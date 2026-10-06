@@ -121,6 +121,20 @@ test("a refused Keep leaves the file staged with Discard and the reason", async 
   assert.equal(h.recorded.length, 0);
 });
 
+test("a Keep that finds the file gone ends once its prompt closes", async () => {
+  const h = harness(async (command) => {
+    if (command === "browser_download_keep") throw "The download is gone";
+  });
+  handleNativeDownload({ ...finished, name: "setup.exe", id: "s6", needsApproval: true, marked: true }, h.deps as never);
+  (h.shown.at(-1)?.options?.action as { onClick: () => void }).onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The app treats discarding a vanished id as done, so closing the explanation ends it.
+  (h.shown.at(-1)?.options?.onDismiss as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(h.calls.map((call) => call.command), ["browser_download_keep", "browser_download_discard"]);
+  assert.equal(h.shown.length, 2);
+});
+
 test("a failed Discard asks again, so the staged file is not left behind", async () => {
   let failures = 1;
   const h = harness(async (command) => {

@@ -802,9 +802,16 @@ fn remember_staged<R: Runtime>(app: &AppHandle<R>, path: &Path) {
         return;
     };
     let _guard = STAGED_LIST_LOCK.lock().unwrap();
-    let mut paths = read_staged_list(&list);
-    paths.push(path.to_path_buf());
+    let paths = with_staged(read_staged_list(&list), path);
     write_staged_list(&list, &paths);
+}
+
+/// Kept or discarded ones are gone from their staged path and drop out, so the list holds only
+/// files still waiting (at most MAX_STAGED) and leftovers not yet deleted.
+fn with_staged(mut paths: Vec<PathBuf>, path: &Path) -> Vec<PathBuf> {
+    paths.retain(|staged| std::fs::symlink_metadata(staged).is_ok());
+    paths.push(path.to_path_buf());
+    paths
 }
 
 /// Delete the staged files a previous run left (kept or discarded ones are already gone). Only
@@ -828,8 +835,8 @@ fn remove_staged_leftovers(paths: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Once per run, before this run stages anything.
-fn clean_staged_leftovers<R: Runtime>(app: &AppHandle<R>) {
+/// Once per run, before this run stages anything: started at launch, and every view waits for it.
+pub(crate) fn clean_staged_leftovers<R: Runtime>(app: &AppHandle<R>) {
     static DONE: std::sync::Once = std::sync::Once::new();
     DONE.call_once(|| {
         let Some(list) = staged_list_path(app) else {
@@ -998,7 +1005,10 @@ fn release_staged(views: &Mutex<ViewsState>, id: &str, marked: Option<bool>) {
 fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
     let (path, marked) = {
         let mut inner = views.lock().unwrap();
-        let entry = inner.staged.get_mut(id).ok_or("No such download")?;
+        // Nothing to delete (gone when a keep found it moved): done, so a prompt can always close.
+        let Some(entry) = inner.staged.get_mut(id) else {
+            return Ok(());
+        };
         let marked = match entry.state {
             StagedState::Ready { marked } => marked,
             StagedState::Downloading => return Err("The download hasn't finished".into()),
@@ -2632,7 +2642,8 @@ mod tests {
             std::fs::write(&staged, b"x").unwrap();
             let views = Mutex::new(ViewsState::default());
             assert!(keep_staged(&views, "12345").is_err());
-            assert!(discard_staged(&views, "12345").is_err());
+            // Nothing to delete: a prompt for a vanished download can still close.
+            assert!(discard_staged(&views, "12345").is_ok());
             let downloading = stage(&views, &staged, "a.exe", StagedState::Downloading);
             assert!(keep_staged(&views, &downloading).is_err());
             assert!(discard_staged(&views, &downloading).is_err());
@@ -2709,6 +2720,19 @@ mod tests {
             assert_eq!(read_staged_list(&list), vec![ours]);
         }
 
+        #[test]
+        fn the_staged_list_drops_resolved_downloads() {
+            let dir = tempfile::tempdir().unwrap();
+            let waiting = dir.path().join("Unconfirmed 0000000000000001.download");
+            let resolved = dir.path().join("Unconfirmed 0000000000000002.download");
+            let new = dir.path().join("Unconfirmed 0000000000000003.download");
+            std::fs::write(&waiting, b"x").unwrap();
+            assert_eq!(
+                with_staged(vec![waiting.clone(), resolved], &new),
+                vec![waiting, new]
+            );
+        }
+
         #[cfg(unix)]
         #[test]
         fn a_leftover_that_cannot_be_deleted_stays_listed() {
@@ -2766,7 +2790,8 @@ mod tests {
             let id = stage(&views, &staged, "a.exe", ready(Some(true)));
             discard_staged(&views, &id).unwrap();
             assert!(!staged.exists());
-            assert!(discard_staged(&views, &id).is_err());
+            // Again is a no-op, not an error.
+            discard_staged(&views, &id).unwrap();
             // Already gone from disk is still a clean discard.
             let gone = stage(&views, &staged, "a.exe", ready(Some(true)));
             discard_staged(&views, &gone).unwrap();

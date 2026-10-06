@@ -2344,6 +2344,9 @@ fn main() {
 
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
+            // Off the launch path: deletes staged downloads a crash or quit left behind.
+            let staged_app = app.handle().clone();
+            std::thread::spawn(move || browser_webview::clean_staged_leftovers(&staged_app));
             if let Err(error) = process::with_studio_runtime_launch_guard(|| {
                 staged_update::reconcile_legacy_at_launch(&diagnostics::studio_dir());
                 Ok(())
