@@ -198,6 +198,9 @@ export const VoiceEngine: FC = () => {
 
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
+    // every re-arm (a turn ending, a chat model arriving) waits for a voice still loading;
+    // the load finishing calls back in here
+    if (useChatRuntimeStore.getState().voiceSlotLoading) return;
     // After a session ends (no-speech finish, silence timer), the composer's
     // dictation field can lag a few frames before clearing. Clicking Dictate
     // while it is still set would toggle dictation OFF and kill the loop, so
