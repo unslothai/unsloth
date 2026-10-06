@@ -254,14 +254,14 @@ def _late_tool_results(transcript: Transcript) -> list[dict]:
         results = {
             part["toolCallId"]: part["result"]
             for part in message["content"]
-            if part.get("type") == "tool-call" and part.get("result")
+            if part.get("type") == "tool-call" and "result" in part
         }
         if current is None or not results:
             continue
         content = [
             {**part, "result": results[part["toolCallId"]]}
             if part.get("type") == "tool-call"
-            and not part.get("result")
+            and "result" not in part
             and part.get("toolCallId") in results
             else part
             for part in current["content"]

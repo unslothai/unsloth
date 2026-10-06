@@ -80,9 +80,8 @@ def _parts(record: dict, message_id: str) -> tuple[list[dict], dict[str, str]]:
         elif kind == "tool_use" and not user:
             parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
         elif kind == "tool_result" and user and block.get("tool_use_id"):
-            result = _result_text(block.get("content"))
-            if result:
-                results[str(block["tool_use_id"])] = result
+            # An empty output is still a finished call; Studio replays "" differently from none.
+            results[str(block["tool_use_id"])] = _result_text(block.get("content"))
     return parts, results
 
 

@@ -663,3 +663,31 @@ def test_codex_revert_and_fork_rebuild_the_inherited_prefix(codex_home):
     assert summary.new_chats == 1  # the fork, not a second copy of the reverted thread
     fork = [m["content"][0].get("text") for m in _messages(codex.SOURCE, "f1")]
     assert fork == ["List the files", "Forked question"]
+
+    # A fork of the revert names the replacement rollout ("r2"), not the thread id.
+    _continuation(codex_home, "f2", "f2", "r2", 6, "Fork of the retry")
+    run_import(codex.SOURCE)
+    rows = {m["id"]: m for m in _messages(codex.SOURCE, "f2")}
+    tip = next(m for m in rows.values() if m["content"][0].get("text") == "Fork of the retry")
+    chain = []
+    while tip:
+        chain.append(tip["content"][0].get("text"))
+        tip = rows.get(tip["parentId"])
+    assert chain == ["Fork of the retry", "Try again", "List the files"]
+
+
+def test_an_empty_tool_output_still_completes_the_call(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "Touch it"),
+            c_asst(
+                "a1", [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}], parent = "u1"
+            ),
+            c_user(
+                "r1", [{"type": "tool_result", "tool_use_id": "t1", "content": ""}], parent = "a1"
+            ),
+        ],
+    )
+    call = claude.read_transcript(path, "t", "s1").messages[1]["content"][0]
+    assert call["result"] == ""

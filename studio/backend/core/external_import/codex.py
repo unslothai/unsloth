@@ -64,6 +64,11 @@ def _rollouts(home: Path) -> list[Path]:
     return sorted(found.values(), key = lambda p: p.name)
 
 
+def _rollout_id(path: Path) -> str:
+    """``rollout-<YYYY-MM-DDThh-mm-ss>-<thread id>[_<rollout id>]``: a revert names its own rollout."""
+    return session_id_of(path)[len("rollout-YYYY-MM-DDThh-mm-ss-") :].rsplit("_", 1)[-1]
+
+
 def _thread_id(path: Path) -> str:
     return str(_meta(path).get("id") or session_id_of(path))
 
@@ -97,8 +102,9 @@ def list_projects(home: Path) -> list[SourceProject]:
 def _records(path: Path) -> list[tuple[str, int, dict]]:
     """``(origin file, ordinal, record)`` with a paginated thread's inherited prefix first.
 
-    A fork or revert (codex-rs ``history_base``) writes only the tail; the prefix is the base
-    thread's older rollout up to ``end_ordinal_exclusive``.
+    A fork or revert (codex-rs ``history_base``) writes only the tail; the prefix is the rollout
+    named by ``history_base.thread_id`` (a rollout id, not ``session_meta.id``) up to
+    ``end_ordinal_exclusive``.
     """
     own = list(read_jsonl(path))
     origin = session_id_of(path)
@@ -109,15 +115,14 @@ def _records(path: Path) -> list[tuple[str, int, dict]]:
     home = next(
         (p.parent for p in path.parents if p.name in ("sessions", "archived_sessions")), None
     )
-    older = [
-        p
-        for p in (_by_thread(home).get(str(base.get("thread_id")), []) if home else [])
-        if p.name < path.name
-    ]
-    if not older:
+    rollout = str(base.get("thread_id"))
+    base_path = next(
+        (p for p in (_rollouts(home) if home else []) if _rollout_id(p) == rollout), None
+    )
+    if base_path is None or base_path == path:
         return tagged  # base rollout deleted: the tail is all there is
     cut = base.get("end_ordinal_exclusive")
-    prefix = [t for t in _records(older[-1]) if not isinstance(cut, int) or t[1] < cut]
+    prefix = [t for t in _records(base_path) if not isinstance(cut, int) or t[1] < cut]
     return prefix + tagged
 
 
@@ -165,7 +170,8 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         ):
             call = open_calls.pop(str(payload.get("call_id")), None)
             result = _output_text(payload.get("output"))
-            if call is not None and result:
+            if call is not None:
+                # An empty output is still a finished call; Studio replays "" differently from none.
                 call["result"] = result
             continue
         else:
