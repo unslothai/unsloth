@@ -3423,10 +3423,9 @@ class DiffusionBackend:
                     self._loading.fetch_repo = fetch_base
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
-                        # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing.
-                        self._loading.asset_repos = tuple(
-                            dict.fromkeys(self._loading.asset_repos + (dit_prequant[0],))
-                        )
+                        # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing. The file
+                        # entry goes in first: load_progress reads without this lock, and a repo listed with no file
+                        # entry yet is counted whole, so a cached sibling checkpoint could latch "finalizing".
                         self._loading.asset_files += (
                             (
                                 dit_prequant[0],
@@ -3434,6 +3433,9 @@ class DiffusionBackend:
                                 int(dit_prequant[2]),
                                 asset_baseline,
                             ),
+                        )
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + (dit_prequant[0],))
                         )
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
@@ -3443,22 +3445,21 @@ class DiffusionBackend:
                 )
             if te_hub_files:
                 # Baselined AFTER the denoiser fetch: both can live in one repo, and a baseline taken before it would
-                # credit the denoiser's bytes to the encoder too. Repo and file are claimed together, since a claimed
-                # repo with no file entry is counted whole, cached sibling encoder included.
+                # credit the denoiser's bytes to the encoder too. File entries before repos, as for the denoiser above.
                 te_baselines = {
                     repo: self._cache_bytes(repo) for repo in {r for r, _n, _s in te_hub_files}
                 }
                 with self._load_cancel_lock:
                     if self._load_token == token and self._loading is not None:
+                        self._loading.asset_files += tuple(
+                            (repo, name, size, te_baselines[repo])
+                            for repo, name, size in te_hub_files
+                        )
                         self._loading.asset_repos = tuple(
                             dict.fromkeys(
                                 self._loading.asset_repos
                                 + tuple(repo for repo, _n, _s in te_hub_files)
                             )
-                        )
-                        self._loading.asset_files += tuple(
-                            (repo, name, size, te_baselines[repo])
-                            for repo, name, size in te_hub_files
                         )
             # Download outside the lock so unload/an eviction can preempt the pull. The carried snapshot is the
             # fallback, never the override: it fires only when the estimate came back empty, since the metadata that

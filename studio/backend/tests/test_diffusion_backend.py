@@ -5046,6 +5046,46 @@ def test_run_load_leaves_a_mirrored_pre_cast_encoder_out_of_the_download(monkeyp
     assert seen[1] == ()
 
 
+class _PollOnClaimState(_LoadingState):
+    # load_progress reads the claim without the lock, so poll it after EVERY store to it.
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in ("asset_repos", "asset_files") and getattr(self, "backend", None) is not None:
+            self.polls.append(self.backend.load_progress()["phase"])
+
+
+@pytest.mark.parametrize("claim", ["encoder", "denoiser"])
+def test_run_load_never_shows_a_claimed_repo_without_its_file(monkeypatch, claim):
+    # A repo claimed with no file entry yet is counted whole, so a poll between the two stores
+    # counted a cached sibling checkpoint (the fp8 file a card used before int8) as this load's
+    # download and latched "finalizing" for the rest of the load.
+    dit_repo = "unsloth/Qwen-Image-2.1-DiT"
+    cache = {"unsloth/Qwen-Image-2.1": 300}
+    cache[_TE_REPO if claim == "encoder" else dit_repo] = 1700
+    _stub_te_run_load(
+        monkeypatch,
+        base = "unsloth/Qwen-Image-2.1",
+        base_bytes = 300,
+        cache = cache,
+        file_bytes = {},
+        dit_prequant = (dit_repo, "Qwen-Image-2.1-INT8.safetensors", 700),
+    )
+    monkeypatch.setattr(DiffusionBackend, "_fetch_denoiser_prequant", lambda self, *a, **k: None)
+    seen = []
+    monkeypatch.setattr(
+        DiffusionBackend, "load_pipeline", lambda self, **kw: seen.append(self.load_progress())
+    )
+    backend = DiffusionBackend()
+    state = _PollOnClaimState(repo_id = "unsloth/Qwen-Image-2.1", base_repo = None)
+    state.polls = []
+    state.backend = backend
+    backend._loading = state
+    backend._load_token = 7
+    backend._run_load(_load_token = 7, repo_id = "unsloth/Qwen-Image-2.1", model_kind = "pipeline")
+    assert state.polls and set(state.polls) == {"downloading"}
+    assert seen[0]["phase"] == "downloading"
+
+
 def test_the_widening_decision_is_taken_on_the_repo_listing(monkeypatch):
     # The widening turns on which repo the fetch resolves to and on whether EVERY transformer shard
     # is cached, and only the base repo's listing answers either. So the estimate defers to a
