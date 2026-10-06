@@ -462,3 +462,48 @@ def test_settings_never_wait_on_device_detection(monkeypatch):
     assert catalog.clef_unsupported_reason(wait = False) is None
     monkeypatch.setattr(hardware, "DEVICE", hardware.DeviceType.MLX)
     assert catalog.clef_unsupported_reason(wait = False) == catalog.CLEF_NEEDS_GPU
+
+
+def _clef_agent(conn):
+    import threading
+
+    from core.systemone import clef_runtime
+
+    agent = object.__new__(clef_runtime.ClefAgent)
+    agent._lock, agent._broken, agent._conn = threading.Lock(), None, conn
+    agent._process = SimpleNamespace(exitcode = 1)
+    return agent
+
+
+def test_a_timed_out_clef_worker_is_never_asked_again(monkeypatch):
+    from core.systemone import clef_runtime
+
+    class Conn:
+        sent = 0
+
+        def send(self, message):
+            self.sent += 1
+
+        def poll(self, timeout):
+            return self.sent > 1  # the first answer comes late, after its request timed out
+
+        def recv(self):
+            return ("ok", {"answers": "for the request that timed out"})
+
+    monkeypatch.setattr(clef_runtime, "DECIDE_TIMEOUT_S", 0.01)
+    conn = Conn()
+    agent = _clef_agent(conn)
+    for _ in range(2):
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "did not answer"):
+            agent.decide("state", {})
+    assert conn.sent == 1
+
+
+def test_a_clef_worker_that_died_after_loading_is_a_worker_error():
+    from core.systemone import clef_runtime
+    class Conn:
+        def send(self, message):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    with pytest.raises(clef_runtime.ClefWorkerError, match = "exited"):
+        _clef_agent(Conn()).decide("state", {})

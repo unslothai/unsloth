@@ -151,6 +151,7 @@ class ClefAgent:
 
     def __init__(self, folder: Path):
         self._lock = threading.Lock()
+        self._broken: str | None = None
         self._conn, child = _CTX.Pipe()
         env = os.environ.get("UNSLOTH_IS_PRESENT")
         os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -188,8 +189,19 @@ class ClefAgent:
 
     def decide(self, state, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         with self._lock:
-            self._conn.send(("decide", state, questions))
-            kind, payload = self._receive(DECIDE_TIMEOUT_S)
+            # After a timeout the late answer is still in the pipe, so the worker is never asked again.
+            if self._broken is not None:
+                raise ClefWorkerError(self._broken)
+            try:
+                self._conn.send(("decide", state, questions))
+                kind, payload = self._receive(DECIDE_TIMEOUT_S)
+            except (OSError, ValueError, ClefWorkerError) as exc:
+                self._broken = (
+                    str(exc)
+                    if isinstance(exc, ClefWorkerError)
+                    else (f"The Clef worker exited (code {self._process.exitcode})")
+                )
+                raise ClefWorkerError(self._broken) from None
         if kind == "invalid":
             raise ValueError(payload)
         if kind != "ok":
