@@ -4252,3 +4252,22 @@ class TestDamagedLatestSidecarRepairHandoff:
             tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
             != "latest"
         )
+
+
+class TestTransformersMainSource:
+    def test_dev_pin_installs_from_main_archive(self):
+        import utils.transformers_version as tv
+
+        assert tv._install_source("transformers==5.19.0.dev0") == tv._TRANSFORMERS_MAIN_ARCHIVE
+        assert tv._install_source("transformers==5.18.0") == "transformers==5.18.0"
+        assert tv._install_source("tokenizers==0.23.0") == "tokenizers==0.23.0"
+
+    def test_extra_pins_replace_base_sidecar_pins(self):
+        import utils.transformers_version as tv
+
+        pkgs = tv._venv_t5_latest_packages(
+            "5.19.0.dev0", ("huggingface-hub==1.32.0", "hf-xet==1.5.2")
+        )
+        assert "huggingface_hub==1.8.0" not in pkgs and "hf_xet==1.4.2" not in pkgs
+        assert pkgs.count("huggingface-hub==1.32.0") == 1 and "hf-xet==1.5.2" in pkgs
+        assert pkgs[0] == "transformers==5.19.0.dev0"

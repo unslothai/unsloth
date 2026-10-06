@@ -36,6 +36,7 @@ persistent ``.venv_t5_latest`` sidecar via
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -272,6 +273,7 @@ def _refresh_snapshot() -> dict | None:
     if pypi_types is None:
         return None
     main_types = _fetch_remote_model_types("main")
+    main_version = _fetch_main_version() if main_types is not None else None
     return {
         "schema": _SNAPSHOT_SCHEMA,
         "fetched_at": time.time(),
@@ -279,6 +281,7 @@ def _refresh_snapshot() -> dict | None:
         "pypi_model_types": sorted(pypi_types),
         "main_model_types": sorted(main_types) if main_types is not None else [],
         "main_checked": main_types is not None,
+        "main_version": main_version,
     }
 
 
@@ -424,6 +427,7 @@ def latest_transformers_supports(model_type: str) -> dict | None:
         "pypi_version": snapshot["pypi_version"],
         "supported_in_pypi": model_type in set(snapshot["pypi_model_types"]),
         "supported_in_main": model_type in set(snapshot["main_model_types"]),
+        "main_version": snapshot.get("main_version"),
     }
 
 
@@ -500,6 +504,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
             "pypi_version": supports[0]["pypi_version"],
             "supported_in_pypi": supported_in_pypi,
             "supported_in_main": supported_in_main,
+            "main_version": supports[0].get("main_version"),
         }
     except Exception as exc:
         logger.debug("Latest-transformers check failed for '%s': %s", model_name, exc)
@@ -517,6 +522,44 @@ _IGNORED_DEPS = frozenset({"typer"})
 
 def _canonical_dep_name(name: str) -> str:
     return name.lower().replace("_", "-")
+
+
+_MAIN_RAW = "https://raw.githubusercontent.com/huggingface/transformers/main"
+
+
+def _fetch_main_version() -> str | None:
+    """``__version__`` on transformers main (a ``.devN`` string), or None."""
+    from utils.transformers_version import _is_valid_version_string
+
+    body = _fetch_text(f"{_MAIN_RAW}/src/transformers/__init__.py")
+    if body is None or body == _FETCH_MISSING:
+        return None
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', body, re.MULTILINE)
+    if (
+        match is None
+        or ".dev" not in match.group(1)
+        or not _is_valid_version_string(match.group(1))
+    ):
+        return None
+    return match.group(1)
+
+
+def _fetch_main_requires() -> list[str] | None:
+    """Core install_requires of transformers main, read from its setup.py."""
+    body = _fetch_text(f"{_MAIN_RAW}/setup.py")
+    if body is None or body == _FETCH_MISSING:
+        return None
+    deps_block = re.search(r"^_deps = \[(.*?)^\]", body, re.MULTILINE | re.DOTALL)
+    install_block = re.search(r"^install_requires = \[(.*?)^\]", body, re.MULTILINE | re.DOTALL)
+    if deps_block is None or install_block is None:
+        return None
+    deps = {}
+    for spec in re.findall(r'"([^"]+)"', deps_block.group(1)):
+        deps[re.split(r"[<>=!~ \[;]", spec, maxsplit = 1)[0]] = spec
+    names = re.findall(r'deps\["([^"]+)"\]', install_block.group(1))
+    if not names or any(name not in deps for name in names):
+        return None
+    return [deps[name] for name in names]
 
 
 def _fetch_requires_dist(version: str) -> list[str] | None:
@@ -568,7 +611,7 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
     install: proceeding unverified could pin a sidecar whose imports then crash the
     workers, and the caller just reached PyPI for the version check so a retry is cheap.
     """
-    reqs = _fetch_requires_dist(version)
+    reqs = _fetch_main_requires() if ".dev" in version else _fetch_requires_dist(version)
     if reqs is None:
         return (), ["dependency metadata for this release (could not be fetched from PyPI; retry)"]
     try:
@@ -591,7 +634,16 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
             continue
         if name in _SIDECAR_PROVIDED:
             if not req.specifier.contains(_SIDECAR_PROVIDED[name], prereleases = True):
-                blockers.append(raw)
+                # The base env already ships a newer hub (studio.txt): shadow the recipe's pins
+                # with the base env's own hub + hf-xet pair rather than refusing the release.
+                base_pins = _base_env_sidecar_pins()
+                base_name_pin = next((p for p in base_pins if p.startswith(f"{name}==")), None)
+                if base_name_pin and req.specifier.contains(
+                    base_name_pin.split("==", 1)[1], prereleases = True
+                ):
+                    extras.extend(p for p in base_pins if p not in extras)
+                else:
+                    blockers.append(raw)
             continue
         try:
             installed = _installed_version(req.name)
@@ -608,6 +660,20 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
         else:
             blockers.append(raw)
     return tuple(extras), blockers
+
+
+def _base_env_sidecar_pins() -> list[str]:
+    """Exact pins of the base env's own huggingface-hub and hf-xet (empty if either is missing)."""
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _installed_version
+
+    pins = []
+    for name in _SIDECAR_PROVIDED:
+        try:
+            pins.append(f"{name}=={_installed_version(name)}")
+        except PackageNotFoundError:
+            return []
+    return pins
 
 
 def is_install_in_progress() -> bool:
@@ -680,7 +746,12 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": "Could not verify the latest transformers release on PyPI.",
         }
-    if version != snapshot["pypi_version"]:
+    from_main = (
+        version != snapshot["pypi_version"]
+        and snapshot.get("main_checked")
+        and version == snapshot.get("main_version")
+    )
+    if version != snapshot["pypi_version"] and not from_main:
         return {
             "success": False,
             "version": version,
@@ -689,6 +760,13 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             # Lets the consent dialog retry with the release that superseded the
             # one /validate saw, instead of re-sending the stale version forever.
             "latest_version": snapshot["pypi_version"],
+        }
+    if from_main and _fetch_main_version() != version:
+        # The sidecar check needs the installed version to equal the pin, and main moves.
+        return {
+            "success": False,
+            "version": version,
+            "message": f"transformers main is no longer {version}; reload the model to check again.",
         }
     extra_packages, blockers = compat_plan(version)
     if blockers:
@@ -709,7 +787,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
     return {
         "success": True,
         "version": version,
-        "message": f"Installed transformers {version} into the latest sidecar "
+        "message": f"Installed transformers {version}{' (main)' if from_main else ''} into the latest sidecar "
         f"(pinned: {latest_venv_pinned_version()}).",
     }
 

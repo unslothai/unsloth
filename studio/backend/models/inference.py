@@ -751,8 +751,11 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_main: bool = Field(
         False,
-        description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Unsloth yet).",
+        description = "True if transformers GitHub main ships this model_type; with main_version "
+        "set, Unsloth can install main into the persistent sidecar after user consent.",
+    )
+    main_version: Optional[str] = Field(
+        None, description = "transformers main __version__ (a .devN string) at check time"
     )
 
 

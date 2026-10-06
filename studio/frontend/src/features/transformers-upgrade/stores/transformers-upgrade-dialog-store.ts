@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { installLatestTransformers } from "../api/transformers-upgrade-api";
+import { upgradeInstallVersion } from "../lib/upgrade-dialog-actions";
 import type {
   TransformersUpgradeInfo,
   TransformersUpgradePhase,
@@ -89,7 +90,7 @@ export const useTransformersUpgradeDialogStore =
     },
     install: async () => {
       const { upgrade, phase, forceCancelActive } = get();
-      const version = upgrade?.pypi_version;
+      const version = upgradeInstallVersion(upgrade);
       if (!version || phase === "installing") return;
       const requestResolver = pendingResolver;
       set({ phase: "installing", errorMessage: null });

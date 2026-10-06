@@ -2408,6 +2408,7 @@ def _venv_t5_is_valid() -> bool:
 
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
+    pkg = _install_source(pkg)
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -3325,12 +3326,33 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     """Package set for the latest sidecar; mirrors the fixed .venv_t5_* sidecars.
     *extra_packages* carries dep-compat shadows (e.g. a newer tokenizers) computed by
     utils.transformers_latest before install."""
-    return (
+    base = (
         f"transformers=={version}",
         "huggingface_hub==1.8.0",
         "hf_xet==1.4.2",
         "tiktoken",
-    ) + tuple(extra_packages)
+    )
+    # A shadow for a package the recipe already pins replaces that pin instead of doubling it.
+    overridden = {_pin_spec_name(p) for p in extra_packages}
+    return tuple(p for p in base if _pin_spec_name(p) not in overridden) + tuple(extra_packages)
+
+
+def _pin_spec_name(spec: str) -> str:
+    return spec.split("==", 1)[0].lower().replace("_", "-")
+
+
+# transformers main, installed for an architecture no release ships yet (user-consented).
+# PyPI never hosts a transformers .devN build, so a dev pin always means main; the archive
+# needs no git on the user's machine.
+_TRANSFORMERS_MAIN_ARCHIVE = (
+    "transformers @ https://github.com/huggingface/transformers/archive/refs/heads/main.zip"
+)
+
+
+def _install_source(pkg: str) -> str:
+    if re.fullmatch(r"transformers==[0-9.]+\.dev[0-9]+", pkg):
+        return _TRANSFORMERS_MAIN_ARCHIVE
+    return pkg
 
 
 # Single reservation for ANY .venv_t5_latest replacement (consented install or lazy

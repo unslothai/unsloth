@@ -6,6 +6,7 @@ import {
   type TransformersUpgradeCheck,
   checkTransformersUpgrade,
   confirmTransformersUpgradeIfNeeded,
+  upgradeInstallVersion,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 
@@ -49,11 +50,10 @@ export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
 ): TrainingTransformersUpgradeNotice {
-  const installable = Boolean(
-    check.upgrade?.supported_in_pypi && check.upgrade?.pypi_version,
-  );
+  const installVersion = upgradeInstallVersion(check.upgrade);
+  const installable = installVersion !== null;
   return {
-    installVersion: installable ? (check.upgrade?.pypi_version ?? null) : null,
+    installVersion,
     fourBitUnavailable: check.forces16Bit && loadsIn4Bit,
     installSwitchesTo16Bit: installable && !check.forces16Bit && loadsIn4Bit,
   };
@@ -130,11 +130,8 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Only a released version is ever installed, so every branch that talks about
-  // installing checks this first.
-  const installable = Boolean(
-    check.upgrade.supported_in_pypi && check.upgrade.pypi_version,
-  );
+  // A PyPI release, or transformers main when no release ships the architecture.
+  const installable = upgradeInstallVersion(check.upgrade) !== null;
   if (check.installBreaksExactResume) {
     // The checkpoint is attested against a 4-bit load the latest sidecar refuses, and
     // that sidecar is a persistent overlay: consenting would strand it for good.
