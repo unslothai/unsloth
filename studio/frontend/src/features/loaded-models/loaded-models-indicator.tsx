@@ -198,8 +198,7 @@ export function LoadedModelsIndicator({
         useSettingsDialogStore.getState().openDialog(target.tab);
         return;
       }
-      // Only the Audio workflow rides along: this takes the user to the page,
-      // it does not start a new thread or reload anything.
+      // Navigation only (Audio carries its workflow): no new thread, no reload.
       void navigate({ to: target.to, search: target.search });
     },
     [navigate],

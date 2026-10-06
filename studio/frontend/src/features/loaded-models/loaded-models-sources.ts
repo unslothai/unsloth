@@ -129,7 +129,6 @@ export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   stt: "Dictation",
 };
 
-// What a speech-slot row does, when it is not speech.
 const AUDIO_WORKFLOW_KIND_LABELS: Partial<Record<AudioWorkflowId, string>> = {
   music: "Music",
   separate: "Separation",

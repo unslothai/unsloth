@@ -217,9 +217,7 @@ export function audioPickIsRoutable({
     return ["snac", "bicodec", "dac"].includes(codec) || AUDIO_CPP_AUDIO_TYPES.has(codec);
   }
   if (isCurated) return true;
-  // The Hub's music and audio-to-audio tags cover far more than the Audio page runs: MusicGen,
-  // Stable Audio, ComfyUI and sa3.cpp GGUFs, codecs and speech enhancers. Separation is the one
-  // audio-to-audio kind with a page; music needs a native family or a GGUF for the audio runtime.
+  // Hub music / audio-to-audio tags also cover MusicGen, Stable Audio, codecs, enhancers: Audio runs none.
   if (task === "audio-to-audio") return audioType === AUDIO_CPP_SEP_AUDIO_TYPE;
   if (task === "text-to-audio") {
     if (NATIVE_AUDIO_TYPES.has(audioType ?? "")) return true;

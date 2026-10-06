@@ -4148,8 +4148,7 @@ export function HubModelPicker({
       });
     }
     for (const c of cachedGguf) {
-      // Only the audio runtime's header classifier tags a GGUF text-to-audio, so a downloaded one is
-      // known to be runnable. Music only: the speech branch of the gate also needs the codec.
+      // Only the audio runtime's header classifier tags a GGUF text-to-audio, so it is runnable.
       const taskFromGgufArch = c.task === "text-to-audio" ? true : undefined;
       const existing = map.get(c.repo_id);
       if (existing) {
