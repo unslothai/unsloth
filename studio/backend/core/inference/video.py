@@ -3175,6 +3175,7 @@ class VideoBackend:
             checkpoint_local: Optional[Path] = None
             if kwargs.get("gguf_filename") and not Path(kwargs["repo_id"]).expanduser().exists():
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
                 checkpoint_local = Path(
                     hf_hub_download_with_xet_fallback(
                         kwargs["repo_id"],
@@ -5870,10 +5871,11 @@ class VideoBackend:
             )
             if fam.name == "ltx-2":
                 from .video_ltx2 import ltx23_variant_identifier
-
                 variant_id = ltx23_variant_identifier(checkpoint_path)
                 if variant_id is not None:
-                    logger.info("video.ltx23_variant: %s (from the checkpoint's weights)", variant_id)
+                    logger.info(
+                        "video.ltx23_variant: %s (from the checkpoint's weights)", variant_id
+                    )
 
             def _price_checkpoint(path: Any) -> tuple[Optional[int], Any]:
                 """Resident MiB of one checkpoint file's DiT and its ComfyUI quant scan (None: a plain file)."""

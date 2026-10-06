@@ -23,9 +23,9 @@ from core.inference.video_ltx2 import (
 
 
 def _fingerprint(bias: torch.Tensor) -> str:
-    return hashlib.sha256(
-        bias.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
-    ).hexdigest()[:16]
+    return hashlib.sha256(bias.to(torch.bfloat16).view(torch.int16).numpy().tobytes()).hexdigest()[
+        :16
+    ]
 
 
 @pytest.fixture
@@ -44,11 +44,19 @@ def biases(monkeypatch):
     video_ltx2._CONTENT_VARIANT_CACHE.clear()
 
 
-def _ltx_file(path, bias, *, dtype = torch.bfloat16, prefix = "model.diffusion_model."):
+def _ltx_file(
+    path,
+    bias,
+    *,
+    dtype = torch.bfloat16,
+    prefix = "model.diffusion_model.",
+):
     tensors = {
         f"{prefix}proj_out.bias": bias.to(dtype),
         # A quantized weight beside it, as in an fp8 / int8 ComfyUI repack; never read.
-        f"{prefix}transformer_blocks.0.attn1.to_q.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn),
+        f"{prefix}transformer_blocks.0.attn1.to_q.weight": torch.zeros(
+            4, 4, dtype = torch.float8_e4m3fn
+        ),
         f"{prefix}transformer_blocks.0.scale_shift_table": torch.zeros(9, 8),
         f"{prefix}audio_proj_out.bias": torch.ones(16),
     }
@@ -59,7 +67,12 @@ def _ltx_file(path, bias, *, dtype = torch.bfloat16, prefix = "model.diffusion_m
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float16])
 @pytest.mark.parametrize("prefix", ["model.diffusion_model.", ""])
 def test_a_renamed_distilled_file_reads_distilled_from_its_weights(tmp_path, biases, dtype, prefix):
-    path = _ltx_file(tmp_path / "LTX-2.3-FP8-ComfyUI.safetensors", biases["distilled"], dtype = dtype, prefix = prefix)
+    path = _ltx_file(
+        tmp_path / "LTX-2.3-FP8-ComfyUI.safetensors",
+        biases["distilled"],
+        dtype = dtype,
+        prefix = prefix,
+    )
     assert ltx23_checkpoint_variant(path) == "distilled"
     assert ltx23_variant_identifier(path) == "ltx-2.3-22b-distilled"
     assert checkpoint_variant(path) == "distilled"

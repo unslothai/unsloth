@@ -620,7 +620,11 @@ LTX23_PROJ_OUT_BIAS_SHA = {
     "140a7d077a306ea9": "distilled",  # ltx-2.3-22b-distilled-1.1
     "3d334d94df5daf30": "dev",  # ltx-2.3-22b-dev (and -dev-fp8)
 }
-_PROJ_OUT_BIAS_NAMES = ("proj_out.bias", "model.diffusion_model.proj_out.bias", "diffusion_model.proj_out.bias")
+_PROJ_OUT_BIAS_NAMES = (
+    "proj_out.bias",
+    "model.diffusion_model.proj_out.bias",
+    "diffusion_model.proj_out.bias",
+)
 _CONTENT_VARIANT_CACHE: dict[tuple[str, int, int], Optional[str]] = {}
 
 
@@ -639,7 +643,9 @@ def _safetensors_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional
         entry = next((header[n] for n in names if isinstance(header.get(n), dict)), None)
         if entry is None:
             return None
-        dtype = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}.get(entry.get("dtype"))
+        dtype = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}.get(
+            entry.get("dtype")
+        )
         start, end = entry["data_offsets"]
         if dtype is None or not 0 < end - start <= 1 << 20:
             return None
@@ -688,7 +694,11 @@ def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str
     try:
         import hashlib
 
-        reader = _gguf_tensor_bf16_bits if path.lower().endswith(".gguf") else _safetensors_tensor_bf16_bits
+        reader = (
+            _gguf_tensor_bf16_bits
+            if path.lower().endswith(".gguf")
+            else _safetensors_tensor_bf16_bits
+        )
         bits = reader(path, _PROJ_OUT_BIAS_NAMES)
         if bits is not None:
             variant = LTX23_PROJ_OUT_BIAS_SHA.get(hashlib.sha256(bits).hexdigest()[:16])

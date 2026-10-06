@@ -52,7 +52,9 @@ def moe_expert_pair(filename: Optional[str]) -> Optional[tuple[str, str]]:
     partner = moe_partner_filename(filename)
     if partner is None:
         return None
-    return (str(filename), partner) if moe_expert_of(filename) == "high" else (partner, str(filename))
+    return (
+        (str(filename), partner) if moe_expert_of(filename) == "high" else (partner, str(filename))
+    )
 
 
 def moe_pick_pairs(fam: Any, *names: Optional[str]) -> bool:
