@@ -604,10 +604,16 @@ def _clef_logits(
     return logits, questions
 
 
-def _decision_logits(model, tokenizer, items: list) -> tuple:
+def _decision_logits(
+    model,
+    tokenizer,
+    items: list,
+    batch_size = None,
+) -> tuple:
     pad_token_id = getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
     if getattr(model, "is_clef", False):
-        return _clef_logits(model, items, pad_token_id)
+        # A run that lowered its batch to fit a 9B / 27B backbone scores in that batch too.
+        return _clef_logits(model, items, pad_token_id, batch_size or 4)
     return _logits(model, items, pad_token_id), items
 
 
@@ -702,6 +708,8 @@ def _load_clef(
     saved = folder / "unsloth_decision_config.json"
     if saved.is_file():
         config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
+        # The parent run's training record does not describe the next fine-tune, as for Laya.
+        config.pop("training", None)
     model.decision_config = config
     _mark_full_finetuning(model, full_finetuning)
     model._unsloth_forced_float32 = bool(getattr(backbone, "_unsloth_forced_float32", False))
@@ -1566,16 +1574,26 @@ class FastDecisionModel:
         )
 
     @staticmethod
-    def evaluate(model, tokenizer, items: list) -> dict:
-        logits, items = _decision_logits(model, tokenizer, items)
+    def evaluate(
+        model,
+        tokenizer,
+        items: list,
+        batch_size = None,
+    ) -> dict:
+        logits, items = _decision_logits(model, tokenizer, items, batch_size)
         return _metrics(logits, items, _served_temperatures(model.decision_config, logits, items))
 
     @staticmethod
-    def calibrate(model, tokenizer, items: list) -> dict:
+    def calibrate(
+        model,
+        tokenizer,
+        items: list,
+        batch_size = None,
+    ) -> dict:
         common = _laya().common
         config = model.decision_config
         fallback = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
-        logits, items = _decision_logits(model, tokenizer, items)
+        logits, items = _decision_logits(model, tokenizer, items, batch_size)
         clef = getattr(model, "is_clef", False)
         if clef:
             return _calibrate_clef(config, logits, items)
