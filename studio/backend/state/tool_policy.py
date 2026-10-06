@@ -151,7 +151,6 @@ def needs_tool_confirmation(
 def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:
     """The risk check, told the level: under Low the Terminal's shell is the host's."""
     from core.inference.tools import classifying_under
-
     with classifying_under(sandbox_level):
         return bool(is_high_risk(name, arguments))
 
