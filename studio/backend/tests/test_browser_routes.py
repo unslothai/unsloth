@@ -343,3 +343,77 @@ def test_a_byte_order_mark_decides_the_encoding():
     page = "<p>caf\u00e9</p>"
     assert browser_mod._decode_html(page.encode("utf-16"), None) == page
     assert browser_mod._decode_html(b"\xef\xbb\xbf" + page.encode("utf-8"), "iso-8859-1") == page
+
+
+def _modules(monkeypatch, scripts):
+    """Serve each URL in `scripts` as (error, body, content_type); return the URLs fetched."""
+    fetched = []
+
+    def fake_fetch(url, **kwargs):
+        fetched.append(url)
+        return scripts.get(url, ("Failed to fetch URL: HTTP 404", "", ""))
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    return fetched
+
+
+def test_self_contained_module_scripts_are_inlined(monkeypatch):
+    # Module scripts load with CORS, which the sandbox's null origin fails on most hosts.
+    _modules(
+        monkeypatch,
+        {
+            "https://example.com/js/app.js": (
+                None,
+                b'customElements.define("x-a", A);s="</script>"',
+                "text/javascript",
+            )
+        },
+    )
+    page = '<p>hi</p><script type="module" defer src="js/app.js" crossorigin integrity="sha-x" data-k="a>b"></script><p>end</p>'
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == (
+        '<p>hi</p><script type="module" defer data-k="a>b">'
+        'customElements.define("x-a", A);s="<\\/script>"</script><p>end</p>'
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        (None, b'import {a} from "./b.js";a()', "text/javascript"),
+        (None, b'const m = await import("./lazy.js")', "application/javascript"),
+        (None, b'export * from "./c.js"', "text/javascript"),
+        (None, b'x="<!--";y="<script>"', "text/javascript"),
+        (None, b"a()", "text/plain"),
+        ("Failed to fetch URL: HTTP 404", "", ""),
+    ],
+)
+def test_modules_that_cannot_be_inlined_keep_their_tag(monkeypatch, result):
+    _modules(monkeypatch, {"https://example.com/m.js": result})
+    page = '<script type="module" src="/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/page") == page
+
+
+def test_only_live_https_module_tags_are_fetched(monkeypatch):
+    fetched = _modules(monkeypatch, {})
+    page = (
+        '<script src="/classic.js"></script>'
+        '<script type="module">inline()</script>'
+        '<script type="module" src="http://example.com/plain.js"></script>'
+        '<!-- <script type="module" src="/old.js"></script> -->'
+        '<script type="module" src="/live.js"></script>'
+    )
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == ["https://example.com/live.js"]
+
+
+def test_a_fetched_page_gets_its_modules_inlined(monkeypatch):
+    def fake_fetch(url, **kwargs):
+        if url.endswith(".js"):
+            assert kwargs["raw_bytes_max"] == browser_mod._MAX_MODULE_BYTES
+            return None, b"ready()", "text/javascript"
+        return None, b'<html><script type="module" src="/a.js"></script></html>', "text/html"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    html = json.loads(_call().body)["html"]
+    assert '<script type="module">ready()</script>' in html

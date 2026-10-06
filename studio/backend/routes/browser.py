@@ -67,6 +67,30 @@ _REFRESH_RE = re.compile(
 )
 _META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
 
+# Module scripts load with CORS, which the sandbox's opaque origin fails unless the host allows
+# any origin. Self-contained ones are fetched here and inlined; ones with imports keep their src.
+_MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
+_TYPE_MODULE_RE = re.compile(r"""(?<![\w-])type\s*=\s*["']?module["'\s>]""", re.IGNORECASE)
+_ATTR_SRC_RE = re.compile(
+    r"""(?<![\w-])src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE
+)
+_FETCH_ATTRS_RE = re.compile(
+    r"""\s(?:src|integrity|crossorigin)(?=[\s=/>])(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?""",
+    re.IGNORECASE,
+)
+# Static or dynamic imports and re-exports resolve against the module's own URL.
+_MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$.]|from\s*["'`])""")
+_SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
+_JS_TYPES = frozenset(
+    {"text/javascript", "application/javascript", "application/ecmascript", "text/ecmascript"}
+)
+_MAX_INLINED_MODULES = 6
+_MAX_MODULE_BYTES = 2 * 1024 * 1024
+_MODULE_TIMEOUT_S = 8
+# Separate from _FETCH_POOL, whose workers wait on these.
+_MODULE_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-module")
+
 # https only (http could hit local services; WebKit lacks local network protection). The sandbox
 # (no allow-same-origin) isolates pages; the injected script submits forms.
 _FRAME_CSP = (
@@ -1144,6 +1168,78 @@ def _studio_headers(host: str) -> dict:
     return _STUDIO_HEADERS if host == "unsloth.ai" or host.endswith(".unsloth.ai") else {}
 
 
+def _fetch_module(
+    url: str, deadline: float, cancel_event: Optional[threading.Event]
+) -> Optional[str]:
+    """A self-contained module's code, safe to inline; None to leave its tag alone."""
+    meta: dict = {}
+    error, body, content_type = _fetch_url_raw(
+        url,
+        timeout = _MODULE_TIMEOUT_S,
+        extra_headers = {"User-Agent": _BROWSER_UA, "Accept": "*/*"},
+        deadline = deadline,
+        raw_bytes_max = _MAX_MODULE_BYTES,
+        meta_out = meta,
+        cancel_event = cancel_event,
+        host_headers = _studio_headers,
+    )
+    if error is not None or not isinstance(body, bytes) or content_type not in _JS_TYPES:
+        return None
+    # Browsers decode module scripts as UTF-8 whatever the header says.
+    code = body.decode("utf-8", errors = "replace")
+    # Imports would resolve against the page; "<!--" then "<script" keeps an inline tag open.
+    if _MODULE_IMPORT_RE.search(code) or ("<!--" in code and _SCRIPT_OPEN_RE.search(code)):
+        return None
+    return re.sub(r"</(script)", r"<\\/\1", code, flags = re.IGNORECASE)
+
+
+def _open_tag(script: str) -> str:
+    """A script element's start tag, from a match of _MODULE_SCRIPT_RE."""
+    return script[: script.lower().rindex("</script")].rstrip()
+
+
+def _inline_module_scripts(
+    page: str,
+    base_url: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
+    """Inline the page's self-contained module scripts, which the sandbox can't load itself."""
+    tags: list[tuple[re.Match[str], str]] = []
+    comments: Optional[list[tuple[int, int]]] = None
+    for match in _MODULE_SCRIPT_RE.finditer(page):
+        open_tag = _open_tag(match.group(0))
+        if not _TYPE_MODULE_RE.search(open_tag):
+            continue
+        src = _attr(_ATTR_SRC_RE.search(open_tag))
+        url = _join(base_url, src) if src else None
+        if not url or not url.lower().startswith("https://"):
+            continue
+        # A commented-out tag stays as it is; inlined code could end the comment.
+        if comments is None:
+            comments = [m.span() for m in _HTML_COMMENT_RE.finditer(page)]
+        if any(begin <= match.start() < finish for begin, finish in comments):
+            continue
+        tags.append((match, url))
+        if len(tags) == _MAX_INLINED_MODULES:
+            break
+    if not tags:
+        return page
+    deadline = time.monotonic() + _MODULE_TIMEOUT_S
+    codes = list(
+        _MODULE_POOL.map(lambda item: _fetch_module(item[1], deadline, cancel_event), tags)
+    )
+    parts: list[str] = []
+    end = 0
+    for (match, _url), code in zip(tags, codes):
+        if code is None:
+            continue
+        open_tag = _FETCH_ATTRS_RE.sub("", _open_tag(match.group(0)))
+        parts += [page[end : match.start()], open_tag, code, "</script>"]
+        end = match.end()
+    parts.append(page[end:])
+    return "".join(parts)
+
+
 def _fetch(
     request: BrowserFetchRequest, cancel_event: threading.Event
 ) -> tuple[Optional[str], bytes, str, dict]:
@@ -1176,7 +1272,12 @@ def _attachment_name(meta: dict) -> Optional[str]:
 
 
 def _build_response(
-    url: str, error: Optional[str], body: bytes, content_type: str, meta: dict
+    url: str,
+    error: Optional[str],
+    body: bytes,
+    content_type: str,
+    meta: dict,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
     if error is not None:
@@ -1201,6 +1302,7 @@ def _build_response(
                 detail = f"(page exceeds the {_MAX_BROWSER_HTML_BYTES} byte limit for the panel)",
             )
         page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        page = _inline_module_scripts(page, base_url, cancel_event)
         payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
         return Response(
             content = json.dumps(payload, ensure_ascii = False).encode("utf-8"),
@@ -1232,7 +1334,7 @@ def _build_response(
 
 def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
     error, body, content_type, meta = _fetch(request, cancel_event)
-    return _build_response(request.url, error, body, content_type, meta)
+    return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
 @router.post("/fetch")
