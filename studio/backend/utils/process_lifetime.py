@@ -379,19 +379,67 @@ def _reset_after_fork() -> None:
     _spawner = None
 
 
-def _free_thread_local_native_caches() -> None:
-    """Before a fork, free the per-thread FFmpeg scaler PyAV 19+ keeps for every thread that ever reformatted a frame.
+class _UncachedReformatters(threading.local):
+    """PyAV's per-thread scaler cache while a fork is in flight: reads find nothing, writes are dropped."""
 
-    A preexec_fn child runs PyOS_AfterFork_Child, which frees the other threads' state. A reformatter freed there
-    waits on FFmpeg slice threads that do not exist in the child, so the child never execs and the spawner (and every
-    launch queued behind it) blocks forever. Swapping the cache frees them here, where those threads still run; the
-    next reformat on each thread rebuilds its own."""
-    frame = sys.modules.get("av.video.frame")
-    if isinstance(getattr(frame, "_thread_local", None), threading.local):
-        try:
+    def __setattr__(self, name: str, value: object) -> None:
+        if name != "reformatter":
+            super().__setattr__(name, value)
+
+
+_forks_in_flight = 0
+
+
+def _suspend_native_caches() -> None:
+    """Before a fork: free the FFmpeg scaler PyAV 19+ caches for every thread that ever reformatted a frame.
+
+    A child that runs Python before exec (a preexec_fn spawn, or a bare os.fork) goes through PyOS_AfterFork_Child,
+    which frees the other threads' state. A scaler freed there waits on FFmpeg slice threads that do not exist in
+    the child, so the child never execs and the spawner, with every launch queued behind it, blocks forever. Freed
+    here instead, where those threads still run. The replacement drops writes until the fork is done: freeing the
+    old scalers releases the GIL, and a reformat on another thread must not cache a new one into this fork."""
+    global _forks_in_flight
+    _forks_in_flight += 1
+    try:
+        frame = sys.modules.get("av.video.frame")
+        cache = getattr(frame, "_thread_local", None)
+        if isinstance(cache, threading.local) and not isinstance(cache, _UncachedReformatters):
+            frame._thread_local = _UncachedReformatters()
+    except Exception:  # noqa: BLE001 - a fork hook must not get in the fork's way
+        pass
+
+
+def _resume_native_caches() -> None:
+    try:
+        frame = sys.modules.get("av.video.frame")
+        if isinstance(getattr(frame, "_thread_local", None), _UncachedReformatters):
             frame._thread_local = threading.local()
-        except Exception:  # noqa: BLE001 - a fork hook must never raise
-            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _resume_native_caches_in_parent() -> None:
+    global _forks_in_flight
+    _forks_in_flight = max(0, _forks_in_flight - 1)
+    # Another thread's fork may still be between its own hooks.
+    if _forks_in_flight == 0:
+        _resume_native_caches()
+
+
+def _resume_native_caches_in_child() -> None:
+    global _forks_in_flight
+    _forks_in_flight = 0
+    _resume_native_caches()
+
+
+# At import, not lazily: run_server imports this module before anything spawns, and every fork needs it, including
+# the ones that bring their own preexec_fn or call os.fork directly.
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before = _suspend_native_caches,
+        after_in_parent = _resume_native_caches_in_parent,
+        after_in_child = _resume_native_caches_in_child,
+    )
 
 
 def _adopt_fork_reset() -> None:
@@ -402,9 +450,7 @@ def _adopt_fork_reset() -> None:
         return
     _fork_reset_installed = True
     try:
-        os.register_at_fork(
-            before = _free_thread_local_native_caches, after_in_child = _reset_after_fork
-        )
+        os.register_at_fork(after_in_child = _reset_after_fork)
     except (AttributeError, RuntimeError):
         pass
 
@@ -486,8 +532,6 @@ def child_popen_kwargs(preexec_fn: Optional[Callable[[], None]] = None) -> dict:
     ``**child_popen_kwargs()`` alongside the caller's existing kwargs.
     """
     if _is_linux():
-        # A preexec_fn child runs Python before exec; spawns outside the spawner need the pre-fork hook too.
-        _adopt_fork_reset()
         # os.getpid() runs in the spawner, so the child tells real reparenting
         # apart from a parent that is pid 1 (see _pdeathsig_preexec).
         return {"preexec_fn": compose_preexec(preexec_fn, os.getpid())}
