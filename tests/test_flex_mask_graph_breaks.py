@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""unsloth_zoo compiles create_causal_mask; for flex_attention models it must trace without graph
-breaks and build the same mask as eager."""
+"""Compiled flex mask: no graph breaks, same mask as eager."""
 
 import pytest
 

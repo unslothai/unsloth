@@ -2204,11 +2204,7 @@ def _is_dynamo_compiling():
 
 
 def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
-    """Does flex_attention_mask branch on the padding mask's values (`if not fast_all(mask)`)?
-
-    Asked by building one from a meta mask, whose values cannot be read, with the block mask
-    builder swapped for a no-op: a meta mask that fails while no mask succeeds is a value read.
-    """
+    """True if building from a meta mask fails (values read) while no mask succeeds."""
     import torch
 
     try:
@@ -2235,15 +2231,8 @@ def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
 
 
 def fix_transformers_flex_mask_graph_breaks():
-    """Keep transformers' flex attention mask free of graph breaks while torch.compile traces it.
-
-    unsloth_zoo compiles create_causal_mask, and flex_attention models (Qwen3.5 at head_dim 256 on
-    B200) broke that graph on every forward in flex_attention_mask: `if not fast_all(attention_mask)`
-    is a data-dependent branch, and create_block_mask(_compile = True) calls a warnings.warn dynamo
-    cannot trace. While tracing, the padding mask is now always applied (an all-ones mask selects
-    the same blocks and values, so the BlockMask is equal) and `_compile` is dropped, as torch's
-    deprecation asks for an already compiled caller. Eager calls run the originals untouched.
-    """
+    """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
+    of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
     try:
         from transformers import masking_utils
     except Exception as e:
