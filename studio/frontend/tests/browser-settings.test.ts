@@ -238,3 +238,36 @@ test("a new site's icon survives the prune its first visit triggers", () => {
   assert.deepEqual(useBrowserHistoryStore.getState().icons, { "fresh.com": "https://fresh.com/icon.png" });
   useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
 });
+
+test("a default zoom chosen while a fetched file shows applies to the next page", async () => {
+  const { useBrowserStore, setPageDownload } = await import("../src/features/browser/store.ts");
+  const { fitZoomToPage } = await import("../src/features/browser/zoom.ts");
+  useBrowserPrefsStore.getState().setDefaultZoom(1);
+  useBrowserStore.getState().openUrl("https://example.com/report.pdf", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const zoom = () => useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom;
+  setPageDownload(tabId, { blob: new Blob(["%PDF"]), name: "report.pdf", contentType: "application/pdf" });
+  fitZoomToPage(tabId, true);
+  assert.equal(zoom(), 1);
+  useBrowserPrefsStore.getState().setDefaultZoom(1.5);
+  setPageDownload(tabId, null);
+  fitZoomToPage(tabId, false);
+  assert.equal(zoom(), 1.5);
+  useBrowserPrefsStore.getState().setDefaultZoom(1);
+});
+
+test("a page the reader set to 100% keeps it after a fetched file", async () => {
+  const { useBrowserStore, setPageDownload } = await import("../src/features/browser/store.ts");
+  const { fitZoomToPage } = await import("../src/features/browser/zoom.ts");
+  useBrowserPrefsStore.getState().setDefaultZoom(1.5);
+  useBrowserStore.getState().openUrl("https://example.com/a", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const zoom = () => useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom;
+  useBrowserStore.getState().setZoom(tabId, 1);
+  setPageDownload(tabId, { blob: new Blob(["%PDF"]), name: "b.pdf", contentType: "application/pdf" });
+  fitZoomToPage(tabId, true);
+  setPageDownload(tabId, null);
+  fitZoomToPage(tabId, false);
+  assert.equal(zoom(), 1);
+  useBrowserPrefsStore.getState().setDefaultZoom(1);
+});

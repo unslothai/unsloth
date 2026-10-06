@@ -30,12 +30,13 @@ export function fitZoomToPage(tabId: string, isFile: boolean): void {
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   if (!tab) return;
   const preferred = defaultZoom();
+  const at = (zoom: number) => Math.abs(tab.zoom - zoom) < 0.001;
   if (isFile) {
-    if (preferred !== 1 && Math.abs(tab.zoom - preferred) < 0.001) {
-      fittedForFile.add(tabId);
-      store.setZoom(tabId, 1);
-    }
-  } else if (fittedForFile.delete(tabId) && Math.abs(tab.zoom - 1) < 0.001) {
+    // Marked even when the default is 100%, so a default changed while it shows applies after.
+    if (!at(preferred)) return;
+    fittedForFile.add(tabId);
+    if (!at(1)) store.setZoom(tabId, 1);
+  } else if (fittedForFile.delete(tabId) && at(1)) {
     store.setZoom(tabId, preferred);
   }
 }
