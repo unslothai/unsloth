@@ -1293,6 +1293,9 @@ export const ru = {
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
+        sttQuantLabel: "Квантизация",
+        sttQuantDescription:
+          "Выберите или найдите модель STT для локального запуска, затем её квантизацию.",
         sttDeviceLabel: "Загружать в",
         sttDeviceAuto: "GPU, если доступен",
         sttDeviceCpu: "ОЗУ процессора",

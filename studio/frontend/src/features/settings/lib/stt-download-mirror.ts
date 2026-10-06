@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import {
   type SttEngine,
   cancelSttDownload,
@@ -11,6 +12,7 @@ import {
 } from "@/features/chat";
 import {
   finishExternalJob,
+  invalidateGgufVariantsCache,
   startExternalJob,
   updateExternalJob,
 } from "@/features/hub";
@@ -20,6 +22,7 @@ import {
   type SttModel,
   getSttModelRepo,
   sttModelName,
+  sttModelVariant,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 import { SttDownloadTrackers } from "./stt-download-trackers";
@@ -51,9 +54,10 @@ function jobKey(model: SttModel, engine?: SttEngine): string {
 async function loadAndAnnounce(
   model: SttModel,
   engine?: SttEngine,
+  ggufVariant?: string | null,
 ): Promise<void> {
   try {
-    await loadSttModel(model, engine);
+    await loadSttModel(model, engine, undefined, undefined, ggufVariant);
     toast.success(
       translate("settings.voice.dictation.sttModelReady", {
         model: sttModelName(model),
@@ -74,6 +78,10 @@ function settle(
 ): void {
   const key = trackerKey(model, engine);
   finishExternalJob(jobKey(model, engine), outcome, error);
+  // A cached listing would still call the new quant not downloaded.
+  if (outcome === "complete" && isAudioCppFolderId(model)) {
+    invalidateGgufVariantsCache(model);
+  }
   trackers.stop(key);
   const shouldWarmVoiceModel =
     warmSelectedVoiceModelOnComplete.get(key) ?? true;
@@ -81,14 +89,15 @@ function settle(
   // Only warm what the user is still pointed at. Selecting another model, or
   // leaving local dictation, during the download means this one is not wanted
   // and loading it would undo the unload that switch performed.
-  const { sttModel, dictationEngine } = useVoiceSettingsStore.getState();
+  const { sttModel, sttGgufVariant, dictationEngine } =
+    useVoiceSettingsStore.getState();
   if (
     shouldWarmVoiceModel &&
     outcome === "complete" &&
     dictationEngine === "model" &&
     sttModel === model
   ) {
-    void loadAndAnnounce(model, engine);
+    void loadAndAnnounce(model, engine, sttModelVariant(model, sttGgufVariant));
   }
 }
 

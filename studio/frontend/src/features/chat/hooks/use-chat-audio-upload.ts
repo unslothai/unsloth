@@ -10,6 +10,7 @@ import {
   applyDictationDictionary,
   recordRecentDictation,
   requestSttDownload,
+  sttModelVariant,
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
@@ -60,6 +61,8 @@ export type ChatAudioUploadReadiness =
 interface ChatAudioUploadSnapshot extends ChatAudioUploadFence {
   model: string;
   engine: SttEngine;
+  /** Quant of a package folder model, pinned with it. */
+  ggufVariant: string | null;
   language: string;
   device: "auto" | "cpu";
   chatId: string | undefined;
@@ -89,6 +92,7 @@ export function useChatAudioUpload({
 }: UseChatAudioUploadOptions) {
   const t = useT();
   const model = useVoiceSettingsStore((state) => state.sttModel);
+  const ggufVariant = useVoiceSettingsStore((state) => state.sttGgufVariant);
   const language = useVoiceSettingsStore((state) => state.dictationLanguage);
   const device = useVoiceSettingsStore((state) => state.sttDevice);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -165,17 +169,19 @@ export function useChatAudioUpload({
     return retry
       ? {
           model: retry.snapshot.model,
+          ggufVariant: retry.snapshot.ggufVariant,
           language: retry.snapshot.language,
           device: retry.snapshot.device,
           engine: retry.snapshot.engine,
         }
       : {
           model: model.trim(),
+          ggufVariant: sttModelVariant(model.trim(), ggufVariant),
           language,
           device,
           engine: sttEngineFor(model.trim()),
         };
-  }, [device, language, model]);
+  }, [device, ggufVariant, language, model]);
 
   const refreshReadiness = useCallback(
     async (silent = false) => {
@@ -299,6 +305,7 @@ export function useChatAudioUpload({
       authSessionEpoch: getAuthSessionEpoch(),
       model: target.model,
       engine: target.engine,
+      ggufVariant: target.ggufVariant,
       language: target.language,
       device: target.device,
       chatId: resolveDictationChatId(chatId),
@@ -345,6 +352,7 @@ export function useChatAudioUpload({
             transcribeAudioBlob(file, {
               model: source.model,
               engine: source.engine,
+              ggufVariant: source.ggufVariant,
               language: source.language,
               device: source.device,
               signal: controller.signal,

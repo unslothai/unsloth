@@ -120,6 +120,10 @@ export interface VoiceSettingsState {
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
+  /** Quant of a package folder `sttModel`; "" runs the row's resident or default quant. */
+  sttGgufVariant: string;
+  setSttGgufVariant: (value: string) => void;
+
   /** "cpu" holds the dictation model in system RAM instead of the GPU. Sent
    *  with every load and transcribe, so a change applies on the next load. */
   sttDevice: SttDevice;
@@ -236,16 +240,21 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
         set((state) => {
-          const sttModel = normalizeSttModel(value);
-          return {
-            sttModel: isSttModelLanguageCompatible(
-              sttModel,
-              state.dictationLanguage,
-            )
-              ? sttModel
-              : DEFAULT_STT_MODEL,
-          };
+          const normalized = normalizeSttModel(value);
+          const sttModel = isSttModelLanguageCompatible(
+            normalized,
+            state.dictationLanguage,
+          )
+            ? normalized
+            : DEFAULT_STT_MODEL;
+          // A quant belongs to the model it was picked for.
+          return sttModel === state.sttModel
+            ? { sttModel }
+            : { sttModel, sttGgufVariant: "" };
         }),
+
+      sttGgufVariant: "",
+      setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
       setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
@@ -257,15 +266,15 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
-        set((state) => ({
-          dictationLanguage,
-          sttModel: isSttModelLanguageCompatible(
-            state.sttModel,
-            dictationLanguage,
-          )
-            ? state.sttModel
-            : DEFAULT_STT_MODEL,
-        })),
+        set((state) =>
+          isSttModelLanguageCompatible(state.sttModel, dictationLanguage)
+            ? { dictationLanguage }
+            : {
+                dictationLanguage,
+                sttModel: DEFAULT_STT_MODEL,
+                sttGgufVariant: "",
+              },
+        ),
 
       dictionary: [],
       addDictionaryEntry: (value) =>
@@ -390,6 +399,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttGgufVariant:
+            sttModel === savedSttModel
+              ? asString(saved?.sttGgufVariant, "")
+              : "",
           sttDevice: normalizeSttDevice(saved?.sttDevice),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),

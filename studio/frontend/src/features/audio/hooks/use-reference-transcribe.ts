@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { sttEngineFor } from "@/features/chat/adapters/studio-model-dictation-adapter";
-import { useVoiceSettingsStore } from "@/features/settings";
+import { useVoiceSettingsStore, withSttVariant } from "@/features/settings";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
@@ -41,7 +41,10 @@ export function useReferenceTranscribe({
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
-            model,
+            // The Settings model runs its saved quant; a Transcribe pick is already resident.
+            model: sttRepo
+              ? model
+              : withSttVariant(model, voice.sttGgufVariant),
             engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
             device: voice.sttDevice,
             purpose,

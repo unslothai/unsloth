@@ -166,6 +166,21 @@ export function sttModelName(model: SttModel): string {
   );
 }
 
+/** The quant a dictation pick runs. Only a package folder row takes one: a saved key already
+ *  names its own, and "" leaves the row's resident or default quant. */
+export function sttModelVariant(
+  model: SttModel,
+  variant: string,
+): string | null {
+  return variant && isAudioCppFolderId(model) ? variant : null;
+}
+
+/** `model` as one id with its quant folded in (`row:variant`), as the audio runtime reads it. */
+export function withSttVariant(model: SttModel, variant: string): string {
+  const quant = sttModelVariant(model, variant);
+  return quant ? `${model}:${quant}` : model;
+}
+
 export function sttModelSize(model: SttModel): string {
   return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
 }

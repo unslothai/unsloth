@@ -181,6 +181,15 @@ def resolve_audio_cpp_stt_model(
     try:
         require_runnable(found, "asr")
     except AudioCppModelError as exc:
+        # The cache only lists cached quants, so a picked quant that is not on disk reads as
+        # missing; when its row runs, it is a download away, which callers offer.
+        if not network and (variant or ref_variant):
+            row = resolve(base, None, hf_token, network = False)
+            if row is not None and row.task == "asr" and row.unsupported is None:
+                raise SttModelNotDownloadedError(
+                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded. Download "
+                    "it in Settings, then Voice, before loading it."
+                ) from exc
         raise SttModelIdError(str(exc)) from exc
     return found
 

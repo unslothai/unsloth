@@ -2087,6 +2087,18 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     # A variant that is not on disk is still refused rather than swapped for another.
     tiny = acm.resolve(folder, "tiny/Q8_0", network = False)
     assert "not found" in tiny.unsupported
+    # To dictation that is a download to offer, not a bad model id.
+    from core.inference.stt_sidecar import SttModelIdError, SttModelNotDownloadedError
+
+    with pytest.raises(SttModelNotDownloadedError, match = r"\(tiny/Q8_0\) is not downloaded"):
+        s.resolve_audio_cpp_stt_model(f"{folder}:tiny/Q8_0")
+    with pytest.raises(SttModelNotDownloadedError):
+        s.resolve_audio_cpp_stt_model(folder, "tiny/Q8_0")
+    assert not s.is_model_downloaded(f"{folder}:tiny/Q8_0")
+    # Another task's folder is still the wrong model, quant or not.
+    _kokoro(hub)
+    with pytest.raises(SttModelIdError):
+        s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF:Q8_0")
     # A file stem is a spelling of its own row, not a new scope.
     stem = acm.resolve(folder, "moonshine-streaming-small-q8_0", network = False)
     assert stem.variant.key == "Q8_0" and stem.unsupported is None

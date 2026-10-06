@@ -12,12 +12,13 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { audioCppSizeLabel } from "@/features/audio/audio-cpp-catalog";
 import { startSttDownload } from "@/features/chat";
-import { hfApiToken, useHfTokenStore } from "@/features/hub";
+import { hfApiToken, listGgufVariants, useHfTokenStore } from "@/features/hub";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { trackSttDownload } from "../lib/stt-download-mirror";
 import {
   type SttDownloadRequest,
@@ -26,6 +27,7 @@ import {
 import {
   sttModelName,
   sttModelSize,
+  sttModelVariant,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
@@ -51,14 +53,57 @@ export function SttDownloadPrompt() {
   const pending = useSttDownloadPromptStore((s) => s.pending);
   const dismiss = useSttDownloadPromptStore((s) => s.dismiss);
   const hfToken = useHfTokenStore((state) => state.token);
+  // Every caller asks about the dictation model, so its saved quant is the one to fetch.
+  const sttModel = useVoiceSettingsStore((s) => s.sttModel);
+  const sttGgufVariant = useVoiceSettingsStore((s) => s.sttGgufVariant);
+  const pendingModel = pending?.model ?? null;
+  const variant =
+    pendingModel === sttModel
+      ? sttModelVariant(pendingModel, sttGgufVariant)
+      : null;
+  // A package folder has no curated size: read its quant's from the cached listing.
+  const [listedSize, setListedSize] = useState<{
+    model: string;
+    variant: string | null;
+    size: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!pendingModel || sttModelSize(pendingModel)) return;
+    let cancelled = false;
+    listGgufVariants(pendingModel, hfApiToken(hfToken))
+      .then((listing) => {
+        const row = listing.variants.find(
+          (candidate) =>
+            candidate.quant === (variant ?? listing.default_variant),
+        );
+        if (cancelled || !row) return;
+        setListedSize({
+          model: pendingModel,
+          variant,
+          size: audioCppSizeLabel(row.download_size_bytes ?? row.size_bytes),
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingModel, variant, hfToken]);
 
-  const confirm = async (request: SttDownloadRequest) => {
+  const confirm = async (
+    request: SttDownloadRequest,
+    ggufVariant: string | null,
+  ) => {
     // Only on accept: a cancel must not leave the engine changed.
     if (request.selectLocalEngine) {
       useVoiceSettingsStore.getState().setDictationEngine("model");
     }
     try {
-      await startSttDownload(request.model, hfApiToken(hfToken));
+      await startSttDownload(
+        request.model,
+        hfApiToken(hfToken),
+        undefined,
+        ggufVariant,
+      );
       // Progress goes to the shared download panel; the model loads itself when it lands.
       trackSttDownload(request.model);
     } catch (error) {
@@ -68,8 +113,12 @@ export function SttDownloadPrompt() {
     }
   };
 
-  const pendingModel = pending?.model ?? null;
-  const size = pendingModel ? sttModelSize(pendingModel) : "";
+  const size = pendingModel
+    ? sttModelSize(pendingModel) ||
+      (listedSize?.model === pendingModel && listedSize.variant === variant
+        ? listedSize.size
+        : "")
+    : "";
   return (
     <AlertDialog
       open={pending !== null}
@@ -110,7 +159,7 @@ export function SttDownloadPrompt() {
               event.preventDefault();
               const request = pending;
               dismiss();
-              if (request) void confirm(request);
+              if (request) void confirm(request, variant);
             }}
           >
             {t("settings.voice.dictation.sttDownload")}
