@@ -176,3 +176,14 @@ def test_readonly_histfile_still_reads_the_environment(tmp_path, monkeypatch, sh
     for var in ("HISTFILE", "ENV", "BASH_ENV"):
         monkeypatch.delenv(var, raising = False)
     assert dse.read_login_shell_env(shell = path).get(SENTINEL) == "1"
+
+
+def test_a_shell_rejecting_the_probe_falls_back(tmp_path):
+    # Stands in for a non-POSIX shell missing from the list (Plan 9 rc, a renamed fish).
+    shell = tmp_path / "notposix"
+    shell.write_text(
+        f'#!/bin/sh\ncase "$2" in if*) exit 2 ;; esac\n{SENTINEL}=1 exec /bin/sh -c "$2"\n',
+        encoding = "utf-8",
+    )
+    shell.chmod(0o755)
+    assert dse.read_login_shell_env(shell = str(shell)).get(SENTINEL) == "1"

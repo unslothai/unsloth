@@ -136,30 +136,13 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
         target = os.path.join(work, "env")
-        try:
-            process = subprocess.Popen(
-                [shell, "-ilc", probe_command(shell, f"env -0 > {shlex.quote(target)}")],
-                stdin = subprocess.DEVNULL,
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                # Oh My Zsh's auto-update prompt can block the shell forever.
-                env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
-                # Its own group, so the cleanup below takes the whole shell.
-                start_new_session = True,
-            )
-        except Exception as error:
-            logger.debug("login shell environment unavailable: %s", error)
-            return {}
-        # pgid == pid, read before the wait reaps it: getpgid then raises.
-        group = process.pid
-        try:
-            returncode = process.wait(timeout = timeout)
-        except Exception as error:
-            logger.debug("login shell did not finish: %s", error)
-            returncode = None
-        finally:
-            # Every path: a clean exit still leaves an rc's agent running.
-            _terminate_group(group, process)
+        command = f"env -0 > {shlex.quote(target)}"
+        probe = probe_command(shell, command)
+        returncode = _run_login_shell(shell, probe, timeout)
+        # A non-POSIX shell missing from the list rejects the probe; the plain command
+        # still worked. Not on a timeout, and not after a run that succeeded.
+        if returncode not in (0, None) and probe != command:
+            returncode = _run_login_shell(shell, command, timeout)
         if returncode != 0:
             logger.debug("login shell exited %s", returncode)
             return {}
@@ -177,6 +160,34 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
         if sep and name:
             out[name] = value
     return out
+
+
+def _run_login_shell(shell: str, command: str, timeout: float) -> "int | None":
+    """``shell -ilc command``'s exit status; ``None`` if it could not start or timed out."""
+    try:
+        process = subprocess.Popen(
+            [shell, "-ilc", command],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            # Oh My Zsh's auto-update prompt can block the shell forever.
+            env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
+            # Its own group, so the cleanup below takes the whole shell.
+            start_new_session = True,
+        )
+    except Exception as error:
+        logger.debug("login shell environment unavailable: %s", error)
+        return None
+    # pgid == pid, read before the wait reaps it: getpgid then raises.
+    group = process.pid
+    try:
+        return process.wait(timeout = timeout)
+    except Exception as error:
+        logger.debug("login shell did not finish: %s", error)
+        return None
+    finally:
+        # Every path: a clean exit still leaves an rc's agent running.
+        _terminate_group(group, process)
 
 
 def _terminate_group(group: int, process) -> None:

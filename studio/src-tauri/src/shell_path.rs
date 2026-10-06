@@ -31,19 +31,29 @@ fn probe_command(shell: &str) -> String {
     )
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(test)]
 fn path_from_output(stdout: &[u8]) -> Option<String> {
+    env_block_path(stdout)?
+}
+
+/// `None` when there is no delimited block (the shell did not run the command),
+/// `Some(None)` when it ran but printed no PATH.
+#[cfg_attr(windows, allow(dead_code))]
+fn env_block_path(stdout: &[u8]) -> Option<Option<String>> {
     let stdout = String::from_utf8_lossy(stdout);
     let env = stdout.split(DELIMITER).nth(1)?;
     let env = strip_ansi_escapes::strip(env);
-    String::from_utf8_lossy(&env)
-        .split('\n')
-        .filter_map(|line| line.strip_prefix("PATH=").map(str::to_owned))
-        .last()
+    Some(
+        String::from_utf8_lossy(&env)
+            .split('\n')
+            .filter_map(|line| line.strip_prefix("PATH=").map(str::to_owned))
+            .last(),
+    )
 }
 
+/// `None` when the shell rejected `command`; `Some(None)` when it ran without PATH.
 #[cfg(not(windows))]
-fn read_login_shell_path(shell: &str, command: &str) -> Option<String> {
+fn read_login_shell_path(shell: &str, command: &str) -> Option<Option<String>> {
     let mut cmd = std::process::Command::new(shell);
     cmd.arg("-ilc")
         .arg(command)
@@ -56,20 +66,20 @@ fn read_login_shell_path(shell: &str, command: &str) -> Option<String> {
     if !out.status.success() {
         return None;
     }
-    path_from_output(&out.stdout)
+    env_block_path(&out.stdout)
 }
 
 /// A shell missing from NON_POSIX_SHELLS (Plan 9 rc, a renamed fish) rejects the probe:
-/// fall back to the old command rather than lose PATH.
+/// fall back to the old command rather than lose PATH. Only on rejection: a probe that
+/// ran without PATH (`export -n PATH`) must not rerun the history-rewriting command.
 #[cfg(not(windows))]
 fn login_shell_path(shell: &str) -> Option<String> {
     let probe = probe_command(shell);
-    read_login_shell_path(shell, &probe).or_else(|| {
-        let old = env_command();
-        (probe != old)
-            .then(|| read_login_shell_path(shell, &old))
-            .flatten()
-    })
+    match read_login_shell_path(shell, &probe) {
+        Some(path) => path,
+        None if probe != env_command() => read_login_shell_path(shell, &env_command()).flatten(),
+        None => None,
+    }
 }
 
 /// Best effort: on any failure PATH stays as the process inherited it.
@@ -146,9 +156,31 @@ mod tests {
         std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shell = shell.to_str().unwrap();
         assert_eq!(read_login_shell_path(shell, &probe_command(shell)), None);
+        assert_eq!(read_login_shell_path(shell, "true"), None);
         let path = login_shell_path(shell).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(path.starts_with("/from/fallback:"), "{path:?}");
+    }
+
+    /// A probe that ran without PATH (`export -n PATH`) is not retried with the old command.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_probe_without_path_is_not_retried() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("unsloth-12678-np-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = dir.join("nopath");
+        std::fs::write(
+            &shell,
+            format!("#!/bin/sh\necho run >> \"$0.calls\"\nprintf %s {DELIMITER}X=1{DELIMITER}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = login_shell_path(shell.to_str().unwrap());
+        let calls = std::fs::read_to_string(dir.join("nopath.calls")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(path, None);
+        assert_eq!(calls.lines().count(), 1, "{calls:?}");
     }
 
     #[cfg(not(windows))]
