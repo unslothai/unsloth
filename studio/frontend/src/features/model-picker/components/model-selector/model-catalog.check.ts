@@ -1556,8 +1556,6 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
     }
 
     if (repoId === AUDIO_CPP_REPO) {
-      // Every folder is offered or listed with why not, so a folder the repo adds is classified
-      // before it can go missing from the pickers.
       const folders = new Set(
         (repo.siblings ?? [])
           .map((s) => s.rfilename.split("/"))
@@ -1632,7 +1630,6 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
 if (process.argv.includes("--network")) {
   console.log("model-catalog check: --network, asking the Hub about every declared artifact...");
-  // Of the audio catalog, only the shared audio GGUF repo's folders, so its drift is checked too.
   const audioCppGroups = AUDIO_CATALOG.filter((group) =>
     group.artifacts.some((artifact) => isAudioCppFolderId(artifact.repoId)),
   );
