@@ -34,6 +34,14 @@ def test_packed_params4bit_in_float_storage_is_quantized():
     assert _has_quantized_linears(_model(layer), routed_ok = True)
 
 
+@pytest.mark.parametrize("packed", ["qweight", "W_q"])
+def test_packed_non_linear_projection_is_quantized(packed):
+    # GPTQ / AWQ (qweight) and HQQ (W_q) projections subclass nn.Module, not nn.Linear.
+    layer = torch.nn.Module()
+    layer.register_buffer(packed, torch.zeros(4, 1, dtype = torch.int32))
+    assert _has_quantized_linears(_model(layer), routed_ok = True)
+
+
 def test_routed_compressed_linears_pass_except_for_mica():
     nvfp4 = _UnslothNVFP4Linear(4, 4)
     fp8 = torch.nn.Linear(4, 4)

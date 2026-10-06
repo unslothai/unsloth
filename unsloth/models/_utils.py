@@ -5835,6 +5835,9 @@ RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
 
 def _has_quantized_linears(model, routed_ok):
     for module in model.modules():
+        # GPTQ / AWQ / HQQ / EETQ projections are plain nn.Modules holding packed weights.
+        if any(hasattr(module, name) for name in ("qweight", "qzeros", "W_q")):
+            return True
         if not isinstance(module, torch.nn.Linear):
             continue
         routed = type(module).__name__ == "_UnslothNVFP4Linear" or getattr(
