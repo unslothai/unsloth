@@ -11,11 +11,13 @@ import asyncio
 import base64
 import codecs
 import hashlib
+import hmac
 import html as _html
 import json
 import re
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
 from urllib.parse import quote, urljoin, urlsplit
@@ -74,6 +76,12 @@ _TYPE_MODULE_RE = re.compile(r"""(?<![\w-])type\s*=\s*["']?module["'\s>]""", re.
 _ATTR_SRC_RE = re.compile(
     r"""(?<![\w-])src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE
 )
+_ATTR_INTEGRITY_RE = re.compile(
+    r"""(?<![\w-])integrity\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE
+)
+_USE_CREDENTIALS_RE = re.compile(
+    r"""(?<![\w-])crossorigin\s*=\s*["']?use-credentials""", re.IGNORECASE
+)
 _FETCH_ATTRS_RE = re.compile(
     r"""\s(?:src|integrity|crossorigin)(?=[\s=/>])(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?""",
     re.IGNORECASE,
@@ -82,14 +90,28 @@ _FETCH_ATTRS_RE = re.compile(
 _MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$.]|from\s*["'`])""")
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
+# The JavaScript MIME types a module script may be served as (WHATWG MIME Sniffing).
 _JS_TYPES = frozenset(
-    {"text/javascript", "application/javascript", "application/ecmascript", "text/ecmascript"}
+    "application/ecmascript application/javascript application/x-ecmascript "
+    "application/x-javascript text/ecmascript text/javascript text/javascript1.0 "
+    "text/javascript1.1 text/javascript1.2 text/javascript1.3 text/javascript1.4 "
+    "text/javascript1.5 text/jscript text/livescript text/x-ecmascript text/x-javascript".split()
 )
+# Strongest last, for Subresource Integrity's "strongest algorithm wins".
+_SRI_ALGORITHMS = ("sha256", "sha384", "sha512")
 _MAX_INLINED_MODULES = 6
 _MAX_MODULE_BYTES = 2 * 1024 * 1024
 _MODULE_TIMEOUT_S = 8
 # Separate from _FETCH_POOL, whose workers wait on these.
 _MODULE_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-module")
+# Answers for recently seen module tags (code to inline, or None to keep the tag), so each page
+# of a site doesn't fetch its bundles again. Failed fetches aren't kept.
+_MODULE_CACHE: "OrderedDict[tuple[str, str, bool], tuple[float, Optional[str]]]" = OrderedDict()
+_MODULE_CACHE_LOCK = threading.Lock()
+_MODULE_CACHE_TTL_S = 600
+_MODULE_CACHE_ENTRIES = 128
+_MODULE_CACHE_CHARS = 16 * 1024 * 1024
+_module_cache_chars = 0
 
 # https only (http could hit local services; WebKit lacks local network protection). The sandbox
 # (no allow-same-origin) isolates pages; the injected script submits forms.
@@ -1168,29 +1190,95 @@ def _studio_headers(host: str) -> dict:
     return _STUDIO_HEADERS if host == "unsloth.ai" or host.endswith(".unsloth.ai") else {}
 
 
+def _integrity_ok(body: bytes, integrity: str) -> bool:
+    """Whether ``body`` matches a tag's ``integrity`` metadata, as the browser would check it.
+
+    Inlining drops the attribute, so the check happens here instead.
+    """
+    hashes: dict[str, list[str]] = {}
+    for token in integrity.split():
+        algorithm, _, value = token.partition("-")
+        algorithm = algorithm.lower()
+        if algorithm in _SRI_ALGORITHMS and value:
+            hashes.setdefault(algorithm, []).append(value.split("?", 1)[0])
+    if not hashes:
+        # No metadata the browser understands: it loads the script unchecked.
+        return True
+    algorithm = max(hashes, key = _SRI_ALGORITHMS.index)
+    digest = base64.b64encode(hashlib.new(algorithm, body).digest()).decode("ascii")
+    return any(hmac.compare_digest(digest, value) for value in hashes[algorithm])
+
+
+def _module_cached(key: tuple[str, str, bool]) -> tuple[bool, Optional[str]]:
+    with _MODULE_CACHE_LOCK:
+        hit = _MODULE_CACHE.get(key)
+        if hit is None or time.monotonic() - hit[0] > _MODULE_CACHE_TTL_S:
+            return False, None
+        _MODULE_CACHE.move_to_end(key)
+        return True, hit[1]
+
+
+def _cache_module(key: tuple[str, str, bool], code: Optional[str]) -> None:
+    global _module_cache_chars
+    size = len(code or "")
+    if size > _MODULE_CACHE_CHARS // 4:
+        return
+    with _MODULE_CACHE_LOCK:
+        old = _MODULE_CACHE.pop(key, None)
+        if old is not None:
+            _module_cache_chars -= len(old[1] or "")
+        _MODULE_CACHE[key] = (time.monotonic(), code)
+        _module_cache_chars += size
+        while len(_MODULE_CACHE) > _MODULE_CACHE_ENTRIES or _module_cache_chars > _MODULE_CACHE_CHARS:
+            _, (_, dropped) = _MODULE_CACHE.popitem(last = False)
+            _module_cache_chars -= len(dropped or "")
+
+
 def _fetch_module(
-    url: str, deadline: float, cancel_event: Optional[threading.Event]
+    url: str,
+    integrity: str,
+    credentials: bool,
+    deadline: float,
+    cancel_event: Optional[threading.Event],
 ) -> Optional[str]:
     """A self-contained module's code, safe to inline; None to leave its tag alone."""
+    key = (url, integrity, credentials)
+    found, code = _module_cached(key)
+    if found:
+        return code
     meta: dict = {}
-    error, body, content_type = _fetch_url_raw(
-        url,
-        timeout = _MODULE_TIMEOUT_S,
-        extra_headers = {"User-Agent": _BROWSER_UA, "Accept": "*/*"},
-        deadline = deadline,
-        raw_bytes_max = _MAX_MODULE_BYTES,
-        meta_out = meta,
-        cancel_event = cancel_event,
-        host_headers = _studio_headers,
-    )
-    if error is not None or not isinstance(body, bytes) or content_type not in _JS_TYPES:
+    try:
+        error, body, content_type = _fetch_url_raw(
+            url,
+            timeout = _MODULE_TIMEOUT_S,
+            extra_headers = {"User-Agent": _BROWSER_UA, "Accept": "*/*"},
+            deadline = deadline,
+            raw_bytes_max = _MAX_MODULE_BYTES,
+            meta_out = meta,
+            cancel_event = cancel_event,
+            host_headers = _studio_headers,
+        )
+    except Exception as exc:
+        # One bad module must not fail the page.
+        logger.warning("browser_module_fetch_failed", error = type(exc).__name__)
         return None
-    # Browsers decode module scripts as UTF-8 whatever the header says.
-    code = body.decode("utf-8", errors = "replace")
-    # Imports would resolve against the page; "<!--" then "<script" keeps an inline tag open.
-    if _MODULE_IMPORT_RE.search(code) or ("<!--" in code and _SCRIPT_OPEN_RE.search(code)):
+    if error is not None or not isinstance(body, bytes):
         return None
-    return re.sub(r"</(script)", r"<\\/\1", code, flags = re.IGNORECASE)
+    code = None
+    allow_origin = (meta.get("allow_origin") or "").strip()
+    # A host that lets any origin load it works from the sandbox as it is, and the browser
+    # caches it; a mismatched hash is refused there too.
+    loads_itself = allow_origin in ("*", "null") and not credentials
+    if content_type in _JS_TYPES and not loads_itself and _integrity_ok(body, integrity):
+        # Browsers decode module scripts as UTF-8 whatever the header says.
+        text = body.decode("utf-8", errors = "replace")
+        # Imports would resolve against the page; "<!--" then "<script" keeps an inline tag open.
+        if not _MODULE_IMPORT_RE.search(text) and not (
+            "<!--" in text and _SCRIPT_OPEN_RE.search(text)
+        ):
+            code = re.sub(r"</(script)", r"<\\/\1", text, flags = re.IGNORECASE)
+    _cache_module(key, code)
+    return code
 
 
 def _open_tag(script: str) -> str:
@@ -1204,7 +1292,7 @@ def _inline_module_scripts(
     cancel_event: Optional[threading.Event] = None,
 ) -> str:
     """Inline the page's self-contained module scripts, which the sandbox can't load itself."""
-    tags: list[tuple[re.Match[str], str]] = []
+    tags: list[tuple[re.Match[str], str, str, bool]] = []
     comments: Optional[list[tuple[int, int]]] = None
     for match in _MODULE_SCRIPT_RE.finditer(page):
         open_tag = _open_tag(match.group(0))
@@ -1219,20 +1307,24 @@ def _inline_module_scripts(
             comments = [m.span() for m in _HTML_COMMENT_RE.finditer(page)]
         if any(begin <= match.start() < finish for begin, finish in comments):
             continue
-        tags.append((match, url))
+        integrity = _attr(_ATTR_INTEGRITY_RE.search(open_tag)) or ""
+        tags.append((match, url, integrity, bool(_USE_CREDENTIALS_RE.search(open_tag))))
         if len(tags) == _MAX_INLINED_MODULES:
             break
     if not tags:
         return page
     deadline = time.monotonic() + _MODULE_TIMEOUT_S
     codes = list(
-        _MODULE_POOL.map(lambda item: _fetch_module(item[1], deadline, cancel_event), tags)
+        _MODULE_POOL.map(lambda tag: _fetch_module(*tag[1:], deadline, cancel_event), tags)
     )
     parts: list[str] = []
     end = 0
-    for (match, _url), code in zip(tags, codes):
-        if code is None:
+    # Inlined code counts toward the panel's page limit, like the page itself.
+    room = _MAX_BROWSER_HTML_BYTES - len(page)
+    for (match, *_), code in zip(tags, codes):
+        if code is None or len(code) > room:
             continue
+        room -= len(code)
         open_tag = _FETCH_ATTRS_RE.sub("", _open_tag(match.group(0)))
         parts += [page[end : match.start()], open_tag, code, "</script>"]
         end = match.end()

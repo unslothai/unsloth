@@ -71,7 +71,7 @@ export async function saveBrowserDownload(
   try {
     if (isTauri) {
       // The app keeps the path so Download history can reveal it.
-      saved = await saveNativeDownload(blob, name, useBrowserPrefsStore.getState().askWhereToSave);
+      saved = await saveNativeDownload(blob, name, useBrowserPrefsStore.getState().askWhereToSave, url);
       if (!saved) return;
     } else {
       picked = target === undefined ? await pickSaveTarget(name) : target;

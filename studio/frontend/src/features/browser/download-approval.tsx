@@ -16,25 +16,30 @@ import { getLocale, translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useId, useState } from "react";
 import { create } from "zustand";
-import { hostOf } from "./address";
+import { hostOf, isWebUrl } from "./address";
 import { useBrowserPrefsStore } from "./prefs-store";
 
-type Request = { host: string; name: string; resolve: (allow: boolean) => void };
+/** `host` is "" when there is no site to remember the answer for. */
+type Request = { host: string; label: string; name: string; resolve: (allow: boolean) => void };
 
 const useApprovalStore = create<{ queue: Request[] }>(() => ({ queue: [] }));
 
-/** Whether a file from `url` may be saved: a remembered answer for its site, else the user's. */
-export function approveDownload(url: string, name: string): Promise<boolean> {
-  const host = hostOf(url);
+/** Whether a file from `url` may be saved: a remembered answer for its site, else the user's.
+ *  `site` is the page that started it, which the answer is kept for (the file's own address by
+ *  default). Only a web page counts as a site: blob: and data: URLs have no host, and one answer
+ *  for "" would then cover them on every site. */
+export function approveDownload(url: string, name: string, site: string = url): Promise<boolean> {
+  const host = isWebUrl(site) ? hostOf(site) : "";
   const prefs = useBrowserPrefsStore.getState();
-  const remembered = prefs.downloadSites[host];
+  const remembered = host ? prefs.downloadSites[host] : undefined;
   if (remembered === "block") {
     toast.error(translate("browser.downloadPrompt.blocked", { host }, getLocale()));
     return Promise.resolve(false);
   }
   if (remembered === "allow" || !prefs.askBeforeDownloading) return Promise.resolve(true);
+  const label = host || hostOf(url) || url.slice(0, 80);
   return new Promise((resolve) =>
-    useApprovalStore.setState((state) => ({ queue: [...state.queue, { host, name, resolve }] })),
+    useApprovalStore.setState((state) => ({ queue: [...state.queue, { host, label, name, resolve }] })),
   );
 }
 
@@ -45,28 +50,34 @@ export function DownloadApprovalDialog() {
   const [remember, setRemember] = useState(false);
   const checkboxId = useId();
 
-  const answer = (allow: boolean) => {
+  // `kept`: a button press. Escape or a click outside only cancels this once, so a stray click
+  // with the box ticked doesn't block the site for good.
+  const answer = (allow: boolean, kept = true) => {
     // A button press also closes the dialog; only the first answer counts for this request.
     if (!request || useApprovalStore.getState().queue[0] !== request) return;
-    if (remember) useBrowserPrefsStore.getState().setDownloadSite(request.host, allow ? "allow" : "block");
+    if (kept && remember && request.host) {
+      useBrowserPrefsStore.getState().setDownloadSite(request.host, allow ? "allow" : "block");
+    }
     setRemember(false);
     useApprovalStore.setState((state) => ({ queue: state.queue.slice(1) }));
     request.resolve(allow);
   };
 
   return (
-    <AlertDialog open={request !== undefined} onOpenChange={(open) => !open && answer(false)}>
-      <AlertDialogContent onOverlayClick={() => answer(false)}>
+    <AlertDialog open={request !== undefined} onOpenChange={(open) => !open && answer(false, false)}>
+      <AlertDialogContent onOverlayClick={() => answer(false, false)}>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("browser.downloadPrompt.title")}</AlertDialogTitle>
           <AlertDialogDescription className="break-words">
-            {request ? t("browser.downloadPrompt.description", { host: request.host, name: request.name }) : null}
+            {request ? t("browser.downloadPrompt.description", { host: request.label, name: request.name }) : null}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <label htmlFor={checkboxId} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
-          <Checkbox id={checkboxId} checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
-          {t("browser.downloadPrompt.remember")}
-        </label>
+        {request?.host ? (
+          <label htmlFor={checkboxId} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+            <Checkbox id={checkboxId} checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
+            {t("browser.downloadPrompt.remember")}
+          </label>
+        ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => answer(false)}>{t("browser.downloadPrompt.cancel")}</AlertDialogCancel>
           <AlertDialogAction onClick={() => answer(true)}>{t("browser.downloadPrompt.download")}</AlertDialogAction>

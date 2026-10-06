@@ -6,6 +6,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { NATIVE_FILE_NAME_HEADER, encodeNativeFilename } from "@/lib/native-files";
+import { isWebUrl } from "./address";
 
 async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const core = await import("@tauri-apps/api/core");
@@ -13,16 +14,33 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
 }
 
 /** Save in the download folder, or through a dialog when `ask`; the saved name and its id, or
- *  null if cancelled. */
+ *  null if cancelled. A file from a website (`source`) is marked as downloaded from it, so the
+ *  system checks it before it opens (Gatekeeper, SmartScreen). */
 export async function saveNativeDownload(
   blob: Blob,
   name: string,
   ask: boolean,
+  source: string | null,
 ): Promise<{ id: string; name: string } | null> {
   const core = await import("@tauri-apps/api/core");
+  const headers: Record<string, string> = {
+    [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name),
+    "x-unsloth-ask": ask ? "1" : "0",
+  };
+  // href is ASCII (punycode host, escaped path), as a header value must be.
+  const href = source && isWebUrl(source) ? safeHref(source) : null;
+  if (href) headers["x-unsloth-source"] = href;
   return core.invoke<{ id: string; name: string } | null>("browser_download_save", new Uint8Array(await blob.arrayBuffer()), {
-    headers: { [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name), "x-unsloth-ask": ask ? "1" : "0" },
+    headers,
   });
+}
+
+function safeHref(url: string): string | null {
+  try {
+    return new URL(url).href;
+  } catch {
+    return null;
+  }
 }
 
 export function revealNativeDownload(id: string): Promise<void> {

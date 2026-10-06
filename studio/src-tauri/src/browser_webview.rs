@@ -1016,6 +1016,17 @@ fn create_view<R: Runtime>(
             let app = webview.app_handle();
             match event {
                 DownloadEvent::Requested { url, destination } => {
+                    // Prompts nobody answered yet: refuse more rather than stage them all.
+                    if crate::browser_downloads::unanswered(app, &download_tab)
+                        >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
+                    {
+                        let name = destination
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        emit_download_failed(app, &download_tab, &url, &name);
+                        return false;
+                    }
                     // Lands in staging until the user allows it (browser_downloads.rs).
                     let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
                         return false;

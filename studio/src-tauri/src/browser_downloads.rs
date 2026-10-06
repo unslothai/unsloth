@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime, State, Url};
 use tauri_plugin_dialog::DialogExt;
 
@@ -19,6 +20,13 @@ const FILE_NAME: &str = "browser-downloads.json";
 const FOLDER_FILE_NAME: &str = "browser-download-folder.json";
 const STAGING_DIR: &str = "browser-download-staging";
 const ASK_HEADER: &str = "x-unsloth-ask";
+/// The web address a panel file came from, for the quarantine mark.
+const SOURCE_HEADER: &str = "x-unsloth-source";
+/// Page downloads a tab may have waiting for an answer; more are refused, so a page can't fill
+/// the disk with staged files while the prompt is ignored.
+pub(crate) const MAX_UNANSWERED_PER_TAB: usize = 3;
+/// A prompt nobody answers (the window reloaded, say) counts as Cancel after this.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 struct Entry {
@@ -50,6 +58,8 @@ pub struct BrowserDownloads {
     /// The folder chosen in Settings; loaded on first use, None for the system Downloads.
     folder: Mutex<Option<Option<PathBuf>>>,
     staging_cleared: AtomicBool,
+    /// Held from picking a free name to taking it, so two saves can't pick the same one.
+    naming: Mutex<()>,
 }
 
 pub fn new_browser_downloads() -> BrowserDownloads {
@@ -180,10 +190,18 @@ pub async fn browser_download_save(
         .headers()
         .get(ASK_HEADER)
         .is_some_and(|value| value.as_bytes() == b"1");
+    let source = request
+        .headers()
+        .get(SOURCE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Url::parse(value).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https"));
     let folder = download_folder(&app)?;
     let saved = if ask {
         crate::native_file_dialogs::save_request_with_dialog(&app, &request, Some(&folder)).await?
     } else {
+        let state = app.state::<BrowserDownloads>();
+        let _naming = state.naming.lock().unwrap();
         Some(crate::native_file_dialogs::save_request_in(
             &request, &folder,
         )?)
@@ -191,6 +209,10 @@ pub async fn browser_download_save(
     let Some(path) = saved else {
         return Ok(None);
     };
+    // From a website: quarantined like a page download, so Gatekeeper or SmartScreen checks it.
+    if let Some(source) = &source {
+        crate::browser_webview::mark_downloaded(&path, source);
+    }
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -370,7 +392,19 @@ pub(crate) fn staging_dir<R: Runtime>(app: &AppHandle<R>) -> Option<(String, Pat
     Some((id, dir))
 }
 
-/// Hold a staged page download until `browser_download_decide` answers for it.
+/// How many of a tab's page downloads still wait for an answer.
+pub(crate) fn unanswered<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> usize {
+    app.state::<BrowserDownloads>()
+        .pending
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|entry| entry.tab_id == tab_id && entry.decision.is_none())
+        .count()
+}
+
+/// Hold a staged page download until `browser_download_decide` answers for it, or until
+/// ANSWER_TIMEOUT refuses it.
 pub(crate) fn add_pending<R: Runtime>(
     app: &AppHandle<R>,
     id: String,
@@ -394,7 +428,25 @@ pub(crate) fn add_pending<R: Runtime>(
         .pending
         .lock()
         .unwrap()
-        .insert(id, pending);
+        .insert(id.clone(), pending);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(ANSWER_TIMEOUT).await;
+        let expired = {
+            let state = app.state::<BrowserDownloads>();
+            let mut pending = state.pending.lock().unwrap();
+            match pending.get_mut(&id) {
+                Some(entry) if entry.decision.is_none() => {
+                    entry.decision = Some(Decision::Deny);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if expired {
+            settle(&app, &id);
+        }
+    });
 }
 
 /// The staged download at `staged` finished.
@@ -502,13 +554,18 @@ async fn deliver<R: Runtime>(
         let Some(picked) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
             return Ok(None);
         };
-        picked
+        let target = picked
             .into_path()
-            .map_err(|_| "Only local paths are supported.".to_string())?
+            .map_err(|_| "Only local paths are supported.".to_string())?;
+        move_file(&entry.staged, &target)?;
+        target
     } else {
-        crate::native_file_dialogs::unique_destination(&folder, &entry.name)?
+        let state = app.state::<BrowserDownloads>();
+        let _naming = state.naming.lock().unwrap();
+        let target = crate::native_file_dialogs::unique_destination(&folder, &entry.name)?;
+        move_file(&entry.staged, &target)?;
+        target
     };
-    move_file(&entry.staged, &target)?;
     crate::browser_webview::mark_downloaded(&target, &entry.url);
     let id = record(app, target.clone());
     Ok(Some((target, id)))

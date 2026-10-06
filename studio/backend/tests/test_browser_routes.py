@@ -345,12 +345,20 @@ def test_a_byte_order_mark_decides_the_encoding():
     assert browser_mod._decode_html(b"\xef\xbb\xbf" + page.encode("utf-8"), "iso-8859-1") == page
 
 
-def _modules(monkeypatch, scripts):
+@pytest.fixture(autouse = True)
+def _empty_module_cache(monkeypatch):
+    monkeypatch.setattr(browser_mod, "_MODULE_CACHE", browser_mod.OrderedDict())
+    monkeypatch.setattr(browser_mod, "_module_cache_chars", 0)
+
+
+def _modules(monkeypatch, scripts, allow_origin = None):
     """Serve each URL in `scripts` as (error, body, content_type); return the URLs fetched."""
     fetched = []
 
     def fake_fetch(url, **kwargs):
         fetched.append(url)
+        if allow_origin is not None:
+            kwargs["meta_out"]["allow_origin"] = allow_origin
         return scripts.get(url, ("Failed to fetch URL: HTTP 404", "", ""))
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
@@ -417,3 +425,68 @@ def test_a_fetched_page_gets_its_modules_inlined(monkeypatch):
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
     html = json.loads(_call().body)["html"]
     assert '<script type="module">ready()</script>' in html
+
+
+def _sri(algorithm, body):
+    import base64
+    import hashlib
+
+    return f"{algorithm}-" + base64.b64encode(hashlib.new(algorithm, body).digest()).decode()
+
+
+def test_an_inlined_module_still_has_its_integrity_checked(monkeypatch):
+    # Inlining drops the integrity attribute, so a tampered file must keep its tag (and fail there).
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
+    tag = '<script type="module" src="/m.js" integrity="{}"></script>'
+    good = tag.format(f"{_sri('sha256', b'other')} {_sri('sha384', b'ready()')}")
+    bad = tag.format(f"{_sri('sha256', b'ready()')} {_sri('sha512', b'other')}")
+    assert "ready()" in browser_mod._inline_module_scripts(good, "https://example.com/")
+    assert browser_mod._inline_module_scripts(bad, "https://example.com/") == bad
+
+
+def test_modules_any_origin_may_load_keep_their_tag(monkeypatch):
+    # The sandbox loads these itself, and the browser caches them.
+    _modules(
+        monkeypatch,
+        {"https://cdn.example/m.js": (None, b"ready()", "application/javascript")},
+        allow_origin = "*",
+    )
+    page = '<script type="module" src="https://cdn.example/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    # A wildcard doesn't cover a credentialed request.
+    credentialed = page.replace("<script ", '<script crossorigin="use-credentials" ')
+    out = browser_mod._inline_module_scripts(credentialed, "https://example.com/")
+    assert out == '<script type="module">ready()</script>'
+
+
+def test_a_module_is_fetched_once_for_many_pages(monkeypatch):
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    page = '<script type="module" src="/m.js"></script>'
+    for _ in range(3):
+        assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert fetched == ["https://example.com/m.js"]
+
+
+def test_inlined_modules_stay_within_the_page_limit(monkeypatch):
+    _modules(
+        monkeypatch,
+        {
+            "https://example.com/a.js": (None, b"a" * 60, "text/javascript"),
+            "https://example.com/b.js": (None, b"b" * 30, "text/javascript"),
+        },
+    )
+    page = '<script type="module" src="/a.js"></script><script type="module" src="/b.js"></script>'
+    monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", len(page) + 50)
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == '<script type="module" src="/a.js"></script><script type="module">' + "b" * 30 + "</script>"
+
+
+def test_a_module_fetch_that_raises_leaves_the_page_alone(monkeypatch):
+    def boom(url, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", boom)
+    page = '<p>x</p><script type="module" src="/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page

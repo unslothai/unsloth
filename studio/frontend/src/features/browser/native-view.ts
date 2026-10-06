@@ -110,9 +110,28 @@ function listenOnce(): void {
   );
 }
 
+/** The file downloads into staging meanwhile; it reaches the download folder only if allowed.
+ *  Always answered: an unanswered download would sit in staging until the app quits. */
+function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
+  const { id, url, name } = event;
+  // The tab's page is the site asking, as in a browser: blob: and data: downloads have none.
+  const decided =
+    tab && currentEntry(tab).kind === "web" ? approveDownload(url, name, shownUrl(tab)) : Promise.resolve(false);
+  void decided
+    .then((allow) => {
+      if (allow) toast(t("browser.native.downloading", { name }));
+      return decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
+    })
+    .catch(() => undefined);
+}
+
 function onNativeEvent(event: NativeEvent): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === event.tabId);
+  if (event.kind === "downloadPrompt") {
+    onDownloadPrompt(event, tab);
+    return;
+  }
   if (!tab || currentEntry(tab).kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
@@ -169,16 +188,6 @@ function onNativeEvent(event: NativeEvent): void {
         onClick: () => openExternalLink(event.url),
       });
       break;
-    case "downloadPrompt": {
-      // The file downloads into staging meanwhile; it reaches the download folder only if allowed.
-      const { id, url, name } = event;
-      void approveDownload(url, name).then((allow) => {
-        const ask = useBrowserPrefsStore.getState().askWhereToSave;
-        if (allow) toast(t("browser.native.downloading", { name }));
-        return decideNativeDownload(id, allow, ask);
-      });
-      break;
-    }
     case "download":
       if (!event.done) {
         toast(t("browser.native.downloading", { name: event.name }));
