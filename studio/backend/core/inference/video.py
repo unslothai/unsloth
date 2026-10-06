@@ -436,6 +436,7 @@ def _video_comfy_resident_mib(
         keep_fp8 = keep_fp8,
         keep_key = keep_key,
         exclude_tokens = exclude,
+        key_map = _video_comfy_key_map(fam),
         **filters,
     )
 
@@ -2640,6 +2641,14 @@ class VideoBackend:
         # ── modular-workflow refusals, before anything heavier.
         from .video_minimax_h3_comfy import is_h3_comfy_name
 
+        if fam.modular_workflow and kind == "single_file" and is_h3_comfy_name(gguf_filename):
+            from .video_minimax_h3_comfy import h3_comfy_task
+            file_task = h3_comfy_task(gguf_filename)
+            if h3_task and str(h3_task).strip().lower() != file_task:
+                raise ValueError(
+                    f"'{Path(str(gguf_filename)).name}' is the {file_task} partition, but the load asked for "
+                    f"{h3_task}. Pick the matching checkpoint."
+                )
         if fam.modular_workflow and kind == "single_file" and not is_h3_comfy_name(gguf_filename):
             # A modular workflow has no single-file assembly: its components each load through their own from_pretrained
             # from the modular index, and nothing consumes a lone .safetensors DiT. Today that only surfaces inside the

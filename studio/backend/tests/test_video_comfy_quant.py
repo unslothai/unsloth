@@ -693,3 +693,33 @@ def test_dense_h3_maps_its_timestep_mlp_and_keeps_adaln_at_compute_dtype():
     assert keep("final_layer.adaln_proj.linear.bias", pruned = False) is None
     assert keep("blocks.3.adaln_proj.linear.weight") is torch.float32
     assert keep("final_layer.video_out.weight", pruned = False) is torch.float32
+
+
+def test_h3_single_file_refuses_a_conflicting_partition_before_staging():
+    from core.inference.video import VideoBackend
+    with pytest.raises(ValueError, match = "ref2va partition"):
+        VideoBackend().validate_load_request(
+            "MiniMaxAI/MiniMax-H3",
+            gguf_filename = "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            model_kind = "single_file",
+            h3_task = "fl2va",
+        )
+
+
+def test_resident_mib_excludes_by_the_converted_name(tmp_path):
+    from core.inference.video_hv15_comfy import hv15_comfy_key_map
+
+    shape = (2048, 1024)
+    tensors = {
+        "time_in.mlp.0.weight": torch.zeros(shape, dtype = torch.int8),
+        "time_in.mlp.0.weight_scale": torch.ones(shape[0], 1),
+        "time_in.mlp.0.comfy_quant": _conf(format = "int8_tensorwise"),
+    }
+    path = _save(tmp_path / "hv.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    kw = dict(keep_int8 = True, keep_fp8 = False, exclude_tokens = ("timestep_embed",))
+    plain = cq.comfy_resident_mib(path, scan, **kw)
+    mapped = cq.comfy_resident_mib(path, scan, **kw, key_map = hv15_comfy_key_map)
+    assert (
+        mapped > plain
+    )  # time_embed.timestep_embedder.linear_1 is excluded, so it is priced at bf16

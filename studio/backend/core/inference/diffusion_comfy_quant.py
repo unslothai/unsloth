@@ -263,6 +263,7 @@ def comfy_resident_mib(
     exclude_tokens: Any = (),
     min_features: int = 0,
     fp8_divisible: int = 0,
+    key_map: Any = None,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
@@ -271,7 +272,8 @@ def comfy_resident_mib(
     ``keep_key(key)`` limits the count to the keys the loader reads (a file bundling other components);
     an int8 layer whose name holds one of ``exclude_tokens`` is priced dequantized, as Studio's int8 filter
     leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
-    not multiples of ``fp8_divisible``). None when the header cannot be read. Torch-free."""
+    not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
+    file). None when the header cannot be read. Torch-free."""
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
         if scan is None:
@@ -289,13 +291,22 @@ def comfy_resident_mib(
             return False
         return not divisible or not (out_f % divisible or in_f % divisible)
 
+    def _excluded(key: str, shape: Any) -> bool:
+        names = [key]
+        if key_map is not None:
+            try:
+                names = [k for k, _rows in key_map(key, tuple(shape or ()))] or names
+            except ValueError:
+                pass
+        return any(t in n for n in names for t in exclude_tokens)
+
     kept = {}
     for name, layer in scan.layers.items():
         shape = (header.get(name + ".weight") or {}).get("shape")
         kept[name + ".weight"] = (
             layer.format == INT8_TENSORWISE
             and keep_int8
-            and not any(t in name + ".weight" for t in exclude_tokens)
+            and not _excluded(name + ".weight", shape)
             and _fits(shape, 0)
         ) or (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
     total = 0
