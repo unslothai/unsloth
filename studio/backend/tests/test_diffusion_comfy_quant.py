@@ -814,3 +814,13 @@ def test_a_local_comfy_override_is_usable_only_for_an_image_family(tmp_path, mon
     assert pq.usable_prequant_source(image, "int8", path_override = path) is None
     video = next(f for f in VIDEO_FAMILIES if any(s == "fp8" for s, _r in (f.prequant_repos or ())))
     assert pq.usable_prequant_source(video, "fp8", path_override = path) is None
+
+
+def test_only_torchao_comfy_loads_ask_for_compile(comfy_file):
+    path, _, _ = comfy_file
+    assert not cq.comfy_torchao_quantized(_load(path))
+    assert not cq.comfy_torchao_quantized(_load(path, int8_backend = "native"))
+    model = nn.Module()
+    model._unsloth_comfy_quant = {"backend": "torchao", "int8": 8}
+    assert cq.comfy_torchao_quantized(model)
+    assert not cq.comfy_torchao_quantized(nn.Linear(2, 2))
