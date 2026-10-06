@@ -19,6 +19,10 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+  audioCppSizeLabel,
+  isAudioCppFolderId,
+} from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import {
   type SttDownloadStatus,
@@ -41,6 +45,7 @@ import {
 } from "@/features/chat";
 import {
   hfApiToken,
+  listGgufVariants,
   useHfTokenStore,
   useHubModelSearch,
 } from "@/features/hub";
@@ -70,10 +75,11 @@ import {
 } from "../lib/stt-download-mirror";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  AUDIO_CPP_STT_FOLDER_IDS,
   AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
-  STT_MODELS,
+  STT_PICKER_MODELS,
   type SttModel,
   getSttModelRepo,
   isCuratedSttModel,
@@ -103,6 +109,7 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "pt-BR", label: "Português (Brasil)" },
   { value: "ru-RU", label: "Русский" },
   { value: "sv-SE", label: "Svenska" },
+  { value: "da-DK", label: "Dansk" },
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
   { value: "he-IL", label: "עברית" },
@@ -118,30 +125,64 @@ const TTS_PREVIEW_TEXT =
  * A package of the shared GGUF repo is already named after its folder, so its
  * row shows the name alone. */
 function sttModelSource(model: SttModel): string {
-  if (AUDIO_CPP_STT_MODELS.has(model)) return sttModelName(model);
+  if (AUDIO_CPP_STT_MODELS.has(model) || isAudioCppFolderId(model)) {
+    return sttModelName(model);
+  }
   return isCuratedSttModel(model) && !MTMD_STT_MODELS.has(model)
     ? `unslothai/whisper-${model}-GGUF`
     : getSttModelRepo(model);
 }
 
 /**
- * Model picker for local transcription. Lists the curated whisper.cpp
- * checkpoints and searches Hugging Face for other Whisper repos (safetensors via
- * Transformers). The trigger is a plain button so the selection never renders
- * inside a text input.
+ * Model picker for local transcription. Lists the curated models and every
+ * other ASR model the Transcribe page offers, and searches Hugging Face for
+ * other Whisper repos (safetensors via Transformers). The trigger is a plain
+ * button so the selection never renders inside a text input.
  */
 function SttModelPicker({
   value,
   language,
+  downloadedModels,
   onChange,
 }: {
   value: SttModel;
   language: string;
+  downloadedModels: ReadonlySet<string>;
   onChange: (model: SttModel) => void;
 }) {
   const t = useT();
   const hfToken = useHfTokenStore((state) => state.token);
   const [open, setOpen] = useState(false);
+  // Folder rows have no curated size: read the default quant's from the same
+  // cached listing the Transcribe picker uses. A row stays blank until it lands.
+  const [folderSizes, setFolderSizes] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    for (const id of AUDIO_CPP_STT_FOLDER_IDS) {
+      if (!isSttModelLanguageCompatible(id, language)) continue;
+      listGgufVariants(id, hfApiToken(hfToken))
+        .then((listing) => {
+          const variant =
+            listing.variants.find(
+              (row) => row.quant === listing.default_variant,
+            ) ?? listing.variants[0];
+          if (cancelled || !variant) return;
+          const size = audioCppSizeLabel(
+            variant.download_size_bytes ?? variant.size_bytes,
+          );
+          setFolderSizes((sizes) =>
+            sizes.get(id) === size ? sizes : new Map(sizes).set(id, size),
+          );
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [open, language, hfToken]);
   const [query, setQuery] = useState("");
   const [validating, setValidating] = useState(false);
   const resultsRef = useWheelScrollRef<HTMLDivElement>();
@@ -158,7 +199,7 @@ function SttModelPicker({
 
   const items = useMemo(() => {
     if (!debouncedQuery) {
-      const defaults: string[] = STT_MODELS.filter((model) =>
+      const defaults: string[] = STT_PICKER_MODELS.filter((model) =>
         isSttModelLanguageCompatible(model, language),
       );
       if (!defaults.includes(value)) {
@@ -166,7 +207,14 @@ function SttModelPicker({
       }
       return defaults;
     }
-    const ids: string[] = [];
+    // Listed models match by name; the Hub search below only finds Whisper repos.
+    const needle = debouncedQuery.toLowerCase();
+    const ids: string[] = STT_PICKER_MODELS.filter(
+      (model) =>
+        (sttModelName(model).toLowerCase().includes(needle) ||
+          model.toLowerCase().includes(needle)) &&
+        isSttModelLanguageCompatible(model, language),
+    );
     for (const result of results) {
       const tags = result.tags?.map((tag) => tag.toLowerCase()) ?? [];
       const isWhisper =
@@ -261,7 +309,8 @@ function SttModelPicker({
           data-testid="stt-model-results"
           className="max-h-64 overflow-y-auto p-1"
         >
-          {(isLoading && debouncedQuery) || validating ? (
+          {(isLoading && debouncedQuery && items.length === 0) ||
+          validating ? (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
               {validating
@@ -278,6 +327,7 @@ function SttModelPicker({
               // shape, two-line rows use a squarer radius. Not rounded-sm: the
               // theme's --radius makes that 13.6px, too round at this height.
               const twoLines = sttModelSource(model) !== sttModelName(model);
+              const size = sttModelSize(model) || folderSizes.get(model);
               return (
                 <button
                   key={model}
@@ -290,7 +340,17 @@ function SttModelPicker({
                 >
                   <span className="min-w-0 flex-1 truncate">
                     <span className="flex items-center gap-1.5 truncate text-xs">
-                      <span className="truncate">{sttModelName(model)}</span>
+                      {/* Same green dot the Hub marks an on-device row with. */}
+                      {downloadedModels.has(model) ? (
+                        <span
+                          role="img"
+                          aria-label={t("picker.onDevice")}
+                          className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
+                        />
+                      ) : null}
+                      <span className="truncate" title={sttModelName(model)}>
+                        {sttModelName(model)}
+                      </span>
                       {RECOMMENDED_STT_MODELS.has(model) ? (
                         <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
                           {t("settings.voice.dictation.sttRecommended")}
@@ -303,9 +363,9 @@ function SttModelPicker({
                       </span>
                     ) : null}
                   </span>
-                  {sttModelSize(model) ? (
+                  {size ? (
                     <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-                      {sttModelSize(model)}
+                      {size}
                     </span>
                   ) : null}
                 </button>
@@ -561,6 +621,10 @@ export function VoiceTab() {
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
   );
+  // Every engine's downloaded models, for the picker's on-device dots.
+  const [downloadedSttModels, setDownloadedSttModels] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   // Was a bare two-sample delta over ~800ms with no window or stability gate,
   // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
@@ -602,6 +666,16 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
+        setDownloadedSttModels(
+          new Set(
+            [
+              status.transformers,
+              status.gguf,
+              status.mtmd,
+              status.audiocpp,
+            ].flatMap((engine) => engine?.downloaded_models ?? []),
+          ),
+        );
         // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
         // backend serves it through Transformers instead of failing. Fall back to the Transformers
         // status here too, or the model shows as unavailable and download is blocked even though it
@@ -1154,6 +1228,7 @@ export function VoiceTab() {
                 <SttModelPicker
                   value={sttModel}
                   language={dictationLanguage}
+                  downloadedModels={downloadedSttModels}
                   onChange={(next) => {
                     if (next !== sttModel) {
                       void unloadSttModel().catch(() => {});

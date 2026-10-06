@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { isAudioCppFolderId } from "../../audio/audio-cpp-catalog";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
@@ -27,11 +28,9 @@ export interface RecentDictation {
   chatId?: string;
 }
 
-// Dictation history is kept in full; the list view paginates. QUOTA_TRIM_KEEP is
-// the emergency floor if localStorage runs out of room (see persist wrapper).
+// pagination keeps full history; quota failures trim it to QUOTA_TRIM_KEEP.
 const QUOTA_TRIM_KEEP = 200;
-// Cap stored transcript length so a few long dictations cannot bloat the
-// persisted blob and trip a synchronous localStorage quota error on save.
+// transcript caps prevent synchronous localStorage quota failures.
 const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
@@ -43,7 +42,8 @@ export function isSttModelId(value: string): boolean {
   const normalized = value.trim();
   return (
     (STT_MODELS as readonly string[]).includes(normalized) ||
-    HF_REPO_ID.test(normalized)
+    HF_REPO_ID.test(normalized) ||
+    isAudioCppFolderId(normalized)
   );
 }
 
