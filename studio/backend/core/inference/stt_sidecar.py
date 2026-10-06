@@ -1720,8 +1720,9 @@ class WhisperSttSidecar:
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
+        task: str = "transcribe",
     ) -> dict:
-        """Transcribe encoded audio bytes to text.
+        """Transcribe encoded audio bytes to text, or to English text with ``task="translate"``.
 
         Accepts any container PyAV can decode: wav, mp3, opus/webm, ogg,
         m4a/aac. Returns {text, language, duration, model}.
@@ -1744,12 +1745,15 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by English-only STT model '{model_id}'."
             )
+        if cached.is_multilingual is False and task == "translate":
+            # The checkpoint's generation config pins the task, so it would only transcribe.
+            raise SttLanguageError(f"English-only STT model '{model_id}' cannot translate.")
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior context, which causes runaway repeats.
         generate_kwargs = {
-            "task": "transcribe",
+            "task": task,
             "condition_on_prev_tokens": False,
             "num_beams": 5,
         }

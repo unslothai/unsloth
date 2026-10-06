@@ -1394,6 +1394,8 @@ _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
 _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
+    "/v1/audio/translations",
+    "/api/inference/audio/translations",
 )
 _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
@@ -1450,7 +1452,7 @@ def _get_request_body_max_bytes(path: str) -> int:
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
-    # multipart headroom over the raw stt cap for the openai transcription route on both mounts
+    # multipart headroom over the raw stt cap for the openai transcription/translation routes
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:

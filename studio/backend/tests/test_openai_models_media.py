@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -443,6 +444,21 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
     }
 
 
+def test_stt_rows_name_their_workflows(monkeypatch):
+    # Only the curated Whisper checkpoints are known multilingual, so only they offer translate.
+    _stt(
+        monkeypatch,
+        downloaded = ("small",),
+        mtmd_downloaded = ("qwen3-asr-0.6b",),
+        whisper_loaded = "org/whisper-custom",
+    )
+    assert {o["id"]: o["audio_workflows"] for o in inf._stt_model_objects(7)} == {
+        "unsloth/whisper-small": ["transcribe", "translate"],
+        "qwen3-asr-0.6b": ["transcribe"],
+        "org/whisper-custom": ["transcribe"],
+    }
+
+
 def test_curated_stt_alias_reports_canonical_loaded_id(monkeypatch):
     _stt(monkeypatch, downloaded = ("small",), whisper_loaded = "small")
     assert [(o["id"], o["loaded"]) for o in inf._stt_model_objects(7)] == [
@@ -651,10 +667,47 @@ def test_loaded_tts_model_is_tagged(monkeypatch):
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
     (entry,) = inf._openai_model_objects()
     assert entry["id"] == "orpheus-3b-Q4" and entry["task"] == "text-to-speech"
+    assert entry["audio_workflows"] == ["speak"]
 
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _Chat())
     (entry,) = inf._openai_model_objects()
     assert entry["id"] == "qwen3-Q4" and "task" not in entry
+    assert "audio_workflows" not in entry
+
+
+@pytest.mark.parametrize(
+    ("info", "task", "workflows"),
+    [
+        (
+            {"audio_type": "audiocpp_tts", "audio_workflows": ["speak", "clone"]},
+            "text-to-speech",
+            ["speak", "clone"],
+        ),
+        (
+            {"audio_type": "audiocpp_music", "audio_workflows": ["music"]},
+            "text-to-speech",
+            ["music"],
+        ),
+        # Listed with no task, a resident separation model looked like a chat model.
+        (
+            {"audio_type": "audiocpp_sep", "audio_workflows": ["separate"]},
+            "audio-to-audio",
+            ["separate"],
+        ),
+        ({"audio_type": "csm"}, "text-to-speech", ["speak"]),
+    ],
+)
+def test_resident_audio_models_carry_task_and_workflows(monkeypatch, info, task, workflows):
+    unsloth = type(
+        "_Audio",
+        (_FakeUnsloth,),
+        {"active_model_name": "org/audio", "models": {"org/audio": {"is_audio": True, **info}}},
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: unsloth())
+    (entry,) = inf._openai_model_objects()
+    assert entry["task"] == task
+    assert entry["audio_workflows"] == workflows
 
 
 def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
