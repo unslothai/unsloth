@@ -4296,7 +4296,9 @@ _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
 # Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
 # "<head>": that text may sit in a comment or a script string. The parser opens the head for the
 # script and folds a later <html>'s attributes into the root.
-_ARTIFACT_PAGE_PRELUDE_AT = _re.compile(r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL)
+_ARTIFACT_PAGE_PRELUDE_AT = _re.compile(
+    r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
+)
 
 
 def _artifact_page_csp(allow_network: bool) -> str:

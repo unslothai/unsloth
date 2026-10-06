@@ -9,7 +9,11 @@ import asyncio
 import routes.inference as inf_mod
 
 
-def _stage(html: str, allow_network: bool = False, subject: str = "u") -> str:
+def _stage(
+    html: str,
+    allow_network: bool = False,
+    subject: str = "u",
+) -> str:
     request = inf_mod.ArtifactPreviewPageRequest(html = html, allow_network = allow_network)
     result = asyncio.run(inf_mod.create_artifact_preview_page(request, current_subject = subject))
     return result["path"].rsplit("/", 1)[1]
@@ -48,7 +52,7 @@ def test_head_text_in_a_script_or_comment_is_not_taken_for_the_head():
     page = '<!doctype html><script>const template = "<head>";</script><!-- <html> -->'
     body = _serve(_stage(page)).body.decode()
     assert body.startswith("<!doctype html><script>(() =>")
-    assert body.endswith(page[len("<!doctype html>"):])
+    assert body.endswith(page[len("<!doctype html>") :])
     # No doctype: first, so the page's own markup stays whole.
     assert _serve(_stage('<p>"<head>"</p>')).body.decode().endswith('</script><p>"<head>"</p>')
 
@@ -71,7 +75,10 @@ def test_one_account_cannot_evict_another_accounts_pages(monkeypatch):
     # The account's own oldest pages go first.
     assert _serve(mine[0]).status_code == 404
     assert _serve(mine[-1]).status_code == 200
-    assert sum(entry[3] == "b" for entry in inf_mod._artifact_pages.values()) == inf_mod._ARTIFACT_PAGE_MAX_PAGES
+    assert (
+        sum(entry[3] == "b" for entry in inf_mod._artifact_pages.values())
+        == inf_mod._ARTIFACT_PAGE_MAX_PAGES
+    )
 
 
 def test_byte_budgets_bound_each_account_and_the_total(monkeypatch):
