@@ -44,6 +44,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
     native_speed_flags,
+    sd_cli_output_paths,
 )
 
 logger = logging.getLogger(__name__)
@@ -719,9 +720,13 @@ class SdCppEngine:
             verbose = verbose,
             extra_args = merged_extra,
         )
+        # A layered run writes numbered files, never output_path itself.
+        expected = output_path
+        if params.qwen_image_layers is not None:
+            expected = sd_cli_output_paths(str(output_path), int(params.qwen_image_layers) + 1)[0]
         return self._run(
             cmd,
-            output_path,
+            expected,
             timeout = timeout,
             env = env,
             on_log = on_log,

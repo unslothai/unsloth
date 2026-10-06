@@ -59,6 +59,12 @@ Or if you prefer to install manually:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+
+On macOS, you can also install Unsloth Desktop with Homebrew:
+```bash
+brew install --cask unsloth
+```
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
@@ -150,6 +156,11 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 #### macOS, Linux, WSL:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
+```
+
+On macOS, you can also install Unsloth Desktop with Homebrew:
+```bash
+brew install --cask unsloth
 ```
 
 #### Windows:

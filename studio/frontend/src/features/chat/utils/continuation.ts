@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ProviderCompactionContentPart } from "../types/api";
+import { providerCompactionPart } from "./provider-compaction.ts";
+
 /** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
  *  with the partial as the final assistant turn plus `continue_final_message`, so the prompt ends mid-sentence
  *  and the new text is appended to the partial. */
@@ -377,7 +380,67 @@ export type ContinuationRequest = {
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
+  providerCompaction?: ProviderCompactionContentPart;
+  providerCompactionAfterToolCalls?: number;
+  providerCompactionProviderType?: string;
+  providerCompactionModelId?: string;
+  providerCompactionConnectionKey?: string;
 };
+
+type ProviderCompactionContinuationFields = Pick<
+  Required<ContinuationRequest>,
+  | "providerCompaction"
+  | "providerCompactionAfterToolCalls"
+  | "providerCompactionProviderType"
+  | "providerCompactionModelId"
+  | "providerCompactionConnectionKey"
+>;
+
+function providerCompactionFields(
+  value: unknown,
+): ProviderCompactionContinuationFields | Record<string, never> {
+  const fields = value as
+    | {
+        providerCompaction?: unknown;
+        providerCompactionAfterToolCalls?: unknown;
+        providerCompactionProviderType?: unknown;
+        providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
+      }
+    | undefined;
+  const compaction = providerCompactionPart(fields?.providerCompaction);
+  const boundary = fields?.providerCompactionAfterToolCalls;
+  const providerType = fields?.providerCompactionProviderType;
+  const modelId = fields?.providerCompactionModelId;
+  const connectionKey = fields?.providerCompactionConnectionKey;
+  if (
+    !compaction ||
+    !Number.isInteger(boundary) ||
+    (boundary as number) < 0 ||
+    typeof providerType !== "string" ||
+    !providerType ||
+    typeof modelId !== "string" ||
+    !modelId ||
+    typeof connectionKey !== "string" ||
+    !connectionKey
+  ) {
+    return {};
+  }
+  return {
+    providerCompaction: compaction,
+    providerCompactionAfterToolCalls: boundary as number,
+    providerCompactionProviderType: providerType,
+    providerCompactionModelId: modelId,
+    providerCompactionConnectionKey: connectionKey,
+  };
+}
+
+export function providerCompactionContinuationFields(
+  metadata: unknown,
+): ProviderCompactionContinuationFields | Record<string, never> {
+  const custom = (metadata as { custom?: unknown } | undefined)?.custom;
+  return providerCompactionFields(custom);
+}
 
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
 export function readContinuationRequest(
@@ -391,6 +454,11 @@ export function readContinuationRequest(
         reasoning?: unknown;
         reasoningDuration?: unknown;
         thoughtSignature?: unknown;
+        providerCompaction?: unknown;
+        providerCompactionAfterToolCalls?: unknown;
+        providerCompactionProviderType?: unknown;
+        providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
       }
     | undefined;
   const partial = typeof request?.partial === "string" ? request.partial : "";
@@ -415,6 +483,7 @@ export function readContinuationRequest(
     ...(typeof signature === "string" && signature
       ? { thoughtSignature: signature }
       : {}),
+    ...providerCompactionFields(request),
   };
 }
 

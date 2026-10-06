@@ -19,7 +19,8 @@ import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
 import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
-import { zoomTab } from "./zoom";
+import { useBrowserPrefsStore } from "./prefs-store";
+import { fitZoomToPage, zoomTab } from "./zoom";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -72,7 +73,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           if (message.newTab) {
             store.openUrl(message.url, {
               newTab: true,
-              background: message.background,
+              background: message.background && !useBrowserPrefsStore.getState().switchToNewTabs,
               method: message.method,
               body: message.body,
             });
@@ -147,8 +148,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
   );
 }
 
-// Stands in for the app's name while translating, so the name can be set in bold.
+// Stands in for the app name while translating, so it can be a link.
 const APP_MARK = "\u0000";
+const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth";
 
 function PageError({
   url,
@@ -180,9 +182,15 @@ function PageError({
                   index === 0
                     ? [part]
                     : [
-                        <strong key={index} className="font-semibold text-foreground">
+                        <a
+                          key={index}
+                          href={DESKTOP_APP_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
+                        >
                           {t("browser.error.desktopApp")}
-                        </strong>,
+                        </a>,
                         part,
                       ],
                 )
@@ -233,9 +241,11 @@ function WebPage({
       if (page.kind === "raw") {
         const name = page.fileName ?? fileNameFromUrl(page.url);
         setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
+        fitZoomToPage(tab.id, true);
         updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
         if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
       } else {
+        fitZoomToPage(tab.id, false);
         updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
       }
     };

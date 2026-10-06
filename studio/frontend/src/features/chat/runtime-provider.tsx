@@ -173,6 +173,7 @@ import {
   reconcileOrdinarySavedMessagesInView,
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
+import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
@@ -1539,8 +1540,11 @@ function scheduleGenerationRecovery(
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
           let advanced = false;
+          let recoveredProviderCompaction: ReturnType<
+            typeof toolRecovery.apply
+          >;
           if (update.event?.type === "chunk") {
-            toolRecovery.apply(
+            recoveredProviderCompaction = toolRecovery.apply(
               update.event.payload,
               raw.length,
               update.event.seq,
@@ -1595,6 +1599,30 @@ function scheduleGenerationRecovery(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
                   ),
+                };
+              }
+              if (recoveredProviderCompaction) {
+                const sourceProviderType = update.run.requestPayload.provider_type;
+                const sourceModelId =
+                  update.run.requestPayload.external_model ??
+                  update.run.requestPayload.model;
+                currentMetadata = {
+                  ...currentMetadata,
+                  ...recoveredProviderCompaction,
+                  providerCompactionProviderType:
+                    typeof sourceProviderType === "string"
+                      ? sourceProviderType
+                      : undefined,
+                  providerCompactionModelId:
+                    typeof sourceModelId === "string"
+                      ? sourceModelId
+                      : undefined,
+                  providerCompactionConnectionKey:
+                    providerCompactionConnectionKey(
+                      update.run.requestPayload.provider_id,
+                      update.run.requestPayload.provider_base_url,
+                      update.run.requestPayload.provider_api_type,
+                    ),
                 };
               }
               if (chunk.quote_cut === true) quoteCut = true;

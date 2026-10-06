@@ -88,3 +88,44 @@ def test_continuation_flags_track_the_trailing_role(monkeypatch, messages, expec
     _drive(run())
     assert captured["body"].get("continue_final_message", False) is expected
     assert ("add_generation_prompt" in captured["body"]) is expected
+
+
+def test_every_round_is_fitted_again(monkeypatch):
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    )
+    client = ExternalProviderClient(
+        provider_type = "vllm", base_url = "http://self-hosted.example/v1", api_key = ""
+    )
+
+    async def fitter(messages):
+        return messages[1:], 7, None
+
+    transport = OAICompatTransport(
+        client, model = "local-model", max_tokens = 64, message_fitter = fitter
+    )
+
+    async def run():
+        for messages in (_ASSISTANT_TAIL, _TOOL_TAIL):
+            async for _ in transport.stream(
+                messages = messages, tools = None, tool_choice = "auto", cancel_event = threading.Event()
+            ):
+                pass
+        await client.close()
+
+    _drive(run())
+    assert [len(body["messages"]) for body in bodies] == [
+        len(_ASSISTANT_TAIL) - 1,
+        len(_TOOL_TAIL) - 1,
+    ]
+    assert [body["max_tokens"] for body in bodies] == [7, 7]

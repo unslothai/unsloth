@@ -16,6 +16,7 @@ import {
   AUDIO_CPP_MUSIC_MIN_SECONDS,
   AUDIO_CPP_REPO,
   AUDIO_CPP_STT_KEYS,
+  AUDIO_CPP_UNOFFERED_FOLDERS,
   audioCppDictationModelFor,
   audioCppDisplayName,
   audioCppModelFor,
@@ -26,6 +27,7 @@ import {
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
+  audioCppRuntimeUpdate,
   audioSamplingControlsApply,
   isGgufTtsTarget,
   isTtsAudioType,
@@ -132,6 +134,25 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(audioCppSizeLabel(2358.4 * 1024 * 1024), "2.3 GB");
 });
 
+test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 18);
+  for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
+    assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
+    assert.match(folder, /-GGUF$/);
+    assert.ok(reason.trim(), folder);
+  }
+  // Single-language transcription models say so; the rest are multilingual.
+  for (const [folder, languages] of [
+    ["Granite-Speech-5.0-470M-TurboCTC-GGUF", ["en"]],
+    ["Kroko-ASR-GGUF", ["en"]],
+    ["Niagara-ASR-GGUF", ["en"]],
+    ["Hviske-v5.3-GGUF", ["da"]],
+    ["GigaAM-ASR-GGUF", undefined],
+  ] as const) {
+    assert.deepEqual(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`)?.languages, languages, folder);
+  }
+});
+
 test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
   for (const model of AUDIO_CPP_MODELS) {
     const group = groupForRepoId(model.id, AUDIO_CATALOG);
@@ -167,6 +188,7 @@ test("voice conversion models are seeded with the pages they run on", () => {
     ["RVC-GGUF", ["convert"], "Voice conversion"],
     ["SeedVC-MLX-GGUF", ["convert"], "Voice conversion"],
     ["MeanVC2-GGUF", ["convert"], "Voice conversion"],
+    ["Tone-Color-VC-GGUF", ["convert"], "Voice conversion"],
     ["Chatterbox-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
     ["Vevo2-GGUF", ["clone", "edit", "convert"], "Voice cloning and conversion"],
     ["IndexTTS2-GGUF", ["clone"], "Voice cloning"],
@@ -541,6 +563,42 @@ test("recommended speech and music picks are refused when the runtime cannot run
   assert.match(
     page,
     /audioCppRuntimeProblem\(id, audioCppRuntime\.current\);\s*if \(runtimeProblem\) \{\s*toast\.error\(runtimeProblem, \{ duration: 7000 \}\);\s*return;/,
+  );
+});
+
+test("an outdated managed runtime names both releases; anything else shows no notice", () => {
+  const current = {
+    available: true,
+    espeak: true,
+    backend: "cuda",
+    release_tag: "v0.9.0-unsloth.1",
+    expected_tag: "v0.9.0-unsloth.1",
+    outdated: false,
+  };
+  const outdated = { ...current, release_tag: "v0.8.0-unsloth.1", outdated: true };
+  assert.deepEqual(audioCppRuntimeUpdate(outdated), {
+    installed: "v0.8.0-unsloth.1",
+    expected: "v0.9.0-unsloth.1",
+  });
+  assert.equal(audioCppRuntimeUpdate(current), null);
+  assert.equal(audioCppRuntimeUpdate(null), null);
+  assert.equal(audioCppRuntimeUpdate(undefined), null);
+  // support servers older than these fields or unable to name either release.
+  assert.equal(
+    audioCppRuntimeUpdate({ available: true, espeak: true, backend: null, release_tag: "v0.8.0" }),
+    null,
+  );
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, expected_tag: null }), null);
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, release_tag: null }), null);
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, available: false }), null);
+  const route = readText("../../backend/routes/inference.py");
+  assert.match(route, /"expected_tag": None,\s*"outdated": False,/);
+  const page = readAudioWorkspaceSource();
+  assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
+  assert.match(page, /\{runtimeUpdate \? \(/);
+  assert.match(
+    page,
+    /Stop Studio,\{" "\}\s*run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>,\s*then start Studio again\./,
   );
 });
 

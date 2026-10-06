@@ -399,12 +399,16 @@ def exercise_permission_mode_controls(page, shoot):
     #
     # So: wait for the level to actually be ON the installation before reloading and asserting on it. Assert what was
     # achieved, not what was commanded.
-    def expect_server_mode(expected, timeout_ms = 15_000):
+    def expect_server_mode(
+        expected,
+        timeout_ms = 15_000,
+        key = "permissionMode",
+    ):
         deadline = time.monotonic() + timeout_ms / 1000.0
         seen = "<never read>"
         while True:
             seen = page.evaluate(
-                """async () => {
+                """async (key) => {
                     const token = localStorage.getItem("unsloth_auth_token");
                     const res = await fetch("/api/chat/settings", {
                         headers: token ? { Authorization: "Bearer " + token } : {},
@@ -412,8 +416,9 @@ def exercise_permission_mode_controls(page, shoot):
                     });
                     if (!res.ok) return "<http " + res.status + ">";
                     const body = await res.json();
-                    return (body && body.settings && body.settings.permissionMode) ?? null;
-                }"""
+                    return (body && body.settings && body.settings[key]) ?? null;
+                }""",
+                key,
             )
             if seen == expected:
                 return
@@ -422,7 +427,7 @@ def exercise_permission_mode_controls(page, shoot):
             page.wait_for_timeout(100)
         fail(
             f"permission level never reached the installation: /api/chat/settings "
-            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"reports {key}={seen!r} after {timeout_ms}ms, expected "
             f"{expected!r} -- the debounced mirror never landed"
         )
 
@@ -540,7 +545,8 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
-    # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
+    # Without a sandbox: Run automatically applies at once, the Sandbox switch reads Low, and sliding it
+    # to High opens the install popup, whose "Use Low sandbox" keeps Low.
     choose("Approve for me")
     expect_mode("Approve for me")
     # Landed on the install first, or the reload hydrates the previous "off" back.
@@ -549,22 +555,49 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Approve for me")
     choose("Run automatically")
-    setup = page.get_by_role("alertdialog")
-    expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
-    expect(setup).to_contain_text("apt-get install -y bubblewrap")
-    expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
-    if setup.get_by_role("button", name = "Install sandbox").count() != 0:
-        fail("setup dialog offered Install sandbox to a request the server did not allow")
-    setup.get_by_role("button", name = "Cancel").click()
-    expect(setup).to_be_hidden()
-    expect_mode("Approve for me")
-    choose("Run automatically")
-    expect(setup).to_be_visible()
-    setup.get_by_role("button", name = "Use it anyway (risky calls will ask)").click()
-    expect(setup).to_be_hidden()
     expect_mode("Run automatically")
+    if page.get_by_role("alertdialog").count() != 0:
+        fail("picking Run automatically without a sandbox opened a dialog")
+    # Reopening the menu straight after a pick races its close; a reload also proves the level persisted.
+    # Landed on the install first, or the reload hydrates the previous "auto" back.
+    expect_server_mode("off")
+    reload_and_wait_for_pill()
+    expect_mode("Run automatically")
+    menu = open_menu()
+    expect(menu.get_by_text("Permissions", exact = True)).to_be_visible()
+    if menu.get_by_text("OS sandbox not available").count() != 0:
+        fail("the Run automatically row still carries the 'OS sandbox not available' hint")
+    switch = menu.get_by_role("menuitemcheckbox")
+    expect(switch).to_have_attribute("aria-checked", "false")
+    expect(switch).to_contain_text("Low")
+    switch.click()
+    setup = page.get_by_role("alertdialog")
+    expect(setup.get_by_role("heading", name = "OS sandbox is not available")).to_be_visible()
+    # The command rides on Copy command (and Settings > Sandbox), not as a block of text in the popup.
+    expect(setup).not_to_contain_text("apt-get install -y bubblewrap")
+    expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    expect(setup.get_by_role("button", name = "Copy command")).to_have_attribute(
+        "title", re.compile(r"apt-get install -y bubblewrap")
+    )
+    expect(setup.get_by_role("button", name = "Learn more")).to_be_visible()
+    if setup.get_by_role("button", name = "Install sandbox").count() != 0:
+        fail("setup popup offered Install sandbox to a request the server did not allow")
+    setup.get_by_role("button", name = "Use Low sandbox").click()
+    expect(setup).to_be_hidden()
+    level = page.evaluate("() => localStorage.getItem('unsloth_chat_sandbox_level')")
+    if level != "low":
+        fail(f"Use Low sandbox stored {level!r}, expected 'low'")
+    expect_mode("Run automatically")
+    expect_server_mode("low", key = "sandboxLevel")
     sandbox_answer["ready"] = True
     reload_and_wait_for_pill()
+    # With a working sandbox the switch turns High again, and stays High for the next browser's run.
+    switch = open_menu().get_by_role("menuitemcheckbox")
+    expect(switch).to_contain_text("Low")
+    switch.click()
+    page.wait_for_function("() => localStorage.getItem('unsloth_chat_sandbox_level') === 'high'")
+    page.keyboard.press("Escape")
+    expect_server_mode("high", key = "sandboxLevel")
 
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")

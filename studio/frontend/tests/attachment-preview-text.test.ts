@@ -36,6 +36,7 @@ const {
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
+  writeDocxBreaksAndCheckboxes,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
 const { readRtfAttachmentContent } =
@@ -1426,6 +1427,55 @@ test("markDocxNotes skips move sources, deletions and text box fallbacks", () =>
     );
   } finally {
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("a Word file keeps its line breaks and which boxes are ticked", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = (checked: string, glyph: string, label: string) =>
+    `<w:p><w:sdt><w:sdtPr><w14:checkbox><w14:checked w14:val="${checked}"/>` +
+    '<w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>' +
+    `</w14:checkbox></w:sdtPr><w:sdtContent>${run(glyph)}</w:sdtContent></w:sdt>${run(label)}</w:p>`;
+  const field = (state: string, label: string) =>
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>${state}</w:checkBox></w:ffData></w:fldChar></w:r>` +
+    '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+    `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(label)}</w:p>`;
+  const archive = docxBytes(
+    `<w:document ${ns}><w:body>` +
+      '<w:p><w:r><w:t>Jane Doe</w:t><w:br/><w:t>42 Elm Street</w:t></w:r><w:r><w:br w:type="textWrapping"/></w:r>' +
+      `${run("Springfield, IL 62704")}</w:p>` +
+      '<w:p><w:r><w:t>Summary</w:t><w:br w:type="page"/><w:t>Details</w:t></w:r></w:p>' +
+      `<w:tbl><w:tr><w:tc><w:p>${run("Built APIs")}<w:r><w:cr/><w:t>Led team of 5</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+      box("1", "☒", " Smoker") +
+      box("0", "☐", " Diabetic") +
+      field('<w:default w:val="0"/><w:checked/>', " Allergies") +
+      field('<w:default w:val="0"/>', " Pregnant") +
+      '<w:p><w:r><w:t xml:space="preserve">Consent </w:t><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:checked/></w:checkBox></w:ffData></w:fldChar></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+      `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(" given")}</w:p>` +
+      "</w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxBreaksAndCheckboxes(archive)),
+    });
+    assert.equal(
+      value,
+      "Jane Doe\n42 Elm Street\nSpringfield, IL 62704\n\n" +
+        "Summary\nDetails\n\n" +
+        "Built APIs\nLed team of 5\n\n" +
+        "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\nConsent ☒ given\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
   }
 });
 

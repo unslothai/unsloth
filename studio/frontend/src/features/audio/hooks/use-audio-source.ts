@@ -5,6 +5,9 @@ import {
   type SegmentRecorder,
   createAudioRecorder,
 } from "@/features/chat/adapters/pcm-recorder";
+import { isMissingDeviceError } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { isTauri } from "@/lib/api-base";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AudioApiError, fetchAudioBlob, uploadAudioInput } from "../api";
 import {
@@ -17,6 +20,8 @@ import {
   INITIAL_AUDIO_SOURCE_STATE,
   audioFileProblem,
   audioSourceReducer,
+  micAudioConstraints,
+  micErrorMessage,
 } from "./audio-source-state";
 
 // A reference only needs seconds; a long take is still usable, the server keeps the first 30 s.
@@ -51,6 +56,20 @@ function mediaDuration(blob: Blob): Promise<number | null> {
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+async function openMicrophone(deviceId: string): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: micAudioConstraints(deviceId),
+    });
+  } catch (error) {
+    // Saved mic may be unplugged; fall back to the default, as dictation does.
+    if (deviceId === "default" || !isMissingDeviceError(error)) throw error;
+    return navigator.mediaDevices.getUserMedia({
+      audio: micAudioConstraints(null),
+    });
+  }
 }
 
 export function recordingSupported(): boolean {
@@ -242,17 +261,13 @@ export function useAudioSource({
     const ticket = ++acquisition.current;
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-    } catch {
+      stream = await openMicrophone(
+        useVoiceSettingsStore.getState().micDeviceId,
+      );
+    } catch (error) {
       acquiring.current = false;
       if (ticket !== acquisition.current) return;
-      dispatch({
-        type: "fail",
-        message:
-          "Could not use the microphone. Allow access, or upload a file instead.",
-      });
+      dispatch({ type: "fail", message: micErrorMessage(error, isTauri) });
       return;
     }
     acquiring.current = false;
