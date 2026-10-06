@@ -247,13 +247,42 @@ def test_the_elevation_check_is_remembered_until_forced(linux):
     assert linux["sudo_checks"] == 2
 
 
-@pytest.mark.parametrize("owner,local", [(False, True), (True, False), (False, False)])
-def test_nobody_but_the_owner_here_makes_unsloth_check_sudo(linux, monkeypatch, owner, local):
+@pytest.mark.parametrize("local", [True, False])
+def test_nobody_but_the_owner_makes_unsloth_check_sudo(linux, monkeypatch, local):
     linux["tool"]("apt-get", "sudo")
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: local)
-    fields = plan_mod.setup_fields_for(object(), owner, available = False)
+    fields = plan_mod.setup_fields_for(object(), False, available = False)
     assert linux["sudo_checks"] == 0
     assert fields["setup_action"] is None and fields["manual_command"]
+
+
+@pytest.mark.parametrize(
+    "elevation,offered",
+    [("root", True), ("sudo", True), ("pkexec", False), (None, False)],
+)
+def test_a_remote_owner_gets_the_button_only_when_nothing_prompts_here(
+    linux, monkeypatch, elevation, offered
+):
+    # Colab and other proxied hosts: the browser is never local, but root or passwordless sudo asks nobody.
+    linux["tool"]("apt-get", "sudo", "pkexec")
+    linux["root"] = elevation == "root"
+    linux["sudo_ok"] = elevation == "sudo"
+    if elevation == "pkexec":
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+    assert plan_mod.linux_elevation(force = True)[0] == elevation
+    fields = plan_mod.setup_fields_for(object(), True, available = False)
+    assert fields["can_run_setup"] is offered
+    assert fields["setup_action"] == (plan_mod.LINUX_INSTALL if offered else None)
+    assert fields["setup_blocked"] == (None if offered else "not_local")
+    assert plan_mod.remote_start_allowed(plan_mod.LINUX_INSTALL) is offered
+    assert plan_mod.remote_start_allowed(plan_mod.WINDOWS_SETUP) is False
+
+
+def test_a_remote_linux_install_is_never_allowed_off_linux(linux, monkeypatch):
+    linux["tool"]("apt-get", "sudo")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert plan_mod.remote_start_allowed(plan_mod.LINUX_INSTALL) is False
 
 
 def test_elevated_steps_ignore_path_and_untrusted_folders(monkeypatch, tmp_path):
@@ -433,6 +462,10 @@ def test_setup_fields_name_the_action_only_for_the_owner_here(linux, monkeypatch
     other = plan_mod.setup_fields_for(object(), False, available = False)
     assert other["setup_action"] is None and other["can_run_setup"] is False
     assert other["manual_command"] == owner["manual_command"] != ""
+    linux["sudo_ok"] = False
+    linux["tool"]("pkexec")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    plan_mod.forget_elevation()
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     remote = plan_mod.setup_fields_for(object(), True, available = False)
     assert remote["setup_action"] is None and remote["manual_command"]

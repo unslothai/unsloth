@@ -2668,6 +2668,35 @@ class FastSentenceTransformer(FastModel):
         st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
 
+        from sentence_transformers.util import load_file_path
+
+        # sentence-transformers 2.x has no local_files_only parameter, so only pass it when set.
+        _local_only = {"local_files_only": True} if kwargs.get("local_files_only") else {}
+        # sentence-transformers >= 6 re-raises Hub errors other than "not found" here; the weights already loaded, so warn rather than fail.
+        try:
+            st_config_path = load_file_path(
+                model_name,
+                "config_sentence_transformers.json",
+                token = token,
+                cache_folder = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                revision = revision,
+                **_local_only,
+            )
+        except Exception as e:
+            print(
+                f"Unsloth: Could not read config_sentence_transformers.json for {model_name} ({e}). "
+                "Saved prompts and similarity_fn_name were not restored."
+            )
+            st_config_path = None
+        if st_config_path is not None:
+            with open(st_config_path, encoding = "utf8") as f:
+                st_config = json.load(f)
+            st_model.prompts.update(st_config.get("prompts") or {})
+            st_model.default_prompt_name = st_config.get("default_prompt_name")
+            st_model.similarity_fn_name = st_config.get("similarity_fn_name")
+
         def _save_pretrained_merged(
             self,
             save_directory,

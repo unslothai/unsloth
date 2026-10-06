@@ -17,6 +17,7 @@ export {
   TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
+  useRepoDownload,
   useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";

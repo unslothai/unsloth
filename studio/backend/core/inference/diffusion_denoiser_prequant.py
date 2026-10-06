@@ -136,6 +136,7 @@ def denoiser_prequant_pipe_kwargs(
             local_files_only = local_files_only,
             logger = logger,
             placement_device = placement_device,
+            family = getattr(fam, "name", None),
         )
         if module is None:
             if logger is not None:

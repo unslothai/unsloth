@@ -48,11 +48,15 @@ export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
           This conversation got long, so it was compacted.
         </span>{" "}
         <span>
-          Older messages were dropped from the model&apos;s context to make room. {detail}
+          {truncation.summarized
+            ? "The provider summarized older messages to make room."
+            : "Older messages were dropped from the model's context to make room."}{" "}
+          {detail}
         </span>
         <span>
           {" "}
-          ({dropped} {dropped === 1 ? "message" : "messages"} dropped here
+          ({dropped} {dropped === 1 ? "message" : "messages"}{" "}
+          {truncation.summarized ? "summarized" : "dropped"} here
           {recalled > 0
             ? `, ${recalled} earlier ${recalled === 1 ? "passage" : "passages"} recalled`
             : ""}

@@ -165,3 +165,25 @@ test("a form result pushed out of the cache still asks before posting again", ()
   assert.equal(cachedPage(entry), undefined);
   assert.equal(sentPosts.has(entry), true);
 });
+
+test("going Back to a keyed file restores its key, so its card finds the tab again", () => {
+  const store = useBrowserStore.getState();
+  store.openFile({ blob: new Blob(["<p>hi</p>"]), name: "page.html", contentType: "text/html", key: "html:back" });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  assert.equal(tab()?.openKey, "file:html:back");
+  store.navigate(tabId, { url: "https://example.com/" });
+  assert.equal(tab()?.openKey, null);
+  store.goBack(tabId);
+  assert.equal(tab()?.openKey, "file:html:back");
+  store.goForward(tabId);
+  assert.equal(tab()?.openKey, null);
+  // A copy going Back does not claim the original's key.
+  store.goBack(tabId);
+  store.duplicateTab(tabId);
+  const copy = useBrowserStore.getState().tabs.find((candidate) => candidate.id !== tabId && candidate.history.some((entry) => entry.kind === "file" && entry.name === "page.html"));
+  assert.equal(copy?.openKey, null);
+  store.navigate(copy?.id ?? "", { url: "https://example.com/" });
+  store.goBack(copy?.id ?? "");
+  assert.equal(useBrowserStore.getState().tabs.find((candidate) => candidate.id === copy?.id)?.openKey, null);
+});

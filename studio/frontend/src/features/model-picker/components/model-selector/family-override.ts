@@ -13,6 +13,7 @@ const LABELS: Readonly<Record<string, string>> = {
   "qwen-image": "Qwen Image",
   "qwen-image-2.1": "Qwen Image 2.1",
   "qwen-image-edit": "Qwen Image Edit",
+  "qwen-image-layered": "Qwen Image Layered",
   "z-image": "Z-Image",
   "krea-2": "Krea 2",
   "lumina-2": "Lumina 2",

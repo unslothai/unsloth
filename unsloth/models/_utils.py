@@ -3866,9 +3866,6 @@ def has_internet(
         return False
 
 
-import psutil
-
-
 def _get_statistics(statistics = None, force_download = True):
     # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
     n_cpus = psutil.cpu_count(logical = False)
@@ -4812,6 +4809,28 @@ def patch_fla_autotuner_fast_path():
     CachedAutotuner.run = run
 
 
+def _is_seq2seq_lm_config(config):
+    # Both halves: Voxtral / Qwen2-Audio are Seq2SeqLM-mapped but decoder-only, Whisper is encoder-decoder but SpeechSeq2Seq.
+    if config is None or not getattr(config, "is_encoder_decoder", False):
+        return False
+    try:
+        from transformers import AutoModelForSeq2SeqLM
+        return type(config) in AutoModelForSeq2SeqLM._model_mapping
+    except Exception:
+        return False
+
+
+def _make_seq2seq_aware_get_batch_samples(original):
+    def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
+        # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
+        if _is_seq2seq_lm_config(getattr(self.model, "config", None)):
+            return original(self, *args, **kwargs)
+        return _unsloth_get_batch_samples(self, *args, **kwargs)
+
+    _unsloth_get_batch_samples_dispatch.__name__ = "_unsloth_get_batch_samples"
+    return _unsloth_get_batch_samples_dispatch
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -4833,7 +4852,9 @@ def patch_gradient_accumulation_fix(Trainer):
             raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
-                Trainer.get_batch_samples = _unsloth_get_batch_samples
+                Trainer.get_batch_samples = _make_seq2seq_aware_get_batch_samples(
+                    Trainer.get_batch_samples
+                )
 
             if not hasattr(Trainer, "_old_compute_loss"):
                 # Fix transformers 4.57.0 raising "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace".

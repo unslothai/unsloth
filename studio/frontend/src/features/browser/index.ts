@@ -3,7 +3,7 @@
 
 import { browserPanelAvailable } from "./panel-availability";
 import { useBrowserPrefsStore } from "./prefs-store";
-import { type OpenFileInput, useBrowserStore } from "./store";
+import { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
 
 export { ClearBrowsingDataDialog } from "./clear-data-dialog";
 export { BrowserToggleButton } from "./browser-toggle";
@@ -14,7 +14,7 @@ export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-support";
 export { pinBrowserPage } from "./resize-pin";
 export { type BookmarksToolbarMode, useBrowserPrefsStore } from "./prefs-store";
-export { type OpenFileInput, useBrowserStore } from "./store";
+export { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
 
 export { browserPanelAvailable, setBrowserPanelAvailable } from "./panel-availability";
 export { PinnedPageRows, usePinnedPageCount } from "./pinned-page-row";
@@ -39,4 +39,33 @@ export function filesOpenInBrowser(): boolean {
 
 export function openFileInBrowser(input: OpenFileInput): void {
   useBrowserStore.getState().openFile(input);
+}
+
+const htmlOpenKey = (key: string) => `file:html:${key}`;
+
+export function openHtmlInBrowser({
+  key,
+  name,
+  code,
+  view = "preview",
+}: {
+  key: string;
+  name: string;
+  code: string;
+  view?: FileViewMode;
+}): void {
+  const store = useBrowserStore.getState();
+  store.openFile({ blob: new Blob([code], { type: "text/html" }), name, contentType: "text/html", key: `html:${key}` });
+  const tabId = useBrowserStore.getState().activeTabId;
+  if (tabId) store.setFileView(tabId, { mode: view });
+}
+
+/** The view showing `key`'s HTML, or null if it is not on screen. */
+export function useShownHtmlView(key: string): FileViewMode | null {
+  return useBrowserStore((state) => {
+    if (!state.open) return null;
+    const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
+    if (tab?.openKey !== htmlOpenKey(key)) return null;
+    return state.fileViews[tab.id]?.mode ?? "preview";
+  });
 }

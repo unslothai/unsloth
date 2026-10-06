@@ -98,6 +98,10 @@ def _send_path_slice() -> str:
     return (
         "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
         "  const supportsStudioToolsForThisTurn = false, studioLocalCodeTools: string[] = [];\n"
+        # No test here carries provider compaction, so its replay target stays unset.
+        "  const externalProvider = undefined, externalSelection = undefined;\n"
+        "  const providerCompactionTargetConnectionKey = null;\n"
+        "  const toExternalBackendProviderType = (providerType: any) => providerType;\n"
         # The provider-dependent flag is covered by external-preserve-thinking.test.ts.
         + "  const replayReasoning = !isExternalRequest;\n"
         + body
