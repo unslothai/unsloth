@@ -16,6 +16,7 @@ import {
 import {
   DOWNLOAD_KIND,
   downloadManager,
+  publicModelId,
   useDeviceInventorySources,
   useRepoDownload,
 } from "@/features/hub";
@@ -223,10 +224,13 @@ export function ApiModelLoadControls({
   activeModel,
   onSettled,
   onUnloadActive,
+  unloading,
 }: {
   activeModel: string | null | undefined;
   onSettled: () => void;
   onUnloadActive: () => void;
+  // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
+  unloading: boolean;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } =
     useChatModelRuntime();
@@ -302,7 +306,7 @@ export function ApiModelLoadControls({
 
   const handlePick = useCallback(
     async (value: string, meta?: ModelSelectorChangeMeta) => {
-      if (!value) {
+      if (!value || unloading) {
         return;
       }
       setActionError(null);
@@ -340,7 +344,14 @@ export function ApiModelLoadControls({
         setActionError(loadErrorMessage(err, "Failed to load model"));
       }
     },
-    [selectModel, loadNpuModel, onSettled, refreshLastLoadLabel, activeModel],
+    [
+      selectModel,
+      loadNpuModel,
+      onSettled,
+      refreshLastLoadLabel,
+      activeModel,
+      unloading,
+    ],
   );
 
   useLoadAfterDownload(
@@ -401,13 +412,18 @@ export function ApiModelLoadControls({
     [ejectModel, onSettled, onUnloadActive],
   );
 
-  const reloadDisabled = reloading || modelLoading || lastLoadLabel == null;
+  const busy = modelLoading || unloading;
+  const reloadDisabled = reloading || busy || lastLoadLabel == null;
 
   const { id: effectiveModel, ggufVariant: activeGgufVariant } =
     monitorSelection(activeModel);
   const isLoaded = Boolean(activeModel);
   // Chat's live settings describe the resident only when its checkpoint is the one the monitor reports.
-  const runtimeIsResident = isLoaded && runtimeCheckpoint === effectiveModel;
+  // The monitor reports a local GGUF by its public id (file stem), Chat's runtime by its path.
+  const runtimeIsResident =
+    isLoaded &&
+    runtimeCheckpoint != null &&
+    publicModelId(runtimeCheckpoint) === effectiveModel;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -425,7 +441,7 @@ export function ApiModelLoadControls({
           handlePick(value, meta);
         }}
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
-        onEject={modelLoading ? undefined : handleEject}
+        onEject={busy ? undefined : handleEject}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -437,7 +453,7 @@ export function ApiModelLoadControls({
         variant="outline"
         size="sm"
         placeholder="Load model"
-        open={selectorOpen}
+        open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
         className={cn("h-9 rounded-full")}
       />

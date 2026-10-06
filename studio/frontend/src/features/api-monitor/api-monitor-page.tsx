@@ -738,6 +738,7 @@ export function ApiMonitorPage(): ReactElement {
             activeModel={data?.active_model}
             onSettled={refresh}
             onUnloadActive={unloadActiveModel}
+            unloading={unloading}
           />
           <Button
             type="button"
