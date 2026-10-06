@@ -181,7 +181,12 @@ def _clean_state(monkeypatch, tmp_path):
     monkeypatch.setattr(
         aupd,
         "chained_phase_plan",
-        lambda: {"status": None, "update_available": False, "skip_reason": "not_installed", "phase": None},
+        lambda: {
+            "status": None,
+            "update_available": False,
+            "skip_reason": "not_installed",
+            "phase": None,
+        },
     )
     yield
     freshness.reset_caches()

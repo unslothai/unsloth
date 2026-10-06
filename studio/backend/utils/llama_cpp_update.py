@@ -1280,9 +1280,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         )
         whisper_spec = (whisper_plan or {}).get("phase")
         # audio.cpp ships its own ggml, so a backend switch never touches it.
-        audio_plan = (
-            (_audio_chain_status() or {}) if backend_request is None or migration else {}
-        )
+        audio_plan = (_audio_chain_status() or {}) if backend_request is None or migration else {}
         audio_spec = audio_plan.get("phase")
         if llama_spec is None and whisper_spec is None and audio_spec is None:
             # Nothing to run: answer with the llama refusal so the existing reasons (local_link / up_to_date / already_selected / ...) keep their meaning.

@@ -180,9 +180,7 @@ def run_env(managed, monkeypatch):
 
     events: list = []
     calls: dict = {}
-    monkeypatch.setattr(
-        stt_audiocpp_sidecar, "get_audio_cpp_stt_sidecar", lambda: _Sidecar(events)
-    )
+    monkeypatch.setattr(stt_audiocpp_sidecar, "get_audio_cpp_stt_sidecar", lambda: _Sidecar(events))
     monkeypatch.setattr(aupd, "_unload_audio_cpp_models", lambda: events.append("unload") or False)
 
     def _installer(new_tag = "v0.9.1-unsloth.1", error = None):
@@ -230,7 +228,9 @@ def test_an_unloaded_model_asks_for_a_reload(run_env, monkeypatch):
     monkeypatch.setattr(aupd, "_unload_audio_cpp_models", lambda: True)
     result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
     assert result["reload_required"] is True
-    assert result["message"] == "Updated audio.cpp to v0.9.1-unsloth.1. Reload your model to use it."
+    assert (
+        result["message"] == "Updated audio.cpp to v0.9.1-unsloth.1. Reload your model to use it."
+    )
 
 
 def test_the_update_flag_clears_when_the_install_fails(run_env):
@@ -312,7 +312,11 @@ def test_no_sidecar_coordination_fails_closed(run_env, monkeypatch):
 
 
 class _Orchestrator:
-    def __init__(self, models = None, loading = ()):
+    def __init__(
+        self,
+        models = None,
+        loading = (),
+    ):
         self.models = dict(models or {})
         self.loading_models = set(loading)
         self.unloaded: list = []
@@ -338,7 +342,9 @@ def slots(monkeypatch):
 
 
 def test_a_main_slot_audio_cpp_model_is_unloaded(slots):
-    slots.main = _Orchestrator({"kokoro": {"audio_type": AUDIO_CPP_TTS_AUDIO_TYPE, "is_audio": True}})
+    slots.main = _Orchestrator(
+        {"kokoro": {"audio_type": AUDIO_CPP_TTS_AUDIO_TYPE, "is_audio": True}}
+    )
     assert aupd._unload_audio_cpp_models() is True
     assert slots.main.unloaded == ["kokoro"]
 
@@ -359,7 +365,9 @@ def test_an_audio_cpp_load_in_flight_is_cancelled(slots, monkeypatch):
 
 
 def test_a_kept_audio_cpp_slot_is_dropped(slots):
-    music = SimpleNamespace(orchestrator = _Orchestrator({"ace": {"audio_type": AUDIO_CPP_MUSIC_AUDIO_TYPE}}))
+    music = SimpleNamespace(
+        orchestrator = _Orchestrator({"ace": {"audio_type": AUDIO_CPP_MUSIC_AUDIO_TYPE}})
+    )
     chat = SimpleNamespace(orchestrator = _Orchestrator({"qwen": {"audio_type": None}}))
     model_slots.slots[:] = [music, chat]
     assert aupd._unload_audio_cpp_models() is True

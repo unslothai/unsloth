@@ -122,10 +122,14 @@ def _plan() -> dict:
         plan["skip_reason"] = "tracks_latest"
         return plan
     status["latest_tag"] = ladder[0][1]
-    if status["installed_tag"] is None or (
-        record.get("published_repo"),
-        status["installed_tag"],
-    ) in ladder:
+    if (
+        status["installed_tag"] is None
+        or (
+            record.get("published_repo"),
+            status["installed_tag"],
+        )
+        in ladder
+    ):
         plan["skip_reason"] = "up_to_date"
         return plan
     if update_checks_disabled():
@@ -159,7 +163,12 @@ def chained_phase_plan() -> dict:
         return _plan()
     except Exception as exc:  # noqa: BLE001 - fail open
         logger.debug("audio.cpp update: plan failed", error = str(exc))
-        return {"status": None, "update_available": False, "skip_reason": "unavailable", "phase": None}
+        return {
+            "status": None,
+            "update_available": False,
+            "skip_reason": "unavailable",
+            "phase": None,
+        }
 
 
 def _unload_audio_cpp_models() -> bool:
@@ -169,7 +178,6 @@ def _unload_audio_cpp_models() -> bool:
     unloaded = False
     try:
         from routes.inference import _peek_inference_backend
-
         main = _peek_inference_backend()
     except Exception as exc:  # noqa: BLE001 - no orchestrator means nothing to unload
         logger.debug("audio.cpp update: inference backend unavailable", error = str(exc))
@@ -238,7 +246,6 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
 
     try:
         from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
-
         sidecar = get_audio_cpp_stt_sidecar()
     except Exception as exc:
         # Replacing the tree without the dictation guard would race a transcription starting from it. Fail closed.
