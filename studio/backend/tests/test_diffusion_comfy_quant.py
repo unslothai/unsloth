@@ -408,6 +408,31 @@ def test_native_backend_keeps_codes_and_computes_the_dense_product(comfy_file):
     assert type(block.adaLN_modulation[0]) is nn.Linear
 
 
+def test_fp16_keeps_fp32_modules_by_their_converted_names(comfy_file):
+    # Wan: ComfyUI's time_embedding.0 becomes diffusers' time_embedder only after conversion
+    path, dense, _ = comfy_file
+
+    class _KeepOut(_Tiny):
+        _keep_in_fp32_modules = ["to_out"]
+
+    model = cq.load_comfy_quant_transformer(
+        _KeepOut,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.float16, "config": "base/repo", "subfolder": "transformer"},
+        int8_backend = None,
+        family = "z-image",
+    )
+    for b, block in enumerate(model.blocks):
+        assert block.to_out.weight.dtype == torch.float32
+        assert block.to_out.bias.dtype == torch.float32
+        assert torch.equal(block.to_out.bias, dense.blocks[b].to_out.bias)
+        assert _cos(block.to_out.weight, dense.blocks[b].to_out.weight) > 0.9999
+        assert block.to_q.weight.dtype == torch.float16
+        assert block.adaLN_modulation[0].bias.dtype == torch.float16
+    assert model.norm.weight.dtype == torch.float16
+
+
 def test_fp8_layers_dequantize_with_their_scale(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     torch.manual_seed(1)
@@ -466,7 +491,13 @@ def test_the_loader_refuses_what_the_scan_refuses(tmp_path):
 
 
 # ------------------------------------------------------------------------------------- fp8 runtime
-def _fp8_file(tmp_path, *, fmt = "float8_e4m3fn", per_row = False, record = None):
+def _fp8_file(
+    tmp_path,
+    *,
+    fmt = "float8_e4m3fn",
+    per_row = False,
+    record = None,
+):
     """A ComfyUI fp8 file of ``_Tiny`` (fused qkv, per-tensor or per-row ``weight_scale``) and its dense source."""
     torch.manual_seed(2)
     dense = _Tiny()
@@ -553,7 +584,9 @@ def test_fp8_native_backend_keeps_codes_and_computes_the_dense_product(tmp_path,
     codes = tensors["blocks.1.qkv.weight"][DIM : 2 * DIM]
     assert torch.equal(linear.weight_q, codes.view(torch.uint8))
     x = torch.randn(4, DIM, dtype = torch.bfloat16)
-    want = torch.nn.functional.linear(x.float(), dense.blocks[1].to_k.weight, dense.blocks[1].to_k.bias)
+    want = torch.nn.functional.linear(
+        x.float(), dense.blocks[1].to_k.weight, dense.blocks[1].to_k.bias
+    )
     assert _cos(linear(x), want) > 0.999
 
 
@@ -588,7 +621,9 @@ def test_e5m2_and_non_bf16_pipelines_dequantize(tmp_path, monkeypatch):
         (None, "fp8", False, "bfloat16", "0", None),  # kill switch
     ],
 )
-def test_fp8_backend_follows_studios_own_fp8_rule(monkeypatch, native, supported, offload, dtype, env, want):
+def test_fp8_backend_follows_studios_own_fp8_rule(
+    monkeypatch, native, supported, offload, dtype, env, want
+):
     import core.inference.diffusion_transformer_quant as tq
 
     monkeypatch.setattr(tq, "native_quant_scheme", lambda *a, **k: native)
@@ -622,10 +657,14 @@ def test_comfy_prequant_refuses_another_scheme_or_base(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match = "converted from org/other-model"):
         cq.load_comfy_prequant(_Tiny, path, scheme = "fp8", **kw)
     with pytest.raises(ValueError, match = "needs a bfloat16 pipeline"):
-        cq.load_comfy_prequant(_Tiny, path, scheme = "fp8", **dict(kw, dtype = torch.float32, base = "org/other-model"))
+        cq.load_comfy_prequant(
+            _Tiny, path, scheme = "fp8", **dict(kw, dtype = torch.float32, base = "org/other-model")
+        )
 
 
-def test_hosted_loader_rebuilds_a_comfy_file_into_studios_int8_weights(comfy_file, monkeypatch, tmp_path):
+def test_hosted_loader_rebuilds_a_comfy_file_into_studios_int8_weights(
+    comfy_file, monkeypatch, tmp_path
+):
     """``load_prequantized_transformer`` on a ComfyUI file: Int8Tensor weights under ConvRot, the loaded file
     recorded, the same placement tail as Studio's own checkpoints."""
     pytest.importorskip("torchao")
@@ -655,7 +694,13 @@ def test_hosted_loader_rebuilds_a_comfy_file_into_studios_int8_weights(comfy_fil
     # asked for the wrong scheme: refused, with the reason recorded, so the caller quantizes dense instead
     assert (
         pq.load_prequantized_transformer(
-            _Tiny, "base/repo", source, device = "cpu", dtype = torch.float32, scheme = "fp8", family = "z-image"
+            _Tiny,
+            "base/repo",
+            source,
+            device = "cpu",
+            dtype = torch.float32,
+            scheme = "fp8",
+            family = "z-image",
         )
         is None
     )
@@ -678,10 +723,13 @@ def test_resident_size_is_priced_from_the_header_not_the_name(tmp_path, comfy_fi
     assert kept >= (quant + 2 * plain) / 2**20
     fp8_path, _, _ = _fp8_file(tmp_path)
     fp8_scan = cq.scan_comfy_quant(fp8_path)
-    assert cq.comfy_resident_mib(fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = True) < cq.comfy_resident_mib(
-        fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = False
+    assert cq.comfy_resident_mib(
+        fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = True
+    ) < cq.comfy_resident_mib(fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = False)
+    assert (
+        cq.comfy_resident_mib(str(tmp_path / "missing.safetensors"), keep_int8 = True, keep_fp8 = True)
+        is None
     )
-    assert cq.comfy_resident_mib(str(tmp_path / "missing.safetensors"), keep_int8 = True, keep_fp8 = True) is None
 
 
 def test_the_row_map_is_traced_on_narrow_tags_and_falls_back_to_full_width(comfy_file, monkeypatch):
@@ -691,7 +739,11 @@ def test_the_row_map_is_traced_on_narrow_tags_and_falls_back_to_full_width(comfy
     path, _, tensors = comfy_file
     widths = []
 
-    def _spy(checkpoint = None, config = None, **kw):
+    def _spy(
+        checkpoint = None,
+        config = None,
+        **kw,
+    ):
         widths.append(checkpoint["blocks.0.qkv.weight"].shape[1])
         return _convert(checkpoint = checkpoint, config = config, **kw)
 
@@ -699,7 +751,11 @@ def test_the_row_map_is_traced_on_narrow_tags_and_falls_back_to_full_width(comfy
     fast = _load(path, int8_backend = "torchao")
     assert widths == [cq._NARROW_TAG_COLUMNS]
 
-    def _needs_width(checkpoint = None, config = None, **kw):
+    def _needs_width(
+        checkpoint = None,
+        config = None,
+        **kw,
+    ):
         w = checkpoint["blocks.0.qkv.weight"]
         checkpoint["blocks.0.qkv.weight"] = w.reshape(-1, DIM)  # only valid at the real width
         return _convert(checkpoint = checkpoint, config = config, **kw)
@@ -710,7 +766,11 @@ def test_the_row_map_is_traced_on_narrow_tags_and_falls_back_to_full_width(comfy
         a, b = getattr(a, "qdata", a), getattr(b, "qdata", b)
         assert torch.equal(a, b)
 
-    def _drops_columns(checkpoint = None, config = None, **kw):
+    def _drops_columns(
+        checkpoint = None,
+        config = None,
+        **kw,
+    ):
         out = _convert(checkpoint = checkpoint, config = config, **kw)
         out["blocks.0.to_out.weight"] = out["blocks.0.to_out.weight"].chunk(2, dim = 1)[0]
         return out

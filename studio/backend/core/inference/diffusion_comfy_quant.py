@@ -721,6 +721,16 @@ def load_comfy_quant_transformer(
             if key.endswith(old):
                 state[key[: -len(old)] + new] = state.pop(key)
 
+    keep_fp32 = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
+    if isinstance(keep_fp32, str):
+        keep_fp32 = [keep_fp32]
+    # fp16: _keep_in_fp32_modules names diffusers keys (Wan time_embedder, scale_shift_table), so every layer goes
+    # through the converter first and dtypes are decided on the converted names.
+    fp16_keep = dtype == torch.float16 and bool(keep_fp32)
+
+    def _dtype_for(key: str) -> Any:
+        return torch.float32 if fp16_keep and any(m in key.split(".") for m in keep_fp32) else dtype
+
     backends = {INT8_TENSORWISE: int8_backend, FP8_E4M3: fp8_backend}
     sources: list = []  # (layer, codes, scale) kept for a runtime
     dequantized = 0
@@ -731,20 +741,15 @@ def load_comfy_quant_transformer(
         state.pop(layer.name + ".input_scale", None)
         if layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
-        if backends.get(layer.format):
+        if backends.get(layer.format) or fp16_keep:
             sources.append((layer, codes, scale))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         else:
             state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, dtype)
             dequantized += 1
 
-    keep_fp32 = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
-    if isinstance(keep_fp32, str):
-        keep_fp32 = [keep_fp32]
     for key, value in list(state.items()):
-        if value is None or not value.is_floating_point() or value.dtype == dtype:
-            continue
-        if dtype == torch.float16 and any(m in key.split(".") for m in keep_fp32):
+        if fp16_keep or value is None or not value.is_floating_point() or value.dtype == dtype:
             continue
         state[key] = value.to(dtype)
     from accelerate import init_empty_weights
@@ -812,6 +817,10 @@ def load_comfy_quant_transformer(
     except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
         converted = _convert_tagged(None)
     del state
+    if fp16_keep:
+        for key, value in list(converted.items()):
+            if torch.is_tensor(value) and value.is_floating_point():
+                converted[key] = value.to(_dtype_for(key))
 
     min_features = DEFAULT_MIN_LINEAR_FEATURES if min_features is None else int(min_features)
     schemes = {INT8_TENSORWISE: TQ_INT8, FP8_E4M3: TQ_FP8}
@@ -831,13 +840,14 @@ def load_comfy_quant_transformer(
         if not isinstance(value, tuple):
             continue
         codes, scale, group, fmt = value
-        scheme = schemes[fmt]
-        backend = backends[fmt]
+        scheme = schemes.get(fmt)
+        backend = backends.get(fmt)
         fqn = name[: -len(".weight")] if name.endswith(".weight") else name
         module = modules.get(fqn)
         weight = None
         keep = (
-            module is not None
+            backend is not None
+            and module is not None
             and name.endswith(".weight")
             and filters[fmt](module, fqn)
             # Studio's fp8 quant leaves the Linears a DiT keeps in fp32 (require_bf16) at full precision.
@@ -854,7 +864,7 @@ def load_comfy_quant_transformer(
             else:
                 weight = _fp8_tensor(name, codes, scale, dtype, fast_accum)
         if weight is None:
-            converted[name] = _dequant(codes, scale, group, dtype)
+            converted[name] = _dequant(codes, scale, group, _dtype_for(name))
             dequantized += 1
             continue
         converted[name] = weight
