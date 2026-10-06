@@ -147,8 +147,8 @@ async def check(url):
             # Long dates, translations and font scaling must fit the viewport;
             # Copy/Edit/Fork/Delete and branch targets must retain their size.
             layouts = []
-            # (viewport width, locale, UI font scale, browser Interface Scale)
-            for width, locale, scale, interface in [
+            # (viewport width, locale, UI font scale, browser Interface Scale, narrow count)
+            for width, locale, scale, interface, *narrow in [
                 (375, "en", ".9375", 1),
                 # UI font size 12px, the minimum (UI_FONT_SIZE_RANGE): --ui-space-scale is 0.8 here, so a
                 # target sized as a multiple of it drops under 24px.
@@ -159,9 +159,16 @@ async def check(url):
                 # The browser's 50% Interface Scale, its floor, at the smallest font: every token shrinks,
                 # so a target clamped at 24px reaches past the gap and over its neighbour.
                 (375, "en", ".75", 0.5),
+                # A narrow custom chat font at the smallest UI font, where each chevron's target reaches
+                # furthest toward the count: the two must still not meet over it.
+                (375, "en", ".75", 1, "narrow count"),
             ]:
                 await page.set_viewport_size({"width": width, "height": 650})
                 await page.goto(f"{url}?branches&locale={locale}&scale={scale}")
+                if narrow:
+                    await page.add_style_tag(
+                        content = ".aui-user-branch-picker > span { font-size: 2px !important; }"
+                    )
                 if interface != 1:
                     await page.evaluate(
                         "s => document.documentElement.style.setProperty('--ui-interface-scale', s)",
@@ -231,7 +238,13 @@ async def check(url):
                         overlap_y = min(a["bottom"], b["bottom"]) - max(a["y"], b["y"])
                         assert overlap_x <= 0.01 or overlap_y <= 0.01, (a, b, geometry)
                 layouts.append(
-                    {"width": width, "locale": locale, "scale": scale, "interface": interface}
+                    {
+                        "width": width,
+                        "locale": locale,
+                        "scale": scale,
+                        "interface": interface,
+                        "narrow": bool(narrow),
+                    }
                 )
 
             # Invalid or synthetic timestamps leave the controls usable.
