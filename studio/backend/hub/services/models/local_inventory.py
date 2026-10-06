@@ -411,7 +411,52 @@ def _scan_models_dir(
             rows = rows[: max(0, limit - len(found))]
         found.extend(rows)
 
+    if limit is None or len(found) < limit:
+        found.extend(
+            loose_diffusion_checkpoint_rows(
+                models_dir,
+                limit = None if limit is None else limit - len(found),
+                entry_limit = entry_limit,
+            )
+        )
     return found
+
+
+def loose_diffusion_checkpoint_rows(
+    folder: Path, *, limit: int | None = None, entry_limit: int | None = None
+) -> List[LocalModelInfo]:
+    """One row per loose single-file diffusion checkpoint in ``folder`` (a ComfyUI
+    ``diffusion_models/`` holds dozens side by side). Each row's path IS the file, so a pick loads
+    that file and not whichever one a folder-level guess would settle on; text encoders, VAEs and
+    LoRAs beside them are not offered (the header decides, see ``comfy_models``)."""
+    from hub.utils.comfy_models import loose_diffusion_checkpoints
+
+    rows: List[LocalModelInfo] = []
+    for path in loose_diffusion_checkpoints(folder, entry_limit = entry_limit):
+        if limit is not None and len(rows) >= limit:
+            break
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
+        rows.append(
+            model_common._local_model_info(
+                scan_path = path,
+                load_path = path,
+                source = "models_dir",
+                model_format = "unknown",
+                artifact_kind = "single_file_checkpoint",
+                updated_at = stat_result.st_mtime,
+                size_bytes = stat_result.st_size,
+            )
+        )
+    return rows
+
+
+def _is_loose_diffusion_checkpoint_row(model: LocalModelInfo) -> bool:
+    return model.artifact_kind == "single_file_checkpoint" and model.path.lower().endswith(
+        ".safetensors"
+    )
 
 
 def _safe_is_dir(path: Path) -> bool:
@@ -1154,9 +1199,20 @@ def _scan_custom_folder(
 
     def _is_supported(m: LocalModelInfo) -> bool:
         # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge it on its shape rather than on a format the layout cannot report.
-        if m.model_format in supported_formats:
+        if m.model_format in supported_formats or _is_loose_diffusion_checkpoint_row(m):
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
+
+    # A ComfyUI root or models/ folder: its denoiser folders (diffusion_models/, unet/,
+    # checkpoints/, and any extra_model_paths.yaml adds) are scanned like nested roots, so
+    # registering the install lists its models without registering each folder.
+    from hub.utils.comfy_models import comfy_dit_scan_roots
+
+    comfy_roots = tuple(
+        root for root in comfy_dit_scan_roots(folder_path) if root not in nested_roots
+    )
+    if comfy_roots:
+        nested_roots = (*nested_roots, *comfy_roots)
 
     generic = [
         m

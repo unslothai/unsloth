@@ -83,10 +83,15 @@ def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
     ``single_file`` load and then resolve that family's companions. Planning the un-normalized
     pick describes a local pipeline with nothing to fetch, and misses those companions.
     """
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
 
     if pick.model_kind or pick.gguf_filename:
         return pick
+    split = split_local_checkpoint_path(pick.model_path)
+    if split is not None:
+        return replace(
+            pick, model_path = split[0], gguf_filename = split[1], model_kind = "single_file"
+        )
     sole = resolve_local_single_file(pick.model_path)
     if sole is None:
         return pick

@@ -495,6 +495,15 @@ def _local_family_needles(model) -> tuple[str, ...]:
             needles.append(single)
     except Exception:
         pass
+    try:
+        # A loose single-file checkpoint row (a ComfyUI diffusion_models/ file) can be renamed past
+        # any family word; its header still names the family, which the loader reads the same way.
+        path = Path(model.path)
+        if path.suffix.lower() == ".safetensors" and path.is_file():
+            from core.inference.diffusion_content import inspect_checkpoint
+            needles.append(inspect_checkpoint(str(path)).family)
+    except Exception:
+        pass
     return tuple(needle for needle in needles if needle)
 
 

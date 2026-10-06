@@ -22,6 +22,12 @@ from typing import Any, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
+from .family_name_match import (
+    name_key_in,
+    normalize_family_name,
+    token_in_name,
+    token_length,
+)
 from .diffusion_nvfp4_flag import nvfp4_blocked
 
 
@@ -800,8 +806,9 @@ _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 def _token_in_needle(token: str, needle: str) -> bool:
     """True when ``token`` appears in ``needle`` as a whole segment (delimited by ``- _ . / \\`` or
     a boundary), not a raw substring, so 'qwen-image-edit' matches '...-2511' but 'kontext'
-    doesn't match 'kontextual'."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    doesn't match 'kontextual'. Separator-insensitive: ``_ - .`` and spaces all read as one
+    delimiter on both sides (``qwen_image_2.1_bf16`` holds ``qwen-image-2.1``)."""
+    return token_in_name(token, needle)
 
 
 def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
@@ -810,8 +817,8 @@ def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
     best: Optional[tuple[DiffusionFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
-                best = (fam, len(token))
+            if _token_in_needle(token, needle) and (best is None or token_length(token) > best[1]):
+                best = (fam, token_length(token))
     return best[0] if best else None
 
 
@@ -824,6 +831,10 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         key = override.strip().lower()
         for fam in _FAMILIES:
             if key == fam.name or key in fam.aliases:
+                return fam
+        norm = normalize_family_name(key)
+        for fam in _FAMILIES:
+            if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
     needle = repo_id.lower()
@@ -961,7 +972,34 @@ def detect_family_for_pick(
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if not override:
+        fam = _family_from_content(fam, repo_id, gguf_filename)
     return fam
+
+
+def _family_from_content(
+    fam: Optional[DiffusionFamily], repo_id: str, gguf_filename: Optional[str]
+) -> Optional[DiffusionFamily]:
+    """Reconcile the name verdict with the picked LOCAL file's own tensor header.
+
+    A ComfyUI tree names files freely, so the header decides what the file is: a text encoder /
+    VAE / LoRA / ControlNet, or a video DiT, is never this page's model (None), and a renamed DiT
+    resolves to the family its keys identify. The name still picks among same-architecture
+    variants (FLUX.1 dev vs Kontext, Qwen-Image vs Edit). Remote picks and directories (no local
+    file) are untouched, as is a header that names no supported family."""
+    from .diffusion_content import local_pick_file, resolve_family_with_content
+
+    path = local_pick_file(repo_id, gguf_filename)
+    if not path:
+        return fam
+    needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
+    vetoed = fam is None and any(_best_family_match(n.lower()) is not None for n in needles)
+    name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
+    if name is None:
+        return None
+    if fam is not None and fam.name == name:
+        return fam
+    return detect_family("", override = name)
 
 
 def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
@@ -1351,7 +1389,7 @@ def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
     for identifier in identifiers:
         needle = (identifier or "").lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
-            if key in needle:
+            if name_key_in(key, needle):
                 return steps, guidance
     return _GENERATION_DEFAULT_FALLBACK
 
