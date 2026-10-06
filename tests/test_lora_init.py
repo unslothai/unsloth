@@ -169,3 +169,25 @@ def test_kill_switch(monkeypatch):
     original = LoraLayer.pissa_init
     with lora_init.fast_lora_init():
         assert LoraLayer.pissa_init is original
+
+
+def test_calibration_patch_does_not_trigger_lazy_module_getattr(monkeypatch):
+    # transformers' lazy module imports submodules (torchvision for aria) on any getattr.
+    import sys
+    import types
+
+    asked = []
+    lazy = types.ModuleType("unsloth_test_lazy_module")
+
+    def __getattr__(name):
+        asked.append(name)
+        raise AttributeError(name)
+
+    lazy.__getattr__ = __getattr__
+    monkeypatch.setitem(sys.modules, lazy.__name__, lazy)
+    names = [name for _, name in lora_init._calibration_functions()]
+    for module, name in lora_init._calibration_functions():
+        fn = getattr(module, name)
+        monkeypatch.setattr(module, name, getattr(fn, "__wrapped__", fn))
+    lora_init.patch_peft_calibration_eager()
+    assert names and not set(asked) & set(names)

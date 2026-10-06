@@ -267,25 +267,33 @@ def fast_lora_init():
 
 # Calibration hooks added after compilation are not guarded on (skip_nnmodule_hook_guards), so compiled
 # modules silently skip them: CorDA then divides by a zero sample count.
-_CALIBRATION_FUNCTIONS = (
-    ("peft.tuners.lora.corda", "preprocess_corda"),
-    ("peft.tuners.lora.eva", "initialize_lora_eva_weights"),
-    ("peft.tuners.lora.loraga", "preprocess_loraga"),
-)
+def _calibration_functions():
+    found = []
+    try:
+        from peft.tuners.lora import corda
+        found.append((corda, "preprocess_corda"))
+    except Exception:
+        pass
+    try:
+        from peft.tuners.lora import eva
+        found.append((eva, "initialize_lora_eva_weights"))
+    except Exception:
+        pass
+    try:
+        from peft.tuners.lora import loraga
+        found.append((loraga, "preprocess_loraga"))
+    except Exception:
+        pass
+    return found
 
 
 def patch_peft_calibration_eager():
     import functools
-    import importlib
     import sys
 
     if not hasattr(torch.compiler, "set_stance"):
         return
-    for module_name, name in _CALIBRATION_FUNCTIONS:
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            continue
+    for module, name in _calibration_functions():
         original = getattr(module, name, None)
         if original is None or getattr(original, "_unsloth_eager", False):
             continue
@@ -300,6 +308,7 @@ def patch_peft_calibration_eager():
                 return __original(*args, **kwargs)
 
         eager._unsloth_eager = True
+        # vars(), not getattr: getattr on lazy modules (transformers) imports submodules.
         for loaded in list(sys.modules.values()):
-            if loaded is not None and getattr(loaded, name, None) is original:
+            if getattr(loaded, "__dict__", {}).get(name) is original:
                 setattr(loaded, name, eager)
