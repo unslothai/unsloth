@@ -720,8 +720,7 @@ class SdCppEngine:
             verbose = verbose,
             extra_args = merged_extra,
         )
-        # A layered run writes layers + 1 numbered files and never ``output_path`` itself; the first one stands for
-        # the run (the caller collects the rest with ``sd_cli_output_paths``).
+        # A layered run writes numbered files, never output_path itself.
         expected = output_path
         if params.qwen_image_layers is not None:
             expected = sd_cli_output_paths(str(output_path), int(params.qwen_image_layers) + 1)[0]

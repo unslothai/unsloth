@@ -1811,14 +1811,11 @@ def _native_output_image(fam: Any, im: Any) -> Any:
 
 
 def _layer_count(fam: Any) -> int:
-    """The number of RGBA layers a layered family (Qwen-Image-Layered) splits its input into; 0 otherwise."""
     return int(getattr(fam, "layer_count", 0) or 0)
 
 
 def _layered_canvas_size(fam: Any, size: tuple[int, int]) -> tuple[int, int]:
-    """The (width, height) a layered family decomposes at: its ``layer_resolution`` square's area at the input's
-    aspect ratio, each side rounded to 32. The same canvas the diffusers engine's ``_layered_canvas`` (the
-    pipeline's ``calculate_dimensions``) picks, kept here because this module never imports the torch engine."""
+    """Copy of diffusion._layered_canvas (the pipeline's calculate_dimensions); this module never imports torch."""
     import math
 
     iw, ih = size
@@ -1830,8 +1827,7 @@ def _layered_canvas_size(fam: Any, size: tuple[int, int]) -> tuple[int, int]:
 
 
 def _keep_layers(items: list, layers: int) -> list:
-    """sd.cpp decodes layers + 1 images per layered generation, the first being its reconstruction of the input. The
-    diffusers pipeline drops that frame ("the origin input") and returns the layers alone, so do the same."""
+    """Drop sd.cpp's input reconstruction (first of each layers + 1 group), as the diffusers pipeline does."""
     if not layers:
         return list(items)
     per = layers + 1
@@ -1881,9 +1877,7 @@ def _native_condition_images(
 
     images = decode_condition_images(fam, init_image, reference_images, localized_edit)
     if source_sized and _layer_count(fam):
-        # A layered family decomposes at its own canvas, whatever the source's size: resize the source to it, as the
-        # layered pipeline does before encoding.
-        # The diffusers engine snaps the source to the 16 px grid before the pipeline picks its canvas; same here.
+        # Canvas from the 16 px snapped source, as the diffusers engine picks it.
         sw, sh = images[0].size
         snapped = (max(16, int(round(sw / 16)) * 16), max(16, int(round(sh / 16)) * 16))
         width, height = _layered_canvas_size(fam, snapped)
@@ -4094,8 +4088,7 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         total_timeout = max(deadline - time.monotonic(), 1.0),
                     )
-                # All-or-nothing per chunk: fail rather than silently drop images from the batch. A layered
-                # generation decodes layers + 1 images.
+                # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
                 expected = count * ((layers + 1) if layers else 1)
                 if not cancel.is_set() and len(blobs) != expected:
                     raise RuntimeError(
@@ -4105,8 +4098,7 @@ class SdCppDiffusionBackend:
                 images.extend(
                     _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in kept
                 )
-                # sd.cpp advances the seed per image within a job, so report chunk_seed+i; every layer of one
-                # decomposition carries its generation's seed.
+                # sd.cpp advances the seed per generation; every layer of one carries that seed.
                 per = len(kept) // count if count else 1
                 seeds.extend(
                     (chunk_seed + i // max(1, per)) & ((1 << 63) - 1) for i in range(len(kept))

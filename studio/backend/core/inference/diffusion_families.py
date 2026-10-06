@@ -408,11 +408,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         condition_image_mode = "RGBA",
         # same DiT as qwen-image
         fp16_incompatible = True,
-        # Native (sd.cpp): the layered model's own 4-channel VAE (the RGB qwen-image VAE cannot decode its layers) and
-        # the Qwen2.5-VL encoder qwen-image uses. sd.cpp never runs the vision tower for this model
-        # (``enable_vision = version != VERSION_QWEN_IMAGE_LAYERED``), so no projector. The VAE is the base repo's
-        # own single file, the one the diffusers route already fetches: sd-cli reads its diffusers tensor names, and
-        # its layers are pixel-identical to the ComfyUI repack's.
+        # Native: its own 4-channel VAE (the RGB one cannot decode layers; pixel-identical to the ComfyUI repack) and
+        # qwen-image's encoder, no projector (sd.cpp: enable_vision = version != VERSION_QWEN_IMAGE_LAYERED).
         sd_cpp_vae = ("Qwen/Qwen-Image-Layered", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = (
             (
@@ -422,7 +419,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         sd_cpp_sampling_method = "euler",
-        # The same schedule as the diffusers route above: ComfyUI's AuraFlow shift, which sd.cpp's flow shift is.
         sd_cpp_flow_shift = 1.0,
         # Layered support landed upstream in master-744 (556f04b); an older reused build has no such literal.
         sd_cpp_arch_marker = "qwen_image_layers",

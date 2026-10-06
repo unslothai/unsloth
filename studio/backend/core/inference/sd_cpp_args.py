@@ -95,8 +95,7 @@ class SdCppGenParams:
     ref_images: tuple[str, ...] = ()
     lora_dir: Optional[str] = None
     lora_apply_mode: Optional[str] = None
-    # Qwen-Image-Layered: the number of layers to split the reference image into. sd.cpp decodes this many plus one
-    # images per generation, the first being its reconstruction of the input. None = unset (sd.cpp's default 3).
+    # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
     qwen_image_layers: Optional[int] = None
 
 
@@ -661,7 +660,6 @@ def build_img_gen_request(
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
-    # Qwen-Image-Layered's layer count, a top-level field of the request (examples/common/common.cpp ``load_if_exists``).
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
     return req
