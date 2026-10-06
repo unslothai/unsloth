@@ -1,25 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 denoisers stored in ComfyUI's layout, for ``diffusion_comfy_quant.load_comfy_quant_transformer``.
-
-ComfyUI ships the H3 DiT under the reference model's names (``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) and
-diffusers has no single-file converter for it, so this module supplies the mapping the loader needs:
-
-- a rename onto ``MiniMaxH3Transformer3DModel``'s names,
-- two row-only reshapes: the fused ``qkv_proj`` splits into ``to_q`` / ``to_k`` / ``to_v`` by contiguous thirds, and
-  ``mlp.fc1`` (``[gate; value]``) becomes ``ff.net.0.proj`` (``[value; gate]``, what diffusers' SwiGLU reads). Rows
-  move whole, so int8 / fp8 codes and their per-row scales stay exact,
-- the pruned (curve-form) adaLN: ``adaln_t_table`` is the curve table Studio's hosted checkpoints call
-  ``time_embedder.table``, and its shape gives the curve rank and grid ``apply_h3_adaln_curve`` needs,
-- the float32 tensors the pruned model keeps (adaLN, patch projections, output heads), as the hosted files do.
-
-Which workflow partition a file holds (fl2va keyframe / text, ref2va reference) is not visible in the tensors, so it
-is read from the file name. Torch-free apart from what the loader passes in.
-"""
+"""MiniMax-H3 denoisers in ComfyUI's layout for ``load_comfy_quant_transformer``: key map (fused qkv split by thirds,
+``mlp.fc1`` ``[gate; value]`` -> SwiGLU ``[value; gate]``, rows move whole so codes and scales stay exact), the pruned
+curve adaLN from ``adaln_t_table``'s shape, and the float32 tensors the pruned model keeps. The partition (fl2va /
+ref2va) is not in the tensors, so it comes from the file name."""
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -40,16 +29,21 @@ _RENAMES = (
     (".attn.k_norm.", ".attn.norm_k."),
     (".attn.out_proj.", ".attn.to_out.0."),
     (".mlp.fc2.", ".ff.net.2."),
+    # dense (non-pruned) files only: the timestep MLP the curve table replaces
+    ("time_embedder.proj_in.", "time_embedder.linear_1."),
+    ("time_embedder.proj_out.", "time_embedder.linear_2."),
 )
 # Kept float32 like the hosted curve-form checkpoints (ComfyUI stores some of them as float16: widening is exact).
 _FP32_PREFIXES = (
     H3_COMFY_TABLE_KEY,
+    "time_embedder.",
     "video_patch_proj.",
     "audio_patch_proj.",
-    "final_layer.adaln_proj.",
     "final_layer.video_out.",
     "final_layer.audio_out.",
 )
+# Only the pruned (curve-form) adaLN projections are float32; a dense file's are bf16 like the block stack.
+_FP32_PRUNED_PREFIXES = ("final_layer.adaln_proj.",)
 _FP32_BLOCK = re.compile(r"^blocks\.\d+\.adaln_proj\.linear\.")
 
 
@@ -60,8 +54,7 @@ def is_h3_comfy_name(filename: Optional[str]) -> bool:
         return False
     if any(token in name for token in ("qwen", "vae", "text_encoder", "controlnet", "lora")):
         return False
-    # The formats Studio runs: int8_convrot, fp8_scaled (ours -INT8 / -FP8) and the dense bf16 / fp16 file; not the
-    # packed w6a8 / nvfp4 / mxfp ones.
+    # Packed w6a8 / nvfp4 / mxfp files have no Studio runtime.
     return any(t in name for t in ("int8", "fp8", "bf16", "fp16")) and not any(
         t in name for t in ("w6a8", "w4a", "nvfp4", "mxfp")
     )
@@ -105,9 +98,11 @@ def h3_comfy_key_map(key: str, shape: Any) -> list:
     return [(name, None)]
 
 
-def h3_comfy_keep_dtype(key: str) -> Optional[Any]:
-    """float32 for the tensors the pruned H3 keeps at full precision, else None (compute dtype)."""
-    if key.startswith(_FP32_PREFIXES) or _FP32_BLOCK.match(key):
+def h3_comfy_keep_dtype(key: str, pruned: bool = True) -> Optional[Any]:
+    """float32 for the tensors H3 keeps at full precision, else None (compute dtype)."""
+    if key.startswith(_FP32_PREFIXES) or (
+        pruned and (key.startswith(_FP32_PRUNED_PREFIXES) or _FP32_BLOCK.match(key))
+    ):
         import torch
         return torch.float32
     return None
@@ -148,7 +143,7 @@ def comfy_layout(path: str) -> dict:
     metadata = h3_comfy_curve_metadata(path)
     return {
         "key_map": h3_comfy_key_map,
-        "keep_dtype": h3_comfy_keep_dtype,
+        "keep_dtype": functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
         "prepare_model": (lambda model: apply_h3_adaln_curve(model, metadata))
         if metadata is not None
         else None,
@@ -199,5 +194,5 @@ def load_h3_comfy_transformer(
             if metadata is not None
             else None
         ),
-        keep_dtype = h3_comfy_keep_dtype,
+        keep_dtype = functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
     )

@@ -261,6 +261,9 @@ def comfy_resident_mib(
     compute_bytes: int = 2,
     keep_key: Any = None,
     exclude_tokens: Any = (),
+    min_features: int = 0,
+    fp8_divisible: int = 0,
+    key_map: Any = None,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
@@ -268,7 +271,9 @@ def comfy_resident_mib(
     nothing reliable here (an fp8 file Studio runs natively is not upcast; an int8 one with no runtime is).
     ``keep_key(key)`` limits the count to the keys the loader reads (a file bundling other components);
     an int8 layer whose name holds one of ``exclude_tokens`` is priced dequantized, as Studio's int8 filter
-    leaves it. None when the header cannot be read. Torch-free."""
+    leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
+    not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
+    file). None when the header cannot be read. Torch-free."""
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
         if scan is None:
@@ -277,15 +282,33 @@ def comfy_resident_mib(
     except Exception:  # noqa: BLE001 -- unknown size: the caller keeps its own estimate
         return None
     header.pop("__metadata__", None)
-    kept = {
-        name + ".weight": (
+
+    def _fits(shape: Any, divisible: int) -> bool:
+        if len(shape or ()) != 2:
+            return False
+        out_f, in_f = (int(d) for d in shape)
+        if min(out_f, in_f) < min_features:
+            return False
+        return not divisible or not (out_f % divisible or in_f % divisible)
+
+    def _excluded(key: str, shape: Any) -> bool:
+        names = [key]
+        if key_map is not None:
+            try:
+                names = [k for k, _rows in key_map(key, tuple(shape or ()))] or names
+            except ValueError:
+                pass
+        return any(t in n for n in names for t in exclude_tokens)
+
+    kept = {}
+    for name, layer in scan.layers.items():
+        shape = (header.get(name + ".weight") or {}).get("shape")
+        kept[name + ".weight"] = (
             layer.format == INT8_TENSORWISE
             and keep_int8
-            and not any(t in name + ".weight" for t in exclude_tokens)
-        )
-        or (layer.format == FP8_E4M3 and keep_fp8)
-        for name, layer in scan.layers.items()
-    }
+            and not _excluded(name + ".weight", shape)
+            and _fits(shape, 0)
+        ) or (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
     total = 0
     for key, entry in header.items():
         if keep_key is not None and not keep_key(key):
@@ -502,23 +525,16 @@ def _decode_rows(
     return segments
 
 
-# Denoiser classes diffusers has no single-file converter for, mapped to the module describing their original
-# (ComfyUI) layout through ``comfy_layout(path) -> {"key_map", "prepare_model", "keep_dtype"}``. Imported on demand, so
-# every caller of ``load_comfy_quant_transformer`` (single file or a hosted ComfyUI-format twin) gets them.
-_ORIGINAL_LAYOUTS = {
-    "HunyuanVideo15Transformer3DModel": "video_hv15_comfy",
-    "MiniMaxH3Transformer3DModel": "video_minimax_h3_comfy",
-}
-
-
 def original_layout(transformer_cls: Any, path: str) -> Optional[dict]:
-    """The key map / prepare / dtype hooks for a class with no diffusers converter, or None."""
-    module = _ORIGINAL_LAYOUTS.get(getattr(transformer_cls, "__name__", ""))
-    if module is None:
+    """The key map / prepare / dtype hooks for a class with no diffusers single-file converter, or None."""
+    name = getattr(transformer_cls, "__name__", "")
+    if name == "HunyuanVideo15Transformer3DModel":
+        from .video_hv15_comfy import comfy_layout
+    elif name == "MiniMaxH3Transformer3DModel":
+        from .video_minimax_h3_comfy import comfy_layout
+    else:
         return None
-    import importlib
-
-    return importlib.import_module(f"{__package__}.{module}").comfy_layout(path)
+    return comfy_layout(path)
 
 
 def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
@@ -771,7 +787,7 @@ def load_comfy_quant_transformer(
 
     ``keep_key(key)`` limits the read to the DiT's keys of a file that bundles other components;
     ``pre_convert(state)`` renames keys (never values) before the family converter runs. A family with no
-    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``_ORIGINAL_LAYOUTS``):
+    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``original_layout``):
     ``[(diffusers key, rows)]`` per file key, ``rows`` None (the whole tensor) or ``[(first row, n rows), ...]``;
     ``prepare_model(model)`` reshapes the freshly built model before the weights load, and ``keep_dtype(key)``
     names a dtype a file tensor keeps instead of the compute dtype. Raises ``ValueError`` for a checkpoint it
@@ -934,8 +950,7 @@ def load_comfy_quant_transformer(
                     )
     else:
         try:
-            # Narrow tags first (full width costs tens of seconds on a large DiT); anything unproven reruns at full
-            # width.
+            # Narrow tags first (full width is slow on a large DiT); anything unproven reruns at full width.
             converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
         except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
             converted = _convert_tagged(None)
@@ -1039,10 +1054,13 @@ def load_comfy_quant_transformer(
             prepare_model(model)
         _install_native(model)
         model.load_state_dict(converted, strict = False, assign = True)
+    loaded = set(converted)
     del converted
-    # from_single_file ends with model.to(torch_dtype): buffers built in __init__ (Wan's float64 rope) follow it
+    # __init__ buffers (Wan's float64 rope) follow the compute dtype; checkpoint buffers keep theirs (H3 curve table)
     for module_name, module in model.named_modules():
         for buffer_name, buffer in list(module._buffers.items()):
+            if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
+                continue
             if buffer is not None and buffer.is_floating_point():
                 want = _dtype_for(f"{module_name}.{buffer_name}")
                 if buffer.dtype != want:

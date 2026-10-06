@@ -49,7 +49,6 @@ def _cos(a, b) -> float:
     ).item()
 
 
-# ------------------------------------------------------------------------------ MiniMax-H3 key map
 def test_h3_key_map_renames_and_splits_rows_only():
     m = h3c.h3_comfy_key_map
     assert m("rope.inv_freq", (16,)) == []
@@ -116,7 +115,6 @@ def test_h3_curve_metadata_comes_from_the_table_shape(tmp_path):
     assert h3c.h3_comfy_curve_metadata(dense) is None
 
 
-# ------------------------------------------------------------------------------ key_map loader path
 class _Attn(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -256,7 +254,6 @@ def test_a_key_map_row_selection_outside_the_tensor_is_refused(h3like_file):
         )
 
 
-# ------------------------------------------------------------------------------ keep_key / pre_convert
 def test_keep_key_reads_only_the_denoiser_and_refuses_quantized_companions(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cq,
@@ -340,7 +337,6 @@ def test_ltx23_pre_convert_strips_the_prefix_and_renames_23_keys():
     assert not ltx23_is_dit_or_connector_key("vocoder.conv.weight")
 
 
-# ------------------------------------------------------------------------------ planning size
 def test_resident_mib_prices_kept_layers_as_stored_and_the_rest_at_bf16(tmp_path):
     rows, cols = 2048, 1024
     q = torch.zeros(rows, cols, dtype = torch.int8)
@@ -383,7 +379,6 @@ def test_resident_mib_prices_kept_layers_as_stored_and_the_rest_at_bf16(tmp_path
     )
 
 
-# ------------------------------------------------------------------------------ video.py policy
 def _plan(resident: bool):
     return types.SimpleNamespace(resident = resident)
 
@@ -424,7 +419,6 @@ def test_video_backends_follow_studio_rules(monkeypatch):
         "int8_backend": "native",
         "fp8_backend": None,
     }
-    # Precision "Off": the user asked for the bf16 DiT
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
@@ -448,7 +442,6 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
         vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
     )  # 1 MiB of codes + scale + config
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
-    # dequantized on load: twice the file
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
     assert n == 2**20
@@ -478,7 +471,6 @@ def test_h3_single_file_validation_accepts_a_comfy_denoiser_and_refuses_the_rest
         assert "single .safetensors checkpoint" not in str(exc)
 
 
-# ------------------------------------------------------------------------------ HunyuanVideo-1.5 key map
 def test_hv15_key_map_renames_splits_and_swaps_rows_only():
     from core.inference.video_hv15_comfy import hv15_comfy_key_map as m
 
@@ -512,7 +504,6 @@ def test_hv15_key_map_renames_splits_and_swaps_rows_only():
     assert m("vision_in.proj.3.weight", (2048, 1152)) == [("image_embedder.linear_2.weight", None)]
     assert m("img_in.proj.weight", (2048, 65, 1, 1, 1)) == [("x_embedder.proj.weight", None)]
     assert m("cond_type_embedding.weight", (3, 2048)) == [("cond_type_embed.weight", None)]
-    # already diffusers-named keys pass through
     assert m("transformer_blocks.0.attn.to_q.weight", (2048, 2048)) == [
         ("transformer_blocks.0.attn.to_q.weight", None)
     ]
@@ -542,7 +533,9 @@ def test_original_layouts_are_found_by_class_name(tmp_path):
     assert cq.original_layout(hv, "x.safetensors")["key_map"] is hv15_comfy_key_map
     path = _save(tmp_path / "h3.safetensors", {"adaln_t_table": torch.zeros(1025, 8)})
     h3 = cq.original_layout(type("MiniMaxH3Transformer3DModel", (), {}), path)
-    assert h3["key_map"] is h3c.h3_comfy_key_map and h3["keep_dtype"] is h3c.h3_comfy_keep_dtype
+    assert h3["key_map"] is h3c.h3_comfy_key_map
+    assert h3["keep_dtype"].func is h3c.h3_comfy_keep_dtype
+    assert h3["keep_dtype"].keywords == {"pruned": True}
     assert callable(h3["prepare_model"])
     assert cq.original_layout(type("WanTransformer3DModel", (), {}), path) is None
 
@@ -565,3 +558,186 @@ def test_a_class_without_a_converter_uses_its_registered_layout(h3like_file, mon
         int8_backend = None,
     )
     assert _cos(model.ff.proj.weight, dense.ff.proj.weight) > 0.9999
+
+
+def test_h3_single_file_task_comes_from_the_file_name_unless_requested():
+    from core.inference.video import _h3_single_file_task
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    ref = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+    assert _h3_single_file_task(h3, "single_file", ref, None) == "ref2va"
+    assert _h3_single_file_task(h3, "single_file", ref, "fl2va") == "fl2va"
+    assert _h3_single_file_task(h3, "pipeline", None, None) is None
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert _h3_single_file_task(wan, "single_file", ref, None) is None
+
+
+def test_h3_single_file_is_refused_on_metal(monkeypatch):
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.video import VideoBackend
+
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: DiffusionDeviceTarget(
+            device = "mps",
+            dtype = None,
+            backend = "mps",
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+            supports_float64 = False,
+        ),
+    )
+    with pytest.raises(ValueError, match = "cannot run on Apple Silicon"):
+        VideoBackend().validate_load_request(
+            "MiniMaxAI/MiniMax-H3",
+            gguf_filename = "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            model_kind = "single_file",
+        )
+
+
+def test_h3_single_file_conditioner_skips_the_generic_precision_gate(monkeypatch):
+    from core.inference.video import assert_video_precision_available
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    monkeypatch.setattr(
+        "core.inference.video.precision_fallback_allowed", lambda: False, raising = False
+    )
+    monkeypatch.setattr(
+        "core.inference.video.te_quant_supported", lambda *_a, **_k: False, raising = False
+    )
+    assert_video_precision_available(
+        fam,
+        model_kind = "single_file",
+        text_encoder_quant = "int8",
+        checkpoint_filename = "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    )
+
+
+def test_resident_mib_prices_layers_the_runtime_filter_skips_at_bf16(tmp_path):
+    big, small, ragged = (2048, 1024), (2048, 64), (2048, 1000)
+    tensors = {}
+    for name, shape, fmt, dtype in (
+        ("i_big", big, "int8_tensorwise", torch.int8),
+        ("i_small", small, "int8_tensorwise", torch.int8),
+        ("f_ragged", ragged, "float8_e4m3fn", torch.float8_e4m3fn),
+    ):
+        tensors[f"{name}.weight"] = torch.zeros(shape, dtype = dtype)
+        tensors[f"{name}.weight_scale"] = torch.ones(shape[0], 1)
+        tensors[f"{name}.comfy_quant"] = _conf(format = fmt)
+    path = _save(tmp_path / "filter.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    kw = dict(keep_int8 = True, keep_fp8 = True)
+    loose = cq.comfy_resident_mib(path, scan, **kw)
+    strict = cq.comfy_resident_mib(path, scan, **kw, min_features = 128, fp8_divisible = 16)
+    extra = 2048 * 64 + 2048 * 1000  # i_small and f_ragged: stored 1 B, priced 2 B
+    assert strict * 1024 * 1024 - loose * 1024 * 1024 >= extra - 1024 * 1024
+    assert strict > loose
+
+
+def test_a_checkpoint_buffer_keeps_its_keep_dtype(h3like_file, tmp_path):
+    path, _dense, tensors = h3like_file
+    table = torch.randn(9, 4, dtype = torch.float64)
+    path = _save(tmp_path / "h3like_table.safetensors", {**tensors, "table": table.half()})
+
+    def add_table(model):
+        model.register_buffer("table", torch.empty(9, 4, dtype = torch.float32))
+
+    model = cq.load_comfy_quant_transformer(
+        _H3Like,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+        family = "minimax-h3",
+        key_map = _h3like_map,
+        prepare_model = add_table,
+        keep_dtype = lambda key: torch.float32
+        if key in ("table",) or key.startswith("head.")
+        else None,
+        int8_backend = None,
+    )
+    assert model.table.dtype is torch.float32
+    assert torch.equal(model.table, table.half().float())
+
+
+def test_offloaded_plan_size_prices_fp8_that_only_runs_resident(monkeypatch, tmp_path):
+    rows = cols = 1024
+    tensors = {
+        "x.weight": torch.zeros(rows, cols, dtype = torch.float8_e4m3fn),
+        "x.weight_scale": torch.ones(()),
+        "x.comfy_quant": _conf(format = "float8_e4m3fn"),
+    }
+    path = _save(tmp_path / "f.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(
+        vid, "comfy_fp8_backend", lambda *a, offload = False, **k: None if offload else "torchao"
+    )
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
+
+
+def test_dense_h3_maps_its_timestep_mlp_and_keeps_adaln_at_compute_dtype():
+    m = h3c.h3_comfy_key_map
+    assert m("time_embedder.proj_in.weight", (5376, 256)) == [
+        ("time_embedder.linear_1.weight", None)
+    ]
+    assert m("time_embedder.proj_out.bias", (2688,)) == [("time_embedder.linear_2.bias", None)]
+    keep = h3c.h3_comfy_keep_dtype
+    assert keep("time_embedder.proj_in.weight", pruned = False) is torch.float32
+    assert keep("blocks.3.adaln_proj.linear.weight", pruned = False) is None
+    assert keep("final_layer.adaln_proj.linear.bias", pruned = False) is None
+    assert keep("blocks.3.adaln_proj.linear.weight") is torch.float32
+    assert keep("final_layer.video_out.weight", pruned = False) is torch.float32
+
+
+def test_h3_single_file_refuses_a_conflicting_partition_before_staging():
+    from core.inference.video import VideoBackend
+    with pytest.raises(ValueError, match = "ref2va partition"):
+        VideoBackend().validate_load_request(
+            "MiniMaxAI/MiniMax-H3",
+            gguf_filename = "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            model_kind = "single_file",
+            h3_task = "fl2va",
+        )
+
+
+def test_resident_mib_excludes_by_the_converted_name(tmp_path):
+    from core.inference.video_hv15_comfy import hv15_comfy_key_map
+
+    shape = (2048, 1024)
+    tensors = {
+        "time_in.mlp.0.weight": torch.zeros(shape, dtype = torch.int8),
+        "time_in.mlp.0.weight_scale": torch.ones(shape[0], 1),
+        "time_in.mlp.0.comfy_quant": _conf(format = "int8_tensorwise"),
+    }
+    path = _save(tmp_path / "hv.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    kw = dict(keep_int8 = True, keep_fp8 = False, exclude_tokens = ("timestep_embed",))
+    plain = cq.comfy_resident_mib(path, scan, **kw)
+    mapped = cq.comfy_resident_mib(path, scan, **kw, key_map = hv15_comfy_key_map)
+    assert (
+        mapped > plain
+    )  # time_embed.timestep_embedder.linear_1 is excluded, so it is priced at bf16
+
+
+def test_offload_only_int8_is_priced_dense_for_a_resident_plan(monkeypatch, tmp_path):
+    rows = cols = 1024
+    tensors = {
+        "x.weight": torch.zeros(rows, cols, dtype = torch.int8),
+        "x.weight_scale": torch.ones(rows, 1),
+        "x.comfy_quant": _conf(format = "int8_tensorwise"),
+    }
+    path = _save(tmp_path / "i.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    monkeypatch.setattr(
+        vid, "comfy_int8_backend", lambda *a, offload = False, **k: "native" if offload else None
+    )
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
