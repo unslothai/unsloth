@@ -20,6 +20,7 @@ import {
   musicBlocker,
   reloadNotice,
   variationsFor,
+  withWaitingEdit,
 } from "../music/music-policy";
 import { parseMusicCapabilities } from "../music/music-types";
 import type {
@@ -48,10 +49,6 @@ const MUSIC_PREVIEW_CAPABILITIES: MusicCapabilities = {
       variations: null,
     },
   ],
-};
-
-const MUSIC_PREVIEW_WITH_EDIT: MusicCapabilities = {
-  modes: [...MUSIC_PREVIEW_CAPABILITIES.modes, { id: "edit" }],
 };
 
 function requestedVariations(
@@ -120,18 +117,13 @@ export function useMusicGeneration({
   const song = useAudioMusicStore((state) => state.song);
   const sfx = useAudioMusicStore((state) => state.sfx);
   const edit = useAudioMusicStore((state) => state.edit);
-  // A clip sent to edit stays in view, with the note to load a model that edits.
   const editWaiting = edit.source !== null;
-  const capabilities = useMemo(
-    () =>
+  const capabilities = useMemo(() => {
+    const loaded =
       parseMusicCapabilities(status?.audio_music) ??
-      (musicLoaded
-        ? null
-        : editWaiting
-          ? MUSIC_PREVIEW_WITH_EDIT
-          : MUSIC_PREVIEW_CAPABILITIES),
-    [status?.audio_music, musicLoaded, editWaiting],
-  );
+      (musicLoaded ? null : MUSIC_PREVIEW_CAPABILITIES);
+    return loaded && withWaitingEdit(loaded, editWaiting);
+  }, [status?.audio_music, musicLoaded, editWaiting]);
   const rule = capabilities
     ? effectiveMusicMode(capabilities, pickedMode)
     : null;

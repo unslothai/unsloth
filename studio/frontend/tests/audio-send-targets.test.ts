@@ -112,9 +112,12 @@ test("the Audio page wires every send, and waits out a running task first", () =
   );
   assert.match(host, /useAudioSeparateStore\.getState\(\)\.setSource\(\{/);
   assert.match(host, /sendClipToMusic\(clip, "edit", name\)/);
-  // With no music model loaded, Music previews Edit too while a sent clip waits there.
+  // Music keeps Edit in view while a sent clip waits there, whatever model is loaded.
   const music = readSrc("features/audio/hooks/use-music-generation.ts");
-  assert.match(music, /editWaiting\s*\? MUSIC_PREVIEW_WITH_EDIT/);
+  assert.match(
+    music,
+    /return loaded && withWaitingEdit\(loaded, editWaiting\);/,
+  );
   assert.match(host, /source: \{ clip_id: voiceClip\.id \}/);
   // The page stays mounted off-route; like its other overlays, the dialog closes with it.
   assert.match(host, /<SaveVoiceDialog\s+open=\{active && savingVoice\}/);
