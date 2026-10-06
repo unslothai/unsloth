@@ -23,7 +23,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # The desktop app hands this process a GUI environment, and a GUI environment has
-# no ~/.bashrc in it. `fix_path_env::fix()` in src-tauri/src/main.rs spawns the
+# no ~/.bashrc in it. `shell_path::fix_path()` in src-tauri spawns the
 # login shell and then takes PATH out of it and nothing else, so an AMD host's
 # HSA_OVERRIDE_GFX_VERSION / ROCM_PATH / USE_CK are dropped on the desktop path
 # and kept on the `unsloth studio` one. #9926 is that difference: identical model
