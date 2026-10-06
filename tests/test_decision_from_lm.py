@@ -188,11 +188,15 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
         )
     # Served logits: the save folds 1 / T into the head and stores the head and the merged backbone
     # in bf16, so the reloaded logits match ours / T up to bf16 rounding, which grows with their scale.
+    # Training is not bit-reproducible on GPU: over 18 B200 runs (with and without bf16 autocast) the
+    # error reached 5.5% of the scale, failing a 3% bound 3 times; T stayed <= 0.87, where a fold
+    # left out or applied twice is off by >= 13%.
     ours, theirs = ours.float().cpu(), theirs.float().cpu()
     mask = ours > -1e3
     expected = ours[mask] / head_temperature
     error = (theirs[mask] - expected).abs().max().item()
-    assert error <= 0.03 * expected.abs().max().item() + 0.05, (error, expected, theirs[mask])
+    scale = expected.abs().max().item()
+    assert error <= 0.08 * scale + 0.05, (error, scale, head_temperature, expected, theirs[mask])
     if base == TINY_QWEN3_5:
         # The base repo has no joint_schema_model.py; Unsloth ships Cloudflare's, so their loader works.
         import importlib.util
