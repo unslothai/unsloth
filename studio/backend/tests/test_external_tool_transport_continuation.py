@@ -107,11 +107,12 @@ def test_every_round_is_fitted_again(monkeypatch):
     client = ExternalProviderClient(
         provider_type = "vllm", base_url = "http://self-hosted.example/v1", api_key = ""
     )
+
+    async def fitter(messages):
+        return messages[1:], 7, None
+
     transport = OAICompatTransport(
-        client,
-        model = "local-model",
-        max_tokens = 64,
-        fit_messages = lambda messages: (messages[1:], 7),
+        client, model = "local-model", max_tokens = 64, message_fitter = fitter
     )
 
     async def run():

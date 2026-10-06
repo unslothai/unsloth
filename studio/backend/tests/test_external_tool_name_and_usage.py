@@ -410,11 +410,13 @@ def test_a_provider_compaction_item_is_handed_to_the_next_round(executed):
     _run(transport)
     assert transport.requests[0]["messages"] == [{"role": "user", "content": "hi"}]
     replayed = transport.requests[1]["messages"]
-    assert [m["role"] for m in replayed] == ["user", "assistant", "assistant", "tool"]
-    assert replayed[1]["extra_content"] == {"openai_responses_compaction": "gAAAA-opaque"}
+    # The item stands in for the history it covers, so only the turn after it is resent.
+    assert [m["role"] for m in replayed] == ["assistant", "assistant", "assistant", "tool"]
+    assert replayed[0]["extra_content"] == {"openai_responses_compaction": "gAAAA-opaque"}
+    assert "hi" not in json.dumps(replayed)
 
 
-def test_a_reprompt_merged_into_a_compacted_message_stays_after_the_item(executed):
+def test_a_reprompt_after_a_compacted_turn_stays_after_the_item(executed):
     narration = "data: " + json.dumps(
         {
             "choices": [{"index": 0, "delta": {"content": "I'll search the web."}}],
@@ -425,5 +427,5 @@ def test_a_reprompt_merged_into_a_compacted_message_stays_after_the_item(execute
     transport.sanitizes_provider_frames = True
     _run(transport, nudge_tool_calls = True)
     replayed = transport.requests[1]["messages"]
-    assert [m["role"] for m in replayed] == ["assistant", "user"]
-    assert "extra_content" in replayed[0] and replayed[1]["content"].startswith("hi\n\n")
+    assert [m["role"] for m in replayed] == ["assistant", "assistant", "user"]
+    assert "extra_content" in replayed[0] and "web_search" in replayed[2]["content"]
