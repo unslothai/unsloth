@@ -1450,6 +1450,10 @@ class ExternalProviderClient:
         # Generous per-byte read timeout: reasoning models pause tens of seconds between bytes, but a dead upstream
         # must eventually error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
+        # Some OpenAI/Azure deployments expose /responses but reject its optional context_management field. The
+        # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
+        # same guaranteed 400 on every provider turn.
+        self._responses_compaction_rejected = False
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -5473,6 +5477,21 @@ class ExternalProviderClient:
         / ``top_k`` are not part of the Responses contract and are dropped here."""
         import json as _json
 
+        # A deployment that rejected context_management once will reject it on every later Studio-tool turn too.
+        # Apply the same local fitting fallback up front and suppress the unsupported field for the rest of this
+        # client's run, rather than deliberately incurring another 400 before each continuation.
+        if (
+            self._responses_compaction_rejected
+            and compaction_threshold is not None
+            and compaction_threshold > 0
+        ):
+            if compaction_fallback is not None:
+                messages, max_tokens, truncation_line = await compaction_fallback(messages)
+                if truncation_line:
+                    yield truncation_line
+            compaction_threshold = None
+            compaction_fallback = None
+
         is_openai_cloud = _is_openai_family_cloud(self.base_url)
         _responses_tool_choice_none = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
@@ -6043,6 +6062,7 @@ class ExternalProviderClient:
                             )
                             and body.pop("context_management", None) is not None
                         ):
+                            self._responses_compaction_rejected = True
                             if compaction_fallback is not None:
                                 (
                                     fallback_messages,

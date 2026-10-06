@@ -480,6 +480,84 @@ def test_a_compaction_rejection_refits_history_before_retry(monkeypatch):
     assert any("context_truncated" in line for line in lines)
 
 
+def test_a_compaction_rejection_is_remembered_across_tool_loop_turns(monkeypatch):
+    bodies: list[dict] = []
+    fallback_calls: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        bodies.append(body)
+        if "context_management" in body:
+            return httpx.Response(
+                400,
+                json = {
+                    "error": {
+                        "message": "context_management is unavailable for this deployment",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        return httpx.Response(
+            200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
+        )
+
+    async def fallback(messages):
+        fallback_calls.append(messages)
+        return messages, 32, None
+
+    turns = [
+        [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "old turn"},
+            {"role": "user", "content": "first provider turn"},
+        ],
+        [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "old turn"},
+            {
+                "role": "assistant",
+                "content": "calling a Studio tool",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+        ],
+    ]
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://myres.openai.azure.com/openai/v1",
+            api_key = "sk-test",
+        )
+        for messages in turns:
+            async for _ in client.stream_chat_completion(
+                messages = messages,
+                model = "gpt-5.5",
+                max_tokens = 32,
+                compaction_threshold = 96_000,
+                compaction_fallback = fallback,
+            ):
+                pass
+        await client.close()
+
+    _drive(run())
+    assert fallback_calls == turns
+    assert len(bodies) == 3
+    assert "context_management" in bodies[0]
+    assert all("context_management" not in body for body in bodies[1:])
+
+
 def test_build_external_messages_passes_the_compaction_item_to_openai():
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
