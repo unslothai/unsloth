@@ -305,9 +305,9 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(monkeypatch, t
 
     real_fill = inference_route._fill_recommended_sampling_openai
 
-    def _capture_after_sampling(route_payload, model_id):
+    def _capture_after_sampling(route_payload, model_id, **kwargs):
         assert route_payload.enable_thinking is thinking_mode
-        real_fill(route_payload, model_id)
+        real_fill(route_payload, model_id, **kwargs)
         raise _StopAfterSampling
 
     monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
@@ -431,6 +431,214 @@ def test_chat_route_normalizes_reasoning_effort_before_generation(
     assert captured["enable_thinking"] is expected_thinking
     assert captured["reasoning_effort"] == expected_effort
     assert captured["preserve_thinking"] is expected_preserve
+
+
+def _qwen_backend(
+    model_identifier,
+    captured,
+    *,
+    supports_reasoning = True,
+    reasoning_default = True,
+):
+    from types import SimpleNamespace
+    def _generate(**kwargs):
+        captured.update(kwargs)
+        yield "done"
+
+    return SimpleNamespace(
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = False,
+        supports_tool_passthrough = False,
+        supports_reasoning = supports_reasoning,
+        reasoning_always_on = False,
+        reasoning_default = reasoning_default,
+        _is_audio = False,
+        model_identifier = model_identifier,
+        context_length = 4096,
+        count_chat_tokens = lambda *a, **k: 2,
+        generate_chat_completion = _generate,
+    )
+
+
+@pytest.mark.parametrize(
+    "model_identifier, supports_reasoning, reasoning_default, request_kwargs, expected",
+    [
+        ("unsloth/Qwen3.6-27B-MTP-GGUF", True, True, {}, (0.6, 0.95, 1.5)),
+        ("unsloth/Qwen3.6-27B-MTP-GGUF", True, True, {"enable_thinking": False}, (0.7, 0.8, 1.5)),
+        ("unsloth/Qwen3.5-4B-GGUF", True, False, {}, (0.7, 0.8, 1.5)),
+        ("unsloth/Qwen3.5-4B-GGUF", True, False, {"reasoning_effort": "high"}, (0.6, 0.95, 1.5)),
+        ("unsloth/Qwen3-8B-GGUF", True, True, {"enable_thinking": False}, (0.7, 0.8, 0.0)),
+        ("unsloth/Qwen3-4B-Instruct-2507-GGUF", False, True, {}, (0.6, 0.95, 0.0)),
+    ],
+)
+def test_chat_route_recommends_the_qwen_sampling_for_the_active_thinking_mode(
+    monkeypatch, model_identifier, supports_reasoning, reasoning_default, request_kwargs, expected
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+    from state.tool_policy import reset_tool_policy
+
+    async def _no_auto_switch(*_args, **_kwargs):
+        return None
+
+    class _Request:
+        state = SimpleNamespace(skip_api_monitor = True)
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope = {}
+
+        async def is_disconnected(self):
+            return False
+
+    captured = {}
+    reset_tool_policy()
+    llama_backend = _qwen_backend(
+        model_identifier,
+        captured,
+        supports_reasoning = supports_reasoning,
+        reasoning_default = reasoning_default,
+    )
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _no_auto_switch)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama_backend)
+
+    payload = ChatCompletionRequest(
+        model = "local-model", messages = [{"role": "user", "content": "hi"}], **request_kwargs
+    )
+    response = asyncio.run(
+        inference_route.openai_chat_completions(payload, _Request(), "test-user")
+    )
+
+    assert response.status_code == 200
+    temperature, top_p, presence_penalty = expected
+    assert captured["temperature"] == temperature
+    assert captured["top_p"] == top_p
+    assert captured["top_k"] == 20
+    assert captured["min_p"] == 0.0
+    assert captured["presence_penalty"] == presence_penalty
+
+
+@pytest.mark.parametrize(
+    "thinking, expected", [(None, (0.6, 0.95)), ({"type": "disabled"}, (0.7, 0.8))]
+)
+def test_messages_route_recommends_the_qwen_sampling_for_the_active_thinking_mode(
+    monkeypatch, thinking, expected
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import AnthropicMessagesRequest
+    from routes import inference as inference_route
+
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    captured = {}
+    llama_backend = _qwen_backend("unsloth/Qwen3.6-35B-A3B-GGUF", captured)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama_backend)
+
+    payload = AnthropicMessagesRequest(
+        max_tokens = 16,
+        messages = [{"role": "user", "content": "hi"}],
+        **({"thinking": thinking} if thinking else {}),
+    )
+    response = asyncio.run(
+        inference_route.anthropic_messages(payload, request = _Request(), current_subject = "t")
+    )
+
+    assert response.status_code == 200
+    assert (captured["temperature"], captured["top_p"]) == expected
+    assert captured["presence_penalty"] == 1.5
+
+
+_QWEN_THINKING_TEMPLATE = (
+    "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+    "<|im_start|>assistant\n{% if enable_thinking is defined and enable_thinking is false %}"
+    "<think>\n\n</think>\n\n{% endif %}"
+)
+_PLAIN_TEMPLATE = (
+    "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+)
+
+
+@pytest.mark.parametrize(
+    "template, request_kwargs, expected",
+    [
+        (_QWEN_THINKING_TEMPLATE, {}, (0.6, 0.95)),
+        (_QWEN_THINKING_TEMPLATE, {"enable_thinking": True}, (0.6, 0.95)),
+        (_QWEN_THINKING_TEMPLATE, {"enable_thinking": False}, (0.7, 0.8)),
+        (_QWEN_THINKING_TEMPLATE, {"enable_thinking": True, "temperature": 0.3}, (0.3, 0.95)),
+        (_PLAIN_TEMPLATE, {"enable_thinking": True}, (0.7, 0.8)),
+    ],
+)
+def test_safetensors_chat_route_recommends_the_qwen_sampling_for_the_active_thinking_mode(
+    monkeypatch, template, request_kwargs, expected
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+    from state.tool_policy import reset_tool_policy
+
+    class _Request:
+        state = SimpleNamespace(skip_api_monitor = True)
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        method = "POST"
+        scope = {}
+        headers = {}
+
+        async def is_disconnected(self):
+            return False
+
+    captured = {}
+
+    class _Backend:
+        active_model_name = "unsloth/Qwen3.6-27B"
+        models = {
+            "unsloth/Qwen3.6-27B": {
+                "chat_template_info": {"template": template},
+                "context_length": 2048,
+            }
+        }
+
+        def generate_chat_response(self, **kwargs):
+            captured.update(kwargs)
+            yield "done"
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+    reset_tool_policy()
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [{"role": "user", "content": "hi"}],
+        stream = False,
+        **request_kwargs,
+    )
+    asyncio.run(inference_route.openai_chat_completions(payload, _Request(), "test-user"))
+
+    assert (captured["temperature"], captured["top_p"]) == expected
+    assert captured["presence_penalty"] == 1.5
 
 
 @pytest.mark.parametrize(

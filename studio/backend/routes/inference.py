@@ -28501,12 +28501,16 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             ),
         )
 
-    _fill_recommended_sampling_openai(payload, upstream.model)
     _normalize_chat_reasoning_controls(payload)
     if not upstream.supports_reasoning:
         payload.enable_thinking = False
     elif payload.enable_thinking is None:
         payload.enable_thinking = payload.reasoning_effort != "none"
+    _fill_recommended_sampling_openai(
+        payload,
+        upstream.model,
+        thinking = payload.enable_thinking if upstream.supports_reasoning else None,
+    )
 
     wants_stream = bool(payload.stream)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
@@ -28896,22 +28900,40 @@ def _normalize_chat_reasoning_controls(payload) -> None:
         payload.preserve_thinking = nested["preserve_thinking"]
 
 
-def _fill_recommended_sampling_openai(payload, model_id) -> None:
+def _sampling_thinking_mode(llama_backend, payload) -> Optional[bool]:
+    if not getattr(llama_backend, "supports_reasoning", False):
+        return None
+    return _think_parsing_expected(llama_backend, payload)
+
+
+def _client_sampling(payload) -> dict:
+    from utils.inference.inference_config import SAMPLING_FIELD_NAMES
+    return {
+        f: (getattr(payload, f) if f in payload.model_fields_set else None)
+        for f in SAMPLING_FIELD_NAMES
+    }
+
+
+def _fill_recommended_sampling_openai(
+    payload,
+    model_id,
+    thinking = None,
+    explicit = None,
+) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
 
     Only the sampling fields the client did NOT explicitly send (tracked via
     ``model_fields_set``) are overwritten, so a client that sets a field stays byte-identical
     unless an operator pins it. Fields with neither a recommendation nor a pin keep their
-    existing (schema-default) value.
+    existing (schema-default) value. A second fill must pass the first fill's ``explicit``:
+    setattr marks every field as set.
     """
-    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+    from utils.inference.inference_config import resolve_effective_sampling
 
-    explicit = {
-        f: (getattr(payload, f) if f in payload.model_fields_set else None)
-        for f in SAMPLING_FIELD_NAMES
-    }
-    effective = resolve_effective_sampling(model_id, explicit)
+    if explicit is None:
+        explicit = _client_sampling(payload)
+    effective = resolve_effective_sampling(model_id, explicit, thinking = thinking)
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -29923,7 +29945,13 @@ async def produce_openai_chat_completions(
         if using_gguf
         else getattr(backend, "active_model_name", None)
     ) or model_name
-    _fill_recommended_sampling_openai(payload, _reco_model_id)
+    _client_sampling_fields = _client_sampling(payload)
+    _fill_recommended_sampling_openai(
+        payload,
+        _reco_model_id,
+        thinking = _sampling_thinking_mode(llama_backend, payload) if using_gguf else None,
+        explicit = _client_sampling_fields,
+    )
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -32339,6 +32367,15 @@ async def produce_openai_chat_completions(
             _sf_template_tools,
             template = _sf_image_tpl,
             prefer_tool_use = False,
+        )
+
+    # The safetensors thinking mode is only known from the template classified above.
+    if _sf_features.get("supports_reasoning"):
+        _fill_recommended_sampling_openai(
+            payload,
+            _reco_model_id,
+            thinking = bool(_sf_parse_think),
+            explicit = _client_sampling_fields,
         )
 
     # A continued turn renders no generation prompt, so nothing is prefilled and the
@@ -37436,7 +37473,11 @@ async def _responses_stream(
 
     # Streaming /v1/responses builds the passthrough body directly (bypassing
     # openai_chat_completions), so apply recommended sampling here too.
-    _fill_recommended_sampling_openai(chat_req, getattr(llama_backend, "model_identifier", None))
+    _fill_recommended_sampling_openai(
+        chat_req,
+        getattr(llama_backend, "model_identifier", None),
+        thinking = _sampling_thinking_mode(llama_backend, chat_req),
+    )
     body = await _build_openai_passthrough_body_async(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
@@ -40387,6 +40428,7 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
+        thinking = _sampling_thinking_mode(llama_backend, payload),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]

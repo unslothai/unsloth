@@ -2413,8 +2413,43 @@ html[data-chat-font] .aui-root {
 	.aui-user-branch-picker {
 		margin-right: calc(3.4px * var(--ui-space-scale, 1));
 	}
+	.aui-branch-chevron-btn,
+	.aui-branch-chevron-btn + * {
+		--aui-chevron-slot: calc(20px * var(--ui-space-scale, 1));
+		--aui-chevron-hit: max(calc(24px * var(--ui-interface-scale, 1)), var(--aui-chevron-slot));
+		--aui-chevron-extra: calc(var(--aui-chevron-hit) - var(--aui-chevron-slot));
+	}
+	/* The count between the chevrons is at least as wide as both extensions, so they cannot meet over it even
+	   in a narrow custom chat font. Wider counts, the usual case, are untouched. */
+	.aui-branch-chevron-btn + :not(.aui-branch-chevron-btn) {
+		/* 1px of slack: two targets that only touch can still trade a sub-pixel once snapped to device pixels. */
+		min-inline-size: calc(var(--aui-chevron-extra) * 2 + 1px);
+		text-align: center;
+	}
 	.aui-branch-chevron-btn {
+		/* The visible button stays the 20px slot, scaled, that the layout was tuned to, so the glyph and its focus
+		   ring sit where they always did. The hit target is at least 24px (what #12173 guarantees every footer
+		   control): an invisible ::before extends it toward the count between the chevrons, never toward the action
+		   button on the outer side, which at small font sizes sits closer than the extra. The floor follows the
+		   browser's Interface Scale, as browser zoom would, but not the UI font size. */
+		position: relative;
+		/* Room above and below for the part of the target past the box. In one row with the action buttons this
+		   sits inside the row's height and moves nothing; when the picker wraps onto its own row, the row grows
+		   to hold it instead of the target reaching across the row gap into the actions above. */
+		margin-block: calc(var(--aui-chevron-extra) / 2);
 		@apply inline-flex size-[calc(20px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
+	}
+	.aui-branch-chevron-btn::before {
+		content: "";
+		position: absolute;
+		inset-block: calc(var(--aui-chevron-extra) / -2);
+		inset-inline: 0;
+	}
+	.aui-branch-chevron-btn:first-child::before {
+		inset-inline-end: calc(var(--aui-chevron-extra) * -1);
+	}
+	.aui-branch-chevron-btn:last-child::before {
+		inset-inline-start: calc(var(--aui-chevron-extra) * -1);
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -4290,10 +4325,16 @@ html[data-chat-font] .aui-root {
 		width: 0 !important;
 	}
 
-	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	/* Chat code is 12px at any width (CODE_FONT_SIZE_RANGE.default); the header steps up when wide. */
 	.aui-thread-root [data-streamdown="code-block"] {
-		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
+	}
+
+	/* The body's text-sm would otherwise override the size above. */
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		font-size: inherit;
+		line-height: inherit;
 	}
 
 	.aui-thread-root [data-streamdown="code-block-header"] {
@@ -4301,10 +4342,6 @@ html[data-chat-font] .aui-root {
 	}
 
 	@container (min-width: 36rem) {
-		.aui-thread-root [data-streamdown="code-block"] {
-			font-size: calc(0.875rem * var(--ui-font-scale, 1));
-		}
-
 		.aui-thread-root [data-streamdown="code-block-header"] {
 			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}

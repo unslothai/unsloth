@@ -105,6 +105,10 @@ class DiffusionFamily:
     # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
     # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
     unified_edit: bool = False
+    # Qwen-Image-Layered: RGBA layers per input (each an output image); 0 = not layered.
+    layer_count: int = 0
+    # The pipeline's ``resolution`` area bucket (640 or 1024).
+    layer_resolution: int = 640
     # Condition images per call, INCLUDING the init image; overflow is refused, never sliced.
     max_condition_images: int = 4
     condition_image_mode: str = "RGB"
@@ -335,6 +339,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
+        # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
+        sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        sd_cpp_text_encoders = (
+            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
+            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
+        ),
     ),
     DiffusionFamily(
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
@@ -358,6 +368,53 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         edit = True,
         # same DiT as qwen-image
         fp16_incompatible = True,
+        # Native: qwen-image's VAE + Qwen2.5-VL, plus its projector (edits read the source through the VLM; a GGUF
+        # encoder has no vision weights). 2511 needs no flag: sd.cpp keys zero_cond_t off __index_timestep_zero__.
+        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                "qwen2vl",
+            ),
+            ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
+        ),
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 3.0,
+    ),
+    DiffusionFamily(
+        # qwen-image's DiT plus use_additional_t_cond / use_layer3d_rope (read from the base config for a GGUF) and an
+        # RGBA VAE. Listed before qwen-image so the name outranks it.
+        name = "qwen-image-layered",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
+        comfy_flow_shift = 1.0,
+        layer_count = 2,
+        layer_resolution = 640,
+        pipeline_class = "QwenImageLayeredPipeline",
+        transformer_class = "QwenImageTransformer2DModel",
+        base_repo = "Qwen/Qwen-Image-Layered",
+        cfg_kwarg = "true_cfg_scale",
+        aliases = ("qwen_image_layered", "qwenimagelayered"),
+        edit = True,
+        max_condition_images = 1,
+        condition_image_mode = "RGBA",
+        # same DiT as qwen-image
+        fp16_incompatible = True,
+        # Native: its own 4-channel VAE (the RGB one cannot decode layers; pixel-identical to the ComfyUI repack) and
+        # qwen-image's encoder, no projector (sd.cpp: enable_vision = version != VERSION_QWEN_IMAGE_LAYERED).
+        sd_cpp_vae = ("Qwen/Qwen-Image-Layered", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                "qwen2vl",
+            ),
+        ),
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 1.0,
+        # Layered support landed upstream in master-744 (556f04b); an older reused build has no such literal.
+        sd_cpp_arch_marker = "qwen_image_layers",
     ),
     DiffusionFamily(
         name = "qwen-image",
@@ -704,8 +761,8 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
     return None
 
 
-# Editing / inpaint checkpoints share an arch keyword but need a different pipeline + input image. "layered" rejects
-# Qwen-Image-Layered, whose transformer expects an extra input.
+# Editing / inpaint checkpoints share an arch keyword but need a different pipeline + input image. "layered" rejects a
+# layered checkpoint of any family without a layered entry of its own; Qwen-Image-Layered has one, so it matches that.
 _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 
 
@@ -820,16 +877,28 @@ def detect_family_by_pipeline_index(path: Optional[str]) -> Optional[DiffusionFa
     matched family cannot run (``...-layered``) is still refused, so the index only adds models
     whose name said nothing, never overrides a name that said no."""
     fam = detect_family_by_pipeline_class(pipeline_class_from_index(path))
-    if fam is None:
-        return None
-    basename = re.split(r"[/\\]+", str(path).lower())[-1]
-    matched_tokens = (fam.name, *fam.aliases)
-    if any(
-        _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
-        for kw in _EDIT_KEYWORDS
-    ):
+    if fam is None or _index_family_ruled_out(fam, path):
         return None
     return fam
+
+
+def _index_family_ruled_out(fam: DiffusionFamily, path: Optional[str]) -> bool:
+    """True when the directory's NAME carries a variant keyword the index's family cannot run."""
+    basename = re.split(r"[/\\]+", str(path).lower())[-1]
+    matched_tokens = (fam.name, *fam.aliases)
+    return any(
+        _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
+        for kw in _EDIT_KEYWORDS
+    )
+
+
+def pipeline_index_contradicts_name(path: Optional[str]) -> bool:
+    """True when a local pipeline's ``model_index.json`` declares a family its directory name rules out (a
+    ``qwen-image-layered`` folder holding a plain ``QwenImagePipeline``). The name-based fallback must not answer
+    for such a directory: the name would pick the variant's family and the loader would then build that pipeline
+    over a checkpoint saved as another. The listing and the loader both refuse it."""
+    fam = detect_family_by_pipeline_class(pipeline_class_from_index(path))
+    return fam is not None and _index_family_ruled_out(fam, path)
 
 
 def detect_family_for_pick(
@@ -855,6 +924,8 @@ def detect_family_for_pick(
         # directory. Remote picks are unaffected: with no local index this is None and the name-based paths below run
         # as before.
         fam = detect_family_by_pipeline_index(repo_id)
+        if fam is None and pipeline_index_contradicts_name(repo_id):
+            return None
     if fam is None:
         fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
@@ -1182,6 +1253,10 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),
     ("qwenimage21", 25, 1.0),
+    # ComfyUI's Image to Layers template: 20 steps, cfg 2.5.
+    ("qwen-image-layered", 20, 2.5),
+    ("qwen_image_layered", 20, 2.5),
+    ("qwenimagelayered", 20, 2.5),
     # 2509 template: 20 / 4; the generic key is the 2511 recipe (the family base).
     ("qwen-image-edit-2509", 20, 4.0),
     ("qwen-image-edit", 40, 4.0),
@@ -1331,6 +1406,8 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "Flux2KleinPipeline": "0.37.0",
     "ZImageInpaintPipeline": "0.37.0",
     "LTX2Pipeline": "0.37.0",
+    # Absent from the 0.36.0 wheel's diffusers/__init__.py, exported by 0.37.0's.
+    "QwenImageLayeredPipeline": "0.37.0",
     "Flux2KleinInpaintPipeline": "0.38.0",
     "Ideogram4Pipeline": "0.39.0",
     # Qwen-Image-2.1 merged upstream on 2026-09-18, four weeks after 0.40.0 was cut, so 0.41.0 is

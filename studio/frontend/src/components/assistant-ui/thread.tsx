@@ -8244,7 +8244,7 @@ const ForkMessageButton: FC = () => {
       disabled={forkDisabled}
       onClick={forkMessage}
     >
-      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.97)]" />
     </TooltipIconButton>
   );
 };
