@@ -1293,6 +1293,12 @@ def test_lean_lora_forward_matches_peft(checkpoint, scaling):
     )
     model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4 * scaling)
     layers = [m for m in model.encoder.modules() if hasattr(m, "_unsloth_peft_forward")]
+    from peft.tuners.lora.layer import Linear
+
+    if Linear.forward.__name__ == "unsloth_forward":
+        # An earlier FastModel load in this process compiled PEFT's forward; the lean one stays out.
+        assert not layers
+        return
     assert layers and all(m.forward.__func__ is decision._lean_lora_forward for m in layers)
     layer = layers[0]
     torch.manual_seed(0)

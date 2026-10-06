@@ -240,6 +240,9 @@ def _lean_lora(encoder) -> None:
     # Plain LoRA (one adapter, no dropout, DoRA or other variant) skips PEFT's per-call checks and casts.
     from peft.tuners.lora.layer import Linear
 
+    # Unsloth's compiler (a FastModel load earlier in this process) already gave PEFT a compiled forward.
+    if Linear.forward.__name__ == "unsloth_forward":
+        return
     for module in encoder.modules():
         if type(module) is not Linear or len(module.lora_A) != 1 or module.lora_variant:
             continue
