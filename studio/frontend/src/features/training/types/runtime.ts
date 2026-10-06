@@ -183,6 +183,7 @@ export interface TrainingViewData {
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
+  datasetName: string | null;
 
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];

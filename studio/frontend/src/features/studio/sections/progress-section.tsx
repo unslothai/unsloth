@@ -19,6 +19,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
@@ -36,12 +41,15 @@ import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
   ChartAverageIcon,
+  Clock01Icon,
   DashboardSpeed01Icon,
   FolderExportIcon,
+  GpuIcon,
   Notebook01Icon,
   RamMemoryIcon,
   StopIcon,
   TemperatureIcon,
+  Timer01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -120,6 +128,8 @@ export function ProgressSection({
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
   const stopRequested = data.isTrainingRunning && stopRequestedLocal;
+  const metricColumns =
+    5 + (data.projectName ? 1 : 0) + (data.datasetName ? 1 : 0);
 
   const pct =
     data.totalSteps > 0
@@ -294,22 +304,25 @@ export function ProgressSection({
                 value: formatNumber(data.currentEpoch, 2),
               })}
             </span>
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium tabular-nums text-muted-foreground">
-              {t("studio.progress.percentComplete", { percent: pct })}
-            </span>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm font-semibold tabular-nums">
                 {t("studio.progress.stepProgress", {
                   current: data.currentStep,
                   total: data.totalSteps || "--",
                 })}
               </span>
-              <span>{pct}%</span>
+              <span className="text-sm font-semibold tabular-nums">{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]" />
+            <Progress
+              value={pct}
+              className={cn(
+                "h-2.5 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]",
+                data.phase === "training" && "[&>div]:animate-none",
+              )}
+            />
           </div>
 
           {!isHistorical && (
@@ -348,15 +361,32 @@ export function ProgressSection({
           <div
             className={cn(
               "grid gap-x-4 gap-y-3 pt-1 sm:grid-cols-2",
-              data.projectName ? "xl:grid-cols-6" : "xl:grid-cols-5",
+              metricColumns === 7
+                ? "xl:grid-cols-7"
+                : metricColumns === 6
+                  ? "xl:grid-cols-6"
+                  : "xl:grid-cols-5",
             )}
           >
-            <MetricStat
-              label={t("studio.progress.loss")}
-              valueClassName="text-2xl font-bold tracking-tight"
-            >
-              {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
-            </MetricStat>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <div className="cursor-help min-w-0">
+                  <MetricStat
+                    label={t("studio.progress.loss")}
+                    valueClassName="text-2xl font-bold tracking-tight"
+                  >
+                    {stoppedLoss != null ? stoppedLoss.toFixed(4) : "--"}
+                  </MetricStat>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] p-3">
+                <p className="font-medium mb-1 text-xs">Training Loss</p>
+                <p className="text-xs/relaxed font-normal text-muted-foreground">
+                  Cross-entropy loss over the current training batch. Lower is better.
+                  A sudden spike may indicate a bad batch, an unstable learning rate, or a data quality issue.
+                </p>
+              </TooltipContent>
+            </Tooltip>
             <MetricStat label={t("studio.progress.lr")}>{stoppedLr != null ? stoppedLr.toExponential(2) : "--"}</MetricStat>
             <MetricStat label={t("studio.progress.gradNorm")}>
               {formatNumber(stoppedGradNorm, 3)}
@@ -366,20 +396,36 @@ export function ProgressSection({
                 {data.projectName}
               </MetricStat>
             )}
-            <MetricStat label={t("studio.progress.model")} valueClassName="truncate">
+            <MetricStat
+              label={t("studio.progress.model")}
+              valueClassName="truncate"
+              title={data.modelName || "--"}
+            >
               {data.modelName || "--"}
             </MetricStat>
+            {data.datasetName && (
+              <MetricStat label="Dataset" valueClassName="truncate" title={data.datasetName}>
+                {data.datasetName}
+              </MetricStat>
+            )}
             <MetricStat label={t("studio.progress.method")}>
               {trainingMethodLabel}
             </MetricStat>
           </div>
 
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span>{t("studio.progress.elapsed", { value: formatDuration(elapsed) })}</span>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <HugeiconsIcon icon={Clock01Icon} className="size-3" />
+              {t("studio.progress.elapsed", { value: formatDuration(elapsed) })}
+            </span>
             {!isHistorical && (
-              <span>{t("studio.progress.eta", { value: formatDuration(eta) })}</span>
+              <span className="flex items-center gap-1">
+                <HugeiconsIcon icon={Timer01Icon} className="size-3" />
+                {t("studio.progress.eta", { value: formatDuration(eta) })}
+              </span>
             )}
-            <span>
+            <span className="flex items-center gap-1">
+              <HugeiconsIcon icon={GpuIcon} className="size-3" />
               {stepsPerSecond == null
                 ? t("studio.progress.noStepsPerSecond")
                 : t("studio.progress.stepsPerSecond", {
@@ -387,7 +433,11 @@ export function ProgressSection({
                 })}
             </span>
             {data.currentNumTokens != null && (
-              <span>{t("studio.progress.tokens", { value: data.currentNumTokens })}</span>
+              <span>
+                {t("studio.progress.tokens", {
+                  value: data.currentNumTokens.toLocaleString(),
+                })}
+              </span>
             )}
           </div>
         </div>
@@ -447,7 +497,8 @@ function LiveGpuPanel({
             </select>
           )}
         </div>
-        <span className="text-ui-11 text-muted-foreground">
+        <span className="flex items-center gap-1.5 text-ui-11 text-muted-foreground">
+          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
           {t("studio.progress.live")}
         </span>
       </div>
@@ -612,6 +663,7 @@ function TrainingHeaderActions({
           className={cn(
             "h-8 rounded-full px-3.5 text-xs shadow-sm",
             stopRequested ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+            !isTrainingRunning && !stopRequested && "hidden",
           )}
           onClick={() => onOpenStopDialog(true)}
           disabled={!isTrainingRunning || stopRequested}
@@ -705,15 +757,18 @@ function MetricStat({
   label,
   children,
   valueClassName,
+  title,
 }: {
   label: string;
   children: ReactNode;
   valueClassName?: string;
+  title?: string;
 }): ReactElement {
   return (
     <div className="min-w-0">
       <p className="text-ui-11 text-muted-foreground">{label}</p>
       <p
+        title={title}
         className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
       >
         {children}

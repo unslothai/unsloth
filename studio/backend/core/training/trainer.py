@@ -352,6 +352,7 @@ class UnslothTrainer:
         self.training_thread = None
         self.training_progress = TrainingProgress()
         self.progress_callbacks = []
+        self.extra_hf_callbacks: list = []
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
@@ -3911,6 +3912,8 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                for _cb in self.extra_hf_callbacks:
+                    self.trainer.add_callback(_cb)
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
@@ -3957,6 +3960,8 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                for _cb in self.extra_hf_callbacks:
+                    self.trainer.add_callback(_cb)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4009,6 +4014,8 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                for _cb in self.extra_hf_callbacks:
+                    self.trainer.add_callback(_cb)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4538,6 +4545,8 @@ class UnslothTrainer:
                     logger.info("Training on full sequences (including prompts)\n")
 
             self.trainer.add_callback(self._create_progress_callback())
+            for _cb in self.extra_hf_callbacks:
+                self.trainer.add_callback(_cb)
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has no
             # terminal; --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)

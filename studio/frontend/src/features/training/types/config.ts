@@ -139,6 +139,7 @@ export interface TrainingConfigState {
   maxPositionEmbeddings: number | null;
   visionImageSize: number | null;
   s3Config: S3Config | null;
+  enableActivationCapture: boolean;
 }
 
 export type AdvancedSettingsBaseline = Partial<
@@ -255,6 +256,7 @@ export interface TrainingConfigActions {
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
   setS3Config: (value: S3Config | null) => void;
+  setEnableActivationCapture: (value: boolean) => void;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

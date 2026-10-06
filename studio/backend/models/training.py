@@ -599,6 +599,12 @@ class TrainingStartRequest(BaseModel):
         _resolve_inventory_handle
     )
 
+    # Interpretability parameters
+    enable_activation_capture: bool = Field(
+        False,
+        description = "Capture neuron activation statistics for interpretability visualizations",
+    )
+
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (

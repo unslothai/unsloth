@@ -1416,6 +1416,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        setEnableActivationCapture: (enableActivationCapture) =>
+          setUserEdit({ enableActivationCapture }),
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;

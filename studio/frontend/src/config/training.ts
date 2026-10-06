@@ -177,6 +177,7 @@ export const DEFAULT_HYPERPARAMS = {
   enableTensorboard: false,
   tensorboardDir: "runs",
   logFrequency: 10,
+  enableActivationCapture: false,
   trustRemoteCode: false,
   finetuneVisionLayers: true,
   finetuneLanguageLayers: true,

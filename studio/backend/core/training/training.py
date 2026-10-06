@@ -325,6 +325,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "gpu_ids": values.get("gpu_ids"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
+        "enable_activation_capture": values.get("enable_activation_capture", False),
     }
     for key in ("output_dir", "allow_external_output_dir"):
         if key in values:
