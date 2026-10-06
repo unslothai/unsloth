@@ -28025,22 +28025,37 @@ async def _proxy_to_external_provider(
     _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    _fits_locally = bool(
+    _compaction_fallback = None
+    if (
+        payload.compaction_threshold
+        and _provider_compacts
+        and (provider_type == "openai" or api_type == "responses")
+        and _rolling_context_policy(payload) is not None
+    ):
+
+        async def _compaction_fallback(messages):
+            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                _fit_external_context, messages, payload
+            )
+            truncation_line = None
+            if (
+                truncation
+                and truncation.get("dropped_messages")
+                and not _non_stream_custom_responses
+            ):
+                truncation_line = _context_truncated_sse_chunk(
+                    f"chatcmpl-{uuid.uuid4().hex}", model, truncation
+                ).rstrip("\n")
+            return fitted, fallback_max_tokens, truncation_line
+
+    if (
         payload.compaction_threshold
         and not _provider_compacts
         and _rolling_context_policy(payload) is not None
-    )
-    if _fits_locally:
+    ):
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context, chat_messages, payload
         )
-
-    def _refit_loop_request(messages: list[dict]) -> tuple[list[dict], Optional[int]]:
-        fitted, _, max_tokens = _fit_external_context(messages, payload, saved_transcript = False)
-        return fitted, max_tokens
-
-    if _provider_compacts and payload.compaction_threshold and _rolling_context_policy(payload):
-        client.fit_without_compaction = _refit_loop_request
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
@@ -28077,6 +28092,7 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,

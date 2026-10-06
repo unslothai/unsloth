@@ -17,7 +17,7 @@ import threading
 import time
 import weakref
 import wave
-from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
@@ -57,6 +57,11 @@ logger = structlog.get_logger(__name__)
 
 _MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
 _MAX_CONCATENATED_WAV_SEGMENTS = 1_024
+
+CompactionFallback = Callable[
+    [list[dict[str, Any]]],
+    Awaitable[tuple[list[dict[str, Any]], Optional[int], Optional[str]]],
+]
 
 
 def _merge_concatenated_wav_segments(
@@ -1424,7 +1429,6 @@ class ExternalProviderClient:
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
         # Returns the messages and max_tokens to send when a deployment refuses server-side compaction.
-        self.fit_without_compaction: Optional[Any] = None
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
@@ -1530,6 +1534,7 @@ class ExternalProviderClient:
         stream: bool = True,
         preserve_thinking: Optional[bool] = None,
         thread_id: Optional[str] = None,
+        compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """Yield OpenAI-format SSE lines from the external provider. OpenAI-compatible providers
         forward lines verbatim; for Anthropic the native Messages API SSE is translated.
@@ -1628,6 +1633,7 @@ class ExternalProviderClient:
                 tool_choice,
                 response_format,
                 stream = stream if self.provider_type == "custom" else True,
+                compaction_fallback = compaction_fallback,
             ):
                 yield line
             return
@@ -5442,6 +5448,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
+        compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """Call OpenAI's /v1/responses endpoint and translate its SSE stream back into OpenAI Chat
         Completions chunk format. The Responses API uses a different request shape (``input`` not
@@ -6020,31 +6027,36 @@ class ExternalProviderClient:
                             )
                             and body.pop("context_management", None) is not None
                         ):
-                            # A deployment without compaction (Azure: "compact_threshold is not enabled") still answers.
-                            if self.fit_without_compaction is None:
-                                continue
-                            fitted, fitted_max_tokens = await asyncio.to_thread(
-                                self.fit_without_compaction, messages
-                            )
-                            async for line in self._stream_openai_responses(
-                                fitted,
-                                model,
-                                temperature,
-                                top_p,
-                                fitted_max_tokens,
-                                enable_thinking,
-                                reasoning_effort,
-                                enabled_tools,
-                                enable_prompt_caching,
-                                openai_code_exec_container_id,
-                                None,
-                                tools,
-                                tool_choice,
-                                response_format,
-                                stream = stream,
-                            ):
-                                yield line
-                            return
+                            if compaction_fallback is not None:
+                                (
+                                    fallback_messages,
+                                    fallback_max_tokens,
+                                    truncation_line,
+                                ) = await compaction_fallback(messages)
+                                await response.aclose()
+                                if truncation_line:
+                                    yield truncation_line
+                                async for fallback_line in self._stream_openai_responses(
+                                    messages = fallback_messages,
+                                    model = model,
+                                    temperature = temperature,
+                                    top_p = top_p,
+                                    max_tokens = fallback_max_tokens,
+                                    enable_thinking = enable_thinking,
+                                    reasoning_effort = reasoning_effort,
+                                    enabled_tools = enabled_tools,
+                                    enable_prompt_caching = enable_prompt_caching,
+                                    openai_code_exec_container_id = openai_code_exec_container_id,
+                                    compaction_threshold = None,
+                                    compaction_fallback = None,
+                                    tools = tools,
+                                    tool_choice = tool_choice,
+                                    response_format = response_format,
+                                    stream = stream,
+                                ):
+                                    yield fallback_line
+                                return
+                            continue
                         if expired_container_4xx and not retried:
                             if stream:
                                 yield (

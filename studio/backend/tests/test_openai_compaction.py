@@ -221,8 +221,8 @@ def _stream(
     messages,
     threshold = None,
     base_url = "https://api.openai.com/v1",
-    fit = None,
     enabled_tools = None,
+    compaction_fallback = None,
 ):
     monkeypatch.setattr(
         ep_mod,
@@ -236,7 +236,11 @@ def _stream(
             base_url = base_url,
             api_key = "sk-test",
         )
-        client.fit_without_compaction = fit
+        extra = {}
+        if enabled_tools is not None:
+            extra["enabled_tools"] = enabled_tools
+        if compaction_fallback is not None:
+            extra["compaction_fallback"] = compaction_fallback
         lines = [
             line
             async for line in client.stream_chat_completion(
@@ -246,7 +250,7 @@ def _stream(
                 top_p = 0.95,
                 max_tokens = 32,
                 compaction_threshold = threshold,
-                enabled_tools = enabled_tools,
+                **extra,
             )
         ]
         await client.close()
@@ -318,6 +322,74 @@ def test_a_replayed_compaction_item_replaces_the_history_it_covers(monkeypatch):
     assert captured["body"]["instructions"] == "Be brief."
 
 
+def test_a_replayed_compaction_item_clears_an_earlier_response_reference(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
+        )
+
+    _stream(
+        monkeypatch,
+        handler,
+        enabled_tools = ["image_generation"],
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "image_generation_call",
+                        "id": "image_earlier",
+                        "response_id": "resp_earlier",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "compaction", "encrypted_content": "gAAAA-current"}],
+            },
+            {"role": "user", "content": "edit the current result"},
+        ],
+    )
+    assert "previous_response_id" not in captured["body"]
+    assert "image_earlier" not in json.dumps(captured["body"]["input"])
+
+
+def test_a_replayed_compaction_item_clears_earlier_manual_image_replay(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
+        )
+
+    _stream(
+        monkeypatch,
+        handler,
+        enabled_tools = ["image_generation"],
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "reasoning", "id": "rs_earlier", "summary": []},
+                    {"type": "image_generation_call", "id": "image_earlier"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "compaction", "encrypted_content": "gAAAA-current"}],
+            },
+            {"role": "user", "content": "continue"},
+        ],
+    )
+    serialized = json.dumps(captured["body"]["input"])
+    assert "rs_earlier" not in serialized
+    assert "image_earlier" not in serialized
+
+
 def test_a_deployment_without_compaction_is_retried_without_it(monkeypatch):
     bodies: list = []
 
@@ -352,38 +424,60 @@ def test_a_deployment_without_compaction_is_retried_without_it(monkeypatch):
     assert not any('"error"' in line for line in lines)
 
 
-def test_a_deployment_without_compaction_gets_the_locally_fitted_history(monkeypatch):
-    bodies: list = []
+def test_a_compaction_rejection_refits_history_before_retry(monkeypatch):
+    bodies: list[dict] = []
+    fallback_calls: list[list[dict]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         bodies.append(body)
         if "context_management" in body:
             return httpx.Response(
-                400, json = {"error": {"message": "compact_threshold is not enabled."}}
+                400,
+                json = {
+                    "error": {
+                        "message": "context_management is unavailable for this deployment",
+                        "type": "invalid_request_error",
+                    }
+                },
             )
         return httpx.Response(
             200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
         )
 
-    _stream(
+    async def fallback(messages):
+        fallback_calls.append(messages)
+        fitted = [messages[0], messages[-1]]
+        notice = "data: " + json.dumps(
+            {
+                "id": "chatcmpl-fallback",
+                "object": "chat.completion.chunk",
+                "choices": [],
+                "context_truncated": {"dropped_messages": len(messages) - len(fitted)},
+            }
+        )
+        return fitted, 32, notice
+
+    messages = [
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "old turn"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest turn"},
+    ]
+    lines = _stream(
         monkeypatch,
         handler,
-        messages = [
-            {"role": "user", "content": "turn 1"},
-            {"role": "assistant", "content": "answer 1"},
-            {"role": "user", "content": "turn 2"},
-        ],
+        messages = messages,
         threshold = 96_000,
         base_url = "https://myres.openai.azure.com/openai/v1",
-        fit = lambda messages: (messages[2:], 9),
+        compaction_fallback = fallback,
     )
-    assert "turn 1" in json.dumps(bodies[0]["input"])
+    assert fallback_calls == [messages]
+    assert len(bodies) == 2
     assert "context_management" not in bodies[1]
-    assert "turn 1" not in json.dumps(bodies[1]["input"]) and "turn 2" in json.dumps(
-        bodies[1]["input"]
-    )
-    assert bodies[1]["max_output_tokens"] == 9
+    assert "old turn" not in json.dumps(bodies[1]["input"])
+    assert "latest turn" in json.dumps(bodies[1]["input"])
+    assert any("context_truncated" in line for line in lines)
 
 
 def test_build_external_messages_passes_the_compaction_item_to_openai():
