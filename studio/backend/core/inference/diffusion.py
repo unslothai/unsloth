@@ -3350,6 +3350,16 @@ class DiffusionBackend:
             kwargs["_te_prequant_resolved"] = bool(te_prequant_files)
             if dit_prequant is not None:
                 expected += int(dit_prequant[2])
+            # The pre-cast encoder is downloaded inside load_pipeline, so without its bytes here the bar read 100% /
+            # finalizing for the whole multi-GB pull. A mirrored file is read in place and never lands in the cache.
+            from .diffusion_te_prequant import te_prequant_unmirrored
+
+            te_hub_files = [
+                (repo, name, int(size or 0))
+                for repo, files in te_prequant_files.values()
+                for name, size in te_prequant_unmirrored(repo, files)
+            ]
+            expected += sum(size for _repo, _name, size in te_hub_files)
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it off the staged
             # list: a failed size estimate drops every base file too. A LOCAL base directory has no listing to fail at
             # (model_info raises on a path) and its shards are already there, so it counts as staged on the filesystem
@@ -3431,6 +3441,25 @@ class DiffusionBackend:
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                 )
+            if te_hub_files:
+                # Baselined AFTER the denoiser fetch: both can live in one repo, and a baseline taken before it would
+                # credit the denoiser's bytes to the encoder too. Repo and file are claimed together, since a claimed
+                # repo with no file entry is counted whole, cached sibling encoder included.
+                te_baselines = {
+                    repo: self._cache_bytes(repo) for repo in {r for r, _n, _s in te_hub_files}
+                }
+                with self._load_cancel_lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(
+                                self._loading.asset_repos
+                                + tuple(repo for repo, _n, _s in te_hub_files)
+                            )
+                        )
+                        self._loading.asset_files += tuple(
+                            (repo, name, size, te_baselines[repo])
+                            for repo, name, size in te_hub_files
+                        )
             # Download outside the lock so unload/an eviction can preempt the pull. The carried snapshot is the
             # fallback, never the override: it fires only when the estimate came back empty, since the metadata that
             # fills it is the same call whose failure earned the escape. Without it the load 401s with every byte

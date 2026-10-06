@@ -4878,6 +4878,174 @@ def test_run_load_counts_a_complete_local_base_as_staged(monkeypatch, tmp_path):
     assert dmod._local_base_transformer_present(None) is False
 
 
+_TE_REPO = "unsloth/Qwen-Image-2.1-FP8"
+_TE_FILE = "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"
+
+
+def _stub_te_run_load(
+    monkeypatch,
+    *,
+    base,
+    base_bytes,
+    cache,
+    file_bytes,
+    dit_prequant = None,
+):
+    # _run_load with every network edge stubbed and a hosted pre-cast encoder of 900 bytes planned.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "_resolve_base_repo", lambda *a, **k: base)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_te_prequant_plan_files",
+        staticmethod(lambda *a, **k: {"text_encoder": (_TE_REPO, [(_TE_FILE, 900)])}),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_pipeline_planned_denoiser_scheme", lambda self, *a, **k: None
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dit_prequant_plan_source", lambda self, *a, **k: dit_prequant
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "declared_footprint_shortfall", lambda self, *a, **k: None
+    )
+    monkeypatch.setattr(dmod, "_assert_base_repo_accessible", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *a, **k: base)
+    monkeypatch.setattr(dmod, "assert_flux2_pick_compatible", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_estimate_download_bytes",
+        staticmethod(lambda *a, **k: (base_bytes, ["model_index.json", "vae/x.safetensors"])),
+    )
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: cache.get(repo, 0))
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_file_bytes",
+        staticmethod(lambda repo, f: file_bytes.get((repo, f), 0)),
+    )
+
+
+def _run_te_load(monkeypatch, on_load, **run_kwargs):
+    backend = DiffusionBackend()
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **kw: on_load(self))
+    backend._loading = _LoadingState(repo_id = run_kwargs["repo_id"], base_repo = None)
+    backend._load_token = 7
+    backend._run_load(_load_token = 7, **run_kwargs)
+    return backend
+
+
+def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
+    # load_pipeline downloads the hosted encoder, and the GGUF + base were cached, so the bar used to
+    # read 100% "Loading to GPU" for the whole multi-GB pull. A cached fp8 sibling in the encoder repo
+    # (the pre-int8 default) must not stand in for the int8 file either.
+    cache = {"unsloth/Qwen-Image-2.1-GGUF": 700, "Qwen/Qwen-Image-2.1": 300, _TE_REPO: 950}
+    file_bytes: dict = {}
+    _stub_te_run_load(
+        monkeypatch,
+        base = "Qwen/Qwen-Image-2.1",
+        base_bytes = 1000,
+        cache = cache,
+        file_bytes = file_bytes,
+    )
+    seen = []
+    repo_ids = []
+
+    def on_load(backend):
+        # _run_load turns an exception here into a load error, so record and assert after it returns.
+        seen.append(backend.load_progress())
+        repo_ids.extend(backend.loading_repo_ids())
+        cache[_TE_REPO] = 950 + 400  # 400 bytes in flight as an .incomplete blob
+        seen.append(backend.load_progress())
+        file_bytes[(_TE_REPO, _TE_FILE)] = 900
+        cache[_TE_REPO] = 950 + 900
+        seen.append(backend.load_progress())
+
+    _run_te_load(
+        monkeypatch,
+        on_load,
+        repo_id = "unsloth/Qwen-Image-2.1-GGUF",
+        gguf_filename = "qwen-image-2.1-Q8_0.gguf",
+        model_kind = "gguf",
+    )
+    assert [(p["phase"], p["bytes_downloaded"], p["bytes_total"]) for p in seen] == [
+        ("downloading", 1000, 1900),
+        ("downloading", 1400, 1900),
+        ("finalizing", 1900, 1900),
+    ]
+    assert _TE_REPO in repo_ids  # the delete-cached guard covers the encoder repo too
+
+
+def test_run_load_credits_a_shared_prequant_repo_once(monkeypatch):
+    # unsloth/Qwen-Image-2.1-FP8 hosts both the denoiser checkpoint and the encoder. The denoiser
+    # lands first, so an encoder baseline taken before that fetch would count its bytes twice.
+    dit_file = "Qwen-Image-2.1-INT8.safetensors"
+    cache = {"unsloth/Qwen-Image-2.1": 300}
+    file_bytes: dict = {}
+    _stub_te_run_load(
+        monkeypatch,
+        base = "unsloth/Qwen-Image-2.1",
+        base_bytes = 300,
+        cache = cache,
+        file_bytes = file_bytes,
+        dit_prequant = (_TE_REPO, dit_file, 700),
+    )
+
+    def fetch(self, *a, **k):
+        cache[_TE_REPO] = 700
+        file_bytes[(_TE_REPO, dit_file)] = 700
+
+    monkeypatch.setattr(DiffusionBackend, "_fetch_denoiser_prequant", fetch)
+    seen = []
+    _run_te_load(
+        monkeypatch,
+        lambda backend: seen.append(backend.load_progress()),
+        repo_id = "unsloth/Qwen-Image-2.1",
+        model_kind = "pipeline",
+    )
+    assert (seen[0]["phase"], seen[0]["bytes_downloaded"], seen[0]["bytes_total"]) == (
+        "downloading",
+        1000,
+        1900,
+    )
+
+
+def test_run_load_leaves_a_mirrored_pre_cast_encoder_out_of_the_download(monkeypatch):
+    # A mirrored encoder is read in place and never reaches the HF cache, so counting it would
+    # hold the bar short of 100% for the rest of the load.
+    from core.inference import diffusion_te_prequant
+
+    monkeypatch.setattr(
+        diffusion_te_prequant, "te_prequant_mirror_path", lambda repo, name: "/mirror/" + name
+    )
+    cache = {"unsloth/Qwen-Image-2.1-GGUF": 700, "Qwen/Qwen-Image-2.1": 300}
+    _stub_te_run_load(
+        monkeypatch,
+        base = "Qwen/Qwen-Image-2.1",
+        base_bytes = 1000,
+        cache = cache,
+        file_bytes = {},
+    )
+    seen = []
+
+    def on_load(backend):
+        seen.append(backend.load_progress())
+        seen.append(backend._loading.asset_files)
+
+    _run_te_load(
+        monkeypatch,
+        on_load,
+        repo_id = "unsloth/Qwen-Image-2.1-GGUF",
+        gguf_filename = "qwen-image-2.1-Q8_0.gguf",
+        model_kind = "gguf",
+    )
+    assert (seen[0]["phase"], seen[0]["bytes_total"]) == ("finalizing", 1000)
+    assert seen[1] == ()
+
+
 def test_the_widening_decision_is_taken_on_the_repo_listing(monkeypatch):
     # The widening turns on which repo the fetch resolves to and on whether EVERY transformer shard
     # is cached, and only the base repo's listing answers either. So the estimate defers to a
