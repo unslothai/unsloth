@@ -546,22 +546,31 @@ def comfy_prequant_enabled() -> bool:
     return (os.environ.get(COMFY_PREQUANT_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-def with_comfy_twins(names: Sequence[str]) -> list:
-    """``names`` with each artifact's ComfyUI-format twin right ahead of the artifact's first name, so the one
-    file ComfyUI also loads is the default download, and the containers older builds request stay behind it as
-    the fallback when the repo does not host the twin. Order-preserving, no duplicates."""
+# Schemes whose ComfyUI twin holds Studio's own weights bit for bit (int8 and int8 ConvRot: the same per-row codes
+# and scales), so it can lead the chain. ComfyUI's fp8 layout has one scale per tensor, so an fp8 twin is a second,
+# coarser rounding of Studio's per-row fp8 (weight error 2.6% -> 3.7%, FLUX.2-klein LPIPS 0.12 -> 0.16): it stays
+# BEHIND Studio's own fp8 artifact and is used only where the repo has no such artifact.
+COMFY_TWIN_LEADS = frozenset({"int8"})
+
+
+def with_comfy_twins(names: Sequence[str], *, lead: bool = True) -> list:
+    """``names`` with each artifact's ComfyUI-format twin added. ``lead``: right ahead of the artifact's first name,
+    so the one file ComfyUI also loads is the default download and the containers older builds request stay behind
+    it as the fallback when the repo does not host the twin; otherwise right behind the artifact's last name.
+    Order-preserving, no duplicates."""
+    names = [n for n in names if n]
     out: list = []
-    seen: set = set()
-    for name in names:
-        if not name:
-            continue
+    for index, name in enumerate(names):
         twin = comfy_prequant_filename(name)
-        if twin and twin not in seen and twin not in names:
-            out.append(twin)
-            seen.add(twin)
-        if name not in seen:
+        stem = _artifact_stem(name)
+        if twin and twin not in names and twin not in out:
+            if lead:
+                out.append(twin)
+            elif not any(_artifact_stem(n) == stem for n in names[index + 1 :]):
+                out.extend(n for n in (name, twin) if n not in out)
+                continue
+        if name not in out:
             out.append(name)
-            seen.add(name)
     return out
 
 
@@ -680,14 +689,20 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
-        # An uncached ComfyUI-format twin goes behind a cached, readable container of the SAME artifact (same
-        # weights): a user who already has Studio's own file keeps it rather than downloading the twin.
+        # Whichever container of an artifact is cached is used before an uncached one of the SAME artifact: an
+        # uncached ComfyUI-format twin goes behind a cached, readable Studio container, and a cached twin goes ahead of
+        # uncached ones (an fp8 twin trails its artifact), so nobody downloads a second copy of weights they hold.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
-            if not twins or _cached(comfy):
+            if not twins:
                 continue
             hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            if _cached(comfy):
+                if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
+                    out.remove(comfy)
+                    out.insert(out.index(twins[0]), comfy)
+                continue
             if hit is None:
                 continue
             out.remove(comfy)
@@ -1016,7 +1031,7 @@ def resolve_prequant_source(
             if name and name not in names:
                 names.append(name)
         if comfy_prequant_enabled() and _comfy_prequant_family(fam):
-            names = with_comfy_twins(names)
+            names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         return PrequantSource(
             kind = "repo",
             location = repo_id,

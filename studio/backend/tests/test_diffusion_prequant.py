@@ -166,9 +166,9 @@ def test_resolve_prefers_a_family_declared_filename():
         dataclasses.replace(fam, prequant_repos = (("fp8", "unsloth/Model-FP8"),)), "fp8"
     )
     assert other.candidate_filenames == (
-        "Model-FP8-ComfyUI.safetensors",
         "Model-FP8.safetensors",
         "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
         "transformer_fp8.pt",
     )
 
@@ -2913,26 +2913,28 @@ def _own_names(names):
 
 
 @pytest.mark.parametrize(
-    "repo, family, scheme, env, first",
+    "repo, family, scheme, env, own",
     [
-        ("Tongyi-MAI/Z-Image-Turbo", None, "int8", {}, "Z-Image-Turbo-INT8-ConvRot-ComfyUI.safetensors"),
-        ("Tongyi-MAI/Z-Image-Turbo", None, "fp8", {}, "Z-Image-Turbo-FP8-ComfyUI.safetensors"),
+        ("Tongyi-MAI/Z-Image-Turbo", None, "int8", {}, "Z-Image-Turbo-INT8-ConvRot.safetensors"),
+        ("Tongyi-MAI/Z-Image-Turbo", None, "fp8", {}, "Z-Image-Turbo-FP8.safetensors"),
         (
             "Qwen/Qwen-Image-2.1",
             "qwen-image-2.1",
             "int8",
             {"UNSLOTH_DIFFUSION_INT8_CONVROT": "1"},
-            "Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors",
+            "Qwen-Image-2.1-INT8-ConvRot.safetensors",
         ),
-        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "fp8", {}, "Qwen-Image-2.1-FP8-ComfyUI.safetensors"),
-        ("black-forest-labs/FLUX.2-klein-4B", None, "fp8", {}, "FLUX.2-klein-4B-FP8-ComfyUI.safetensors"),
+        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "int8", {}, "Qwen-Image-2.1-INT8.safetensors"),
+        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "fp8", {}, "Qwen-Image-2.1-FP8.safetensors"),
+        ("black-forest-labs/FLUX.2-klein-4B", None, "fp8", {}, "FLUX.2-klein-4B-FP8.safetensors"),
     ],
 )
-def test_image_families_resolve_the_comfy_twin_first_and_keep_every_old_name(
-    monkeypatch, repo, family, scheme, env, first
+def test_image_families_resolve_the_comfy_twin_and_keep_every_old_name(
+    monkeypatch, repo, family, scheme, env, own
 ):
-    """New builds ask for ``<stem>-ComfyUI.safetensors`` first. Older builds never ask for it, and the chain behind it
-    is exactly what the kill switch (and an older build) resolves, in the same order."""
+    """New builds also ask for ``<stem>-ComfyUI.safetensors``: AHEAD of the artifact for int8 (the twin holds the
+    same codes and scales), BEHIND it for fp8 (ComfyUI's per-tensor fp8 is a coarser rounding). Older builds never
+    ask for it, and the chain without it is exactly what the kill switch (and an older build) resolves."""
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_prequant import COMFY_PREQUANT_ENV, comfy_prequant_filename
 
@@ -2940,16 +2942,21 @@ def test_image_families_resolve_the_comfy_twin_first_and_keep_every_old_name(
         monkeypatch.setenv(k, v)
     fam = detect_family(repo, override = family) if family else detect_family(repo)
     names = resolve_prequant_source(fam, scheme).candidate_filenames
-    assert names[0] == first
+    twin = comfy_prequant_filename(own)
     monkeypatch.setenv(COMFY_PREQUANT_ENV, "0")
     old = resolve_prequant_source(fam, scheme).candidate_filenames
     assert _own_names(names) == old
-    assert old[0] == first.replace("-ComfyUI.safetensors", ".safetensors")
-    # every artifact with a model-name stem gets its twin right ahead of its first container
-    for name in old:
-        twin = comfy_prequant_filename(name)
-        if twin is not None and not name.endswith(".pt"):
-            assert names.index(twin) == names.index(name) - 1
+    assert old[0] == own
+    if scheme == "int8":
+        assert names[0] == twin
+        # every artifact gets its twin right ahead of its first container
+        for name in old:
+            other = comfy_prequant_filename(name)
+            if other is not None and not name.endswith(".pt"):
+                assert names.index(other) == names.index(name) - 1
+    else:
+        stems = [n for n in names if n.startswith(own[: -len(".safetensors")] + ".")]
+        assert names.index(twin) == names.index(stems[-1]) + 1
 
 
 def test_comfy_twin_names():
@@ -2972,6 +2979,12 @@ def test_comfy_twin_names():
         "A-INT8.safetensors",
         "A-INT8.pt",
         "transformer_int8.pt",
+    ]
+    assert with_comfy_twins(["A-FP8.safetensors", "A-FP8.pt", "transformer_fp8.pt"], lead = False) == [
+        "A-FP8.safetensors",
+        "A-FP8.pt",
+        "A-FP8-ComfyUI.safetensors",
+        "transformer_fp8.pt",
     ]
     # a pickle-only chain still gets the twin ahead of it; a declared twin is not duplicated
     assert with_comfy_twins(["A-INT8.pt"]) == ["A-INT8-ComfyUI.safetensors", "A-INT8.pt"]

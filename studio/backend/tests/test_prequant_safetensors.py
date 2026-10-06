@@ -109,8 +109,7 @@ def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
 
     src = pq.usable_prequant_source(fam, "fp8")
     assert src is not None
-    assert src.filename == "Model-FP8-ComfyUI.safetensors"
-    assert src.fallback_filenames[0] == "Model-FP8.safetensors"
+    assert src.filename == "Model-FP8.safetensors"
 
 
 def test_usable_source_still_refused_when_nothing_is_readable(monkeypatch):
@@ -140,10 +139,7 @@ def test_a_cached_safetensors_artifact_is_evidence_enough(monkeypatch):
         pq, "cached_checkpoint_path", lambda source, **kw: "/cache/model-FP8.safetensors"
     )
     src = pq.usable_prequant_source(fam, "fp8")
-    assert src is not None and src.candidate_filenames[:2] == (
-        "model-FP8-ComfyUI.safetensors",
-        "model-FP8.safetensors",
-    )
+    assert src is not None and src.filename == "model-FP8.safetensors"
 
 
 def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypatch):
@@ -152,9 +148,9 @@ def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypa
     fam = _family(prequant_repos = (("fp8", "unsloth/Model-FP8"),))
     src = pq.resolve_prequant_source(fam, "fp8")
     assert src.candidate_filenames == (
-        "Model-FP8-ComfyUI.safetensors",
         "Model-FP8.safetensors",
         "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
         "transformer_fp8.pt",
     )
 
