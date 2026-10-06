@@ -156,8 +156,10 @@ test("the sidebar and the customizer resolve the row the same way", async () => 
     sidebar,
     /sidebarNavRowPinned\(item, sidebarNavAuto, \{ projectsSectionShowing \}\)/,
   );
-  assert.match(sidebar, /\.filter\(\(item\) => !navRowPinned\(item\)\)/);
-  assert.match(sidebar, /\.filter\(\(item\) => navRowPinned\(item\)\)/);
+  assert.match(
+    sidebar,
+    /placeNavRows\(\s*sidebarNav\.map\(\(item\) => \(\{ id: item\.id, pinned: navRowPinned\(item\) \}\)\),/,
+  );
   assert.match(customizer, /checked=\{pinned\}/);
   // And the switch records the decision alongside the new placement.
   assert.match(

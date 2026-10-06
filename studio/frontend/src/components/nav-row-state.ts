@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How a sidebar nav row renders once its pending state is folded in. Its own import-free
-// module so it is testable: app-sidebar.tsx pulls in the whole shell.
+// Where a sidebar nav row goes and how it renders once its pending state is folded in. Its own
+// import-free module so it is testable: app-sidebar.tsx pulls in the whole shell.
 
 export type NavRowState = {
   disabled?: boolean;
@@ -44,5 +44,26 @@ export function resolveNavRowState(row: NavRowState): {
     tooltip: row.tooltip,
     spinner: row.spinner,
     pending: false,
+  };
+}
+
+/**
+ * Split the nav rows between the sidebar and its "More" flyout, keeping their order.
+ *
+ * More needs two or more rows to be worth a click: with exactly one unpinned, the menu and that
+ * row are both dropped. `shown` is a row the current page puts on the sidebar without pinning it,
+ * in its own slot. It leaves More, but the count is taken first, so surfacing it never hides
+ * another row.
+ */
+export function placeNavRows<Id extends string>(
+  rows: readonly { id: Id; pinned: boolean }[],
+  shown: Id | null,
+): { inline: Id[]; overflow: Id[] } {
+  const unpinned = rows.filter((row) => !row.pinned).map((row) => row.id);
+  return {
+    inline: rows
+      .filter((row) => row.pinned || row.id === shown)
+      .map((row) => row.id),
+    overflow: unpinned.length > 1 ? unpinned.filter((id) => id !== shown) : [],
   };
 }
