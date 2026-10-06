@@ -33,6 +33,8 @@ interface BrowserBookmarksState {
   removeBookmark: (id: string) => void;
   setBookmarkIcon: (id: string, icon: string) => void;
   restoreBookmark: (bookmark: Bookmark, index: number) => void;
+  /** Saves many at once (an import), skipping saved addresses; returns how many it added. */
+  importBookmarks: (items: { url: string; title: string; folder: BookmarkFolder; addedAt?: number }[]) => number;
 }
 
 export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
@@ -75,6 +77,25 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
           return { bookmarks: state.bookmarks.map((bookmark) => (bookmark.id === id ? { ...bookmark, icon } : bookmark)) };
         }),
       removeBookmark: (id) => set((state) => ({ bookmarks: state.bookmarks.filter((bookmark) => bookmark.id !== id) })),
+      importBookmarks: (items) => {
+        const saved = new Set(get().bookmarks.map((bookmark) => bookmark.url));
+        const added: Bookmark[] = [];
+        for (const item of items) {
+          if (get().bookmarks.length + added.length >= MAX_BOOKMARKS) break;
+          if (item.url.length > MAX_URL_CHARS || saved.has(item.url)) continue;
+          saved.add(item.url);
+          added.push({
+            id: newId(),
+            url: item.url,
+            title: item.title.trim().slice(0, MAX_TITLE_CHARS),
+            folder: item.folder,
+            addedAt: item.addedAt ?? Date.now(),
+          });
+        }
+        // One write instead of one per bookmark.
+        if (added.length > 0) set((state) => ({ bookmarks: [...state.bookmarks, ...added] }));
+        return added.length;
+      },
       restoreBookmark: (bookmark, index) =>
         set((state) => {
           if (state.bookmarks.some((other) => other.id === bookmark.id || other.url === bookmark.url)) return state;

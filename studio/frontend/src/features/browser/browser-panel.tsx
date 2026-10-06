@@ -100,7 +100,8 @@ import {
   useState,
 } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
-import { OtherSurfaceError, canPrintFrames, canScreenshot, printPage, screenshotPage } from "./capture";
+import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
+import { canScreenshot } from "./screenshot-support";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
@@ -142,7 +143,7 @@ import {
   useBrowserStore,
 } from "./store";
 import { TabView } from "./tab-view";
-import { ZOOM_STEPS, canZoom, stepZoom, zoomTab } from "./zoom";
+import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -983,8 +984,11 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
 function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
-  const zoom = tab?.zoom ?? 1;
-  if (!canZoom(tab) || Math.abs(zoom - 1) < 0.001) return null;
+  const preferred = useBrowserPrefsStore((state) => state.defaultZoom);
+  if (!canZoom(tab)) return null;
+  const zoom = tab.zoom;
+  const resetZoom = homeZoom(tab, preferred);
+  if (Math.abs(zoom - resetZoom) < 0.001) return null;
   const label = t("browser.menu.zoomReset");
   return (
     <Tooltip>
@@ -992,7 +996,7 @@ function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
         <button
           type="button"
           aria-label={label}
-          onClick={() => useBrowserStore.getState().setZoom(tab.id, 1)}
+          onClick={() => useBrowserStore.getState().setZoom(tab.id, resetZoom)}
           className="h-6 shrink-0 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-2 text-ui-12 tabular-nums text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
         >
           {new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(zoom)}
@@ -1059,7 +1063,9 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
   const zoomable = canZoom(tab);
-  const zoom = zoomable ? tab.zoom : 1;
+  const preferred = useBrowserPrefsStore((state) => state.defaultZoom);
+  const resetZoom = zoomable ? homeZoom(tab, preferred) : preferred;
+  const zoom = zoomable ? tab.zoom : resetZoom;
   const setZoom = (next: number) =>
     zoomable && useBrowserStore.getState().setZoom(tab.id, next);
   const percent = new Intl.NumberFormat(locale, {
@@ -1105,8 +1111,8 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
       <button
         type="button"
         aria-label={t("browser.menu.zoomReset")}
-        disabled={!zoomable || zoom === 1}
-        onClick={() => setZoom(1)}
+        disabled={!zoomable || zoom === resetZoom}
+        onClick={() => setZoom(resetZoom)}
         className={cn(step, "rounded-md")}
       >
         <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
@@ -1966,6 +1972,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               tabId={activeTab.id}
               title={activeTab.title}
               url={webAddress(activeTab) ?? ""}
+              page={pageElement}
             />
           ) : null}
         </div>

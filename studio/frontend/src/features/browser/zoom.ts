@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { defaultZoom } from "./prefs-store";
 import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
 
 export function canZoom(tab: BrowserTab | undefined): tab is BrowserTab {
@@ -15,10 +16,15 @@ export function stepZoom(zoom: number, direction: 1 | -1): number {
   return [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? zoom;
 }
 
-/** Zooms a tab's page a step in (1), out (-1), or to 100% (0), apart from the interface's zoom. */
+/** Reset target: 100% for files, the default zoom for web pages. */
+export function homeZoom(tab: BrowserTab, preferred = defaultZoom()): number {
+  return currentEntry(tab).kind === "file" ? 1 : preferred;
+}
+
+/** Zoom a tab's page in (1), out (-1), or back to its default (0), apart from the interface's zoom. */
 export function zoomTab(tabId: string, direction: 1 | -1 | 0): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   if (!canZoom(tab)) return;
-  store.setZoom(tabId, direction === 0 ? 1 : stepZoom(tab.zoom, direction));
+  store.setZoom(tabId, direction === 0 ? homeZoom(tab) : stepZoom(tab.zoom, direction));
 }

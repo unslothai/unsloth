@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { useBrowserPrefsStore } from "./prefs-store";
 
 export type HistoryItem = { id: string; url: string; title: string; visitedAt: number };
 export type DownloadItem = {
@@ -23,6 +24,13 @@ export const MAX_TITLE_CHARS = 200;
 // The icons sites declare, by host: most sites name theirs in the page, not at /favicon.ico.
 const MAX_ICONS = 300;
 const PERSIST_DELAY_MS = 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Visits before this are past the kept period; 0 keeps them all. */
+function retentionCutoff(): number {
+  const days = useBrowserPrefsStore.getState().historyRetentionDays;
+  return days > 0 ? Date.now() - days * DAY_MS : 0;
+}
 
 /** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
 function deferredLocalStorage(): StateStorage {
@@ -69,6 +77,8 @@ interface BrowserHistoryState {
   removeDownload: (id: string) => void;
   clearHistory: () => void;
   clearDownloads: () => void;
+  /** Drops visits past the kept period (Settings > Browser). */
+  pruneHistory: () => void;
 }
 
 export const useBrowserHistoryStore = create<BrowserHistoryState>()(
@@ -87,7 +97,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         }),
       recordVisit: (url, fullTitle) =>
         set((state) => {
-          if (url.length > MAX_URL_CHARS) return state;
+          if (url.length > MAX_URL_CHARS || !useBrowserPrefsStore.getState().saveHistory) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const [latest, ...rest] = state.history;
           // A reload or title update of the same page is one visit.
@@ -95,10 +105,13 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
             return { history: [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest] };
           }
           const item = { id: newId(), url, title, visitedAt: Date.now() };
-          return { history: [item, ...state.history].slice(0, MAX_HISTORY) };
+          const cutoff = retentionCutoff();
+          const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
+          return { history: [item, ...kept].slice(0, MAX_HISTORY) };
         }),
       recordDownload: (item) =>
         set((state) => {
+          if (!useBrowserPrefsStore.getState().saveDownloadHistory) return state;
           // A page picks these: bounded like a visit, keeping the download without an overlong address.
           const entry = {
             ...item,
@@ -115,6 +128,12 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       removeDownload: (id) => set((state) => ({ downloads: state.downloads.filter((item) => item.id !== id) })),
       clearHistory: () => set({ history: [], icons: {} }),
       clearDownloads: () => set({ downloads: [] }),
+      pruneHistory: () =>
+        set((state) => {
+          const cutoff = retentionCutoff();
+          if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return state;
+          return { history: state.history.filter((visit) => visit.visitedAt >= cutoff) };
+        }),
     }),
     {
       // Per account: a write still deferred at a switch lands under the account that made it.
@@ -124,3 +143,9 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
     },
   ),
 );
+
+// Prune at startup (storage loads synchronously) and when retention shortens.
+useBrowserHistoryStore.getState().pruneHistory();
+useBrowserPrefsStore.subscribe((state, previous) => {
+  if (state.historyRetentionDays !== previous.historyRetentionDays) useBrowserHistoryStore.getState().pruneHistory();
+});

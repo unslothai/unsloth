@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { defaultZoom } from "./prefs-store";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -157,7 +158,8 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     loading: false,
     reloadKey: 0,
     openKey,
-    zoom: 1,
+    // Files open fitted; the default zoom is for web pages.
+    zoom: entry.kind === "file" ? 1 : defaultZoom(),
     nativeHistory: null,
     nativeError: null,
     customTitle: null,

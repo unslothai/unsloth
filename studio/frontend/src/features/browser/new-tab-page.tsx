@@ -201,6 +201,8 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const { navigate, openInternal } = useBrowserStore.getState();
   const [page, setPage] = useState(0);
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
+  const showSuggested = useBrowserPrefsStore((state) => state.showSuggestedSites);
+  const showRecents = useBrowserPrefsStore((state) => state.showRecentPages);
   const sites = useMemo(
     () => suggestedSites(history, hidden),
     [history, hidden],
@@ -258,7 +260,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             />
           </div>
         </section>
-        {sites.length > 0 ? (
+        {showSuggested && sites.length > 0 ? (
           <section className="flex flex-col gap-3">
             <SectionTitle>{t("browser.suggested")}</SectionTitle>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -268,7 +270,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             </div>
           </section>
         ) : null}
-        {recents.length > 0 ? (
+        {showRecents && recents.length > 0 ? (
           <section className="flex flex-col gap-3">
             <SectionTitle
               actions={

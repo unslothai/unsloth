@@ -19,6 +19,7 @@ import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
 import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
+import { useBrowserPrefsStore } from "./prefs-store";
 import { zoomTab } from "./zoom";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
@@ -72,7 +73,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           if (message.newTab) {
             store.openUrl(message.url, {
               newTab: true,
-              background: message.background,
+              background: message.background && !useBrowserPrefsStore.getState().switchToNewTabs,
               method: message.method,
               body: message.body,
             });
