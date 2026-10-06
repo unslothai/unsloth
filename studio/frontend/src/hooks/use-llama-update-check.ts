@@ -283,9 +283,11 @@ export function useLlamaUpdateCheck({
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
-      pollTimer.current = setInterval(async () => {
+      const timer = setInterval(async () => {
         const s = await fetchStatus();
-        if (!s) return;
+        // Polls overlap: a "running" answer landing after a later poll saw the job
+        // finish would re-set applying with no timer left to clear it.
+        if (!s || pollTimer.current !== timer) return;
         setStatus(s);
         const presentation = llamaUpdatePresentation(llamaUpdateOffered(s), s.job);
         setApplying(presentation.applying);
@@ -314,6 +316,7 @@ export function useLlamaUpdateCheck({
           onDone?.({ ok: false, error: "update did not complete" });
         }
       }, JOB_POLL_INTERVAL_MS);
+      pollTimer.current = timer;
     },
     [clearPollTimer, notifyReloadIfNeeded],
   );
