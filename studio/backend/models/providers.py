@@ -7,6 +7,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+ProviderApiType = Literal["chat_completions", "responses", "systemone"]
+
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
@@ -51,6 +53,8 @@ class ProviderRegistryEntry(BaseModel):
 class ProviderCreate(BaseModel):
     """Request to create a saved provider configuration."""
 
+    api_type: ProviderApiType = "chat_completions"
+
     provider_type: str = Field(..., description = "Provider type from the registry")
     display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
     base_url: Optional[str] = Field(
@@ -81,6 +85,8 @@ class ProviderCreate(BaseModel):
 
 class ProviderUpdate(BaseModel):
     """Request to update a saved provider configuration."""
+
+    api_type: Optional[ProviderApiType] = None
 
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
@@ -121,6 +127,8 @@ class ProviderCredentialMigration(BaseModel):
 class ProviderResponse(BaseModel):
     """A saved provider configuration (returned by list/get endpoints)."""
 
+    api_type: ProviderApiType = "chat_completions"
+
     id: str = Field(..., description = "Unique provider config ID")
     provider_type: str = Field(..., description = "Provider type (e.g. 'openai')")
     display_name: str = Field(..., description = "User-chosen label")
@@ -154,6 +162,10 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+    capabilities: Optional[list[str]] = Field(
+        None,
+        description = "Per-model capability names (Ollama /api/tags: thinking, tools, vision, ...)",
+    )
 
 
 class ProviderModelReasoningInfo(BaseModel):
@@ -179,6 +191,8 @@ class ModelCatalogResponse(BaseModel):
 class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
 
+    api_type: ProviderApiType = "chat_completions"
+
     provider_id: Optional[str] = Field(
         None, description = "Saved provider config whose stored key may be used"
     )
@@ -195,6 +209,8 @@ class ProviderModelsRequest(BaseModel):
 
 class ProviderTestRequest(BaseModel):
     """Request to test connectivity to an external provider."""
+
+    api_type: ProviderApiType = "chat_completions"
 
     provider_id: Optional[str] = Field(
         None, description = "Saved provider config whose stored key may be used"

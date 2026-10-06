@@ -40,10 +40,12 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
+    alternating_turns,
     build_dac_tts_prompt,
     make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    messages_with_attached_image,
     neutralize_control_markup_in_messages,
     neutralize_tts_prompt_text,
     prompt_opens_reasoning_channel,
@@ -66,15 +68,81 @@ from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
 from io import StringIO
 import structlog
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 
 logger = get_logger(__name__)
+
+
+def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
+    # True is the loaders' default; passing it reads as an explicit request to requantize fp8 checkpoints to NF4.
+    return {} if load_in_4bit else {"load_in_4bit": False}
 
 
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
     if hf_token is False:
         return False
     return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
+
+
+def _exact_model_name_for_load(config: ModelConfig, load_in_4bit: bool) -> Optional[str]:
+    """The repo id to hand the loader verbatim, or None to let Unsloth's mapper choose.
+
+    ``config.path`` when the mapped repo is not on disk and the user's own weights are.
+    The mapped repo's cached spelling when it IS on disk under another case: the mapper
+    emits one lowercased id and huggingface_hub keys the cache directory on the id
+    verbatim, so asking for any other spelling re-downloads it (huggingface_hub#3838).
+    """
+    if config.is_local or config.is_lora or not config.path:
+        return None
+    try:
+        from unsloth.models import loader, loader_utils
+
+        # ModelScope downloads every repo id to its own cache, so the HF cache says nothing here.
+        if loader.USE_MODELSCOPE:
+            return None
+        # Resolve the repo the loader will fetch on this host, after its bitsandbytes fallbacks.
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
+        name = config.path.lower()
+        if name in loader_utils.BAD_MAPPINGS:
+            return None
+        table = (
+            loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
+        )
+        # Avoid fetching the remote mapper for unknown names.
+        if name not in table:
+            return None
+        target = loader_utils.get_model_name(config.path, load_in_4bit = load_in_4bit)
+        if target and not loader.ALLOW_PREQUANTIZED_MODELS:
+            target = loader._strip_unsloth_bnb_4bit_suffix(target)
+    except Exception as e:
+        logger.debug(f"Could not resolve the Unsloth mapping for {config.path}: {e}")
+        return None
+    if not target or target.lower() == name:
+        return None
+    from utils.utils import (
+        active_hf_cache_loadable_snapshot,
+        active_hf_cache_repo_spelling,
+    )
+
+    cached_target = active_hf_cache_repo_spelling(target)
+    if cached_target == target:
+        return None  # on disk under the name the mapper will ask for: nothing to do
+    if cached_target is not None:
+        logger.info(f"Loading cached {cached_target} instead of downloading {target} again")
+        return cached_target
+    snapshot = active_hf_cache_loadable_snapshot(config.path)
+    if snapshot is None:
+        return None
+    try:
+        checkpoint = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(checkpoint, dict) or checkpoint.get("quantization_config") is not None:
+        return None
+    logger.info(f"Loading cached {config.path} as named instead of downloading {target}")
+    return config.path
 
 
 class HarmonyTextStreamer:
@@ -140,7 +208,8 @@ class HarmonyTextStreamer:
 
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-        self._process_incremental(raw)
+        # A trailing U+FFFD may be a character whose bytes are still arriving; end() emits it.
+        self._process_incremental(raw.rstrip("\ufffd"))
 
     def end(self):
         gen_ids = self._token_ids[self._prompt_len :]
@@ -575,6 +644,7 @@ class InferenceBackend:
             repaired,
         )
 
+    @_invalidates_gpu_memory("transformers load")
     def load_model(
         self,
         config: ModelConfig,
@@ -809,15 +879,19 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
+            exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
+            use_exact_model_name = exact_model_name is not None
+            load_path = exact_model_name or config.path
             if config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
-                    model_name = config.path,
+                    model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -859,13 +933,14 @@ class InferenceBackend:
 
             else:
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = config.path,
+                    model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastLanguageModel.for_inference(model)
@@ -899,6 +974,7 @@ class InferenceBackend:
 
             raise Exception(error_msg)
 
+    @_invalidates_gpu_memory("transformers unload")
     def unload_model(self, model_name: str) -> bool:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:
@@ -1919,6 +1995,7 @@ class InferenceBackend:
         repetition_penalty,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
@@ -1936,35 +2013,19 @@ class InferenceBackend:
         processor = model_info.get("processor") or model_info.get("tokenizer")
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        user_text = "Please transcribe this audio."
-        if messages:
-            for msg in reversed(messages):
-                if msg["role"] == "user" and msg.get("content"):
-                    user_text = content_to_text(msg["content"])
-                    break
-        # Not the caption scan above: that one falls back past a media-only turn.
-        last_user = next(
-            (m for m in reversed(messages or []) if m.get("role") == "user"),
-            None,
-        )
-
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # Gemma 3n format — audio goes INTO apply_chat_template
-        audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            named_turn(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "audio", "audio": audio_array},
-                        {"type": "text", "text": user_text},
-                    ],
-                },
-                last_user,
-            ),
-        ]
+        # Gemma 3n format: audio goes INTO apply_chat_template, one item per clip in order.
+        audio_messages = messages_with_attached_image(
+            alternating_turns(messages),
+            system_prompt = system_prompt,
+            fallback_user_text = "Please transcribe this audio.",
+            structured_content = True,
+            image = 0,
+            audio = audio_array,
+            extra_audio = extra_audio_arrays or (),
+        )
 
         # Direct processor render like the vision path, so neutralize here too, with
         # this processor's own profile so another family's marker stays untouched (#7066).
@@ -2096,7 +2157,9 @@ class InferenceBackend:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
         built at model load."""
@@ -2110,13 +2173,23 @@ class InferenceBackend:
             yield "Error: Whisper pipeline not initialized"
             return
 
+        clips = [audio_array, *(extra_audio_arrays or [])]
         try:
-            with self._generation_lock:
-                result = whisper_pipe({"raw": audio_array, "sampling_rate": 16000})
+            for index, clip in enumerate(clips):
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                with self._generation_lock:
+                    self._apply_adapter_state(use_adapter)
+                    try:
+                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
+                    finally:
+                        # Plain requests keep the adapter state, so turn the LoRA back on.
+                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
+                            model_info["model"].base_model.enable_adapter_layers()
 
-            text = result.get("text", "") if isinstance(result, dict) else str(result)
-            if text:
-                yield text
+                text = result.get("text", "") if isinstance(result, dict) else str(result)
+                if text:
+                    yield f"\n\n{text}" if index else text
         except Exception as e:
             logger.error(f"Whisper ASR error: {e}")
             yield f"Error: {str(e)}"
@@ -2476,6 +2549,7 @@ class InferenceBackend:
             if use_adapter is not None:
                 self._apply_adapter_state(use_adapter)
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            self.last_generation_stats = None
 
             if audio_type == "snac":
                 result = self._generate_snac(
@@ -2565,6 +2639,12 @@ class InferenceBackend:
         )
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
+        self._record_generation_stats(
+            prompt_tokens = input_ids.shape[1],
+            completion_tokens = self._generated_token_count(model, generated, input_ids.shape[1]),
+            max_new_tokens = max_new_tokens,
+            ended_on_stop_token = self._ended_on_stop_token(generated, 128258),
+        )
         return self._audio_codec_manager.decode_snac(generated, str(device))
 
     def _generate_csm(
@@ -2619,7 +2699,14 @@ class InferenceBackend:
         )
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
-        new_tokens = generated[:, inputs.input_ids.shape[1] :]
+        prompt_len = inputs.input_ids.shape[1]
+        self._record_generation_stats(
+            prompt_tokens = prompt_len,
+            completion_tokens = self._generated_token_count(model, generated, prompt_len),
+            max_new_tokens = max_new_tokens,
+            ended_on_stop_token = self._ended_on_stop_token(generated, tokenizer.eos_token_id),
+        )
+        new_tokens = generated[:, prompt_len:]
         decoded_text = tokenizer.batch_decode(new_tokens, skip_special_tokens = False)[0]
         return self._audio_codec_manager.decode_bicodec(decoded_text, str(model.device))
 
@@ -2685,6 +2772,16 @@ class InferenceBackend:
                 )
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
+        self._record_generation_stats(
+            prompt_tokens = inputs.input_ids.shape[1],
+            completion_tokens = self._generated_token_count(
+                model, generated, inputs.input_ids.shape[1]
+            ),
+            max_new_tokens = max_new_tokens,
+            ended_on_stop_token = self._ended_on_stop_token(
+                generated, self._generation_stop_token_ids(model, {})
+            ),
+        )
         decoded_text = tokenizer.batch_decode(generated, skip_special_tokens = False)[0]
         return self._audio_codec_manager.decode_dac(decoded_text, str(model.device))
 

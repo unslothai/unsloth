@@ -159,8 +159,17 @@ def marker_backend_was_chosen(marker: Optional[Mapping[str, Any]]) -> bool:
     crash stays repairable, while an update keeps the bundle rather than swapping
     backends behind the user. They part ways on a corrupt value too -- recovery
     keeps its hands off it, an update re-detects.
+
+    ``backend_request_unsatisfied`` is the third parting: the installer now PRESERVES a
+    concrete request that the install could not honour (so a later update can retry it)
+    instead of erasing it to "auto", and the bundle on disk is then the one DETECTION
+    picked. This asks about the installed bundle, so such a marker stays "detected",
+    exactly as it read before the request was preserved. Absent -- every marker written
+    before the field -- means satisfied.
     """
     if not marker:
+        return False
+    if marker.get("backend_request_unsatisfied"):
         return False
     recorded = marker.get("backend_request")
     if isinstance(recorded, str) and recorded.strip():

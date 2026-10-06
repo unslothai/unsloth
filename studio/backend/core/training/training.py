@@ -38,6 +38,7 @@ import traceback
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal, Iterator
@@ -83,6 +84,22 @@ _MAX_TRACKED_START_REQUESTS = 64
 _MAX_START_CANCEL_TOMBSTONES = 1024
 _START_CANCEL_TOMBSTONE_TTL_S = 300.0
 _START_CANCELLED_ERROR_CODE = "training_start_cancelled"
+DEFAULT_TRAINING_OPTIMIZER = "adamw_8bit"
+XPU_SAFE_TRAINING_OPTIMIZER = "adamw_torch"
+XPU_DEVICE_BACKEND = "xpu"
+PAGED_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_8bit"
+ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_32bit"
+# Not a bit-width question: XPU routes optimizer_update_32bit to Triton too
+# (bitsandbytes backends/xpu/ops.py), which asserts on a SYCL toolchain we do not ship.
+XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS = frozenset(
+    (
+        DEFAULT_TRAINING_OPTIMIZER,
+        PAGED_BITSANDBYTES_TRAINING_OPTIMIZER,
+        ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER,
+        PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER,
+    )
+)
 
 _pyplot = None
 _pyplot_failed = False
@@ -198,8 +215,25 @@ def should_use_mlx_training_backend(*, device: Optional[Any] = None) -> bool:
     return is_apple_silicon_training_platform()
 
 
+def normalize_training_optimizer_for_device(optimizer: Any, *, device_backend: str) -> Any:
+    if not isinstance(optimizer, str):
+        return optimizer
+    optimizer_key = optimizer.strip().lower().replace("-", "_")
+    if (
+        device_backend == XPU_DEVICE_BACKEND
+        and optimizer_key in XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS
+    ):
+        return XPU_SAFE_TRAINING_OPTIMIZER
+    return optimizer
+
+
 def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     """Build the normalized worker config shared by Unsloth and the CLI adapter."""
+    device_backend = get_device().value
+    optimizer = normalize_training_optimizer_for_device(
+        values.get("optim", DEFAULT_TRAINING_OPTIMIZER),
+        device_backend = device_backend,
+    )
     config = {
         "model_name": values["model_name"],
         "project_name": values.get("project_name"),
@@ -258,7 +292,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         ),
         "random_seed": _coerce_seed(values.get("random_seed")),
         "packing": values.get("packing", False),
-        "optim": values.get("optim", "adamw_8bit"),
+        "optim": optimizer,
         "lr_scheduler_type": values.get("lr_scheduler_type", "linear"),
         "use_lora": values.get("use_lora", True),
         "lora_r": values.get("lora_r", 16),
@@ -298,7 +332,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
-    config["device_backend"] = get_device().value
+    config["device_backend"] = device_backend
     return config
 
 
@@ -653,6 +687,7 @@ class TrainingProgress:
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
+    session_start_step: int = 0
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
@@ -1051,6 +1086,10 @@ class _MLXTrainerAdapter:
                     self.training_progress.elapsed_seconds,
                 ),
                 eta_seconds = event.get("eta_seconds", self.training_progress.eta_seconds),
+                session_start_step = event.get(
+                    "session_start_step",
+                    self.training_progress.session_start_step,
+                ),
                 grad_norm = event.get("grad_norm", self.training_progress.grad_norm),
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
@@ -1198,8 +1237,10 @@ class TrainingBackend:
         # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
         self._in_model_load: bool = False
+        self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
+        self._stderr_capture = None
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
@@ -1616,6 +1657,7 @@ class TrainingBackend:
             del self._start_requests[request_id]
             overflow -= 1
 
+    @_invalidates_gpu_memory("training start")
     @owned_job()
     def start_training(
         self,
@@ -1723,7 +1765,7 @@ class TrainingBackend:
             lora_rank = config.get("lora_r", 16),
             target_modules = config.get("target_modules"),
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-            optimizer = config.get("optim", "adamw_8bit"),
+            optimizer = config.get("optim", DEFAULT_TRAINING_OPTIMIZER),
         )
 
         defer_auto_selection = False
@@ -1776,7 +1818,10 @@ class TrainingBackend:
             if before_spawn is not None:
                 try:
                     before_spawn()
-                except Exception:
+                except Exception as exc:
+                    # Best effort, except a resident that still holds the GPUs.
+                    if getattr(exc, "blocks_training", False):
+                        raise
                     logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
             if defer_auto_selection:
@@ -1797,16 +1842,19 @@ class TrainingBackend:
                 ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
+                    self._open_worker_stderr_capture()
 
                     process_args, process_kwargs = account_process_spec(
                         "core.training.worker",
                         "run_training_process",
                         cache_env,
-                        {
-                            "event_queue": event_queue,
-                            "stop_queue": stop_queue,
-                            "config": config,
-                        },
+                        self._with_stderr_mirror(
+                            {
+                                "event_queue": event_queue,
+                                "stop_queue": stop_queue,
+                                "config": config,
+                            }
+                        ),
                     )
                     proc = _CTX.Process(
                         target = run_without_native_path_secret,
@@ -1925,6 +1973,7 @@ class TrainingBackend:
             self._last_full_config = config
             self._last_hf_cache_env = cache_env
             self._in_model_load = False
+            self._model_download_repo_id = None
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
 
@@ -1966,6 +2015,7 @@ class TrainingBackend:
                 )
             return True
 
+    @_invalidates_gpu_memory("training stop")
     @job_control
     def stop_training(
         self,
@@ -2567,15 +2617,18 @@ class TrainingBackend:
                     ):
                         event_queue = _CTX.Queue()
                         stop_queue = _CTX.Queue()
+                        self._open_worker_stderr_capture()
                         process_args, process_kwargs = account_process_spec(
                             "core.training.worker",
                             "run_training_process",
                             cache_env,
-                            {
-                                "event_queue": event_queue,
-                                "stop_queue": stop_queue,
-                                "config": config,
-                            },
+                            self._with_stderr_mirror(
+                                {
+                                    "event_queue": event_queue,
+                                    "stop_queue": stop_queue,
+                                    "config": config,
+                                }
+                            ),
                         )
                         new_proc = _CTX.Process(
                             target = run_without_native_path_secret,
@@ -2637,6 +2690,7 @@ class TrainingBackend:
                 )
                 with self._lock:
                     self._in_model_load = False
+                    self._model_download_repo_id = None
                     self._event_queue = event_queue
                     self._stop_queue = stop_queue
                     self._proc = new_proc
@@ -2836,6 +2890,45 @@ class TrainingBackend:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
             logger.exception("Training event pump: failed to handle %s event; skipping", etype)
 
+    def _open_worker_stderr_capture(self) -> None:
+        previous = self._stderr_capture
+        self._stderr_capture = None
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:
+                logger.debug("Could not close the previous training stderr sink", exc_info = True)
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-training-worker-")
+        except Exception as exc:
+            logger.debug("Could not open a training worker stderr mirror: %s", exc)
+
+    def _with_stderr_mirror(self, kwargs: dict) -> dict:
+        capture = self._stderr_capture
+        if capture is None:
+            return kwargs
+        from utils.native_path_leases import STDERR_MIRROR_KWARG
+
+        # Popped by run_without_native_path_secret. It must not reach run_training_process.
+        return {**kwargs, STDERR_MIRROR_KWARG: capture.path}
+
+    def _unexpected_exit_message(self, proc) -> str:
+        from utils.worker_stderr import unexpected_exit_message
+
+        text = ""
+        capture = self._stderr_capture
+        if capture is not None:
+            try:
+                text = capture.text()
+            except Exception:
+                logger.debug("Could not read the training worker stderr sink", exc_info = True)
+        return unexpected_exit_message(
+            getattr(proc, "pid", None),
+            getattr(proc, "exitcode", None),
+            text,
+        )
+
     @job_pump
     def _pump_loop(self) -> None:
         """Background thread: consume subprocess events and update state.
@@ -2891,6 +2984,15 @@ class TrainingBackend:
                     return
 
                 with self._lock:
+                    report_exit = (
+                        self._progress.is_training
+                        and not self._should_stop
+                        and not self._progress.error
+                    )
+                exit_message = self._unexpected_exit_message(proc) if report_exit else None
+                if exit_message:
+                    logger.error("%s", exit_message)
+                with self._lock:
                     if self._progress.is_training:
                         if self._should_stop:
                             self._progress.is_training = False
@@ -2898,7 +3000,9 @@ class TrainingBackend:
                         else:
                             self._progress.is_training = False
                             self._progress.error = (
-                                self._progress.error or "Training process exited unexpectedly"
+                                self._progress.error
+                                or exit_message
+                                or "Training process exited unexpectedly"
                             )
 
                 self._ensure_db_run_created()
@@ -3014,6 +3118,12 @@ class TrainingBackend:
         if etype == "model_load_started":
             with self._lock:
                 self._in_model_load = True
+                self._model_download_repo_id = None
+            return
+        if etype == "model_load_resolved":
+            with self._lock:
+                if self._in_model_load:
+                    self._model_download_repo_id = event["repo_id"]
             return
         if etype == "model_load_completed":
             with self._lock:
@@ -3062,10 +3172,15 @@ class TrainingBackend:
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
                 self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
-                self._progress.elapsed_seconds = event.get("elapsed_seconds")
-                self._progress.eta_seconds = event.get("eta_seconds")
-                self._progress.grad_norm = event.get("grad_norm")
-                self._progress.num_tokens = event.get("num_tokens")
+                self._progress.elapsed_seconds = event.get(
+                    "elapsed_seconds", self._progress.elapsed_seconds
+                )
+                self._progress.eta_seconds = event.get("eta_seconds", self._progress.eta_seconds)
+                self._progress.session_start_step = event.get(
+                    "session_start_step", self._progress.session_start_step
+                )
+                self._progress.grad_norm = event.get("grad_norm", self._progress.grad_norm)
+                self._progress.num_tokens = event.get("num_tokens", self._progress.num_tokens)
                 self._progress.eval_loss = event.get("eval_loss")
                 _peak = event.get("peak_memory_gb")
                 if _peak is not None:

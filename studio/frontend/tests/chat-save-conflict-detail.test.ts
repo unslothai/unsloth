@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 
 type Module = {
   saveChatMessage: (
@@ -47,6 +48,7 @@ function harness(response: ReturnType<typeof jsonResponse>) {
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
+      "./skill-load-event": { skillLoadCardEvent },
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });
@@ -78,6 +80,9 @@ function harness(response: ReturnType<typeof jsonResponse>) {
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },
       "@/features/native-intents/api": { consumeNativePathToken: () => undefined },
+      // loadModel reads the disk on the way in and out: a model the backend has to download
+      // writes to the cache inside that request, passing no download-manager funnel.
+      "@/features/settings/low-disk-check": { checkDiskSpace: () => Promise.resolve() },
       "@/lib/model-lifecycle-events": {},
     },
   );

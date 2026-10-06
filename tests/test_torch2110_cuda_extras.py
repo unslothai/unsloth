@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Regression guard: the CUDA torch2110 / torch212x extras must pin the torch trio to the
+"""Regression guard: the CUDA torch2110 / torch212x / torch2130 / torch2140 extras must pin the torch trio to the
 matching +cuXXX local build (xformers 0.0.35 does not pin torch), else resolution walks
 torch up to a release the xformers wheel was not built for. Parses files only, no network.
 
@@ -41,10 +41,12 @@ REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 AUTO_INSTALL = REPO / "unsloth" / "_auto_install.py"
 _TORCH_TRIO = ("torch", "torchvision", "torchaudio")
-# torchaudio has no 2.12 release, so the 2.12 leaves keep 2.11.0.
+# torchaudio stops at 2.11.0 (stable ABI), so the 2.12+ leaves keep it.
 _TORCH212_TRIO = {
     "torch2120": {"torch": "2.12.0", "torchvision": "0.27.0", "torchaudio": "2.11.0"},
     "torch2121": {"torch": "2.12.1", "torchvision": "0.27.1", "torchaudio": "2.11.0"},
+    "torch2130": {"torch": "2.13.0", "torchvision": "0.28.0", "torchaudio": "2.11.0"},
+    "torch2140": {"torch": "2.14.0", "torchvision": "0.29.0", "torchaudio": "2.11.0"},
 }
 _TORCH212_CUDA = ("cu126", "cu130")
 
@@ -173,6 +175,73 @@ def test_auto_install_rejects_cuda128_on_torch212():
     # cu128 tops out at torch 2.11, so 2.12 there must fail rather than name a missing extra.
     source = AUTO_INSTALL.read_text(encoding = "utf-8")
     assert 'if v >= V(\'2.12.0\') and cuda not in ("12.6", "13.0")' in source
+
+
+def _run_auto_install(torch_version: str, cuda: str, capsys) -> str:
+    import sys
+    import types
+
+    fake = types.ModuleType("torch")
+    fake.__version__ = torch_version
+    fake.version = types.SimpleNamespace(cuda = cuda)
+    fake.cuda = types.SimpleNamespace(get_device_capability = lambda: (9, 0))
+    fake._C = types.SimpleNamespace(_GLIBCXX_USE_CXX11_ABI = True)
+    saved = sys.modules.get("torch")
+    sys.modules["torch"] = fake
+    try:
+        exec(compile(AUTO_INSTALL.read_text(encoding = "utf-8"), str(AUTO_INSTALL), "exec"), {})
+    finally:
+        if saved is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = saved
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "torch_version, series",
+    [
+        ("2.12.0+cu130", "torch2120"),
+        ("2.12.1", "torch2121"),
+        ("2.13.0+cu126", "torch2130"),
+        ("2.14.0+cu130", "torch2140"),
+    ],
+)
+@pytest.mark.parametrize("cuda", ["12.6", "13.0"])
+def test_auto_install_selects_series(torch_version: str, series: str, cuda: str, capsys):
+    out = _run_auto_install(torch_version, cuda, capsys)
+    tag = cuda.replace(".", "")
+    assert f'"unsloth[cu{tag}-{series}] @' in out
+    assert f"--extra-index-url https://download.pytorch.org/whl/cu{tag}" in out
+
+
+@pytest.mark.parametrize(
+    "torch_version, message",
+    [
+        ("2.12.2", "not supported"),
+        ("2.13.1", "not supported"),
+        ("2.14.1", "too new"),
+        ("2.15.0", "too new"),
+    ],
+)
+def test_auto_install_rejects_unpinned_versions(torch_version: str, message: str, capsys):
+    with pytest.raises(RuntimeError, match = message):
+        _run_auto_install(torch_version, "13.0", capsys)
+
+
+@pytest.mark.parametrize(
+    "torch_version",
+    ["2.13.0rc1", "2.13.0a0+git1234", "2.14.0rc2+cu130", "2.13.0+git1234", "2.14.0+cu130.custom"],
+)
+def test_auto_install_rejects_nonstable_torch213_plus(torch_version: str, capsys):
+    with pytest.raises(RuntimeError, match = "pre-release or custom build"):
+        _run_auto_install(torch_version, "13.0", capsys)
+
+
+@pytest.mark.parametrize("torch_version", ["2.13.0", "2.14.0"])
+def test_auto_install_rejects_cuda128_on_torch213_plus(torch_version: str, capsys):
+    with pytest.raises(RuntimeError, match = "requires CUDA 12.6 or 13.0"):
+        _run_auto_install(torch_version, "12.8", capsys)
 
 
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])

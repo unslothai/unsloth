@@ -12,6 +12,8 @@ from typing import Any, Iterable, Optional
 
 from hub.schemas.datasets import (
     DatasetSplitOption,
+    HubDatasetOptionsRequest,
+    HubDatasetOptionsResponse,
     LocalDatasetOptionsRequest,
     LocalDatasetOptionsResponse,
 )
@@ -36,6 +38,7 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
+_HUB_INFO_TIMEOUT_SECONDS = 20.0
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
 _SPLIT_RE = HF_DATASET_SPLIT_NAME_PATTERN
 
@@ -745,3 +748,52 @@ def local_dataset_options(request: LocalDatasetOptionsRequest) -> LocalDatasetOp
 
     splits = _sorted_options(options, repo_id)
     return LocalDatasetOptionsResponse(cache_available = True, splits = splits)
+
+
+def hub_dataset_options(
+    request: HubDatasetOptionsRequest, hf_token = None
+) -> HubDatasetOptionsResponse:
+    """Configs and splits resolved from the repo's files through ``HF_ENDPOINT``, as training
+    resolves them, for when no datasets-server answers (a mirror, ModelScope). Reads no rows."""
+    from datasets import DownloadConfig
+    from datasets.load import dataset_module_factory
+    from fastapi import HTTPException
+    from huggingface_hub import HfApi
+
+    from hub.services.models.account_access import account_hf_token
+    from hub.utils import download_registry
+    from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
+    from hub.utils.hf_errors import hf_error_status, modelscope_missing
+    from hub.utils.hf_tokens import recording_a_request_token_fetch
+
+    hf_token = account_hf_token(hf_token)
+    repo_id = request.dataset_name.strip()
+    if not is_valid_repo_id(repo_id):
+        raise HTTPException(status_code = 400, detail = "Invalid dataset name")
+    refuse_unauthorized_dataset_preview(hf_token, repo_id)
+    try:
+        with recording_a_request_token_fetch(hf_token, repo_id, "dataset"):
+            # Pinned: on "main", datasets asks a datasets-server for exported infos (100 s timeout).
+            sha = (
+                HfApi().dataset_info(repo_id, token = hf_token, timeout = _HUB_INFO_TIMEOUT_SECONDS).sha
+            )
+            module = dataset_module_factory(
+                repo_id, revision = sha, download_config = DownloadConfig(token = hf_token)
+            )
+    except Exception as exc:
+        detail = modelscope_missing(exc) or download_registry.scrub_secrets(
+            str(exc), hf_token = hf_token
+        )
+        status = hf_error_status(exc)
+        if status is None:
+            status = 404 if isinstance(exc, FileNotFoundError) else 400
+        raise HTTPException(status_code = status, detail = detail) from exc
+
+    # Builder configs only: card metadata can name configs with no files, which training rejects.
+    options: set[tuple[str, str]] = set()
+    for config in module.builder_configs_parameters.builder_configs or []:
+        _add_info_options(
+            options,
+            {"config_name": config.name, "splits": [str(s) for s in config.data_files or {}]},
+        )
+    return HubDatasetOptionsResponse(splits = _sorted_options(options, repo_id))

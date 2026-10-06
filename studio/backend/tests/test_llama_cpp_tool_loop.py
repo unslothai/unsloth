@@ -278,6 +278,8 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert payloads[0]["timings_per_token"] is True
     assert samples[0]["prompt_n"] == 900
     assert samples[0]["prompt_per_second"] == 9000
+    assert samples[0]["prompt_progress"]["total"] == 1000
+    assert samples[1]["running_phase"] == "token_generation"
     assert all("prompt_ms" not in sample for sample in samples)
     assert samples[-1]["predicted_per_second"] == 200
 
@@ -2477,7 +2479,7 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
 
-    assert calls == [("web_search", {"query": big_query})]
+    assert calls == [("web_search", {"query": big_query.strip()})]
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     # Empty-args card = provisional open; full-args card = reconciled real start.
     provisional = [e for e in tool_starts if not e.get("arguments")]
@@ -3048,6 +3050,29 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
     assert gated, tool_starts
     assert events.index(provisional[0]) < events.index(gated[0])
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
+    first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    seen: list = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **kwargs: seen.append(kwargs.get("host_access_approved")) or "OK",
+    )
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: verdict)
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    assert seen == ([True] if verdict == "allow" else [])
 
 
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
@@ -4860,7 +4885,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"query":"' + big + '"}}'
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
@@ -4881,7 +4906,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
     assert calls and calls[0][0] == "web_search"
-    assert len(calls[0][1].get("code", "")) > cap
+    assert len(calls[0][1].get("query", "")) > cap
 
 
 def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
