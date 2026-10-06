@@ -24,6 +24,7 @@ import re
 import struct
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
+from utils import host_memory as _host_memory
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import shutil
 import signal
@@ -14303,122 +14304,17 @@ class LlamaCppBackend:
         """Memory this process can still charge to an enforcing cgroup.
 
         ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
-        containers. Walk the process's cgroup plus its ancestors and pair each
-        limit with that same directory's usage; an ancestor slice can be the
-        binding limit and includes sibling usage that a leaf does not see.
-        Supports cgroup v2 and the legacy v1 memory controller. ``None`` means
-        no finite readable limit, so callers retain their host reading.
+        containers. ``utils.host_memory`` walks the process's cgroup plus its
+        ancestors (v2 and legacy v1) and pairs each limit with that directory's
+        usage; it is the one reader every host-RAM sizing site shares. An empty
+        list means no finite readable limit, so callers retain their host reading.
         """
-
-        def _first_line(path: str) -> Optional[str]:
-            try:
-                with open(path, "r", encoding = "utf-8") as f:
-                    return f.readline().strip()
-            except OSError:
-                return None
-
-        def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
-            if not raw or raw == "max":
-                return None
-            try:
-                value = int(raw)
-            except ValueError:
-                return None
-            # cgroup v1 spells unlimited as a near-2^63 sentinel.
-            if value < 0 or (limit and value >= 1 << 60):
-                return None
-            return value
-
-        def _stat_integer(path: str, *keys: str) -> int:
-            """Read the first requested byte counter present in memory.stat."""
-            try:
-                with open(path, "r", encoding = "utf-8") as f:
-                    values = {}
-                    for line in f:
-                        parts = line.split()
-                        if len(parts) == 2 and parts[0] in keys:
-                            value = _integer(parts[1])
-                            if value is not None:
-                                values[parts[0]] = value
-            except OSError:
-                return 0
-            return next((values[key] for key in keys if key in values), 0)
-
-        def _directories(root: str, relative: Optional[str]) -> list[str]:
-            root = os.path.abspath(root)
-            current = os.path.normpath(os.path.join(root, (relative or "/").lstrip("/")))
-            try:
-                if os.path.commonpath((root, current)) != root:
-                    return [root]
-            except ValueError:
-                return [root]
-            out = []
-            while True:
-                out.append(current)
-                if current == root:
-                    return out
-                current = os.path.dirname(current)
-
-        try:
-            with open(_PROC_SELF_CGROUP, "r", encoding = "utf-8") as f:
-                lines = [line.strip() for line in f if line.strip()]
-        except OSError:
-            lines = []
-
-        budgets: list[tuple[int, int]] = []
-        v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
-        for directory in _directories(_CGROUP_ROOT, v2_relative):
-            limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
-            if limit is None:
-                continue
-            used = _integer(_first_line(os.path.join(directory, "memory.current")))
-            if used is not None:
-                # memory.current includes file-backed cache. Inactive file pages
-                # are reclaimable under pressure, so price the launch against the
-                # cgroup working set rather than charging cached GGUF pages twice.
-                used = max(
-                    0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
-                )
-            budgets.append((limit if used is None else limit - used, limit))
-
-        v1_root = os.path.join(_CGROUP_ROOT, "memory")
-        v1_relative = None
-        for line in lines:
-            parts = line.split(":", 2)
-            if len(parts) == 3 and "memory" in parts[1].split(","):
-                v1_relative = parts[2]
-                break
-        for directory in _directories(v1_root, v1_relative):
-            limit = _integer(
-                _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
-            )
-            if limit is None:
-                continue
-            used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
-            if used is not None:
-                # v1 usage is hierarchical when use_hierarchy is enabled, so its
-                # matching counter is total_inactive_file. Fall back to the local
-                # counter for non-hierarchical controllers.
-                used = max(
-                    0,
-                    used
-                    - _stat_integer(
-                        os.path.join(directory, "memory.stat"),
-                        "total_inactive_file",
-                        "inactive_file",
-                    ),
-                )
-            budgets.append((limit if used is None else limit - used, limit))
-
-        return budgets
+        return _host_memory.cgroup_memory_budgets(_CGROUP_ROOT, _PROC_SELF_CGROUP)
 
     @staticmethod
     def _cgroup_available_memory_mib() -> Optional[int]:
         """What this process can still charge, i.e. the tightest REMAINDER."""
-        budgets = LlamaCppBackend._cgroup_memory_budgets()
-        if not budgets:
-            return None
-        return max(min(remaining for remaining, _limit in budgets), 0) // (1024 * 1024)
+        return _host_memory.cgroup_headroom_mib(LlamaCppBackend._cgroup_memory_budgets())
 
     @staticmethod
     def _cgroup_memory_limit_mib() -> Optional[int]:
@@ -14426,10 +14322,7 @@ class LlamaCppBackend:
 
         Not interchangeable with the remainder above, which shrinks as the container
         fills and would price against memory that is merely busy rather than absent."""
-        budgets = LlamaCppBackend._cgroup_memory_budgets()
-        if not budgets:
-            return None
-        return min(limit for _remaining, limit in budgets) // (1024 * 1024)
+        return _host_memory.cgroup_limit_mib(LlamaCppBackend._cgroup_memory_budgets())
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
@@ -14437,25 +14330,9 @@ class LlamaCppBackend:
         neither is readable, capped by this process's cgroup remainder. On a
         unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling:
         the weights load into shared system RAM."""
-        available = None
-        try:
-            import psutil
-            available = int(psutil.virtual_memory().available // (1024 * 1024))
-        except Exception:
-            pass
-        if available is None:
-            try:
-                with open("/proc/meminfo", encoding = "utf-8") as f:
-                    for line in f:
-                        if line.startswith("MemAvailable:"):
-                            available = int(line.split()[1]) // 1024  # kB -> MiB
-                            break
-            except Exception:
-                pass
-        cgroup_available = LlamaCppBackend._cgroup_available_memory_mib()
-        if available is None:
-            return cgroup_available
-        return min(available, cgroup_available) if cgroup_available is not None else available
+        return _host_memory.usable_mib(
+            _host_memory.system_available_mib(), LlamaCppBackend._cgroup_available_memory_mib()
+        )
 
     @staticmethod
     def _total_system_memory_mib() -> Optional[int]:
@@ -14463,19 +14340,7 @@ class LlamaCppBackend:
         readable. The ceiling on what ``MemAvailable`` can ever become, so a preflight that
         runs before the resident model and pipeline are torn down can price against it
         without charging for host memory that is about to come back."""
-        try:
-            import psutil
-            return int(psutil.virtual_memory().total // (1024 * 1024))
-        except Exception:
-            pass
-        try:
-            with open("/proc/meminfo", encoding = "utf-8") as f:
-                for line in f:
-                    if line.startswith("MemTotal:"):
-                        return int(line.split()[1]) // 1024  # kB -> MiB
-        except Exception:
-            pass
-        return None
+        return _host_memory.system_total_mib()
 
     @staticmethod
     def _host_memory_capacity_mib() -> Optional[int]:
@@ -14485,11 +14350,9 @@ class LlamaCppBackend:
         /proc/meminfo does not show. The LIMIT, never the remainder, which shrinks as
         the container fills and would price against memory that is merely busy.
         """
-        total = LlamaCppBackend._total_system_memory_mib()
-        limit = LlamaCppBackend._cgroup_memory_limit_mib()
-        if total is None:
-            return limit
-        return min(total, limit) if limit is not None else total
+        return _host_memory.usable_mib(
+            LlamaCppBackend._total_system_memory_mib(), LlamaCppBackend._cgroup_memory_limit_mib()
+        )
 
     _ARGV_MODEL = frozenset({"-m", "--model"})
     _ARGV_RPC = frozenset({"--rpc"})

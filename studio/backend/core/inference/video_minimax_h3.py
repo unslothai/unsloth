@@ -188,9 +188,25 @@ def h3_process_held_host_bytes() -> int:
 
 
 def h3_host_capacity_bytes() -> int:
-    """What the system can still hand out plus what this process already holds and the render reuses."""
+    """What the system can still hand out plus what this process already holds and the render reuses.
+
+    "Can still hand out" is the usable host RAM: system available capped by the headroom of any
+    enforcing cgroup (``utils.host_memory``), the same reader the pin budget sizes from. Under a
+    container or systemd ``MemoryMax`` the host-wide figure admitted renders the limit then
+    OOM-killed. The sum is capped at the cgroup limit, which is all the process can ever charge."""
     import psutil
-    return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
+    from utils import host_memory
+
+    available = int(psutil.virtual_memory().available)
+    budgets = host_memory.cgroup_memory_budgets()
+    headroom_mib = host_memory.cgroup_headroom_mib(budgets)
+    if headroom_mib is not None:
+        available = min(available, int(headroom_mib) << 20)
+    capacity = available + h3_process_held_host_bytes()
+    limit_mib = host_memory.cgroup_limit_mib(budgets)
+    if limit_mib is not None:
+        capacity = min(capacity, int(limit_mib) << 20)
+    return capacity
 
 
 # Host floor while the int8 conditioner streams too: measured ~66 GB process peak on a Colab G4 (12 / 16 / 24 GB

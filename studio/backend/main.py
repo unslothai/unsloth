@@ -2583,6 +2583,31 @@ def get_system_info(
     )
 
     memory = psutil.virtual_memory()
+    memory_total = memory.total
+    memory_available = memory.available
+    memory_percent = memory.percent
+    # Under a container / systemd MemoryMax the host-wide reading overstates what this process can
+    # use: the picker's RAM tiers compare against available_gb, so publish the cgroup-capped figures
+    # (utils.host_memory, the reader the pin budget and the H3 guard size from). No limit, no change.
+    try:
+        from utils import host_memory
+
+        _budgets = host_memory.cgroup_memory_budgets()
+        _headroom_mib = host_memory.cgroup_headroom_mib(_budgets)
+        _limit_mib = host_memory.cgroup_limit_mib(_budgets)
+        if _limit_mib is not None:
+            memory_total = min(memory_total, _limit_mib * 1024**2)
+        if _headroom_mib is not None:
+            memory_available = min(memory_available, _headroom_mib * 1024**2)
+        if _limit_mib is not None or _headroom_mib is not None:
+            memory_available = min(memory_available, memory_total)
+            memory_percent = (
+                round((memory_total - memory_available) / memory_total * 100, 1)
+                if memory_total
+                else memory_percent
+            )
+    except Exception as e:
+        logger.debug(f"Failed to read the cgroup memory limit: {e}")
 
     # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
     cpu_freq_mhz = cpu_frequency_mhz()
@@ -2636,9 +2661,9 @@ def get_system_info(
             "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
-            "total_gb": round(memory.total / 1024**3, 2),
-            "available_gb": round(memory.available / 1024**3, 2),
-            "percent_used": memory.percent,
+            "total_gb": round(memory_total / 1024**3, 2),
+            "available_gb": round(memory_available / 1024**3, 2),
+            "percent_used": memory_percent,
             "process_used_mb": process_used_mb,
         },
         "disk": {
