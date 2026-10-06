@@ -82,6 +82,7 @@ export function ScaleMenu({
   fitScale,
   onChange,
   className,
+  contentClassName,
   floating = false,
 }: {
   value: MediaZoom;
@@ -89,6 +90,7 @@ export function ScaleMenu({
   fitScale?: number;
   onChange: (value: MediaZoom) => void;
   className?: string;
+  contentClassName?: string;
   floating?: boolean;
 }) {
   const t = useT();
@@ -109,7 +111,7 @@ export function ScaleMenu({
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
+      <DropdownMenuContent align="end" className={cn("w-40", contentClassName)}>
         <DropdownMenuRadioGroup
           value={String(value)}
           onValueChange={(next) => onChange(next === "fit" ? "fit" : Number(next))}

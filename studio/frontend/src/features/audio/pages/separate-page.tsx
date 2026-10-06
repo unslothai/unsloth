@@ -35,6 +35,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
+import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
   separatePresentation,
@@ -271,26 +272,13 @@ export function SeparateFooter({
   );
 }
 
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-async function downloadGroup(group: SeparationGroup) {
-  try {
-    // Each stem is fetched when the zip reaches it, so a long song never holds every stem at once.
-    const files = group.stems.map((clip) => ({
-      name: stemFileName(group.title, stemLabel(clip.role ?? "")),
-      blob: () => fetchAudioBlob(clip.url),
-    }));
-    saveBlob(await zipStems(files), stemZipName(group.title));
-  } catch {
-    toast.error("Could not download the stems.");
-  }
+function downloadGroup(group: SeparationGroup) {
+  // Each stem is fetched when the zip reaches it, so a long song never holds every stem at once.
+  const files = group.stems.map((clip) => ({
+    name: stemFileName(group.title, stemLabel(clip.role ?? "")),
+    blob: () => fetchAudioBlob(clip.url),
+  }));
+  return saveAudio(stemZipName(group.title), null, () => zipStems(files));
 }
 
 const SEND_TARGETS: readonly SendTarget[] = [
@@ -348,13 +336,11 @@ function SelectedSeparation({
           const clip = group.stems.find((item) => item.id === clipId);
           const src = sources.srcById[clipId];
           if (!clip || !src) return;
-          const anchor = document.createElement("a");
-          anchor.href = src;
-          anchor.download = stemFileName(
-            group.title,
-            stemLabel(clip.role ?? ""),
+          void saveAudio(
+            stemFileName(group.title, stemLabel(clip.role ?? "")),
+            src,
+            () => fetchAudioBlob(clip.url),
           );
-          anchor.click();
         }}
         onDownloadAll={() => void downloadGroup(group)}
         onSend={(target, clipId) => {

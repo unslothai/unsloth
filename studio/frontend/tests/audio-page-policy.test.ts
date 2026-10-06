@@ -428,10 +428,10 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
   );
 });
 
-test("history-only downloads revoke their temporary blob URL", () => {
+test("history-only downloads save the fetched blob without caching a URL", () => {
   assert.match(
     audioPageSource,
-    /handleDownloadClipById[\s\S]*temporaryUrl = fetched\.url;[\s\S]*anchor\.click\(\);[\s\S]*URL\.revokeObjectURL\(url\)/,
+    /handleDownloadClipById[\s\S]*galleryCache\.srcById\.get\(clip\.id\) \?\? null,\s*\(\) => fetchClipBlob\(clip\.url\),/,
   );
   assert.doesNotMatch(
     audioPageSource,
