@@ -9,6 +9,10 @@ catches a mismatch, but it opens the downloaded checkpoint, so it fires from ins
 ``load_pipeline`` -- after the prefetch pulled ~19 GB of base shards and after the resident pipeline
 was torn down to make room.
 
+Qwen-Image vs Qwen-Image-2.1 has the same shape of bug on ``img_in.weight`` (hidden 3072 vs 4096):
+``assert_qwen_image_gguf_matches_base`` is the loader backstop; this module refuses earlier off the
+same range-read header.
+
 This module answers the same question from metadata alone: one HTTP range request for the first few
 hundred KiB of the GGUF, where its tensor table lives. That is cheap enough to run at SELECTION time
 (``/images/download-plan``) and again on the pre-eviction path, so the refusal lands before a byte
@@ -43,6 +47,10 @@ from core.inference.diffusion_families import (
     flux2_mismatch_reason,
     gguf_flux2_inner_dim,
     gguf_flux2_inner_dim_from_header,
+    gguf_qwen_image_hidden_dim,
+    gguf_qwen_image_hidden_dim_from_header,
+    qwen_image_base_hidden_dim,
+    qwen_image_mismatch_reason,
     resolve_local_gguf_child,
 )
 
@@ -66,6 +74,10 @@ _ABANDON_GRACE_SECONDS = 0.5
 # re-probes off disk for free.
 _INNER_DIM_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[int]] = {}
 _INNER_DIM_CACHE_MAX = 256
+# Same key shape as ``_INNER_DIM_CACHE``, separate dict so a FLUX.2 miss cannot poison a Qwen probe
+# (or the reverse) when a renamed file is probed under both families in one session.
+_QWEN_HIDDEN_DIM_CACHE: dict[tuple[str, str, str, Optional[tuple]], Optional[int]] = {}
+_QWEN_HIDDEN_DIM_CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
 
 
@@ -419,6 +431,82 @@ def flux2_pick_mismatch(
     )
 
 
+def qwen_image_hidden_dim_for_pick(
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    *,
+    allow_network: bool = True,
+) -> Optional[int]:
+    """``img_in`` hidden size of the GGUF this pick names, WITHOUT downloading it, or None.
+
+    Same memo / disk / range-read contract as ``flux2_inner_dim_for_pick``."""
+    if not repo_id or not gguf_filename or not gguf_filename.lower().endswith(".gguf"):
+        return None
+    token = normalize_token(hf_token)
+    local = _local_gguf_path(repo_id, gguf_filename)
+    key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
+    with _CACHE_LOCK:
+        if key in _QWEN_HIDDEN_DIM_CACHE:
+            return _QWEN_HIDDEN_DIM_CACHE[key]
+    if local is None and not allow_network:
+        return None
+    if local is not None:
+        hidden = gguf_qwen_image_hidden_dim_from_header(_read_local_header(local))
+        if hidden is None:
+            hidden = gguf_qwen_image_hidden_dim(local)
+    else:
+        hidden = gguf_qwen_image_hidden_dim_from_header(
+            _shared_gguf_header(repo_id, gguf_filename, token, local)
+        )
+    with _CACHE_LOCK:
+        if len(_QWEN_HIDDEN_DIM_CACHE) >= _QWEN_HIDDEN_DIM_CACHE_MAX:
+            _QWEN_HIDDEN_DIM_CACHE.clear()
+        _QWEN_HIDDEN_DIM_CACHE[key] = hidden
+    return hidden
+
+
+def _revalidated_qwen_hidden_dim(
+    repo_id: str, gguf_filename: str, hf_token: Optional[str], got: int
+) -> Optional[int]:
+    """``got`` again, re-read off the Hub when it came from a cached copy the Hub has moved past."""
+    cached = _snapshot_revision(_local_gguf_path(repo_id, gguf_filename))
+    if cached is None:
+        return got
+    token = normalize_token(hf_token)
+    live = _hub_revision(repo_id, gguf_filename, token)
+    if live is None or live == cached:
+        return got
+    return gguf_qwen_image_hidden_dim_from_header(_read_gguf_header(repo_id, gguf_filename, token))
+
+
+def qwen_image_pick_mismatch(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    base_repo: Optional[str],
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Why this Qwen-Image GGUF cannot load against this base, or None when nothing is wrong.
+
+    ``base_repo`` must be the RESOLVED upstream id, same as the loader guard. Covers
+    ``qwen-image``, ``qwen-image-edit``, and ``qwen-image-2.1``."""
+    if not gguf_filename or not str(getattr(fam, "name", "")).startswith("qwen-image"):
+        return None
+    want = qwen_image_base_hidden_dim(base_repo)
+    if want is None:
+        return None
+    got = qwen_image_hidden_dim_for_pick(repo_id, gguf_filename, hf_token)
+    if got is not None and got != want:
+        got = _revalidated_qwen_hidden_dim(repo_id, gguf_filename, hf_token, got)
+    return qwen_image_mismatch_reason(
+        Path(str(gguf_filename)).name,
+        str(base_repo),
+        got,
+        want,
+    )
+
+
 # GGUF ``general.architecture`` values nothing in Unsloth can decode. Beside the FLUX.2 check
 # because both ask whether the pick is loadable, off the same prefix. The set itself lives in a
 # leaf module, shared with the chat gate and the listing classifier so they cannot drift.
@@ -646,9 +734,26 @@ def assert_flux2_pick_compatible(
         raise ValueError(reason)
 
 
+def assert_qwen_image_pick_compatible(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    base_repo: Optional[str],
+    hf_token: Optional[str] = None,
+) -> None:
+    """Refuse a Qwen-Image / 2.1 ``img_in`` size mismatch before download or unload.
+
+    ``ValueError`` like the FLUX.2 assert so /images/load maps it to 400 and the download-plan
+    catches it."""
+    reason = qwen_image_pick_mismatch(fam, repo_id, gguf_filename, base_repo, hf_token)
+    if reason is not None:
+        raise ValueError(reason)
+
+
 def _reset_inner_dim_cache() -> None:
     """Drop the memoised header probes. Tests only."""
     with _CACHE_LOCK:
         _INNER_DIM_CACHE.clear()
+        _QWEN_HIDDEN_DIM_CACHE.clear()
         _SPEECH_ARCH_CACHE.clear()
         _HEADER_PREFIX_CACHE.clear()
