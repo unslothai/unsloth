@@ -2492,6 +2492,16 @@ export const de = {
       importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
       importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
+      importFromSource: "Aus {source} importieren",
+      importFromSourceDescription:
+        "Kopieren Sie Ihre {source}-Konversationen nach Studio, gruppiert nach Projekt.",
+      importingAction: "Wird importiert...",
+      importedSourceOneChat: "1 Konversation aus {source} importiert.",
+      importedSourceChatCount:
+        "{count} Konversationen aus {source} importiert.",
+      sourceUpdated: "{count} neue Nachrichten aus {source} hinzugefügt.",
+      sourceUpToDate: "Die {source}-Konversationen sind bereits aktuell.",
+      importedSourcePartial: "Einige {source}-Konversationen konnten nicht importiert werden.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",
       clearAction: "Löschen",

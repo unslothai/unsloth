@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
+from .diffusion_flow_shift import flux_mu_shift
 from .diffusion_nvfp4_flag import nvfp4_blocked
 
 
@@ -119,8 +120,10 @@ class DiffusionFamily:
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
     # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
-    # (lowercased id substring, shift) for checkpoints whose template differs; first match wins.
-    comfy_flow_shift_variants: tuple[tuple[str, float], ...] = field(default_factory = tuple)
+    # (lowercased id substring, shift or None = shipped) for checkpoints whose template differs; first match wins.
+    comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
+        default_factory = tuple
+    )
     # (lowercased id substring, ((key, value), ...)) overriding ``base_repo``'s transformer config; first match wins.
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
@@ -229,6 +232,16 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
+        # ComfyUI fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base). Keys name the model: paths match too.
+        comfy_flow_shift_variants = tuple(
+            (f"{prefix}-{model}", shift)
+            for model, shift in (
+                ("schnell", None),
+                ("krea-dev", flux_mu_shift(1.15)),
+                ("dev", flux_mu_shift(1.15)),
+            )
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
+        ),
         prequant_repos = (
             ("int8", "unsloth/FLUX.1-schnell-FP8"),
             ("fp8", "unsloth/FLUX.1-schnell-FP8"),
@@ -338,6 +351,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # detect_family prefers this over "flux.1".
         name = "flux.1-kontext",
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        comfy_flow_shift = flux_mu_shift(
+            1.15
+        ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
         pipeline_class = "FluxKontextPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
@@ -485,6 +501,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
         # rules, none of which fit.
         name = "qwen-image-2.1",
+        # ComfyUI QwenImage21: ModelSamplingFlux fixed mu 0.69, no terminal stretch.
+        comfy_flow_shift = flux_mu_shift(0.69),
         pipeline_class = "QwenImage21Pipeline",
         transformer_class = "QwenImage21Transformer2DModel",
         base_repo = "Qwen/Qwen-Image-2.1",

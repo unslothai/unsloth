@@ -2435,6 +2435,16 @@ export const ja = {
       importingChats: "チャットをインポート中: 現在 {count} 件（{percent}%）...",
       importedChatCountPartial: "{count} 件の会話を最近のチャットにインポートしました。{failed} 件は保存できませんでした。",
       importFailed: "インポートに失敗しました。",
+      importFromSource: "{source} からインポート",
+      importFromSourceDescription:
+        "{source} の会話をプロジェクトごとにまとめて Studio にコピーします。",
+      importingAction: "インポート中...",
+      importedSourceOneChat: "{source} から 1 件の会話をインポートしました。",
+      importedSourceChatCount:
+        "{source} から {count} 件の会話をインポートしました。",
+      sourceUpdated: "{source} から {count} 件の新しいメッセージを追加しました。",
+      sourceUpToDate: "{source} の会話はすでに最新です。",
+      importedSourcePartial: "一部の {source} の会話をインポートできませんでした。",
       clearHistory: "チャット履歴を消去",
       clearHistoryDescription: "このデバイスからチャット履歴を削除します。",
       clearAction: "消去",
