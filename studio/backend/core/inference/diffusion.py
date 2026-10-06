@@ -272,6 +272,7 @@ from .diffusion_denoiser_prequant import (
 )
 from .diffusion_comfy_quant import (
     comfy_int8_backend,
+    comfy_torchao_quantized,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
@@ -5456,6 +5457,8 @@ class DiffusionBackend:
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
+                # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
+                comfy_compile = False
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
@@ -6646,6 +6649,7 @@ class DiffusionBackend:
                                     target = target,
                                     logger = logger,
                                 )
+                                comfy_compile = comfy_torchao_quantized(transformer)
                             else:
                                 # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
                                 transformer = transformer_cls.from_single_file(
@@ -6980,7 +6984,7 @@ class DiffusionBackend:
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
                     if (
-                        transformer_quant_engaged is not None
+                        (transformer_quant_engaged is not None or comfy_compile)
                         and native_scheme is None
                         and effective_speed == SPEED_OFF
                     ):
@@ -6995,6 +6999,7 @@ class DiffusionBackend:
                         speed_mode is None
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
+                        and not comfy_compile
                         and compile_eligible(target, is_gguf = False, family = fam)
                         and not fp16_compile_explicit_only(target)
                     )
@@ -7398,7 +7403,7 @@ class DiffusionBackend:
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
-                                if transformer_quant_engaged is not None
+                                if (transformer_quant_engaged is not None or comfy_compile)
                                 and native_scheme is None
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
                                 else "auto: exact eager for the first two images; "

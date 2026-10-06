@@ -365,6 +365,12 @@ def _decode_rows(name: str, tagged: Any, sources: list) -> list:
     return segments
 
 
+def comfy_torchao_quantized(model: Any) -> bool:
+    """Whether a ComfyUI load left torchao-quantized weights in ``model`` (eager is several times slower)."""
+    info = getattr(model, "_unsloth_comfy_quant", None) or {}
+    return "torchao" in (info.get("backend"), info.get("fp8_backend"))
+
+
 def comfy_int8_backend(
     target: Any,
     family: Optional[str],

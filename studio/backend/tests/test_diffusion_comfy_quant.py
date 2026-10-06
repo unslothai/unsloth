@@ -482,3 +482,13 @@ def test_the_loader_refuses_what_the_scan_refuses(tmp_path):
         cq.load_comfy_quant_transformer(
             _Tiny, path, scan, {"config": "base/repo"}, int8_backend = None
         )
+
+
+def test_only_torchao_comfy_loads_ask_for_compile(comfy_file):
+    path, _, _ = comfy_file
+    assert not cq.comfy_torchao_quantized(_load(path))
+    assert not cq.comfy_torchao_quantized(_load(path, int8_backend = "native"))
+    model = nn.Module()
+    model._unsloth_comfy_quant = {"backend": "torchao", "int8": 8}
+    assert cq.comfy_torchao_quantized(model)
+    assert not cq.comfy_torchao_quantized(nn.Linear(2, 2))
