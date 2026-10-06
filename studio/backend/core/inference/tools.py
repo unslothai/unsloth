@@ -16915,6 +16915,45 @@ def _empty_result_with_requested_images(
     return empty_text + "\n\n---\n\n" + found
 
 
+def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
+    """Search Wikipedia's API independently of ddgs, using the guarded HTTP fetcher."""
+    from html import unescape
+
+    params = urllib.parse.urlencode({
+        "action": "query", "list": "search", "srsearch": query,
+        "format": "json", "srlimit": min(max_results, 50), "srnamespace": 0,
+    })
+    error, body, _ = _fetch_url_raw(
+        "https://en.wikipedia.org/w/api.php?" + params,
+        timeout = timeout, deadline = deadline, cancel_event = cancel_event,
+        website_policy = website_policy, raw_bytes_max = 1024 * 1024,
+        extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
+    )
+    if error:
+        raise RuntimeError(error)
+    payload = json.loads(body)
+    if "error" in payload:
+        raise RuntimeError("Wikipedia search API returned an error")
+    return [
+        {
+            "title": item["title"],
+            "href": "https://en.wikipedia.org/wiki/" + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
+        }
+        for item in payload["query"]["search"]
+        if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"].strip()
+    ]
+
+
+def _usable_search_results(results, website_policy):
+    from .web_access_policy import check_url_access
+
+    return [
+        r for r in results
+        if isinstance(r, dict) and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+    ]
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16953,57 +16992,78 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be interrupted mid-flight, so gate on either
-    # side: skip an already-cancelled request, and discard results that land after the client has gone.
+    # Preserve the existing blocking provider call; discard its result after a disconnect.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
         from .web_access_policy import check_url_access, scope_search_query
 
-        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
-        if not engine_tiers:
-            return "Search failed: no approved search engine is available."
-
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
-        # all disallowed otherwise yields nothing even when valid results rank just under them. Test the domain lists,
-        # not the dict: a run always stores a normalized policy, which is truthy even when unrestricted.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
-        # a client per tier would restart the budget and a 7s web_search could block ~14s.
         deadline = time.monotonic() + timeout if timeout else None
-        client = DDGS(timeout = timeout)
-        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
-        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
-        results, last_error = [], None
-        for backend in engine_tiers:
+        client, results, last_error = None, [], None
+        rejected_results = False
+        wikipedia_fallback = False
+        try:
+            from ddgs import DDGS
+            from ddgs.engines import ENGINES
+
+            engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+            if not engine_tiers:
+                raise RuntimeError("no approved search engine is available.")
+            # Keep the existing provider budget, including for the client reused by image search.
+            # Reserving time for Wikipedia would cut off otherwise successful slow searches.
+            deadline = time.monotonic() + timeout if timeout else None
+            client = DDGS(timeout = timeout)
+            for backend in engine_tiers:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Search cancelled."
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    client = DDGS(timeout = remaining)
+                try:
+                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    results = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not results)
+                except Exception as exc:
+                    last_error = exc
+                    continue
+                if results:
+                    break
+        except Exception as exc:
+            last_error = exc
+        if cancel_event is not None and cancel_event.is_set():
+            return "Search cancelled."
+        if not results:
+            remaining = deadline - time.monotonic() if deadline else 5.0
+            allowed, _, _ = check_url_access("https://en.wikipedia.org/w/api.php", website_policy)
+            if allowed and remaining > 0:
+                try:
+                    fallback_timeout = min(remaining, 5.0)
+                    fallback_deadline = time.monotonic() + fallback_timeout
+                    if deadline is not None:
+                        fallback_deadline = min(fallback_deadline, deadline)
+                    results = _usable_search_results(
+                        _wikipedia_search(query, wanted, fallback_timeout, fallback_deadline, cancel_event, website_policy),
+                        website_policy,
+                    )
+                    wikipedia_fallback = bool(results)
+                except Exception:
+                    logger.debug("Independent Wikipedia search failed", exc_info = True)
             if cancel_event is not None and cancel_event.is_set():
                 return "Search cancelled."
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                client = DDGS(timeout = remaining)
-            try:
-                results = client.text(effective_query, max_results = wanted, backend = backend)
-            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
-                last_error = exc
-                continue
-            if results:
-                break
-        if not results and last_error is not None:
-            raise last_error
+            if not results and last_error is not None:
+                raise last_error
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1] if rejected_results and restricted else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -17018,7 +17078,7 @@ def _web_search(
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
                 continue
-            title = " ".join(str(r.get("title") or "").split())
+            title = " ".join(str(r.get("title") or href).split())
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
@@ -17031,6 +17091,9 @@ def _web_search(
                 website_policy,
             )
         text = "\n\n---\n\n".join(parts)
+        if wikipedia_fallback:
+            text = "General web search was unavailable or returned no usable results. " \
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n" + text
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
@@ -17041,7 +17104,7 @@ def _web_search(
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
-        elif include_images:
+        elif include_images and not wikipedia_fallback:
             text += _web_search_images_suffix(
                 client,
                 effective_query,

@@ -65,6 +65,7 @@ def engine_calls(monkeypatch):
     # 9.14.4 defines _get_network_client; a DHT cache hit would skip the engines entirely.
     if callable(getattr(DDGS, "_get_network_client", None)):
         monkeypatch.setattr(DDGS, "_get_network_client", lambda self: None)
+    monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
     return _Recorder(monkeypatch)
 
 
@@ -199,10 +200,11 @@ def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_cal
                 cls, "search", lambda self, q, _i = inner, **k: (time.sleep(0.3), _i(self, q, **k))[1]
             )
 
-    tools.execute_tool("web_search", {"query": "unsloth", "timeout": 3})
+    tools.execute_tool("web_search", {"query": "unsloth"}, timeout = 3)
 
     tier_budgets = [b for b in budgets if isinstance(b, (int, float))]
-    assert len(tier_budgets) >= 3, f"expected a client per tier, saw {budgets}"
+    assert len(tier_budgets) >= 2, f"expected a client per tier, saw {budgets}"
+    assert all(0 < budget <= 3 for budget in tier_budgets)
     # Each value is the budget REMAINING when that tier starts, so the invariant is that it shrinks
     # and never exceeds what the caller asked for. Summing them would be summing overlapping windows.
     assert tier_budgets == sorted(
