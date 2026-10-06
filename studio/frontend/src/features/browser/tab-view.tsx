@@ -20,7 +20,7 @@ import { InternalPageView } from "./internal-pages";
 import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import { useBrowserPrefsStore } from "./prefs-store";
-import { zoomTab } from "./zoom";
+import { fitZoomToPage, zoomTab } from "./zoom";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -241,9 +241,11 @@ function WebPage({
       if (page.kind === "raw") {
         const name = page.fileName ?? fileNameFromUrl(page.url);
         setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
+        fitZoomToPage(tab.id, true);
         updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
         if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
       } else {
+        fitZoomToPage(tab.id, false);
         updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
       }
     };

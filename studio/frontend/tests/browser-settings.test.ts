@@ -94,3 +94,50 @@ test("an import adds new addresses in one write and skips ones already saved", (
   assert.equal(bookmarks[1]?.addedAt, 1000);
   assert.equal(store.importBookmarks([{ url: "https://example.org/", title: "Org", folder: "other" }]), 0);
 });
+
+test("reloading the latest page still drops visits past the kept period", () => {
+  const now = Date.now();
+  // Set first, so the visit below only crosses the cutoff while Studio is open.
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(30);
+  useBrowserHistoryStore.setState({
+    history: [
+      { id: "latest", url: "https://example.com/a", title: "A", visitedAt: now - 1000 },
+      { id: "old", url: "https://example.com/old", title: "Old", visitedAt: now - 40 * DAY_MS },
+    ],
+  });
+  useBrowserHistoryStore.getState().recordVisit("https://example.com/a", "A");
+  assert.deepEqual(
+    useBrowserHistoryStore.getState().history.map((visit) => visit.id),
+    ["latest"],
+  );
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
+});
+
+test("with history saving off, site icons are not kept either", () => {
+  useBrowserHistoryStore.getState().clearHistory();
+  useBrowserPrefsStore.getState().setSaveHistory(false);
+  useBrowserHistoryStore.getState().recordIcon("example.com", "https://example.com/icon.png");
+  assert.deepEqual(useBrowserHistoryStore.getState().icons, {});
+  useBrowserPrefsStore.getState().setSaveHistory(true);
+  useBrowserHistoryStore.getState().recordIcon("example.com", "https://example.com/icon.png");
+  assert.equal(useBrowserHistoryStore.getState().icons["example.com"], "https://example.com/icon.png");
+});
+
+test("a fetched file shows at 100% and the next page returns to the default zoom", async () => {
+  const { useBrowserStore, setPageDownload } = await import("../src/features/browser/store.ts");
+  const { fitZoomToPage, homeZoom } = await import("../src/features/browser/zoom.ts");
+  useBrowserPrefsStore.getState().setDefaultZoom(1.25);
+  useBrowserStore.getState().openUrl("https://example.com/paper.pdf", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const zoom = () => useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom;
+  assert.equal(zoom(), 1.25);
+  setPageDownload(tabId, { blob: new Blob(["%PDF"]), name: "paper.pdf", contentType: "application/pdf" });
+  fitZoomToPage(tabId, true);
+  assert.equal(zoom(), 1);
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  assert.equal(tab && homeZoom(tab), 1);
+  setPageDownload(tabId, null);
+  fitZoomToPage(tabId, false);
+  assert.equal(zoom(), 1.25);
+  useBrowserPrefsStore.getState().setDefaultZoom(1);
+});

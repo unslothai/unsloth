@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { defaultZoom } from "./prefs-store";
-import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
+import { type BrowserTab, currentEntry, pageDownload, useBrowserStore } from "./store";
 
 export function canZoom(tab: BrowserTab | undefined): tab is BrowserTab {
   const kind = tab ? currentEntry(tab).kind : null;
@@ -16,9 +16,28 @@ export function stepZoom(zoom: number, direction: 1 | -1): number {
   return [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? zoom;
 }
 
-/** Reset target: 100% for files, the default zoom for web pages. */
+/** Reset target: 100% for files (attached or fetched), the default zoom for web pages. */
 export function homeZoom(tab: BrowserTab, preferred = defaultZoom()): number {
-  return currentEntry(tab).kind === "file" ? 1 : preferred;
+  return currentEntry(tab).kind === "file" || pageDownload(tab.id) ? 1 : preferred;
+}
+
+// Tabs moved to 100% for a fetched file, so the next web page goes back to the default.
+const fittedForFile = new Set<string>();
+
+/** Show a fetched file at 100% and restore the default zoom after it, unless the reader zoomed. */
+export function fitZoomToPage(tabId: string, isFile: boolean): void {
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  if (!tab) return;
+  const preferred = defaultZoom();
+  if (isFile) {
+    if (preferred !== 1 && Math.abs(tab.zoom - preferred) < 0.001) {
+      fittedForFile.add(tabId);
+      store.setZoom(tabId, 1);
+    }
+  } else if (fittedForFile.delete(tabId) && Math.abs(tab.zoom - 1) < 0.001) {
+    store.setZoom(tabId, preferred);
+  }
 }
 
 /** Zoom a tab's page in (1), out (-1), or back to its default (0), apart from the interface's zoom. */

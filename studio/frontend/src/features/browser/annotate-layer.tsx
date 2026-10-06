@@ -38,14 +38,14 @@ const PAD = 5;
 const DRAG_THRESHOLD = 4;
 const BUBBLE = 28;
 
-/** Attach a screenshot of the marked page when Settings asks for one; failures just skip it. */
-async function attachAnnotationScreenshot(page: HTMLElement | null): Promise<void> {
-  if (useBrowserPrefsStore.getState().annotationScreenshots !== "always" || !page || !canScreenshot()) return;
-  const { tabs, annotateTabId, attachToChat } = useBrowserStore.getState();
+/** A screenshot of the marked page when Settings asks for one; failures just skip it. */
+async function annotationScreenshot(page: HTMLElement | null): Promise<File[]> {
+  if (useBrowserPrefsStore.getState().annotationScreenshots !== "always" || !page || !canScreenshot()) return [];
+  const { tabs, annotateTabId } = useBrowserStore.getState();
   const tab = tabs.find((candidate) => candidate.id === annotateTabId);
-  if (!tab || !attachToChat) return;
+  if (!tab) return [];
   const blob = await screenshotPage(tab, page).catch(() => null);
-  if (blob) await attachToChat(new File([blob], "Annotated page.png", { type: "image/png" }));
+  return blob ? [new File([blob], "Annotated page.png", { type: "image/png" })] : [];
 }
 
 type Annotation = {
@@ -254,11 +254,11 @@ export function AnnotateLayer({
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
     // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
-    await attachAnnotationScreenshot(page);
-    const sent = await sendAnnotations({
-      file: fileName,
-      items: outgoing.map(({ quote, request }) => ({ quote, request })),
-    }).finally(() => setSending(false));
+    const files = await annotationScreenshot(page);
+    const sent = await sendAnnotations(
+      { file: fileName, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      files,
+    ).finally(() => setSending(false));
     if (sent) exit();
   };
 
@@ -842,12 +842,11 @@ export function WebAnnotateLayer({
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
     // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
-    await attachAnnotationScreenshot(page);
-    const sent = await sendAnnotations({
-      file: title || url,
-      url,
-      items: outgoing.map(({ quote, request }) => ({ quote, request })),
-    }).finally(() => setSending(false));
+    const files = await annotationScreenshot(page);
+    const sent = await sendAnnotations(
+      { file: title || url, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      files,
+    ).finally(() => setSending(false));
     if (sent) exit();
   };
 

@@ -362,6 +362,10 @@ export function createSettingsSearchIndex({
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
+    // The row is web only.
+    browser: SETTINGS_SEARCH_INDEX.browser.filter(
+      (key) => key !== "browser.askWhereToSaveSetting",
+    ),
   };
 }
 

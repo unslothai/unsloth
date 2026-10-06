@@ -378,6 +378,7 @@ function messageHasImage(message: MessageRecord): boolean {
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
+  files: File[] = [],
 ): Promise<boolean> {
   const composer = aui.composer();
   const drafted = () => {
@@ -387,8 +388,10 @@ function sendDocumentAnnotations(
   // Text or files the user staged are their next message: the annotations join it unsent.
   const before = drafted();
   const hasDraft = before.text || before.attachments > 0;
-  return composer
-    .addAttachment(createAnnotationsFile(annotations))
+  // Extra files first, after the draft check, so they don't count as a draft.
+  return files
+    .reduce((staged, file) => staged.then(() => composer.addAttachment(file)), Promise.resolve())
+    .then(() => composer.addAttachment(createAnnotationsFile(annotations)))
     .then(() => {
       const form = [
         ...document.querySelectorAll<HTMLFormElement>("form.aui-composer-root"),
@@ -407,7 +410,7 @@ function sendDocumentAnnotations(
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const now = drafted();
-          if (now.text || now.attachments > 1) return;
+          if (now.text || now.attachments > 1 + files.length) return;
           form.requestSubmit();
         }),
       );
@@ -483,7 +486,7 @@ const SingleContent = memo(function SingleContent({
     setInAppLinkHandler(openUrlInBrowser);
     useBrowserStore.setState({
       requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
+      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
       // The canvas and the browser share the side panel, so the file leaves the browser for it.
       openInCanvas: ({ title, code }) => {
         const artifact = createChatArtifact({

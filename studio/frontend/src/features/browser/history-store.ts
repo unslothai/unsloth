@@ -93,6 +93,8 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       recordIcon: (host, icon) =>
         set((state) => {
           if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
+          // Icons name the hosts visited, so they follow the history setting.
+          if (!useBrowserPrefsStore.getState().saveHistory) return state;
           const { [host]: _replaced, ...rest } = state.icons;
           const hosts = Object.keys(rest);
           for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
@@ -102,14 +104,14 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         set((state) => {
           if (url.length > MAX_URL_CHARS || !useBrowserPrefsStore.getState().saveHistory) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
-          const [latest, ...rest] = state.history;
+          const cutoff = retentionCutoff();
+          const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
+          const [latest, ...rest] = kept;
           // A reload or title update of the same page is one visit.
           if (latest?.url === url) {
             return { history: [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest] };
           }
           const item = { id: newId(), url, title, visitedAt: Date.now() };
-          const cutoff = retentionCutoff();
-          const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
           return { history: [item, ...kept].slice(0, MAX_HISTORY) };
         }),
       recordDownload: (item) =>
@@ -161,8 +163,13 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
   ),
 );
 
-// Prune at startup (storage loads synchronously) and when retention shortens.
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+// Prune at startup (storage loads synchronously), hourly while open, and when retention shortens.
 useBrowserHistoryStore.getState().pruneHistory();
+if (typeof window !== "undefined" && typeof window.setInterval === "function") {
+  window.setInterval(() => useBrowserHistoryStore.getState().pruneHistory(), PRUNE_INTERVAL_MS);
+}
 useBrowserPrefsStore.subscribe((state, previous) => {
   if (state.historyRetentionDays !== previous.historyRetentionDays) useBrowserHistoryStore.getState().pruneHistory();
 });

@@ -88,7 +88,6 @@ export function BrowserTab() {
     () => new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }),
     [locale],
   );
-  // The desktop app's save dialog always shows; a web browser needs one to offer.
   const canAsk = canAskWhereToSave();
   const screenshots = canScreenshot();
 
@@ -151,11 +150,15 @@ export function BrowserTab() {
       <SettingsSection title={t("browser.tabsTitle")}>
         <SettingsRow
           label={t("browser.switchToNewTabsSetting")}
-          description={t("browser.switchToNewTabsSettingDescription")}
+          description={t(
+            native ? "browser.switchToNewTabsNative" : "browser.switchToNewTabsSettingDescription",
+          )}
         >
+          {/* Native views can't tell a background click, so their new tabs always open in front. */}
           <Switch
             aria-label={t("browser.switchToNewTabsSetting")}
-            checked={switchToNewTabs}
+            checked={native || switchToNewTabs}
+            disabled={native}
             onCheckedChange={setSwitchToNewTabs}
           />
         </SettingsRow>
@@ -308,23 +311,22 @@ export function BrowserTab() {
       </SettingsSection>
 
       <SettingsSection title={t("browser.downloadsTitle")}>
-        <SettingsRow
-          label={t("browser.askWhereToSaveSetting")}
-          description={t(
-            canAsk
-              ? "browser.askWhereToSaveSettingDescription"
-              : isTauri
-                ? "browser.askWhereToSaveDesktop"
-                : "browser.askWhereToSaveUnsupported",
-          )}
-        >
-          <Switch
-            aria-label={t("browser.askWhereToSaveSetting")}
-            checked={isTauri || (canAsk && askWhereToSave)}
-            disabled={!canAsk}
-            onCheckedChange={setAskWhereToSave}
-          />
-        </SettingsRow>
+        {/* Web only: the desktop app asks for saved files, but page downloads go to Downloads. */}
+        {isTauri ? null : (
+          <SettingsRow
+            label={t("browser.askWhereToSaveSetting")}
+            description={t(
+              canAsk ? "browser.askWhereToSaveSettingDescription" : "browser.askWhereToSaveUnsupported",
+            )}
+          >
+            <Switch
+              aria-label={t("browser.askWhereToSaveSetting")}
+              checked={canAsk && askWhereToSave}
+              disabled={!canAsk}
+              onCheckedChange={setAskWhereToSave}
+            />
+          </SettingsRow>
+        )}
         <SettingsRow
           label={t("browser.saveDownloadHistorySetting")}
           description={t("browser.saveDownloadHistorySettingDescription")}

@@ -31,8 +31,9 @@ export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
 
-/** Resolves false when the composer refused them (it says why), so the marks stay. */
-export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<boolean>;
+/** Resolves false when the composer refused them (it says why), so the marks stay.
+ *  `files` (an annotation screenshot) go in the same message. */
+export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
 export type OpenInCanvas = (file: { title: string; code: string }) => void;
 
