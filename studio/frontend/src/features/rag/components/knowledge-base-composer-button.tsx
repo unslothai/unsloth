@@ -46,8 +46,7 @@ export function KnowledgeBaseComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  // Refreshes overlap (mount, menu open, every mutation), and an older answer landing
-  // last would restore a deleted KB and keep its stale kb_id selected.
+  // Refreshes overlap; an older answer landing last would restore a deleted KB.
   const latestRefreshRef = useRef(0);
   const refresh = useCallback(async () => {
     const request = ++latestRefreshRef.current;
@@ -61,8 +60,7 @@ export function KnowledgeBaseComposerButton({
     }
   }, []);
 
-  // Load on mount, and again after any create, rename or delete, wherever it happened:
-  // the fallback below can only drop a deleted KB this list has seen go.
+  // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
     return subscribeKnowledgeBasesChanged(() => void refresh());

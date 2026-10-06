@@ -58,16 +58,14 @@ type View =
 
 export interface KnowledgeBaseFocus {
   kbId: string;
-  /** Files to upload into that knowledge base once its documents view opens. */
   uploads?: RagUploadItem[];
 }
 
 export interface KnowledgeBaseDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Open straight to this knowledge base's documents instead of the list. */
   focus?: KnowledgeBaseFocus | null;
-  /** Where focus goes on close. Without a Radix trigger it would land on the body. */
+  /** Without a Radix trigger, focus would land on the body on close. */
   onCloseAutoFocus?: (event: Event) => void;
 }
 
@@ -80,9 +78,7 @@ export function KnowledgeBaseDialog({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
-  // Handed-over files not uploading yet; nothing else holds them. A handoff arriving
-  // meanwhile joins them, and if their knowledge base cannot be resolved they go to
-  // whichever one is opened or created next.
+  // Handed-over files not yet uploading; nothing else holds them.
   const handoffRef = useRef<RagUploadItem[]>([]);
   const handedFocusRef = useRef<KnowledgeBaseFocus | null>(null);
   const [name, setName] = useState("");
@@ -179,8 +175,7 @@ export function KnowledgeBaseDialog({
     });
   }
 
-  // Handed-over files are a one-time handoff. The view outlives a close and a reopen
-  // renders it once before resetting, so the files leave it as soon as they start.
+  // The view outlives a close, so the files leave it as soon as they start.
   const takeUploads = useCallback(() => {
     handoffRef.current = [];
     setView((current) =>
@@ -222,7 +217,6 @@ export function KnowledgeBaseDialog({
         ).id;
         toast.success("Knowledge base created");
       }
-      // A new knowledge base is empty, so open it where files are added.
       const created = (await refresh())?.find((row) => row.id === createdId);
       if (created) openDocuments(created);
       else setView({ kind: "list" });
@@ -424,9 +418,7 @@ function KnowledgeBaseDocuments({
   onBack,
 }: {
   kb: KnowledgeBase;
-  /** Files handed over to upload here once, e.g. a drop the chat could not take. */
   uploads?: RagUploadItem[];
-  /** Called as they start, so the caller stops handing them over. */
   onUploadsStarted: () => void;
   onBack: () => void;
 }) {
@@ -446,9 +438,8 @@ function KnowledgeBaseDocuments({
       : undefined,
   });
 
-  // Deferred a tick so it starts on the mount that stays: the hook's unmount cleanup would
-  // abort an upload started on StrictMode's first one. `upload` changes identity every
-  // render, which only resets the timer; taking the files off the view is what stops a rerun.
+  // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's
+  // first mount. Taking the files off the view, not the deps, stops a rerun.
   useEffect(() => {
     if (!uploads?.length) return;
     const timer = window.setTimeout(() => {

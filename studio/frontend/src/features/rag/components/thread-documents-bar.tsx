@@ -76,11 +76,9 @@ import {
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import { uploadItemFromIntent, useRagDocuments } from "./use-rag-documents";
 
-// The active KB's name, refetched after any create, rename or delete so a rename made
-// from this chat's own dialog shows at once. Null while unknown or when there is none.
+// Refetched after any KB mutation so a rename shows at once.
 function useKnowledgeBaseName(kbId: string | null): string | null {
-  // Keyed by id, so a switch to another KB never shows the previous one's name while the
-  // new fetch is in flight: a drop in that window would name one KB and add to another.
+  // Keyed by id: a drop during a switch must not name one KB and add to another.
   const [known, setKnown] = useState<{ kbId: string; name: string | null } | null>(
     null,
   );
@@ -92,12 +90,11 @@ function useKnowledgeBaseName(kbId: string | null): string | null {
       const request = ++latest;
       listKnowledgeBases()
         .then((rows) => {
-          // Two quick changes fetch twice, and only the newer answer may land.
           if (cancelled || request !== latest) return;
           setKnown({ kbId, name: rows.find((kb) => kb.id === kbId)?.name ?? null });
         })
         .catch(() => {
-          // Keep the name on screen: a failed refetch says nothing about the KB.
+          // A failed refetch says nothing about the KB.
         });
     };
     load();
@@ -110,8 +107,7 @@ function useKnowledgeBaseName(kbId: string | null): string | null {
   return known !== null && known.kbId === kbId ? known.name : null;
 }
 
-// Shown when retrieval comes from a KB, so the source isn't invisible. Opens that KB's
-// documents, since this bar cannot upload into it.
+// Shown when retrieval comes from a KB, so the source isn't invisible.
 function KnowledgeBaseSourceChip({
   name,
   onOpen,
@@ -587,8 +583,7 @@ export function ThreadDocumentsBar({
     null,
   );
   const kbChipRef = useRef<HTMLButtonElement>(null);
-  // The toaster outlives this bar, and an "Add" clicked after it unmounts would open
-  // nothing while the batch is already out of the native-intent store.
+  // The toaster outlives this bar; an "Add" after unmount would open nothing.
   const kbDropOffersRef = useRef(new Set<string | number>());
   useEffect(() => {
     const offers = kbDropOffersRef.current;
@@ -620,7 +615,7 @@ export function ThreadDocumentsBar({
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
-    // index into something this bar never shows. The action carries the drop there.
+    // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
       const kbId = ragSource.kbId;
       const files =
@@ -630,8 +625,7 @@ export function ThreadDocumentsBar({
       const target = activeKbName
         ? `"${activeKbName}"`
         : "this chat's knowledge base";
-      // Nothing else holds these files, so the offer lasts while their path tokens can
-      // still be read, not the default few seconds.
+      // Nothing else holds these files: keep the offer while their path tokens are readable.
       const expiresAt = Math.min(...intents.map((intent) => intent.path.expiresAtMs));
       const offer = toast(`Add ${files} to ${target}?`, {
         description:
@@ -690,10 +684,8 @@ export function ThreadDocumentsBar({
     fileInputRef.current?.click();
   }, []);
 
-  // In every branch, not only the KB one: a drop's "Add" names the KB it was dropped on,
-  // and still has to open after the chat's source moves elsewhere. Always the first child
-  // of a fragment, so a source change while it is open (deleting the active KB in it)
-  // keeps the same instance instead of remounting it. It renders in a portal.
+  // Every branch, always the first fragment child: an "Add" must open after the source
+  // moves, and deleting the active KB in it must not remount it.
   const kbDialog = (
     <KnowledgeBaseDialog
       open={kbDialogFocus !== null}
@@ -702,7 +694,6 @@ export function ThreadDocumentsBar({
       }}
       focus={kbDialogFocus}
       onCloseAutoFocus={(event) => {
-        // The chip reopens this dialog, so focus returns to it however the dialog opened.
         const chip = kbChipRef.current;
         if (chip?.isConnected) {
           event.preventDefault();

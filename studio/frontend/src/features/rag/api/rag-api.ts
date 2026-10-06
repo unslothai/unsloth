@@ -110,19 +110,15 @@ export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   return data.knowledgeBases ?? [];
 }
 
-/** Fired after a knowledge base is created, renamed or deleted. The composer's source menu
- * and the source chip each keep their own copy of the list, and a menu that misses a
- * delete keeps sending the deleted kb_id. */
+/** Readers keep their own KB list; one that misses a delete keeps sending the deleted kb_id. */
 export const KNOWLEDGE_BASES_CHANGED_EVENT = "unsloth-knowledge-bases-changed";
 
-/** Announced on failure too: a delete can fail because the row is already gone, and a
- * refetch is what tells the readers so. */
+// Also on failure: a delete can fail because the row is already gone.
 function announceKnowledgeBasesChanged(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(KNOWLEDGE_BASES_CHANGED_EVENT));
 }
 
-/** Run `onChanged` after any knowledge base mutation in this tab. Returns the unsubscribe. */
 export function subscribeKnowledgeBasesChanged(
   onChanged: () => void,
 ): () => void {
