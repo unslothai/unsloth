@@ -18,6 +18,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useIsAccountOwner } from "@/features/auth";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
@@ -26,6 +27,7 @@ import {
   subscribeKnowledgeBasesChanged,
 } from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
+import { EmbeddingModelMenuPicker } from "./embedding-model-menu-picker";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
 // Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
@@ -40,6 +42,8 @@ export function KnowledgeBaseComposerButton({
   const ragDisabled = useRagToolDisabled();
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
+  // The embedding model is a server setting only the owner can change.
+  const isOwner = useIsAccountOwner();
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [kbsLoaded, setKbsLoaded] = useState(false);
@@ -133,9 +137,16 @@ export function KnowledgeBaseComposerButton({
           align="start"
           sideOffset={2}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
+          className={
+            isOwner
+              ? "unsloth-plus-menu mcp-menu w-[calc(320px*var(--ui-space-scale,1))]"
+              : "unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
+          }
         >
-          <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
+          <DropdownMenuLabel className="flex items-center justify-between gap-3">
+            <span className="shrink-0">Retrieve from</span>
+            {isOwner ? <EmbeddingModelMenuPicker /> : null}
+          </DropdownMenuLabel>
           <DropdownMenuItem
             onSelect={() => setRagSource({ type: "thread" })}
             className={

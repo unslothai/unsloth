@@ -12,7 +12,7 @@ import { formatBytes, useHubModelSearch } from "@/features/hub";
 import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import { PinIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PipelineType } from "@huggingface/hub";
 import { type ReactElement, useMemo, useState } from "react";
@@ -34,6 +34,9 @@ type EmbeddingModelPickerProps = {
   defaultModel?: string;
   /** Repos already on disk, for the on-device dot. */
   cachedModels?: ReadonlySet<string>;
+  /** Models pinned to the RAG menu; each row toggles its own pin. */
+  pinnedModels?: readonly string[];
+  onTogglePin?: (model: string) => void;
   accessToken?: string;
   disabled?: boolean;
   /** Held open with a spinner while the pick is resolved and saved. */
@@ -86,6 +89,8 @@ export function EmbeddingModelPicker({
   onSelect,
   defaultModel,
   cachedModels,
+  pinnedModels,
+  onTogglePin,
   accessToken,
   disabled,
   busy,
@@ -123,8 +128,12 @@ export function EmbeddingModelPicker({
     if (fallback && !rows.some((row) => row.id === fallback)) {
       rows.push({ id: fallback, sizeBytes: null });
     }
+    // Pinned models stay listed, so they can be unpinned here.
+    for (const pin of pinnedModels ?? []) {
+      if (!rows.some((row) => row.id === pin)) rows.push({ id: pin, sizeBytes: null });
+    }
     return rows;
-  }, [results, value, defaultModel]);
+  }, [results, value, defaultModel, pinnedModels]);
 
   const pick = (model: string) => {
     setOpen(false);
@@ -206,44 +215,74 @@ export function EmbeddingModelPicker({
               {t("settings.general.rag.noResults")}
             </div>
           ) : (
-            items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => pick(item.id)}
-                aria-selected={item.id === value}
-                className={`flex w-full items-center justify-between gap-3 rounded-full px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
-                  item.id === value ? "bg-accent font-medium" : ""
-                }`}
-              >
-                <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                  {/* Same green dot the Hub marks an on-device row with. */}
-                  {isOnDevice(cachedModels, item.id) ? (
-                    <span
-                      // A bare span is generic, and ARIA-in-HTML forbids naming
-                      // one, so Safari and Firefox drop the label and the dot goes
-                      // unannounced. Same role the Hub's own on-device dot carries.
-                      role="img"
-                      aria-label={t("settings.general.rag.onDevice")}
-                      className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
-                    />
-                  ) : null}
-                  <span className="truncate font-mono text-ui-11">
-                    {item.id}
-                  </span>
-                  {item.id === defaultModel ? (
-                    <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
-                      {t("settings.general.rag.recommended")}
+            items.map((item) => {
+              const pinned = pinnedModels?.includes(item.id) ?? false;
+              return (
+                <div
+                  key={item.id}
+                  className={`group/row flex items-center rounded-full transition-colors hover:bg-muted ${
+                    item.id === value ? "bg-accent font-medium" : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => pick(item.id)}
+                    aria-selected={item.id === value}
+                    className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-full py-1.5 pl-2.5 text-left"
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                      {/* Same green dot the Hub marks an on-device row with. */}
+                      {isOnDevice(cachedModels, item.id) ? (
+                        <span
+                          // A bare span is generic, and ARIA-in-HTML forbids naming
+                          // one, so Safari and Firefox drop the label and the dot goes
+                          // unannounced. Same role the Hub's own on-device dot carries.
+                          role="img"
+                          aria-label={t("settings.general.rag.onDevice")}
+                          className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
+                        />
+                      ) : null}
+                      <span className="truncate font-mono text-ui-11">
+                        {item.id}
+                      </span>
+                      {item.id === defaultModel ? (
+                        <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                          {t("settings.general.rag.recommended")}
+                        </span>
+                      ) : null}
                     </span>
-                  ) : null}
-                </span>
-                {item.sizeBytes ? (
-                  <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-                    {formatBytes(item.sizeBytes)}
-                  </span>
-                ) : null}
-              </button>
-            ))
+                    {item.sizeBytes ? (
+                      <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
+                        {formatBytes(item.sizeBytes)}
+                      </span>
+                    ) : null}
+                  </button>
+                  {onTogglePin ? (
+                    <button
+                      type="button"
+                      onClick={() => onTogglePin(item.id)}
+                      aria-pressed={pinned}
+                      aria-label={t(
+                        pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin",
+                      )}
+                      title={t(pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin")}
+                      // Shown on hover or focus; always once pinned.
+                      className={`mr-1 ml-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                        pinned ? "text-primary hover:text-primary" : "opacity-0 group-hover/row:opacity-100"
+                      }`}
+                    >
+                      <HugeiconsIcon
+                        icon={PinIcon}
+                        strokeWidth={1.75}
+                        className="size-3.5"
+                      />
+                    </button>
+                  ) : (
+                    <span className="w-2.5 shrink-0" />
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </PopoverContent>

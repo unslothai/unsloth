@@ -15,7 +15,7 @@ import {
 } from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import {
   EmbeddingModelBlockedError,
   type EmbeddingModelResolution,
@@ -25,6 +25,8 @@ import {
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
+import { useEmbeddingPinsStore } from "../stores/embedding-pins-store";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { EmbeddingModelPicker } from "./embedding-model-picker";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -65,6 +67,21 @@ export function DocumentsRagSection(): ReactElement {
   const [cachedRepos, setCachedRepos] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const pinnedModels = useEmbeddingPinsStore((s) => s.pinned);
+  const togglePin = useEmbeddingPinsStore((s) => s.togglePin);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  // "Change model" in the RAG menu lands here.
+  useEffect(() => {
+    if (scrollTarget !== "general-rag-embedding") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("general-rag-embedding");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   useEffect(() => {
     void useEmbeddingModelStore.getState().load();
@@ -345,7 +362,7 @@ export function DocumentsRagSection(): ReactElement {
   };
 
   return (
-    <SettingsSection title={t("settings.general.rag.sectionTitle")}>
+    <SettingsSection ref={sectionRef} title={t("settings.general.rag.sectionTitle")}>
       <SettingsRow
         label={t("settings.general.rag.embeddingModel")}
         description={t("settings.general.rag.embeddingModelDescription", {
@@ -424,6 +441,8 @@ export function DocumentsRagSection(): ReactElement {
             onSelect={(model) => void applyEmbeddingModel(model, false)}
             defaultModel={embeddingModel?.defaultEmbeddingModel}
             cachedModels={cachedRepos}
+            pinnedModels={pinnedModels}
+            onTogglePin={togglePin}
             accessToken={hfToken || undefined}
             disabled={!embeddingModel}
             busy={isSavingEmbeddingModel}

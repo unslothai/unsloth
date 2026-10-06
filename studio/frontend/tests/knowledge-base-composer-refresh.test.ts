@@ -87,6 +87,8 @@ function harness() {
         },
       },
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
+      "./embedding-model-menu-picker": { EmbeddingModelMenuPicker: "EmbeddingModelMenuPicker" },
+      "@/features/auth": { useIsAccountOwner: () => true },
     },
   );
   function render() {
