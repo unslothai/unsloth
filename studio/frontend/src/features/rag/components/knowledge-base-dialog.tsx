@@ -113,12 +113,16 @@ export function KnowledgeBaseDialog({
     }
   }, []);
 
+  const wasOpenRef = useRef(false);
   useEffect(() => {
     if (!open) {
       handoffRef.current = [];
       handedFocusRef.current = null;
+      wasOpenRef.current = false;
       return;
     }
+    const wasOpen = wasOpenRef.current;
+    wasOpenRef.current = true;
     // Once per handoff, though StrictMode runs this twice for the same one.
     if (focus !== handedFocusRef.current) {
       handedFocusRef.current = focus;
@@ -126,7 +130,20 @@ export function KnowledgeBaseDialog({
     }
     const uploads = handoffRef.current;
     let cancelled = false;
-    setView({ kind: "list" });
+    // A handoff into the KB already on screen keeps its view mounted: unmounting it
+    // abandons the rest of a batch still uploading there.
+    setView((current) =>
+      wasOpen &&
+      focus &&
+      current.kind === "documents" &&
+      current.kb.id === focus.kbId
+        ? {
+            kind: "documents",
+            kb: current.kb,
+            uploads: uploads.length ? uploads : undefined,
+          }
+        : { kind: "list" },
+    );
     void refresh().then((rows) => {
       if (cancelled || !focus) return;
       const kb = rows?.find((row) => row.id === focus.kbId);
@@ -440,14 +457,15 @@ function KnowledgeBaseDocuments({
 
   // Deferred a tick: the hook's unmount cleanup aborts an upload started on StrictMode's
   // first mount. Taking the files off the view, not the deps, stops a rerun.
+  // A batch already uploading here goes first: upload() tracks one run at a time.
   useEffect(() => {
-    if (!uploads?.length) return;
+    if (!uploads?.length || uploading) return;
     const timer = window.setTimeout(() => {
       onUploadsStarted();
       void upload(uploads);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [uploads, onUploadsStarted, upload]);
+  }, [uploads, uploading, onUploadsStarted, upload]);
 
   return (
     <div

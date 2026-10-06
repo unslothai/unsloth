@@ -104,6 +104,7 @@ const KB = { id: "kb-1", name: "Product docs", documentCount: 0 };
 const ITEM = { kind: "native", token: "tok-notes", name: "notes.md" };
 
 function harness(rows: Array<typeof KB> = [KB]) {
+  const state = { uploading: false };
   const uploads: unknown[][] = [];
   const abandoned: unknown[][] = [];
   const errors: string[] = [];
@@ -168,7 +169,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
           return {
             documents: [],
             loading: false,
-            uploading: false,
+            uploading: state.uploading,
             refresh: async () => {},
             upload: async (items: unknown[]) => {
               const started = generation.current;
@@ -275,6 +276,9 @@ function harness(rows: Array<typeof KB> = [KB]) {
     get documentsMounts() {
       return documentsMounts;
     },
+    set uploading(value: boolean) {
+      state.uploading = value;
+    },
     openRow() {
       const row = find(tree, (e) => e.props.title === "Open to add or remove documents");
       (row!.props.onClick as () => void)();
@@ -368,4 +372,20 @@ test("a handoff that arrives while another waits joins it instead of replacing i
   const LAST = { kind: "native", token: "tok-last", name: "last.md" };
   await app.open({ kbId: KB.id, uploads: [LAST] });
   assert.deepEqual(app.uploads, [[ITEM, LATER], [LAST]]);
+});
+
+test("a handoff into the knowledge base on screen waits for its running upload without remounting", async () => {
+  const app = harness();
+  await app.open({ kbId: KB.id, uploads: [ITEM] });
+  assert.deepEqual(app.uploads, [[ITEM]]);
+  app.uploading = true;
+  // A second drop's "Add" while the first batch is still uploading in this view.
+  const LATER = { kind: "native", token: "tok-faq", name: "faq.md" };
+  await app.open({ kbId: KB.id, uploads: [LATER] });
+  assert.equal(app.documentsMounts, 1);
+  assert.deepEqual(app.uploads, [[ITEM]]);
+  app.uploading = false;
+  await app.settle();
+  assert.deepEqual(app.uploads, [[ITEM], [LATER]]);
+  assert.deepEqual(app.abandoned, []);
 });
