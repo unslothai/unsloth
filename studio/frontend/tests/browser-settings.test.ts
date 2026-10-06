@@ -189,3 +189,22 @@ test("an import past the bookmark limit says how many it left out", async () => 
   });
   useBrowserBookmarksStore.setState({ bookmarks: [] });
 });
+
+test("back to a file shows it at 100%, forward to the web page at the default zoom", async () => {
+  const { useBrowserStore } = await import("../src/features/browser/store.ts");
+  const store = useBrowserStore.getState();
+  store.openFile({ blob: new Blob(["# notes"]), name: "notes.md", contentType: "text/markdown" });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const zoom = () => useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom;
+  useBrowserPrefsStore.getState().setDefaultZoom(1.5);
+  store.navigate(tabId, { url: "https://example.com/" });
+  assert.equal(zoom(), 1.5);
+  store.goBack(tabId);
+  assert.equal(zoom(), 1);
+  store.goForward(tabId);
+  assert.equal(zoom(), 1.5);
+  store.setZoom(tabId, 2);
+  store.goBack(tabId);
+  assert.equal(zoom(), 2, "a zoom the reader chose carries over");
+  useBrowserPrefsStore.getState().setDefaultZoom(1);
+});

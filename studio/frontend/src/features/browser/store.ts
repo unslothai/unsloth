@@ -314,12 +314,20 @@ type BrowserState = {
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
   tabs.map((tab) => (tab.id === tabId ? update(tab) : tab));
 
-/** A web page opened from a new tab, a history page or an unzoomed file starts at the default zoom. */
+/** Zoom on entering `entry`, by opening it or going back or forward. A web page reached from a new
+ *  tab, a history page or an unzoomed file starts at the default; a file reached from an unzoomed
+ *  web page shows at 100%. A zoom the reader chose carries over. */
 function zoomFor(tab: BrowserTab, entry: BrowserEntry): number {
   const from = tab.history[tab.index];
-  if (entry.kind !== "web" || !from) return tab.zoom;
-  const unzoomedFile = from.kind === "file" && Math.abs(tab.zoom - 1) < 0.001;
-  return from.kind === "newtab" || from.kind === "internal" || unzoomedFile ? defaultZoom() : tab.zoom;
+  if (!from) return tab.zoom;
+  const preferred = defaultZoom();
+  const at = (zoom: number) => Math.abs(tab.zoom - zoom) < 0.001;
+  if (entry.kind === "web") {
+    const unzoomedFile = from.kind === "file" && at(1);
+    return from.kind === "newtab" || from.kind === "internal" || unzoomedFile ? preferred : tab.zoom;
+  }
+  if (entry.kind === "file" && from.kind === "web" && at(preferred)) return 1;
+  return tab.zoom;
 }
 
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
@@ -346,6 +354,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
   const entry = tab.history[index] ?? { kind: "newtab" };
   return {
     ...tab,
+    zoom: zoomFor(tab, entry),
     index,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
