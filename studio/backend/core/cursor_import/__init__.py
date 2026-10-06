@@ -12,7 +12,6 @@ from core.cursor_import.discovery import (
     resolve_state_slug,
 )
 from core.cursor_import.importer import (
-    CursorImportSummary,
     import_cursor_chats,
     project_id_for,
     thread_id_for,
@@ -22,7 +21,6 @@ from core.cursor_import.transcripts import CursorTranscript, read_transcript
 __all__ = [
     "CURSOR_HOME_ENV",
     "NO_FOLDER_SLUG",
-    "CursorImportSummary",
     "CursorTranscript",
     "CursorWorkspace",
     "cursor_home",

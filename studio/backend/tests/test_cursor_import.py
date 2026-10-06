@@ -14,7 +14,7 @@ import storage.studio_db as studio_db
 from auth.authentication import get_current_subject
 from core.cursor_import import discovery, import_cursor_chats, project_id_for, thread_id_for
 from core.cursor_import.transcripts import read_transcript
-from routes.cursor_import import router as cursor_import_router
+from routes.external_import import router as external_import_router
 
 
 def write_transcript(home: Path, slug: str, session_id: str, records: list[dict]) -> Path:
@@ -483,56 +483,6 @@ def test_appended_turns_arrive_even_when_the_file_mtime_does_not_move(cursor_hom
     assert len(studio_db.list_chat_messages(thread_id_for("session-one"))) == 3
 
 
-def test_cursor_marks_from_the_old_table_still_apply(cursor_home):
-    # A database that ran the Cursor-only ledger still has those rows. Folding
-    # them onto the shared table is what keeps a later append from being treated
-    # as already imported -- or skipped entirely for want of a mark.
-    import_cursor_chats()
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("DELETE FROM external_import_sessions WHERE source = 'cursor'")
-        conn.execute(
-            """
-            CREATE TABLE cursor_import_sessions (
-                session_id TEXT NOT NULL PRIMARY KEY,
-                transcript_updated_at INTEGER NOT NULL,
-                turns_imported INTEGER NOT NULL
-            ) WITHOUT ROWID
-            """
-        )
-        conn.execute(
-            "INSERT INTO cursor_import_sessions VALUES (?, ?, ?)",
-            ("session-one", 2**62, 2),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-        studio_db._schema_ready = set()
-    write_transcript(
-        cursor_home,
-        "Users-me-app",
-        "session-one",
-        [
-            turn("user", "<user_query>Fix the header</user_query>"),
-            turn("assistant", "Fixed it."),
-            turn("user", "<user_query>And the footer</user_query>"),
-        ],
-    )
-
-    summary = import_cursor_chats()
-
-    assert summary.messages == 1
-    assert studio_db.get_external_import_mark("cursor", "session-one")["turnsImported"] == 3
-    conn = studio_db.get_connection()
-    try:
-        tables = {
-            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        assert "cursor_import_sessions" not in tables
-    finally:
-        conn.close()
-
-
 def test_a_no_op_import_does_not_promote_the_project_in_the_sidebar(cursor_home):
     import_cursor_chats()
     project_id = project_id_for("Users-me-app")
@@ -599,7 +549,6 @@ def test_nothing_to_import_is_not_a_failure(tmp_path, monkeypatch):
     summary = import_cursor_chats()
 
     assert summary.chats == 0
-    assert summary.imported_anything is False
 
 
 # Routes
@@ -608,7 +557,7 @@ def test_nothing_to_import_is_not_a_failure(tmp_path, monkeypatch):
 @pytest.fixture
 def client():
     app = FastAPI()
-    app.include_router(cursor_import_router, prefix = "/api/import")
+    app.include_router(external_import_router, prefix = "/api/import")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app)
 
@@ -642,6 +591,6 @@ def test_the_import_endpoint_reports_what_it_wrote(client, cursor_home):
 
 def test_the_import_endpoint_needs_a_signed_in_user(cursor_home):
     app = FastAPI()
-    app.include_router(cursor_import_router, prefix = "/api/import")
+    app.include_router(external_import_router, prefix = "/api/import")
 
     assert TestClient(app).post("/api/import/cursor").status_code in (401, 403)

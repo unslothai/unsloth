@@ -14,7 +14,7 @@ import storage.studio_db as studio_db
 from auth.authentication import get_current_subject
 from core.claude_import import discovery, import_claude_chats, project_id_for, thread_id_for
 from core.claude_import.transcripts import read_transcript
-from routes.claude_import import router as claude_import_router
+from routes.external_import import router as external_import_router
 
 # ISO timestamps, the shape Claude Code writes.
 T0 = "2026-08-01T10:00:00.000Z"
@@ -563,7 +563,7 @@ def test_an_empty_session_leaves_nothing_behind(claude_home, tmp_path):
 @pytest.fixture
 def client():
     app = FastAPI()
-    app.include_router(claude_import_router, prefix = "/api/import")
+    app.include_router(external_import_router, prefix = "/api/import")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app)
 
@@ -593,5 +593,31 @@ def test_the_import_endpoint_reports_what_it_wrote(client, claude_home):
 
 def test_the_import_endpoint_needs_a_signed_in_user(claude_home):
     app = FastAPI()
-    app.include_router(claude_import_router, prefix = "/api/import")
+    app.include_router(external_import_router, prefix = "/api/import")
     assert TestClient(app).post("/api/import/claude").status_code in (401, 403)
+
+
+@pytest.mark.parametrize("source", ["claude", "cursor"])
+def test_a_managed_account_cannot_reach_the_owners_histories(claude_home, source):
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    app = FastAPI()
+    app.include_router(external_import_router, prefix = "/api/import")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+
+    @app.middleware("http")
+    async def as_managed_account(request, call_next):
+        token = bind_account(AccountContext("acct-alice", "alice"))
+        try:
+            return await call_next(request)
+        finally:
+            reset_account(token)
+
+    client = TestClient(app)
+    assert client.get(f"/api/import/{source}/status").json()["available"] is False
+    assert client.post(f"/api/import/{source}").status_code == 403
+    assert studio_db.list_chat_threads() == []
+
+
+def test_an_unknown_source_is_rejected(client):
+    assert client.post("/api/import/vscode").status_code == 422

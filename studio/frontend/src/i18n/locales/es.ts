@@ -2422,29 +2422,18 @@ export const es = {
       importingChats: "Importando chats: {count} hasta ahora ({percent}%)...",
       importedChatCountPartial: "Se importaron {count} conversaciones a Recientes; {failed} no se pudieron guardar.",
       importFailed: "La importación falló.",
-      importFromCursor: "Importar desde Cursor",
-      importFromCursorDescription:
-        "Copia tus conversaciones de Cursor a Studio, agrupadas por proyecto.",
+      importFromSource: "Importar desde {source}",
+      importFromSourceDescription:
+        "Copia tus conversaciones de {source} a Studio, agrupadas por proyecto.",
       importingAction: "Importando...",
-      importCursorNoChats: "No se encontraron conversaciones de Cursor.",
-      importedCursorOneChat: "Se importó 1 conversación desde Cursor.",
-      importedCursorChatCount:
-        "Se importaron {count} conversaciones desde Cursor.",
-      cursorUpToDate:
-        "Las conversaciones de Cursor ya están actualizadas.",
-      importedCursorPartial:
-        "No se pudieron importar algunas conversaciones de Cursor.",
-      importFromClaude: "Importar desde Claude Code",
-      importFromClaudeDescription:
-        "Copia tus conversaciones de Claude Code a Studio, agrupadas por proyecto.",
-      importClaudeNoChats: "No se encontraron conversaciones de Claude Code.",
-      importedClaudeOneChat: "Se importó 1 conversación desde Claude Code.",
-      importedClaudeChatCount:
-        "Se importaron {count} conversaciones desde Claude Code.",
-      claudeUpToDate:
-        "Las conversaciones de Claude Code ya están actualizadas.",
-      importedClaudePartial:
-        "No se pudieron importar algunas conversaciones de Claude Code.",
+      importSourceNoChats: "No se encontraron conversaciones de {source}.",
+      importedSourceOneChat: "Se importó 1 conversación desde {source}.",
+      importedSourceChatCount:
+        "Se importaron {count} conversaciones desde {source}.",
+      sourceUpToDate:
+        "Las conversaciones de {source} ya están actualizadas.",
+      importedSourcePartial:
+        "No se pudieron importar algunas conversaciones de {source}.",
       clearHistory: "Borrar historial de chat",
       clearHistoryDescription: "Elimina el historial de chat de este dispositivo.",
       clearAction: "Borrar",

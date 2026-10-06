@@ -11,7 +11,6 @@ from core.claude_import.discovery import (
     read_project,
 )
 from core.claude_import.importer import (
-    ClaudeImportSummary,
     import_claude_chats,
     project_id_for,
     thread_id_for,
@@ -20,7 +19,6 @@ from core.claude_import.transcripts import ClaudeTranscript, read_transcript
 
 __all__ = [
     "CLAUDE_HOME_ENV",
-    "ClaudeImportSummary",
     "ClaudeProject",
     "ClaudeTranscript",
     "claude_home",

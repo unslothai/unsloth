@@ -2409,25 +2409,16 @@ export const ptBR = {
       importingChats: "Importando chats: {count} até agora ({percent}%)...",
       importedChatCountPartial: "{count} conversas importadas para Recentes; {failed} não puderam ser salvas.",
       importFailed: "Falha na importação.",
-      importFromCursor: "Importar do Cursor",
-      importFromCursorDescription:
-        "Copie suas conversas do Cursor para o Studio, agrupadas por projeto.",
+      importFromSource: "Importar do {source}",
+      importFromSourceDescription:
+        "Copie suas conversas do {source} para o Studio, agrupadas por projeto.",
       importingAction: "Importando...",
-      importCursorNoChats: "Nenhuma conversa do Cursor encontrada.",
-      importedCursorOneChat: "1 conversa importada do Cursor.",
-      importedCursorChatCount:
-        "{count} conversas importadas do Cursor.",
-      cursorUpToDate: "As conversas do Cursor já estão atualizadas.",
-      importedCursorPartial: "Algumas conversas do Cursor não puderam ser importadas.",
-      importFromClaude: "Importar do Claude Code",
-      importFromClaudeDescription:
-        "Copie suas conversas do Claude Code para o Studio, agrupadas por projeto.",
-      importClaudeNoChats: "Nenhuma conversa do Claude Code encontrada.",
-      importedClaudeOneChat: "1 conversa importada do Claude Code.",
-      importedClaudeChatCount:
-        "{count} conversas importadas do Claude Code.",
-      claudeUpToDate: "As conversas do Claude Code já estão atualizadas.",
-      importedClaudePartial: "Algumas conversas do Claude Code não puderam ser importadas.",
+      importSourceNoChats: "Nenhuma conversa do {source} encontrada.",
+      importedSourceOneChat: "1 conversa importada do {source}.",
+      importedSourceChatCount:
+        "{count} conversas importadas do {source}.",
+      sourceUpToDate: "As conversas do {source} já estão atualizadas.",
+      importedSourcePartial: "Algumas conversas do {source} não puderam ser importadas.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
       clearAction: "Limpar",

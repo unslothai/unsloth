@@ -2387,25 +2387,16 @@ export const it = {
       importingChats: "Importazione chat: {count} finora ({percent}%)...",
       importedChatCountPartial: "Importate {count} conversazioni in Recenti; {failed} non sono state salvate.",
       importFailed: "Importazione non riuscita.",
-      importFromCursor: "Importa da Cursor",
-      importFromCursorDescription:
-        "Copia le tue conversazioni di Cursor in Studio, raggruppate per progetto.",
+      importFromSource: "Importa da {source}",
+      importFromSourceDescription:
+        "Copia le tue conversazioni di {source} in Studio, raggruppate per progetto.",
       importingAction: "Importazione...",
-      importCursorNoChats: "Nessuna conversazione di Cursor trovata.",
-      importedCursorOneChat: "1 conversazione importata da Cursor.",
-      importedCursorChatCount:
-        "{count} conversazioni importate da Cursor.",
-      cursorUpToDate: "Le conversazioni di Cursor sono già aggiornate.",
-      importedCursorPartial: "Alcune conversazioni di Cursor non sono state importate.",
-      importFromClaude: "Importa da Claude Code",
-      importFromClaudeDescription:
-        "Copia le tue conversazioni di Claude Code in Studio, raggruppate per progetto.",
-      importClaudeNoChats: "Nessuna conversazione di Claude Code trovata.",
-      importedClaudeOneChat: "1 conversazione importata da Claude Code.",
-      importedClaudeChatCount:
-        "{count} conversazioni importate da Claude Code.",
-      claudeUpToDate: "Le conversazioni di Claude Code sono già aggiornate.",
-      importedClaudePartial: "Alcune conversazioni di Claude Code non sono state importate.",
+      importSourceNoChats: "Nessuna conversazione di {source} trovata.",
+      importedSourceOneChat: "1 conversazione importata da {source}.",
+      importedSourceChatCount:
+        "{count} conversazioni importate da {source}.",
+      sourceUpToDate: "Le conversazioni di {source} sono già aggiornate.",
+      importedSourcePartial: "Alcune conversazioni di {source} non sono state importate.",
       clearHistory: "Cancella la cronologia delle chat",
       clearHistoryDescription:
         "Elimina la cronologia delle chat da questo dispositivo.",

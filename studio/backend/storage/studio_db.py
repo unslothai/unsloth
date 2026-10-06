@@ -808,7 +808,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    _fold_cursor_import_ledger(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS prompt_entries (
@@ -5459,39 +5458,6 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
         return len(ids), inserted
     finally:
         conn.close()
-
-
-def _fold_cursor_import_ledger(conn: sqlite3.Connection) -> None:
-    """Move Cursor marks onto the shared ledger, then drop the old table.
-
-    Early drafts of this feature stored Cursor's progress in its own table.
-    A machine that ran that draft still has the rows; without folding them,
-    a re-import would see no mark and refuse to write anything Cursor appended.
-    """
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    if "cursor_import_sessions" not in tables:
-        return
-    # VALUES upsert, not INSERT…SELECT…ON CONFLICT: older SQLite parses the
-    # latter as a syntax error, and the per-session write is the same shape
-    # record_external_import_mark already uses.
-    rows = conn.execute(
-        "SELECT session_id, transcript_updated_at, turns_imported FROM cursor_import_sessions"
-    ).fetchall()
-    for row in rows:
-        conn.execute(
-            """
-            INSERT INTO external_import_sessions
-                (source, session_id, transcript_updated_at, turns_imported)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(source, session_id) DO UPDATE SET
-                transcript_updated_at = excluded.transcript_updated_at,
-                turns_imported = MAX(
-                    excluded.turns_imported, external_import_sessions.turns_imported
-                )
-            """,
-            ("cursor", row["session_id"], row["transcript_updated_at"], row["turns_imported"]),
-        )
-    conn.execute("DROP TABLE cursor_import_sessions")
 
 
 def get_external_import_mark(source: str, session_id: str) -> Optional[dict]:
