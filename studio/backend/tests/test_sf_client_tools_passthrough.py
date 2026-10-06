@@ -1621,6 +1621,25 @@ def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
     assert probed[0] is bool(offered)
 
 
+@pytest.mark.parametrize("asked", [{"enable_tools": True}, {"mcp_enabled": True}])
+def test_tool_choice_none_keeps_a_compacted_mlx_thread_tool_free(monkeypatch, asked):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
+    monkeypatch.setattr(inf, "_thread_has_checkpoint", lambda thread_id, messages = None: True)
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    _install(monkeypatch, backend)
+    # A GGUF model that is still loading already reports its tool support.
+    loading = SimpleNamespace(**{**vars(_llama_stub()), "supports_tools": True})
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: loading)
+    fields = {"thread_id": "saved", "context_overflow": "truncate_oldest", "tool_choice": "none"}
+    _serve(monkeypatch, stream = False, context_policy = "checkpoint", **fields, **asked)
+
+    assert backend.calls[0]["tools"] is None
+    assert [fit["recall_reachable"] for fit in backend.fits] == [False]
+
+
 _TURNS = "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
 _WITH_TOOLS = "{% if tools %}<tool_call>{{ tools }}</tool_call>{% endif %}" + _TURNS
 # Named templates: only the branch a turn carrying tools renders decides, either way round.

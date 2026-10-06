@@ -32224,8 +32224,10 @@ async def produce_openai_chat_completions(
         payload.tool_choice != "none" and bool(payload.mcp_enabled) and _sf_cli_policy is not False
     )
     # Can a turn run search_conversation? A stream without control frames cannot approve the call.
+    # tool_choice is asked directly: _tool_loop_unusable weighs it against the GGUF backend's tools.
     _sf_recall_loop_usable = (
-        not _tool_loop_unusable
+        payload.tool_choice != "none"
+        and not _tool_loop_unusable
         and not _has_client_tool_contract
         and not _response_format_constrains_decoding(payload)
         and (_ui_events or not _confirm_gate_would_prompt(payload, ("search_conversation",)))
