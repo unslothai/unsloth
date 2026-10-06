@@ -863,8 +863,9 @@ def capability_snapshot(
         reason = reason,
         environment = sys.platform,
         protection_state = "preview",
-        profile_id = backend.PROFILE_ID,
-        limitations = backend.LIMITATIONS,
+        # The Linux layout can vary per host (an empty /proc in containers); macOS has one profile.
+        profile_id = getattr(backend, "profile_id", lambda: backend.PROFILE_ID)(),
+        limitations = getattr(backend, "limitations", lambda: backend.LIMITATIONS)(),
         probe_generation = hashlib.sha256((identity + "available").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = (

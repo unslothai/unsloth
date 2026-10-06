@@ -8,6 +8,7 @@ from __future__ import annotations
 import fnmatch
 import glob
 import os
+import re
 import shutil
 import stat
 import site
@@ -120,7 +121,10 @@ def bwrap_identity() -> str:
     """Stable identity included in capability-cache keys."""
     path = _trusted_bwrap_path()
     info = os.stat(path, follow_symlinks = False)
-    return repr((path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode))
+    layout = "emptyproc" if empty_proc_layout(path) else "proc"
+    return repr(
+        (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode, layout)
+    )
 
 
 # /etc is fresh in the jail; without these nothing dynamically linked starts.
@@ -332,13 +336,85 @@ def _bwrap_long_options(identity: tuple[str, int, int]) -> frozenset[str]:
     )
 
 
-def _bwrap_supports(bwrap: str, option: str) -> bool:
+def _bwrap_file_identity(bwrap: str) -> tuple[str, int, int]:
     try:
         info = os.stat(bwrap)
-        identity = (bwrap, info.st_ino, info.st_mtime_ns)
+        return (bwrap, info.st_ino, info.st_mtime_ns)
     except OSError:
-        identity = (bwrap, 0, 0)
-    return option in _bwrap_long_options(identity)
+        return (bwrap, 0, 0)
+
+
+def _bwrap_supports(bwrap: str, option: str) -> bool:
+    return option in _bwrap_long_options(_bwrap_file_identity(bwrap))
+
+
+# A container masking parts of its own /proc (Docker, Colab) refuses a fresh one in a child namespace.
+# bwrap <= 0.11 says "on /newroot/proc", 0.12 says "on /proc" (openai/codex#44329).
+_PROC_MOUNT_REFUSED = re.compile(
+    r"Can't mount proc on (?:/newroot)?/proc: "
+    r"(?:Permission denied|Operation not permitted|Invalid argument)"
+)
+
+
+def proc_mount_refused(stderr: str) -> bool:
+    return bool(_PROC_MOUNT_REFUSED.search(stderr or ""))
+
+
+def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProcess | None":
+    """The launch's namespaces, /proc and system binds in its order, running only `true`."""
+    true = next((p for p in ("/usr/bin/true", "/bin/true") if os.path.isfile(p)), None)
+    if true is None:
+        return None
+    argv = [bwrap, "--unshare-user", "--unshare-pid", *proc, "--dev", "/dev"]
+    for root in _SYSTEM_ROOTS:
+        if os.path.isdir(root):
+            argv += ["--ro-bind-try", root, root]
+    try:
+        return subprocess.run(
+            [*argv, "--", true],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            close_fds = True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+@lru_cache(maxsize = 8)
+def _fresh_proc_refused(identity: tuple[str, int, int]) -> bool:
+    """Only the /proc mount fails while the rest of bwrap works; any other failure is the probe's to report."""
+    fresh = _preflight(identity[0], ("--proc", "/proc"))
+    if fresh is None or fresh.returncode == 0 or not proc_mount_refused(fresh.stderr):
+        return False
+    without = _preflight(identity[0], ())
+    return without is not None and without.returncode == 0
+
+
+def empty_proc_layout(bwrap: str | None = None) -> bool:
+    """Whether launches mount an empty private /proc instead of a fresh procfs. Never the host's: it lists every cmdline."""
+    try:
+        path = bwrap or _trusted_bwrap_path()
+    except SandboxUnavailableError:
+        return False
+    return _fresh_proc_refused(_bwrap_file_identity(path))
+
+
+def forget_proc_layout() -> None:
+    _fresh_proc_refused.cache_clear()
+
+
+def profile_id() -> str:
+    return f"{PROFILE_ID}-emptyproc" if empty_proc_layout() else PROFILE_ID
+
+
+def limitations() -> tuple[str, ...]:
+    # ps and anything reading /proc see nothing inside.
+    return (*LIMITATIONS, "no_process_filesystem") if empty_proc_layout() else LIMITATIONS
 
 
 def _host_mount_points() -> tuple[str, ...]:
@@ -730,8 +806,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "ALL",
             "--seccomp",
             str(seccomp.fileno()),
-            "--proc",
-            "/proc",
+            *(("--tmpfs", "/proc") if empty_proc_layout(bwrap) else ("--proc", "/proc")),
             "--dev",
             "/dev",
             "--dir",

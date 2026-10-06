@@ -565,3 +565,15 @@ def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, t
         "the host was never re-examined, so installing bubblewrap does not "
         "take effect until the long TTL expires"
     )
+
+
+def test_the_capability_names_the_empty_proc_layout_it_was_probed_with(monkeypatch):
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("the /proc layout is a bubblewrap detail")
+    from core.inference import sandbox_linux
+
+    monkeypatch.setattr(sandbox_probe, "probe", lambda backend, force = False: (True, "probe passed"))
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: True)
+    capability = os_sandbox.capability_snapshot(force = True)
+    assert capability.available and capability.profile_id == f"{sandbox_linux.PROFILE_ID}-emptyproc"
+    assert "no_process_filesystem" in capability.limitations

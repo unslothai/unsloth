@@ -12,6 +12,7 @@ import inspect
 import json
 import os
 import platform
+import shlex
 import shutil
 import socket
 import stat
@@ -2415,3 +2416,128 @@ def test_studio_state_inside_a_runtime_path_is_carved_out(monkeypatch, tmp_path)
     assert str(state) not in kept
     assert str(lib / "python3.12") in kept
     assert str(managed) in kept, "the managed venv inside the Studio home must stay readable"
+
+
+@pytest.mark.parametrize(
+    "stderr,refused",
+    [
+        ("bwrap: Can't mount proc on /newroot/proc: Permission denied", True),  # bwrap 0.9 (Colab)
+        ("bwrap: Can't mount proc on /proc: Operation not permitted", True),  # bwrap 0.12
+        ("bwrap: Can't mount proc on /newroot/proc: Invalid argument", True),
+        ("bwrap: setting up uid map: Permission denied", False),
+        ("bwrap: Can't mount tmpfs on /newroot/tmp: Permission denied", False),
+        ("bwrap: Can't mount proc on /newroot/proc: No such file or directory", False),
+        ("", False),
+    ],
+)
+def test_only_a_refused_proc_mount_reads_as_a_masked_container(stderr, refused):
+    assert sandbox_linux.proc_mount_refused(stderr) is refused
+
+
+def _fake_bwrap(
+    tmp_path,
+    *,
+    fresh_proc,
+    without_proc = 0,
+):
+    """A bwrap whose fresh /proc fails with `fresh_proc` (stderr) and whose other runs exit `without_proc`."""
+    record = tmp_path / "bwrap_calls"
+    fake = tmp_path / "bwrap"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{record}"\n'
+        'for a in "$@"; do if [ "$a" = "--proc" ]; then\n'
+        + (f"  echo {shlex.quote(fresh_proc)} >&2; exit 1\n" if fresh_proc else "  exit 0\n")
+        + "fi; done\n"
+        + f"exit {without_proc}\n"
+    )
+    fake.chmod(0o755)
+    sandbox_linux.forget_proc_layout()
+    return str(fake), record
+
+
+@pytest.fixture
+def _no_proc_layout_left_behind():
+    sandbox_linux.forget_proc_layout()
+    yield
+    sandbox_linux.forget_proc_layout()
+
+
+def test_a_container_refusing_a_fresh_proc_gets_an_empty_one(tmp_path, _no_proc_layout_left_behind):
+    fake, record = _fake_bwrap(
+        tmp_path, fresh_proc = "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    runs = record.read_text().splitlines()
+    assert len(runs) == 2, "the preflight is cached per bwrap"
+    assert "--proc /proc" in runs[0] and "--proc" not in runs[1]
+
+
+@pytest.mark.parametrize(
+    "fresh_proc,without_proc",
+    [
+        ("", 0),  # a fresh procfs works: the normal layout
+        ("bwrap: setting up uid map: Permission denied", 1),  # bwrap is broken for another reason
+        # Only the proc mount fails, but not as a masked container fails: the probe reports it.
+        ("bwrap: Can't mount proc on /newroot/proc: No such file or directory", 0),
+        (
+            "bwrap: Can't mount proc on /proc: Permission denied",
+            1,
+        ),  # nothing works without /proc either
+    ],
+)
+def test_any_other_outcome_keeps_the_fresh_proc(
+    tmp_path, _no_proc_layout_left_behind, fresh_proc, without_proc
+):
+    fake, _record = _fake_bwrap(tmp_path, fresh_proc = fresh_proc, without_proc = without_proc)
+    assert sandbox_linux.empty_proc_layout(fake) is False
+
+
+@pytest.mark.parametrize("empty", [True, False])
+def test_the_launch_mounts_an_empty_private_proc_never_the_hosts(tmp_path, monkeypatch, empty):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: empty)
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        argv = launch.argv
+        assert ("/proc", "/proc") not in _pairs(argv, "--ro-bind")
+        assert ("/proc", "/proc") not in _pairs(argv, "--bind")
+        assert ("/proc", "/proc") not in _pairs(argv, "--ro-bind-try")
+        tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
+        procs = [argv[i + 1] for i, token in enumerate(argv) if token == "--proc"]
+        assert ("/proc" in tmpfs) is empty
+        assert procs == ([] if empty else ["/proc"])
+    finally:
+        launch.cleanup()
+
+
+def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypatch):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    seen = {}
+    for empty in (False, True):
+        monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a, e = empty: e)
+        seen[empty] = (
+            sandbox_linux.profile_id(),
+            sandbox_linux.limitations(),
+            sandbox_linux.bwrap_identity(),
+        )
+    assert seen[False][0] == sandbox_linux.PROFILE_ID != seen[True][0]
+    assert "no_process_filesystem" in seen[True][1]
+    assert "no_process_filesystem" not in seen[False][1]
+    assert seen[False][2] != seen[True][2]
+
+
+def test_resetting_the_probe_forgets_the_proc_layout(tmp_path, _no_proc_layout_left_behind):
+    from core.inference import sandbox_probe
+
+    fake, record = _fake_bwrap(
+        tmp_path, fresh_proc = "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    sandbox_probe.reset_probe_cache()
+    assert sandbox_linux.empty_proc_layout(fake) is True
+    assert len(record.read_text().splitlines()) == 4, "the layout was not checked again"
+
