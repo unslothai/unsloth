@@ -27,6 +27,7 @@ This file therefore runs on Linux, macOS and Windows with no accelerator and no 
 from __future__ import annotations
 
 import ast
+import contextlib
 import sys
 import types
 from pathlib import Path
@@ -56,7 +57,12 @@ def _load(*names, **env):
     """Exec the named top-level functions against `env` and return the namespace."""
     # save.py imports this from models.mistral_format (#12144) and calls it on every merge and
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
-    namespace = {"raise_if_merging_mistral_format_view": lambda model, save_method: None, **env}
+    # The residual-init conversion (#6879) is a no-op without PiSSA-style snapshots.
+    namespace = {
+        "raise_if_merging_mistral_format_view": lambda model, save_method: None,
+        "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
+        **env,
+    }
     for name in names:
         exec(compile(_function_source(name), str(_SAVE_PY), "exec"), namespace)
     return namespace
