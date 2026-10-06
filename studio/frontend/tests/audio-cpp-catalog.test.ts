@@ -575,7 +575,10 @@ test("an outdated managed runtime names both releases; anything else shows no no
   const page = readAudioWorkspaceSource();
   assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
   assert.match(page, /\{runtimeUpdate \? \(/);
-  assert.match(page, /<code className="font-mono">unsloth studio update<\/code>/);
+  assert.match(
+    page,
+    /Stop Studio,\{" "\}\s*run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>,\s*then start Studio again\./,
+  );
 });
 
 test("the capability line names GGUF audio and music, never the runtime's internal type", () => {

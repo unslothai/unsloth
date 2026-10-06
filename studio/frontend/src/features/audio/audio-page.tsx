@@ -1587,9 +1587,10 @@ export function AudioPage({
                       <span className="whitespace-nowrap">
                         {runtimeUpdate.expected}
                       </span>
-                      . Some models may not work until you update. Run{" "}
+                      . Some models may not work until you update. Stop Studio,{" "}
+                      run{" "}
                       <code className="font-mono">unsloth studio update</code>,
-                      then restart Studio.
+                      then start Studio again.
                     </span>
                   </p>
                 ) : null}
