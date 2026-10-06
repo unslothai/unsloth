@@ -71,7 +71,9 @@ def test_comfy_expert_names_resolve_the_a14b_family_and_pair():
 
 def test_checkpoint_files_name_both_experts():
     assert _checkpoint_files(GGUF_HIGH, "gguf") == (GGUF_HIGH, GGUF_LOW)
-    assert _checkpoint_files("Wan2.2-TI2V-5B-Q4_K_M.gguf", "gguf") == ("Wan2.2-TI2V-5B-Q4_K_M.gguf",)
+    assert _checkpoint_files("Wan2.2-TI2V-5B-Q4_K_M.gguf", "gguf") == (
+        "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+    )
     assert _checkpoint_files(None, "gguf") == ()
 
 
