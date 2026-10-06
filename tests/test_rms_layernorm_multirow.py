@@ -65,20 +65,25 @@ def _inputs(
     return X, W, dY
 
 
-def _run(X, W, dY, gemma):
-    Y, r = rms_layernorm._rms_forward(X, W, 1e-6, gemma, _eager)
+def _run(
+    X,
+    W,
+    dY,
+    gemma,
+    rows = None,
+):
+    Y, r = rms_layernorm._rms_forward(X, W, 1e-6, gemma, _eager, rows)
     dY = dY.clone()
     dX = torch.empty_like(dY) if gemma else dY
-    rms_layernorm._rms_backward(dY, dX, X, W, r, 1e-6, gemma, _eager)
+    rms_layernorm._rms_backward(dY, dX, X, W, r, 1e-6, gemma, _eager, rows)
     return Y, r, dX
 
 
 def _both(monkeypatch, X, W, dY, gemma):
-    monkeypatch.setattr(rms_layernorm, "_MULTIROW", False)
-    one_row = _run(X, W, dY, gemma)
-    monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
-    many_rows = _run(X, W, dY, gemma)
-    return one_row, many_rows
+    # Forced past the self-check: a mismatch there would fall back and compare one row to itself.
+    settings = rms_layernorm._multirow_settings(X.shape[1])
+    assert settings is not None
+    return _run(X, W, dY, gemma, False), _run(X, W, dY, gemma, settings)
 
 
 @pytest.mark.parametrize("kind", ["normal", "wide", "offset", "zero_rows"])
