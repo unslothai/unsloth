@@ -132,7 +132,10 @@ def krea2_original(sd: dict) -> dict:
         if key in _KREA2_INV_TOP:
             out[_KREA2_INV_TOP[key]] = value.clone()
             continue
-        m = re.match(r"^(transformer_blocks|text_fusion\.layerwise_blocks|text_fusion\.refiner_blocks)\.(\d+)\.(.+)$", key)
+        m = re.match(
+            r"^(transformer_blocks|text_fusion\.layerwise_blocks|text_fusion\.refiner_blocks)\.(\d+)\.(.+)$",
+            key,
+        )
         assert m, key
         group, index, rest = m.groups()
         stem = {
@@ -141,7 +144,9 @@ def krea2_original(sd: dict) -> dict:
             "text_fusion.refiner_blocks": "txtfusion.refiner_blocks",
         }[group]
         if rest == "scale_shift_table":
-            out[f"{stem}.{index}.mod.lin"] = value.reshape(-1).clone()  # stored flat in the real files
+            out[f"{stem}.{index}.mod.lin"] = value.reshape(
+                -1
+            ).clone()  # stored flat in the real files
         else:
             out[f"{stem}.{index}.{_KREA2_INV_BLOCK[rest]}"] = value.clone()
     return out
@@ -190,13 +195,30 @@ def hy_original(sd: dict, hidden: int, comfy_names: bool) -> dict:
     # c_embedder has its own naming in the reference repo: linear_1 / linear_2
     for p in ("weight", "bias"):
         a, b = ref_or_comfy(("linear_1", "linear_2"), ("in_layer", "out_layer"))
-        put(f"txt_in.c_embedder.{a}.{p}", take(f"context_embedder.time_text_embed.text_embedder.linear_1.{p}"))
-        put(f"txt_in.c_embedder.{b}.{p}", take(f"context_embedder.time_text_embed.text_embedder.linear_2.{p}"))
+        put(
+            f"txt_in.c_embedder.{a}.{p}",
+            take(f"context_embedder.time_text_embed.text_embedder.linear_1.{p}"),
+        )
+        put(
+            f"txt_in.c_embedder.{b}.{p}",
+            take(f"context_embedder.time_text_embed.text_embedder.linear_2.{p}"),
+        )
 
-    n_ref = len({k.split(".")[3] for k in sd if k.startswith("context_embedder.token_refiner.refiner_blocks.")})
+    n_ref = len(
+        {
+            k.split(".")[3]
+            for k in sd
+            if k.startswith("context_embedder.token_refiner.refiner_blocks.")
+        }
+    )
     for i in range(n_ref):
-        s, d = f"context_embedder.token_refiner.refiner_blocks.{i}.", f"txt_in.individual_token_refiner.blocks.{i}."
-        qkv, proj = ref_or_comfy(("self_attn_qkv", "self_attn_proj"), ("self_attn.qkv", "self_attn.proj"))
+        s, d = (
+            f"context_embedder.token_refiner.refiner_blocks.{i}.",
+            f"txt_in.individual_token_refiner.blocks.{i}.",
+        )
+        qkv, proj = ref_or_comfy(
+            ("self_attn_qkv", "self_attn_proj"), ("self_attn.qkv", "self_attn.proj")
+        )
         for p in ("weight", "bias"):
             put(f"{d}norm1.{p}", take(f"{s}norm1.{p}"))
             put(f"{d}norm2.{p}", take(f"{s}norm2.{p}"))
@@ -211,8 +233,17 @@ def hy_original(sd: dict, hidden: int, comfy_names: bool) -> dict:
         s, d = f"transformer_blocks.{i}.", f"double_blocks.{i}."
         for side, q, k, v, o, nq, nk, mod, ff in (
             ("img", "to_q", "to_k", "to_v", "to_out.0", "norm_q", "norm_k", "norm1", "ff"),
-            ("txt", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out", "norm_added_q", "norm_added_k",
-             "norm1_context", "ff_context"),
+            (
+                "txt",
+                "add_q_proj",
+                "add_k_proj",
+                "add_v_proj",
+                "to_add_out",
+                "norm_added_q",
+                "norm_added_k",
+                "norm1_context",
+                "ff_context",
+            ),
         ):
             attn_qkv = ref_or_comfy(f"{side}_attn_qkv", f"{side}_attn.qkv")
             attn_proj = ref_or_comfy(f"{side}_attn_proj", f"{side}_attn.proj")
@@ -222,20 +253,39 @@ def hy_original(sd: dict, hidden: int, comfy_names: bool) -> dict:
                 put(f"{d}{side}_mod.{lin}.{p}", take(f"{s}{mod}.linear.{p}"))
                 put(f"{d}{side}_mlp.{mlp_in}.{p}", take(f"{s}{ff}.net.0.proj.{p}"))
                 put(f"{d}{side}_mlp.{mlp_out}.{p}", take(f"{s}{ff}.net.2.{p}"))
-            put(ref_or_comfy(f"{d}{side}_attn_q_norm.weight", f"{d}{side}_attn.norm.query_norm.scale"),
-                take(f"{s}attn.{nq}.weight"))
-            put(ref_or_comfy(f"{d}{side}_attn_k_norm.weight", f"{d}{side}_attn.norm.key_norm.scale"),
-                take(f"{s}attn.{nk}.weight"))
+            put(
+                ref_or_comfy(
+                    f"{d}{side}_attn_q_norm.weight", f"{d}{side}_attn.norm.query_norm.scale"
+                ),
+                take(f"{s}attn.{nq}.weight"),
+            )
+            put(
+                ref_or_comfy(
+                    f"{d}{side}_attn_k_norm.weight", f"{d}{side}_attn.norm.key_norm.scale"
+                ),
+                take(f"{s}attn.{nk}.weight"),
+            )
 
     n_single = len({k.split(".")[1] for k in sd if k.startswith("single_transformer_blocks.")})
     for i in range(n_single):
         s, d = f"single_transformer_blocks.{i}.", f"single_blocks.{i}."
         for p in ("weight", "bias"):
-            put(f"{d}linear1.{p}", torch.cat([take(f"{s}attn.to_{x}.{p}") for x in "qkv"] + [take(f"{s}proj_mlp.{p}")]))
+            put(
+                f"{d}linear1.{p}",
+                torch.cat(
+                    [take(f"{s}attn.to_{x}.{p}") for x in "qkv"] + [take(f"{s}proj_mlp.{p}")]
+                ),
+            )
             put(f"{d}linear2.{p}", take(f"{s}proj_out.{p}"))
             put(f"{d}modulation.{lin}.{p}", take(f"{s}norm.linear.{p}"))
-        put(ref_or_comfy(f"{d}q_norm.weight", f"{d}norm.query_norm.scale"), take(f"{s}attn.norm_q.weight"))
-        put(ref_or_comfy(f"{d}k_norm.weight", f"{d}norm.key_norm.scale"), take(f"{s}attn.norm_k.weight"))
+        put(
+            ref_or_comfy(f"{d}q_norm.weight", f"{d}norm.query_norm.scale"),
+            take(f"{s}attn.norm_q.weight"),
+        )
+        put(
+            ref_or_comfy(f"{d}k_norm.weight", f"{d}norm.key_norm.scale"),
+            take(f"{s}attn.norm_k.weight"),
+        )
 
     assert used == set(sd), sorted(set(sd) - used)[:5]  # the inverse covers the whole model
     if comfy_names:
@@ -245,7 +295,10 @@ def hy_original(sd: dict, hidden: int, comfy_names: bool) -> dict:
 
 def _assert_round_trip(model, converted):
     want = model.state_dict()
-    assert set(converted) == set(want), (sorted(set(want) - set(converted))[:5], sorted(set(converted) - set(want))[:5])
+    assert set(converted) == set(want), (
+        sorted(set(want) - set(converted))[:5],
+        sorted(set(converted) - set(want))[:5],
+    )
     for key, value in want.items():
         assert tuple(converted[key].shape) == tuple(value.shape), key
         assert torch.equal(converted[key], value), key
@@ -260,14 +313,22 @@ def test_krea2_original_layout_round_trips_bit_identical():
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     original = krea2_original(model.state_dict())
     # The real files' top-level names, from Comfy-Org/Krea-2's headers.
-    assert {"first.weight", "tproj.1.weight", "txtmlp.3.bias", "last.modulation.lin", "blocks.0.mod.lin"} <= set(original)
+    assert {
+        "first.weight",
+        "tproj.1.weight",
+        "txtmlp.3.bias",
+        "last.modulation.lin",
+        "blocks.0.mod.lin",
+    } <= set(original)
     assert original["blocks.0.mod.lin"].dim() == 1
     _assert_round_trip(model, conv.krea2_checkpoint_to_diffusers(checkpoint = original))
 
 
 def test_krea2_container_prefix_is_stripped():
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
-    original = {"model.diffusion_model." + k: v for k, v in krea2_original(model.state_dict()).items()}
+    original = {
+        "model.diffusion_model." + k: v for k, v in krea2_original(model.state_dict()).items()
+    }
     _assert_round_trip(model, conv.krea2_checkpoint_to_diffusers(checkpoint = original))
 
 
@@ -278,7 +339,9 @@ def test_hunyuanimage_original_layouts_round_trip_bit_identical(comfy_names, dis
     model = _tiny("HunyuanImageTransformer2DModel", cfg)
     hidden = cfg["num_attention_heads"] * cfg["attention_head_dim"]
     original = hy_original(model.state_dict(), hidden, comfy_names)
-    _assert_round_trip(model, conv.hunyuanimage_checkpoint_to_diffusers(checkpoint = original, config = cfg))
+    _assert_round_trip(
+        model, conv.hunyuanimage_checkpoint_to_diffusers(checkpoint = original, config = cfg)
+    )
     # Without a config the hidden size is read off img_in.
     _assert_round_trip(model, conv.hunyuanimage_checkpoint_to_diffusers(checkpoint = original))
 
@@ -297,14 +360,22 @@ def test_hunyuanimage_final_modulation_halves_swap():
 
 def test_unknown_keys_are_refused_not_dropped():
     with pytest.raises(ValueError, match = "not a Krea 2 transformer key"):
-        conv.krea2_checkpoint_to_diffusers(checkpoint = {"blocks.0.attn.something.weight": torch.zeros(2, 2)})
+        conv.krea2_checkpoint_to_diffusers(
+            checkpoint = {"blocks.0.attn.something.weight": torch.zeros(2, 2)}
+        )
     with pytest.raises(ValueError, match = "not a HunyuanImage 2.1 transformer key"):
         conv.hunyuanimage_checkpoint_to_diffusers(
-            checkpoint = {"img_in.proj.bias": torch.zeros(8), "double_blocks.0.img_attn.extra.weight": torch.zeros(2, 2)}
+            checkpoint = {
+                "img_in.proj.bias": torch.zeros(8),
+                "double_blocks.0.img_attn.extra.weight": torch.zeros(2, 2),
+            }
         )
     with pytest.raises(ValueError, match = "cannot be split"):
         conv.hunyuanimage_checkpoint_to_diffusers(
-            checkpoint = {"img_in.proj.bias": torch.zeros(8), "double_blocks.0.img_attn.qkv.weight": torch.zeros(23, 8)}
+            checkpoint = {
+                "img_in.proj.bias": torch.zeros(8),
+                "double_blocks.0.img_attn.qkv.weight": torch.zeros(23, 8),
+            }
         )
 
 
@@ -321,7 +392,9 @@ def test_every_2d_weight_is_a_whole_row_gather(family):
         fn = conv.krea2_checkpoint_to_diffusers
     else:
         distilled = family == "hy_comfy_distilled"
-        model = _tiny("HunyuanImageTransformer2DModel", {**HY_CFG, **(HY_DISTILLED if distilled else {})})
+        model = _tiny(
+            "HunyuanImageTransformer2DModel", {**HY_CFG, **(HY_DISTILLED if distilled else {})}
+        )
         original = hy_original(model.state_dict(), 32, comfy_names = distilled)
         fn = conv.hunyuanimage_checkpoint_to_diffusers
     weights = sorted(k for k, v in original.items() if v.dim() == 2)
@@ -340,7 +413,10 @@ def test_every_2d_weight_is_a_whole_row_gather(family):
             continue
         for i, r, n in cq._decode_rows(name, value, sources):
             for row in range(r, r + n):
-                assert (i, row) not in seen, f"{name}: row {row} of {weights[i]} also went to {seen[(i, row)]}"
+                assert (
+                    i,
+                    row,
+                ) not in seen, f"{name}: row {row} of {weights[i]} also went to {seen[(i, row)]}"
                 seen[(i, row)] = name
     assert len(seen) == sum(int(original[k].shape[0]) for k in weights)
 
@@ -401,11 +477,17 @@ def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch):
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     path = tmp_path / "krea2_tiny_bf16.safetensors"
     safetensors_torch.save_file(
-        {k: v.to(torch.bfloat16).contiguous() for k, v in krea2_original(model.state_dict()).items()}, str(path)
+        {
+            k: v.to(torch.bfloat16).contiguous()
+            for k, v in krea2_original(model.state_dict()).items()
+        },
+        str(path),
     )
     monkeypatch.setattr(cls, "load_config", classmethod(lambda c, *a, **k: dict(KREA2_CFG)))
     loaded = conv.load_original_layout_transformer(
-        cls, str(path), {"torch_dtype": torch.bfloat16, "config": "krea/Krea-2-Turbo", "subfolder": "transformer"}
+        cls,
+        str(path),
+        {"torch_dtype": torch.bfloat16, "config": "krea/Krea-2-Turbo", "subfolder": "transformer"},
     )
     keep = cls._keep_in_fp32_modules
     for key, value in model.state_dict().items():
@@ -427,8 +509,10 @@ def test_the_single_file_branch_uses_studio_loader_only_without_from_single_file
 
     source = inspect.getsource(studio)
     gate = source.index('if kind != "gguf" and not hasattr(transformer_cls, "from_single_file"):')
-    assert gate < source.index("load_original_layout_transformer(\n", gate) < source.index(
-        "transformer = transformer_cls.from_single_file(", gate
+    assert (
+        gate
+        < source.index("load_original_layout_transformer(\n", gate)
+        < source.index("transformer = transformer_cls.from_single_file(", gate)
     )
 
 
@@ -514,8 +598,14 @@ def _header_stub(path):
         n = struct.unpack("<Q", f.read(8))[0]
         header = json.loads(f.read(n))
     header.pop("__metadata__", None)
-    dtypes = {"BF16": torch.bfloat16, "F32": torch.float32, "F16": torch.float16, "F8_E4M3": torch.float8_e4m3fn,
-              "I8": torch.int8, "U8": torch.uint8}
+    dtypes = {
+        "BF16": torch.bfloat16,
+        "F32": torch.float32,
+        "F16": torch.float16,
+        "F8_E4M3": torch.float8_e4m3fn,
+        "I8": torch.int8,
+        "U8": torch.uint8,
+    }
     layers = {k[: -len(".comfy_quant")] for k in header if k.endswith(".comfy_quant")}
     stub = {}
     for key, meta in header.items():
@@ -528,7 +618,6 @@ def _header_stub(path):
 
 def _meta_model(cls, cfg):
     from accelerate import init_empty_weights
-
     with init_empty_weights():
         return cls.from_config(cfg)
 
@@ -549,7 +638,10 @@ def test_real_comfy_headers_convert_strictly(pattern):
     if "Krea-2" in pattern:
         cls, cfg, fn = _class("Krea2Transformer2DModel"), {}, conv.krea2_checkpoint_to_diffusers
     else:
-        cls, fn = _class("HunyuanImageTransformer2DModel"), conv.hunyuanimage_checkpoint_to_diffusers
+        cls, fn = (
+            _class("HunyuanImageTransformer2DModel"),
+            conv.hunyuanimage_checkpoint_to_diffusers,
+        )
         cfg = dict(
             text_embed_2_dim = 1472,
             rope_axes_dim = (64, 64),

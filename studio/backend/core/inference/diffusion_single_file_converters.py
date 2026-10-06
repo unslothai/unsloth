@@ -43,7 +43,6 @@ def _plain_1d(value: Any) -> Any:
     quant_shape = getattr(value, "quant_shape", None)
     if quant_shape is not None and len(quant_shape) == 1:
         from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
-
         return dequantize_gguf_tensor(value)
     return value
 
@@ -100,7 +99,9 @@ _KREA2_BLOCK = {
     "postnorm.scale": "norm2.weight",
 }
 
-_KREA2_BLOCK_RE = re.compile(r"^(blocks|txtfusion\.layerwise_blocks|txtfusion\.refiner_blocks)\.(\d+)\.(.+)$")
+_KREA2_BLOCK_RE = re.compile(
+    r"^(blocks|txtfusion\.layerwise_blocks|txtfusion\.refiner_blocks)\.(\d+)\.(.+)$"
+)
 _KREA2_BLOCK_STEM = {
     "blocks": "transformer_blocks",
     "txtfusion.layerwise_blocks": "text_fusion.layerwise_blocks",
@@ -204,7 +205,9 @@ _HYIMG_QKV = {
     "self_attn.qkv": ("attn.to_q", "attn.to_k", "attn.to_v"),
 }
 
-_HYIMG_REFINER_RE = re.compile(r"^txt_in\.individual_token_refiner\.blocks\.(\d+)\.(.+)\.(weight|bias|scale)$")
+_HYIMG_REFINER_RE = re.compile(
+    r"^txt_in\.individual_token_refiner\.blocks\.(\d+)\.(.+)\.(weight|bias|scale)$"
+)
 _HYIMG_DOUBLE_RE = re.compile(r"^double_blocks\.(\d+)\.(.+)\.(weight|bias|scale)$")
 _HYIMG_SINGLE_RE = re.compile(r"^single_blocks\.(\d+)\.(.+)\.(weight|bias|scale)$")
 _HYIMG_TOP_RE = re.compile(r"^(.+)\.(weight|bias|scale)$")
@@ -214,16 +217,28 @@ _HYIMG_TOP_RE = re.compile(r"^(.+)\.(weight|bias|scale)$")
 # Each rewrites only a name, so the two layouts share every row rule below.
 _HYIMG_REFERENCE_NAMES = (
     (re.compile(r"^((?:double_blocks\.\d+\.)(?:img|txt))_attn_(qkv|proj)\."), r"\1_attn.\2."),
-    (re.compile(r"^((?:double_blocks\.\d+\.)(?:img|txt))_attn_q_norm\.weight$"), r"\1_attn.norm.query_norm.scale"),
-    (re.compile(r"^((?:double_blocks\.\d+\.)(?:img|txt))_attn_k_norm\.weight$"), r"\1_attn.norm.key_norm.scale"),
+    (
+        re.compile(r"^((?:double_blocks\.\d+\.)(?:img|txt))_attn_q_norm\.weight$"),
+        r"\1_attn.norm.query_norm.scale",
+    ),
+    (
+        re.compile(r"^((?:double_blocks\.\d+\.)(?:img|txt))_attn_k_norm\.weight$"),
+        r"\1_attn.norm.key_norm.scale",
+    ),
     (re.compile(r"^(single_blocks\.\d+\.)q_norm\.weight$"), r"\1norm.query_norm.scale"),
     (re.compile(r"^(single_blocks\.\d+\.)k_norm\.weight$"), r"\1norm.key_norm.scale"),
-    (re.compile(r"^(txt_in\.individual_token_refiner\.blocks\.\d+\.)self_attn_(qkv|proj)\."), r"\1self_attn.\2."),
+    (
+        re.compile(r"^(txt_in\.individual_token_refiner\.blocks\.\d+\.)self_attn_(qkv|proj)\."),
+        r"\1self_attn.\2.",
+    ),
     (re.compile(r"\.(img_mlp|txt_mlp|mlp)\.fc1\."), r".\1.0."),
     (re.compile(r"\.(img_mlp|txt_mlp|mlp)\.fc2\."), r".\1.2."),
     (re.compile(r"\.(img_mod|txt_mod|modulation)\.linear\."), r".\1.lin."),
     (re.compile(r"^(time_in|time_r_in|guidance_in|txt_in\.t_embedder)\.mlp\.0\."), r"\1.in_layer."),
-    (re.compile(r"^(time_in|time_r_in|guidance_in|txt_in\.t_embedder)\.mlp\.2\."), r"\1.out_layer."),
+    (
+        re.compile(r"^(time_in|time_r_in|guidance_in|txt_in\.t_embedder)\.mlp\.2\."),
+        r"\1.out_layer.",
+    ),
     (re.compile(r"^txt_in\.c_embedder\.linear_1\."), "txt_in.c_embedder.in_layer."),
     (re.compile(r"^txt_in\.c_embedder\.linear_2\."), "txt_in.c_embedder.out_layer."),
 )
@@ -240,7 +255,11 @@ def _hyimg_param(suffix: str) -> str:
     return "weight" if suffix == "scale" else suffix
 
 
-def hunyuanimage_checkpoint_to_diffusers(checkpoint: Any = None, config: Any = None, **kwargs: Any) -> dict:
+def hunyuanimage_checkpoint_to_diffusers(
+    checkpoint: Any = None,
+    config: Any = None,
+    **kwargs: Any,
+) -> dict:
     """HunyuanImage 2.1 original layout -> diffusers ``HunyuanImageTransformer2DModel``. Both original
     namings load: the reference repo's (``img_attn_qkv``, ``mlp.fc1``, ``mod.linear``; Comfy-Org's bf16
     file) and ComfyUI's (``img_attn.qkv``, ``mlp.0``, ``mod.lin``, under ``model.model.``; its fp8 and
@@ -277,12 +296,16 @@ def hunyuanimage_checkpoint_to_diffusers(checkpoint: Any = None, config: Any = N
             index, layer, suffix = match.groups()
             stem = f"context_embedder.token_refiner.refiner_blocks.{index}."
             if layer in _HYIMG_QKV:
-                for name, part in zip(_HYIMG_QKV[layer], _split_rows(raw_key, value, (hidden,) * 3)):
+                for name, part in zip(
+                    _HYIMG_QKV[layer], _split_rows(raw_key, value, (hidden,) * 3)
+                ):
                     converted[f"{stem}{name}.{suffix}"] = part
                 continue
             new = _HYIMG_REFINER.get(layer)
             if new is None:
-                raise ValueError(f"{raw_key}: not a HunyuanImage 2.1 transformer key this converter knows")
+                raise ValueError(
+                    f"{raw_key}: not a HunyuanImage 2.1 transformer key this converter knows"
+                )
             converted[f"{stem}{new}.{_hyimg_param(suffix)}"] = value
             continue
 
@@ -291,12 +314,16 @@ def hunyuanimage_checkpoint_to_diffusers(checkpoint: Any = None, config: Any = N
             index, layer, suffix = match.groups()
             stem = f"transformer_blocks.{index}."
             if layer in _HYIMG_QKV:
-                for name, part in zip(_HYIMG_QKV[layer], _split_rows(raw_key, value, (hidden,) * 3)):
+                for name, part in zip(
+                    _HYIMG_QKV[layer], _split_rows(raw_key, value, (hidden,) * 3)
+                ):
                     converted[f"{stem}{name}.{suffix}"] = part
                 continue
             new = _HYIMG_DOUBLE.get(layer)
             if new is None:
-                raise ValueError(f"{raw_key}: not a HunyuanImage 2.1 transformer key this converter knows")
+                raise ValueError(
+                    f"{raw_key}: not a HunyuanImage 2.1 transformer key this converter knows"
+                )
             converted[f"{stem}{new}.{_hyimg_param(suffix)}"] = value
             continue
 
@@ -309,12 +336,16 @@ def hunyuanimage_checkpoint_to_diffusers(checkpoint: Any = None, config: Any = N
                 if mlp <= 0:
                     raise ValueError(f"{raw_key}: too few rows for q, k, v and the MLP input")
                 names = ("attn.to_q", "attn.to_k", "attn.to_v", "proj_mlp")
-                for name, part in zip(names, _split_rows(raw_key, value, (hidden, hidden, hidden, mlp))):
+                for name, part in zip(
+                    names, _split_rows(raw_key, value, (hidden, hidden, hidden, mlp))
+                ):
                     converted[f"{stem}{name}.{suffix}"] = part
                 continue
             new = _HYIMG_SINGLE.get(layer)
             if new is None:
-                raise ValueError(f"{raw_key}: not a HunyuanImage 2.1 transformer key this converter knows")
+                raise ValueError(
+                    f"{raw_key}: not a HunyuanImage 2.1 transformer key this converter knows"
+                )
             converted[f"{stem}{new}.{_hyimg_param(suffix)}"] = value
             continue
 
@@ -344,7 +375,6 @@ def _cat_rows(first: Any, second: Any) -> Any:
     quant_type = getattr(first, "quant_type", None)
     if quant_type is not None and getattr(out, "quant_type", None) is None:
         from diffusers.quantizers.gguf.utils import GGUFParameter
-
         out = GGUFParameter(out, quant_type = quant_type)
     return out
 
@@ -356,7 +386,12 @@ CONVERTERS: dict = {
 }
 
 
-def load_original_layout_transformer(transformer_cls: Any, path: str, sf_kwargs: dict, logger: Any = None) -> Any:
+def load_original_layout_transformer(
+    transformer_cls: Any,
+    path: str,
+    sf_kwargs: dict,
+    logger: Any = None,
+) -> Any:
     """``transformer_cls`` from a plain (unquantized) original-layout safetensors file, for a class
     diffusers gives no ``from_single_file`` at all (Krea 2: no ``FromOriginalModelMixin``).
 
@@ -399,7 +434,6 @@ def load_original_layout_transformer(transformer_cls: Any, path: str, sf_kwargs:
     unexpected = sorted(set(converted) - set(wanted))
     if missing or unexpected:
         import os
-
         name = os.path.basename(str(path))
         raise ValueError(
             f"{name} does not match {transformer_cls.__name__}: {len(missing)} missing "
@@ -413,11 +447,16 @@ def load_original_layout_transformer(transformer_cls: Any, path: str, sf_kwargs:
         if not value.is_floating_point():
             continue
         if tuple(value.shape) != tuple(wanted[key].shape):
-            raise ValueError(f"{key}: {tuple(value.shape)} in the file, {tuple(wanted[key].shape)} in the model")
+            raise ValueError(
+                f"{key}: {tuple(value.shape)} in the file, {tuple(wanted[key].shape)} in the model"
+            )
         if value.dtype != want:
             converted[key] = value.to(want)
     model.load_state_dict(converted, strict = True, assign = True)
     model.eval()
     if logger is not None:
-        logger.info("diffusion.single_file: %s loaded from an original-layout file", transformer_cls.__name__)
+        logger.info(
+            "diffusion.single_file: %s loaded from an original-layout file",
+            transformer_cls.__name__,
+        )
     return model
