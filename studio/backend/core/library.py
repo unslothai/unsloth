@@ -463,7 +463,12 @@ def _attachment_items() -> list[dict]:
 _NAME_BREAK_RE = re.compile(f"[{UNSAFE_NAME_CHARS}\\s]+")
 
 
-def _prompt_name(prompt: str, fallback: str, extension: str, suffix: str = "") -> str:
+def _prompt_name(
+    prompt: str,
+    fallback: str,
+    extension: str,
+    suffix: str = "",
+) -> str:
     cleaned = _NAME_BREAK_RE.sub(" ", prompt).strip()
     if len(cleaned) > 60:
         cleaned = cleaned[:60].rsplit(" ", 1)[0] or cleaned[:60]

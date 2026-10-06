@@ -1005,7 +1005,10 @@ def test_a_group_delete_takes_only_that_runs_clips():
     from fastapi import HTTPException
     from routes.inference import delete_gallery_audio_group
 
-    stems = [gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r)) for r in ("vocals", "drums")]
+    stems = [
+        gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
+        for r in ("vocals", "drums")
+    ]
     other = gallery.save(_wav(), _meta(workflow = "separate", group_id = "g2", role = "vocals"))
     loose = gallery.save(_wav(), _meta())
     assert asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester")) == {"removed": 2}

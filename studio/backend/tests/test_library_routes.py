@@ -602,7 +602,11 @@ def test_separated_stems_are_named_by_stem_and_carry_their_run(client, monkeypat
 def test_music_variations_and_edits_get_distinct_names(client, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
 
-    def song(role, variation, mode = "song"):
+    def song(
+        role,
+        variation,
+        mode = "song",
+    ):
         settings = {"mode": mode, "variation": variation}
         return _audio_clip("Rainy jazz", workflow = "music", role = role, settings = settings)
 
@@ -610,7 +614,12 @@ def test_music_variations_and_edits_get_distinct_names(client, monkeypatch):
     edit, sfx = song("edit", None, "edit"), song("output", None, "sfx")
     items = _items(client)[0]
     names = [items[f"audio:{clip}"]["name"] for clip in (first, second, edit, sfx)]
-    assert names == ["Rainy jazz (1).wav", "Rainy jazz (2).wav", "Rainy jazz (edit).wav", "Rainy jazz.wav"]
+    assert names == [
+        "Rainy jazz (1).wav",
+        "Rainy jazz (2).wav",
+        "Rainy jazz (edit).wav",
+        "Rainy jazz.wav",
+    ]
     assert [items[f"audio:{clip}"]["audio"]["mode"] for clip in (first, sfx)] == ["song", "sfx"]
     assert [items[f"audio:{clip}"]["audio"]["variation"] for clip in (second, edit)] == [2, None]
 
@@ -622,7 +631,9 @@ def test_a_long_prompt_keeps_its_stem_suffix(client, monkeypatch):
     assert name.endswith(" - Vocals.wav") and len(name) <= 60 + len(" - Vocals.wav")
 
 
-def test_a_clip_made_with_a_local_model_hides_its_path_from_an_api_key(client, monkeypatch, tmp_path):
+def test_a_clip_made_with_a_local_model_hides_its_path_from_an_api_key(
+    client, monkeypatch, tmp_path
+):
     monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
     local = str(tmp_path / "models" / "my-tts.gguf")
     clip = _audio_clip("Hi", workflow = "speak", model = local)
