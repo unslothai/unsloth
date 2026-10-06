@@ -8,16 +8,89 @@ import contextlib
 import functools
 import importlib.util
 import os
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
-__all__ = ["compiled_encoder"]
+__all__ = ["compiled_encoder", "pad_length"]
 
 # Shorter runs spend more on a cold compile than it saves.
 COMPILE_MIN_FORWARDS = 4000
+# Static shapes launch far cheaper than dynamic ones on short decisions, one graph per 64-token bucket
+# (G4: full fine-tune 0.528 -> 0.482 s/step at 2 x 16). Past STATIC_MAX_LEN there are too many buckets
+# to compile, so long-context data keeps dynamic shapes.
+STATIC_MULTIPLE = 64
+STATIC_MAX_LEN = 1024
+
+
+def _encoder_sdpa(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    dropout = 0.0,
+    scaling = None,
+    **kwargs,
+):
+    # transformers' SDPA attention without unsloth_zoo's wrappers, which carry a __module__ that
+    # torch 2.11's dynamo cannot guard, so the compiled layers fell back to eager on Linux.
+    out = torch.nn.functional.scaled_dot_product_attention(
+        query, key, value, attn_mask = attention_mask, dropout_p = dropout, scale = scaling
+    )
+    return out.transpose(1, 2).contiguous(), None
+
+
+@contextlib.contextmanager
+def _compilable_attention(model, enabled: bool):
+    config = model.encoder.config
+    original = config._attn_implementation
+    if enabled and original == "sdpa":
+        from transformers import AttentionInterface, AttentionMaskInterface
+        from transformers.masking_utils import sdpa_mask
+
+        AttentionInterface.register("unsloth_decision_sdpa", _encoder_sdpa)
+        AttentionMaskInterface.register("unsloth_decision_sdpa", sdpa_mask)
+        config._attn_implementation = "unsloth_decision_sdpa"
+    try:
+        yield
+    finally:
+        config._attn_implementation = original
+
+
+def _compile_static(function):
+    return torch.compile(function, dynamic = False)
+
+
+def _training_only(layer, compiled):
+    # Evaluation batches have arbitrary lengths, which static graphs would compile one by one.
+    def call(*args, **kwargs):
+        return compiled(*args, **kwargs) if layer.training else layer._call_impl(*args, **kwargs)
+
+    return call
+
+
+@contextlib.contextmanager
+def _recompile_limit(limit: int):
+    config = torch._dynamo.config
+    name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+    original = getattr(config, name)
+    setattr(config, name, max(original, limit))
+    try:
+        yield
+    finally:
+        setattr(config, name, original)
+
+
+def _torch_checkpoint():
+    # torch's own checkpoint, also once unsloth_zoo has patched torch.utils.checkpoint.checkpoint.
+    module = torch.utils.checkpoint
+    for func in (module.checkpoint, getattr(module, "_old_checkpoint", None)):
+        if getattr(func, "__module__", None) == module.__name__:
+            return func
+    return None
 
 
 def _encoder_layers(model):
@@ -74,6 +147,7 @@ def compiled_encoder(
     model,
     forwards: int,
     amp_dtype = None,
+    max_length: Optional[int] = None,
 ):
     """Compile each Laya encoder layer in place for one training run, then go back to eager.
 
@@ -82,6 +156,9 @@ def compiled_encoder(
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []
+    static = bool(layers) and max_length is not None and max_length <= STATIC_MAX_LEN
+    # Every bucket compiles once with and once without grad (the KL reference forward), plus slack.
+    buckets = -(-max_length // STATIC_MULTIPLE) if static else 0
     # Unsloth's reentrant offloaded checkpoint gives compiled bf16 layers wrong gradients (cosine 0.68
     # to eager, 0.30 full fine-tune), so compiled runs checkpoint with torch's own.
     swapped = {}
@@ -91,27 +168,53 @@ def compiled_encoder(
             layer._compiled_call_impl = None
         for layer, func in swapped.items():
             layer._gradient_checkpointing_func = func
+        model.__dict__["_unsloth_pad_multiple"] = 0
 
-    if layers:
+    with _compilable_attention(model, bool(layers)), _recompile_limit(2 * buckets + 8):
+        if layers:
+            try:
+                torch_checkpoint = _torch_checkpoint()
+                if torch_checkpoint is None:
+                    raise RuntimeError("torch's own checkpoint is not reachable")
+                for layer in layers:
+                    func = getattr(layer, "_gradient_checkpointing_func", None)
+                    if func is not None and getattr(func, "func", func) is not torch_checkpoint:
+                        swapped[layer] = func
+                        layer._gradient_checkpointing_func = functools.partial(
+                            torch_checkpoint, use_reentrant = False
+                        )
+                    if static:
+                        layer._compiled_call_impl = _training_only(
+                            layer, _compile_static(layer._call_impl)
+                        )
+                    else:
+                        layer.compile(dynamic = True)
+                model.__dict__["_unsloth_pad_multiple"] = STATIC_MULTIPLE if static else 0
+                _warm_up(model, amp_dtype)
+            except Exception as error:
+                restore()
+                torch._dynamo.reset()
+                print(
+                    f"Unsloth: compiling the Laya encoder failed ({type(error).__name__}), training eagerly."
+                )
+                layers, swapped = [], {}
+        model.__dict__["_unsloth_decision_compiled"] = bool(layers)
         try:
-            for layer in layers:
-                func = getattr(layer, "_gradient_checkpointing_func", None)
-                if func is not None and getattr(func, "func", func) is not _torch_checkpoint:
-                    swapped[layer] = func
-                    layer._gradient_checkpointing_func = functools.partial(
-                        _torch_checkpoint, use_reentrant = False
-                    )
-                layer.compile(dynamic = True)
-            _warm_up(model, amp_dtype)
-        except Exception as error:
+            yield bool(layers)
+        finally:
             restore()
-            torch._dynamo.reset()
-            print(
-                f"Unsloth: compiling the Laya encoder failed ({type(error).__name__}), training eagerly."
-            )
-            layers, swapped = [], {}
-    model.__dict__["_unsloth_decision_compiled"] = bool(layers)
-    try:
-        yield bool(layers)
-    finally:
-        restore()
+
+
+def pad_length(model, inputs: dict) -> dict:
+    # Pads a training batch to the static bucket; padded positions are masked keys and never
+    # gathered, so the loss is unchanged.
+    multiple = model.__dict__.get("_unsloth_pad_multiple", 0)
+    extra = -inputs["input_ids"].shape[1] % multiple if multiple and model.training else 0
+    if extra:
+        pad = model.encoder.config.pad_token_id or 0
+        inputs = {
+            **inputs,
+            "input_ids": torch.nn.functional.pad(inputs["input_ids"], (0, extra), value = pad),
+            "attention_mask": torch.nn.functional.pad(inputs["attention_mask"], (0, extra)),
+        }
+    return inputs
