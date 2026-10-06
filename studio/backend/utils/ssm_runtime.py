@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
@@ -20,6 +19,7 @@ from loggers import get_logger
 from utils.kernel_install import (
     CAUSAL_CONV1D,
     MAMBA_SSM,
+    PinnedKernel,
     hipcc_gcc_install_dir,
     install_prebuilt,
     source_build_command,
@@ -348,6 +348,18 @@ def _install_kernel(
     return _is_importable(import_name)
 
 
+def _pinned_kwargs(kernel: PinnedKernel) -> dict[str, str]:
+    """_install_kernel arguments for a pinned kernel release."""
+    return {
+        "import_name": kernel.import_name,
+        "display_name": kernel.display_name,
+        "pypi_name": kernel.pypi_name,
+        "package_version": kernel.package_version,
+        "release_tag": kernel.release_tag,
+        "release_base_url": kernel.release_base_url,
+    }
+
+
 def ensure_ssm_runtime(
     model_name: str,
     *,
@@ -369,9 +381,9 @@ def ensure_ssm_runtime(
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install_kernel(
-        **asdict(CAUSAL_CONV1D), status_cb = status_cb, run = run
+        **_pinned_kwargs(CAUSAL_CONV1D), status_cb = status_cb, run = run
     ):
         logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
 
-    if is_ssm and not _install_kernel(**asdict(MAMBA_SSM), status_cb = status_cb, run = run):
+    if is_ssm and not _install_kernel(**_pinned_kwargs(MAMBA_SSM), status_cb = status_cb, run = run):
         raise RuntimeError("Could not install mamba-ssm, required by this Mamba model.")

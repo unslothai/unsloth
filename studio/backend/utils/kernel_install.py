@@ -198,6 +198,8 @@ def uninstall_command(
     return [sys.executable, "-m", "pip", "uninstall", "-y", distribution]
 
 
+# `unsloth install-kernels` from here on.
+
 # name -> (pip distribution, check that loads the compiled extension). The package imports are no
 # proof: `import causal_conv1d` never loads it, and `import mamba_ssm` fails on einops under --no-deps.
 # Install order: mamba_ssm's fast path imports causal_conv1d.
