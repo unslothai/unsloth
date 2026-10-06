@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import type { ActivationMetadata, ActivationRecord } from "@/features/training/api/train-api";
+import type { ActivationMetadata, ActivationRecord } from "@/features/training";
 import { type ReactElement, useMemo, useState } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
@@ -342,7 +342,7 @@ export function DiagnosticsPanel({
                     )}
                   >
                     {/* Severity bar */}
-                    <div className={cn("mt-0.5 h-full w-0.5 rounded-full shrink-0 self-stretch min-h-[1rem]", styles.bar)} />
+                    <div className={cn("mt-0.5 h-full w-0.5 rounded-full shrink-0 self-stretch min-h-[calc(1rem*var(--ui-space-scale,1))]", styles.bar)} />
 
                     <div className="flex flex-col gap-0.5 min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 flex-wrap">

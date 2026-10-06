@@ -6,8 +6,11 @@
 import { Menubar as MenubarPrimitive } from "radix-ui";
 import type * as React from "react";
 
+import { Tick02Icon } from "@/lib/tick-icon";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Menubar({
@@ -72,18 +75,23 @@ function MenubarContent({
   className,
   align = "start",
   alignOffset = -4,
-  sideOffset = 8,
+  sideOffset = 0,
+  collisionPadding,
+  ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <MenubarPortal>
       <MenubarPrimitive.Content
+        ref={snappedRef}
         data-slot="menubar-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         alignOffset={alignOffset}
         sideOffset={sideOffset}
         className={cn(
-          "bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/5 min-w-48 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
+          "bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] min-w-48 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
           className,
         )}
         {...props}
@@ -206,7 +214,7 @@ function MenubarShortcut({
     <span
       data-slot="menubar-shortcut"
       className={cn(
-        "text-muted-foreground group-focus/menubar-item:text-accent-foreground text-xs tracking-widest ml-auto",
+        "text-muted-foreground group-focus/menubar-item:text-accent-foreground text-xs tracking-widest ml-auto -mr-[0.1em]",
         className,
       )}
       {...props}
@@ -240,9 +248,9 @@ function MenubarSubTrigger({
     >
       {children}
       <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        strokeWidth={2}
-        className="ml-auto size-4"
+        icon={MenuChevronRightIcon}
+        strokeWidth={1.5}
+        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </MenubarPrimitive.SubTrigger>
   );
@@ -250,13 +258,18 @@ function MenubarSubTrigger({
 
 function MenubarSubContent({
   className,
+  collisionPadding,
+  ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.SubContent>) {
+  const snappedRef = useSnappedPaddingRef(ref);
   return (
     <MenubarPrimitive.SubContent
+      ref={snappedRef}
       data-slot="menubar-sub-content"
+      collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
       className={cn(
-        "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/5 min-w-32 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
+        "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] min-w-32 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
         className,
       )}
       {...props}

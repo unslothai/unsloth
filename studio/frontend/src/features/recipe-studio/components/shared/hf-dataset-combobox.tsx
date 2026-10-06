@@ -10,7 +10,8 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { Spinner } from "@/components/ui/spinner";
-import { useDebouncedValue, useHfDatasetSearch } from "@/hooks";
+import { useDebouncedValue } from "@/hooks";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 
 type HfDatasetComboboxProps = {
@@ -39,7 +40,7 @@ export function HfDatasetCombobox({
     setInputValue(value);
   }, [value]);
 
-  const { results, isLoading, error } = useHfDatasetSearch(debouncedQuery, {
+  const { results, isLoading, error } = useHubDatasetSearch(debouncedQuery, {
     accessToken,
   });
 

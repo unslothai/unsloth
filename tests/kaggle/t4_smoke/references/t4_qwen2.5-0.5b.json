@@ -1,0 +1,113 @@
+{
+  "metrics": [
+    {
+      "step": 1,
+      "loss": 9.584939956665039,
+      "grad_norm": NaN,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 2,
+      "loss": 9.745938301086426,
+      "grad_norm": NaN,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 3,
+      "loss": 9.245159149169922,
+      "grad_norm": NaN,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 4,
+      "loss": 9.647134780883789,
+      "grad_norm": 45.160423278808594,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 5,
+      "loss": 4.702123641967773,
+      "grad_norm": 44.13249969482422,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 6,
+      "loss": 1.6208575963974,
+      "grad_norm": 28.80680274963379,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 7,
+      "loss": 1.6451478004455566,
+      "grad_norm": 52.89907455444336,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 8,
+      "loss": 0.18397647142410278,
+      "grad_norm": 20.12683868408203,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 9,
+      "loss": 1.5581536293029785,
+      "grad_norm": 45.12421417236328,
+      "learning_rate": 0.001
+    },
+    {
+      "step": 10,
+      "loss": 0.12298735976219177,
+      "grad_norm": 12.339546203613281,
+      "learning_rate": 0.001
+    }
+  ],
+  "environment": {
+    "python": "3.12.13",
+    "torch": "2.10.0+cu128",
+    "cuda": "12.8",
+    "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+    "transformers": "5.5.0",
+    "trl": "0.24.0",
+    "unsloth": "2026.8.19",
+    "resolved": {
+      "torch": "2.10.0+cu128",
+      "transformers": "5.5.0",
+      "trl": "0.24.0",
+      "peft": "0.19.1",
+      "accelerate": "1.13.0",
+      "bitsandbytes": "0.50.0",
+      "vllm": null,
+      "triton": "3.6.0",
+      "xformers": null,
+      "datasets": "4.3.0",
+      "tokenizers": "0.22.2",
+      "safetensors": "0.7.0",
+      "huggingface_hub": "1.11.0",
+      "unsloth": "2026.8.19",
+      "unsloth_zoo": "2026.8.13"
+    },
+    "gpu_name": "Tesla T4",
+    "gpu_capability": "sm_75",
+    "gpu_total_gb": 14.6,
+    "gpu_count_visible": 1,
+    "driver_cuda": "12.8"
+  },
+  "config": {
+    "max_steps": 10,
+    "init_loss_scale": 0.0,
+    "batch_size": 2,
+    "grad_accum": 1,
+    "max_seq_length": 512,
+    "learning_rate": 0.001,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "optim": "adamw_8bit",
+    "gradient_checkpointing": "unsloth",
+    "repeat": 2,
+    "dataset_digest": "847095f51df8d86429cd2cd095824369d6d95c36bd461c363599651d356946df"
+  },
+  "model": "unsloth/Qwen2.5-0.5B-Instruct",
+  "resolved_checkpoint": "unsloth/qwen2.5-0.5b-instruct-unsloth-bnb-4bit",
+  "resolved_revision": "10413c288cb9629acdf60b3e0229f3ba75efe413",
+  "source_kernel": "danielhanchen/unsloth-t4-ci-17c2db2a"
+}

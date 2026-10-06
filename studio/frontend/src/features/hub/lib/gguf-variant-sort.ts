@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import type { GgufVariantDetail } from "@/features/hub/inventory";
+import { formatBytes } from "@/features/hub/lib/format";
+import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
+import { type GgufFitInput, classifyGgufVariantFit } from "@/lib/gguf-fit";
+
+export function ggufVariantDisplayLabel(
+  variant: Pick<GgufVariantDetail, "display_label" | "quant">,
+): string {
+  return variant.display_label?.trim() || variant.quant;
+}
+
+export function ggufVariantDownloadSizeBytes(
+  variant: Pick<GgufVariantDetail, "download_size_bytes" | "size_bytes">,
+): number {
+  return variant.download_size_bytes ?? variant.size_bytes;
+}
+
+type GgufVariantTransfer = Pick<
+  GgufVariantDetail,
+  "download_size_bytes" | "size_bytes" | "download_remaining_bytes" | "partial"
+>;
+
+/** What starting this variant now would transfer. On a partial that is the
+ * remainder the backend measured; everywhere else it is the full size. An
+ * unmeasured partial falls back to the total, the costlier of the two. */
+export function ggufVariantTransferBytes(variant: GgufVariantTransfer): number {
+  const total = ggufVariantDownloadSizeBytes(variant);
+  if (!variant.partial) return total;
+  const remaining = variant.download_remaining_bytes;
+  return typeof remaining === "number" && remaining >= 0 ? remaining : total;
+}
+
+/** Labelled form of the above. A partial says what is LEFT: the full size there
+ * reads as "this downloads all over again", which is only true for a one-file
+ * quant. */
+export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
+  const label = formatBytes(ggufVariantTransferBytes(variant));
+  return variant.partial ? `${label} left` : label;
+}
+
+export function ggufVariantFitRank(
+  variant: GgufVariantDetail,
+  resources: GgufFitInput,
+): number {
+  switch (classifyGgufVariantFit(variant, resources)) {
+    case "fits":
+      return 0;
+    case "marginal":
+      return 1;
+    case "partial":
+    case "ram":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+export function compareGgufVariantFitAndSize(
+  a: GgufVariantDetail,
+  b: GgufVariantDetail,
+  resources: GgufFitInput,
+): number {
+  const aFit = ggufVariantFitRank(a, resources);
+  const bFit = ggufVariantFitRank(b, resources);
+  if (aFit !== bFit) return aFit - bFit;
+  return aFit === 3 ? a.size_bytes - b.size_bytes : b.size_bytes - a.size_bytes;
+}
+
+export function ggufVariantDownloadStatusRank(
+  variant: GgufVariantDetail,
+): number {
+  if (variant.downloaded) return 0;
+  if (variant.partial) return 1;
+  return 2;
+}
+
+export function sortDownloadableGgufVariants(
+  variants: readonly GgufVariantDetail[],
+  resources: GgufFitInput,
+): GgufVariantDetail[] {
+  return [...variants].sort((a, b) => {
+    const statusDelta =
+      ggufVariantDownloadStatusRank(a) - ggufVariantDownloadStatusRank(b);
+    if (statusDelta !== 0) return statusDelta;
+    return compareGgufVariantFitAndSize(a, b, resources);
+  });
+}
+
+export function sortLocalGgufVariants(
+  variants: readonly GgufVariantDetail[],
+  options: GgufFitInput & {
+    defaultVariant?: string | null;
+  },
+): GgufVariantDetail[] {
+  const defaultVariant = options.defaultVariant?.trim();
+  return [...variants].sort((a, b) => {
+    if (defaultVariant) {
+      const aDefault = ggufVariantsMatch(a.quant, defaultVariant);
+      const bDefault = ggufVariantsMatch(b.quant, defaultVariant);
+      if (aDefault !== bDefault) return aDefault ? -1 : 1;
+    }
+    return compareGgufVariantFitAndSize(a, b, options);
+  });
+}
+
+export function resolveLocalGgufVariant<T extends { quant: string }>(
+  variants: readonly T[] | null | undefined,
+  options: {
+    selectedVariant?: string | null;
+    activeVariant?: string | null;
+    defaultVariant?: string | null;
+  },
+): T | null {
+  if (!variants || variants.length === 0) {
+    return null;
+  }
+  for (const candidate of [
+    options.selectedVariant,
+    options.activeVariant,
+    options.defaultVariant,
+  ]) {
+    // Blank candidates must not match a blank variant key.
+    if (!candidate?.trim()) {
+      continue;
+    }
+    const match = variants.find((variant) =>
+      ggufVariantsMatch(variant.quant, candidate),
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return variants[0] ?? null;
+}

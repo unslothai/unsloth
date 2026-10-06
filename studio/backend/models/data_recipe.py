@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Pydantic schemas for Data Recipe (DataDesigner) API.
-"""
+"""Pydantic schemas for Data Recipe (DataDesigner) API."""
 
 from __future__ import annotations
 
@@ -83,7 +81,6 @@ class SeedInspectUploadRequest(BaseModel):
     block_id: str | None = None
     file_ids: list[str] | None = None
     file_names: list[str] | None = None
-    # Shared fields
     preview_size: int = Field(default = 10, ge = 1, le = 50)
     seed_source_type: str | None = None
     unstructured_chunk_size: int | None = Field(default = None, ge = 1, le = 20000)
@@ -103,9 +100,7 @@ class SeedInspectUploadRequest(BaseModel):
             if not self.block_id:
                 raise ValueError("block_id is required when using file_ids")
             if self.file_names is None or len(self.file_ids) != len(self.file_names):
-                raise ValueError(
-                    "file_names must be provided and same length as file_ids"
-                )
+                raise ValueError("file_names must be provided and same length as file_ids")
         if has_legacy:
             if not self.filename:
                 raise ValueError("filename is required when using content_base64")
@@ -126,7 +121,7 @@ class UnstructuredFileUploadResponse(BaseModel):
     file_id: str
     filename: str
     size_bytes: int
-    status: str  # "ok" or "error"
+    status: str
     error: str | None = None
 
 

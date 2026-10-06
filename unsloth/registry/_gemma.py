@@ -8,12 +8,9 @@ class GemmaModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{version}-{size}B"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
-# Gemma3 Base Model Meta
 GemmaMeta3Base = ModelMeta(
     org = "google",
     base_name = "gemma",
@@ -25,7 +22,6 @@ GemmaMeta3Base = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-# Gemma3 Instruct Model Meta
 GemmaMeta3Instruct = ModelMeta(
     org = "google",
     base_name = "gemma",

@@ -15,12 +15,21 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ..jsonable import to_jsonable, to_preview_jsonable
+from ..jsonable import to_jsonable, to_preview_jsonable_row
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer
+from ..service import build_config_builder, create_data_designer, install_public_egress_guard
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
-_ARTIFACT_ROOT = recipe_datasets_root()
+# Fresh spawned interpreter: re-apply main.py's process-wide network injections.
+from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
+from utils.paths.path_utils import drop_appledouble_metadata
+
+activate_native_tls()
+activate_happy_eyeballs()
+
+_ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
 _RE_SECRET_TOKEN = re.compile(
     r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
@@ -60,9 +69,7 @@ def _slugify_run_name(value: str) -> str:
     return slug[:80].strip("-")
 
 
-def _build_dataset_name(
-    *, run_name: str | None, job_id: str, artifact_root: Path
-) -> str:
+def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Path) -> str:
     fallback = f"recipe_{job_id}"
     slug = _slugify_run_name(run_name or "")
     base_name = f"recipe_{slug}" if slug else fallback
@@ -74,21 +81,12 @@ def _build_dataset_name(
     return candidate
 
 
-def run_job_process(
-    *,
-    event_queue,
-    recipe: dict[str, Any],
-    run: dict[str, Any],
-) -> None:
-    """
-    Subprocess entrypoint.
-    Sends events to `event_queue`.
-    """
+def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any]) -> None:
+    """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    install_public_egress_guard()
+    os.environ["PYTHONWARNINGS"] = "ignore"
 
     import warnings
     from loggers.config import LogConfig
@@ -101,11 +99,7 @@ def run_job_process(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
-
     try:
-        from data_designer.config.run_config import RunConfig
-
         rows = int(run.get("rows") or 1000)
         job_id = str(run.get("_job_id") or "").strip()
         if not job_id:
@@ -120,12 +114,26 @@ def run_job_process(
         merge_batches = bool(run.get("merge_batches"))
         ensure_dir(_ARTIFACT_ROOT)
         run_config_raw = run.get("run_config") or {}
+        execution_type = str(run.get("execution_type") or "full").strip().lower()
+        planned_artifact_path = (
+            str(_ARTIFACT_ROOT / dataset_name) if execution_type != "preview" else None
+        )
+        event_queue.put(
+            {
+                "type": EVENT_JOB_STARTED,
+                "ts": time.time(),
+                "artifact_path": planned_artifact_path,
+                "execution_type": execution_type,
+            }
+        )
+
+        from data_designer.config.run_config import RunConfig
 
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner configures root logging in DataDesigner.__init__.
-        # Attach queue logger directly to `data_designer` so parser events survive root resets.
+        # DataDesigner resets root logging in __init__; attach the queue handler to the named loggers so
+        # parser events survive.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (
@@ -142,7 +150,6 @@ def run_job_process(
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
 
-        execution_type = str(run.get("execution_type") or "full").strip().lower()
         if execution_type == "preview":
             results = designer.preview(builder, num_records = rows)
             analysis = (
@@ -153,7 +160,7 @@ def run_job_process(
             dataset = (
                 []
                 if results.dataset is None
-                else to_preview_jsonable(results.dataset.to_dict(orient = "records"))
+                else to_preview_jsonable_row(results.dataset.to_dict(orient = "records"))
             )
             processor_artifacts = (
                 None
@@ -172,14 +179,10 @@ def run_job_process(
                 }
             )
         else:
-            results = designer.create(
-                builder, num_records = rows, dataset_name = dataset_name
-            )
+            results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
             if merge_batches:
-                _merge_batches_to_single_parquet(
-                    results.artifact_storage.base_dataset_path
-                )
+                _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {
@@ -203,7 +206,8 @@ def run_job_process(
 
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     parquet_dir = base_dataset_path / "parquet-files"
-    parquet_files = sorted(parquet_dir.glob("*.parquet"))
+    # Counted, so a companion would make a single-batch job take the merge path and rewrite a dataset that needed none.
+    parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:
         return
 

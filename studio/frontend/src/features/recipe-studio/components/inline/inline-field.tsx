@@ -17,7 +17,7 @@ export function InlineField({
 }: InlineFieldProps): ReactElement {
   return (
     <div className={cn("grid gap-1.5", className)}>
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
         {label}
       </p>
       {children}

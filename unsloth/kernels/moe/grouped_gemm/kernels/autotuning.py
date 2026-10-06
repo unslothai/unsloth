@@ -1,16 +1,13 @@
 # Unsloth
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published
 # by the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Affero General Public License for more details.
-#
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
@@ -53,25 +50,23 @@ def _triton_supports_tma():
     """Check if current Triton version supports TMA API."""
     import triton.language as tl
 
-    # Check for both old experimental and new stable API names
+    # Both the old experimental and the new stable API names.
     return hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
 
 
-# Precompute at module import
-# NOTE: TMA is disabled for now due to compatibility issues with permute_x/permute_y settings
-# in the MoE grouped GEMM forward/backward passes. Re-enable once these are resolved.
-_TRITON_HAS_TMA = False  # _triton_supports_tma()
+# TMA disabled for now: incompatible with permute_x/permute_y in the MoE grouped GEMM passes.
+_TRITON_HAS_TMA = False
 
 
 def get_forward_configs(
     BLOCK_M = DEFAULT_M_BLOCK_SIZES,
     BLOCK_N = DEFAULT_N_BLOCK_SIZES,
     BLOCK_K = DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_X = None,  # Auto-detect if not specified
-    TMA_LOAD_W = None,  # Auto-detect if not specified
-    TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
+    TMA_LOAD_X = None,
+    TMA_LOAD_W = None,
+    TMA_STORE = False,
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
@@ -150,14 +145,13 @@ def get_dX_kernel_configs(
     BLOCK_M = DEFAULT_M_BLOCK_SIZES,
     BLOCK_N = DEFAULT_N_BLOCK_SIZES,
     BLOCK_K = DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_dY = None,  # Auto-detect if not specified
-    TMA_LOAD_W = None,  # Auto-detect if not specified
-    TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
+    TMA_LOAD_dY = None,
+    TMA_LOAD_W = None,
+    TMA_STORE = False,
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
 ):
-    # Auto-detect TMA support
     if TMA_LOAD_dY is None:
         TMA_LOAD_dY = _TRITON_HAS_TMA
     if TMA_LOAD_W is None:
@@ -233,11 +227,10 @@ def get_dW_kernel_configs(
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
-    TMA_LOAD_dY = None,  # Auto-detect if not specified
-    TMA_LOAD_X = None,  # Auto-detect if not specified
+    TMA_LOAD_dY = None,
+    TMA_LOAD_X = None,
     TMA_STORE = False,
 ):
-    # Auto-detect TMA support
     if TMA_LOAD_dY is None:
         TMA_LOAD_dY = _TRITON_HAS_TMA
     if TMA_LOAD_X is None:
@@ -307,16 +300,11 @@ def get_dW_kernel_configs(
 
 
 def estimate_smem_reqs(
-    num_stages: int,
-    BLOCK_SIZE_M: int,
-    BLOCK_SIZE_N: int,
-    BLOCK_SIZE_K: int,
-    dtype: torch.dtype,
+    num_stages: int, BLOCK_SIZE_M: int, BLOCK_SIZE_N: int, BLOCK_SIZE_K: int, dtype: torch.dtype
 ):
     num_bytes = dtype.itemsize
     return (
-        num_stages * BLOCK_SIZE_K * (BLOCK_SIZE_M + BLOCK_SIZE_N)
-        + BLOCK_SIZE_M * BLOCK_SIZE_N
+        num_stages * BLOCK_SIZE_K * (BLOCK_SIZE_M + BLOCK_SIZE_N) + BLOCK_SIZE_M * BLOCK_SIZE_N
     ) * num_bytes
 
 
@@ -329,9 +317,7 @@ def exceeds_smem_capacity(
     smem_size: int,
     slack: float = 50000,
 ):
-    smem_reqs = estimate_smem_reqs(
-        num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype
-    )
+    smem_reqs = estimate_smem_reqs(num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype)
     return smem_reqs > smem_size + slack
 
 
@@ -352,7 +338,6 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
     permute_y = kwargs["PERMUTE_Y"]
     tokens_per_expert = num_tokens // num_experts
 
-    # use_tma = [k for k in config.kwargs.keys() if k.startswith("USE_TMA_")]
     MIN_BLOCK_SIZE_M = DEFAULT_M_BLOCK_SIZES[0]
     if exceeds_smem_capacity(
         num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype, smem_size
@@ -362,14 +347,11 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
         return True
     if permute_x and permute_y:
         return True
-    # if not supports_tma() and any(use_tma):
-    #     return True
     return False
 
 
 def maybe_disable_tma(config: triton.Config):
     from ..interface import supports_tma
-
     tma_keys = [k for k in config.kwargs.keys() if k.startswith("USE_TMA_")]
     if not supports_tma():
         logger.info("Disabling TMA")
@@ -391,7 +373,7 @@ def prune_kernel_configs_fwd(configs: list[triton.Config], args, **kwargs):
         if common_prune_criteria(config, kwargs, dtype):
             continue
         if config.kwargs["USE_TMA_LOAD_X"] and kwargs["PERMUTE_X"]:
-            # Dynamically disable TMA_LOAD_X for permuted X
+            # Dynamically disable TMA_LOAD_X for permuted X, and TMA_LOAD_dY for permuted Y.
             config.kwargs["USE_TMA_LOAD_X"] = False
         if config.kwargs["USE_TMA_STORE"] and kwargs["PERMUTE_Y"]:
             continue

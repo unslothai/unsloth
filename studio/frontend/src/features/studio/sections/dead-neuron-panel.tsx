@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ReplayControls } from "./neuron-heatmap-section";
-import type { ActivationRecord } from "@/features/training/api/train-api";
+import type { ActivationRecord } from "@/features/training";
 import { type ReactElement, useMemo, useState } from "react";
 
 // A neuron channel is "dead" if its max mean_abs across all captured steps is below this.
@@ -217,7 +217,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                         dead (avg)
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent className="max-w-[240px]">
+                    <TooltipContent className="max-w-[calc(240px*var(--ui-space-scale,1))]">
                       <p className="font-medium mb-1">Dead neurons</p>
                       <p className="text-xs/relaxed font-normal">
                         A channel is dead when its mean absolute activation stays below 0.01 across all
@@ -238,7 +238,7 @@ export function DeadNeuronPanel({ isTraining, records, stepIndex, onStepChange }
                         constant (avg)
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent className="max-w-[240px]">
+                    <TooltipContent className="max-w-[calc(240px*var(--ui-space-scale,1))]">
                       <p className="font-medium mb-1">Constant neurons</p>
                       <p className="text-xs/relaxed font-normal">
                         A channel is constant when its activation barely changes over training steps

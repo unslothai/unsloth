@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Shared aria-labels for the Think pill (toggle + effort dropdown) so both
-// controls use the same pre-load / unsupported-model wording.
+// Shared aria-labels for the Think pill toggle + effort dropdown, so both
+// use the same pre-load / unsupported-model wording.
 
 export interface ThinkToggleState {
   reasoningLockedOn: boolean;
@@ -27,8 +27,7 @@ export interface ThinkEffortState {
   reasoningEffort: string;
 }
 
-// Locked-on isn't special-cased: the effort dropdown stays interactive
-// (users can still pick an effort level).
+// Locked-on isn't special-cased: the effort dropdown stays interactive.
 export function thinkEffortAriaLabel(state: ThinkEffortState): string {
   if (!state.modelLoaded) return "Thinking (model not loaded)";
   if (state.reasoningDisabled)

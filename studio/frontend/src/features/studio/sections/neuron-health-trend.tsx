@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { ArrowExpandDiagonal01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ActivationRecord } from "@/features/training/api/train-api";
+import type { ActivationRecord } from "@/features/training";
 import { type ReactElement, useMemo, useState, useSyncExternalStore } from "react";
 import {
   CartesianGrid,
@@ -179,7 +179,7 @@ export function NeuronHealthTrend({
           <CardTitle className="text-sm font-medium">Neuron Health Trend</CardTitle>
         </CardHeader>
         <CardContent className="flex-1 flex items-center justify-center">
-          <p className="text-xs text-muted-foreground text-center max-w-[180px]">
+          <p className="text-xs text-muted-foreground text-center max-w-[calc(180px*var(--ui-space-scale,1))]">
             Need at least 2 captured steps to show trend
           </p>
         </CardContent>

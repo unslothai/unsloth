@@ -70,21 +70,19 @@ export function ChartsSection({
   }
 
   return (
-    <div className="h-full">
-      <Suspense
-        fallback={
-          <div className="grid grid-cols-2 grid-rows-2 gap-4 h-full">
-            {SKELETON_KEYS.map((key) => (
-              <div
-                key={key}
-                className="rounded-xl border bg-muted/30 animate-pulse"
-              />
-            ))}
-          </div>
-        }
-      >
-        <ChartsContent metrics={series} isTraining={isTraining} evalEnabled={evalEnabled} />
-      </Suspense>
-    </div>
+    <Suspense
+      fallback={
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {SKELETON_KEYS.map((key) => (
+            <div
+              key={key}
+              className="h-[calc(280px*var(--ui-space-scale,1))] 4xl:h-[calc(360px*var(--ui-space-scale,1))] rounded-xl border bg-muted/30 animate-pulse"
+            />
+          ))}
+        </div>
+      }
+    >
+      <ChartsContent metrics={series} isTraining={isTraining} evalEnabled={evalEnabled} />
+    </Suspense>
   );
 }

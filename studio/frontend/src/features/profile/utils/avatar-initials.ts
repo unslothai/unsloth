@@ -7,7 +7,17 @@ export function initialsFromName(name: string): string {
   return trimmed[0]!.toUpperCase();
 }
 
-/** Default blue background for avatar fallback (readable white text). */
-export function avatarBgStyle(): { backgroundColor: string } {
-  return { backgroundColor: "hsl(217 58% 48%)" };
+/**
+ * Accent background for the avatar fallback with a readable foreground.
+ *
+ * Uses `--control-accent`, the token behind toggles and badges, so the
+ * avatar follows the palette accent (green in standard, blue in classic)
+ * and any custom accent the user picks in Appearance. The literals only
+ * apply outside the theme root, keeping the avatar branded there.
+ */
+export function avatarBgStyle(): { backgroundColor: string; color: string } {
+  return {
+    backgroundColor: "var(--control-accent, #17b88b)",
+    color: "var(--control-accent-foreground, #ffffff)",
+  };
 }

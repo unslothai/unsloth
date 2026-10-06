@@ -27,12 +27,9 @@ function isAuxNode(node: Node): boolean {
 /**
  * Returns the primary workflow nodes that fitView should target.
  *
- * Excludes markdown notes and aux (LLM input overlay) nodes so the viewport
- * is framed around the primary workflow blocks. Falls back to all nodes if
- * filtering would leave an empty set.
- *
- * The returned array contains full {@link Node} objects so callers can inspect
- * `node.measured` without a second lookup pass.
+ * Excludes markdown notes and aux (LLM input overlay) nodes; falls back to
+ * all nodes if filtering would leave an empty set. Returns full {@link Node}
+ * objects so callers can inspect `node.measured` without a second lookup.
  */
 export function getFitViewTargetNodes(nodes: Node[]): Node[] {
   const primary = nodes.filter(
@@ -42,9 +39,9 @@ export function getFitViewTargetNodes(nodes: Node[]): Node[] {
 }
 
 /**
- * Builds a standard {@link FitViewOptions} object targeting the primary
- * workflow nodes. Every call site that invokes `fitView` should go through
- * this helper so zoom, padding, and node filtering stay consistent.
+ * Builds a standard {@link FitViewOptions} targeting the primary workflow
+ * nodes. All `fitView` call sites go through this so zoom, padding, and
+ * node filtering stay consistent.
  */
 export function buildFitViewOptions(
   nodes: Node[],

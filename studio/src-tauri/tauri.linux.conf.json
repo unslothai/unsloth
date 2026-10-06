@@ -1,0 +1,19 @@
+{
+  "bundle": {
+    "icon": [
+      "icons/linux/512x512.png",
+      "icons/linux/16x16.png",
+      "icons/linux/22x22.png",
+      "icons/linux/24x24.png",
+      "icons/linux/32x32.png",
+      "icons/linux/48x48.png",
+      "icons/linux/64x64.png",
+      "icons/linux/96x96.png",
+      "icons/linux/128x128.png",
+      "icons/linux/256x256.png"
+    ],
+    "resources": {
+      "../../install.sh": "install.sh"
+    }
+  }
+}

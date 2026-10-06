@@ -4,6 +4,13 @@ on:
   schedule:
     - cron: '30 5 * * *' # Runs at 5:30 UTC every day
 
+# Serialize, never cancel. This job comments on up to 500 issues per run, so a
+# cancelled run leaves a half-pinged backlog and no record of where it stopped.
+# Two runs overlapping would double-ping the same issues.
+concurrency:
+  group: stale-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   stale:
     runs-on: ubuntu-latest
@@ -11,7 +18,7 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f  # v10.2.0
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93  # v11.0.0
         with:
           # The message to post on stale issues.
           # This message will ping the issue author.

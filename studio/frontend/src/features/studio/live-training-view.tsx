@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { cn } from "@/lib/utils";
 import {
+  getTrainingRun,
+  useActivationData,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
@@ -15,8 +17,11 @@ import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-
 import { NeuronHealthTrend } from "./sections/neuron-health-trend";
 import { DiagnosticsPanel } from "./sections/diagnostics-panel";
 import { ProgressSection } from "./sections/progress-section";
+import {
+  type RunConfigOverride,
+  mapRunConfigToOverride,
+} from "./sections/run-config-override";
 import { TrainingStartOverlay } from "./training-start-overlay";
-import { useActivationData } from "@/features/training/hooks/use-activation-data";
 
 function InterpretabilitySection({
   isTraining,
@@ -62,7 +67,7 @@ function InterpretabilitySection({
       />
 
       {/* Trend chart — full width, compact */}
-      <div className="h-[280px]">
+      <div className="h-[calc(280px*var(--ui-space-scale,1))]">
         <NeuronHealthTrend
           records={records}
           stepIndex={displayIndex}
@@ -93,6 +98,23 @@ function InterpretabilitySection({
   );
 }
 
+/** Retry budget for the run-config lookup. The row is inserted at start_training(), but a
+* lookup issued in the same instant can still miss it; a few short retries cover that. */
+const RUN_CONFIG_FETCH_RETRIES = 5;
+const RUN_CONFIG_FETCH_RETRY_MS = 1000;
+
+/** The fetched run config only applies while it belongs to the active job;
+ * a stale record from a previous run falls back to the form store. */
+function activeRunOverride(
+  fetched: { jobId: string; override: RunConfigOverride | undefined } | null,
+  jobId: string | null,
+): RunConfigOverride | undefined {
+  if (fetched === null || fetched.jobId !== jobId) {
+    return undefined;
+  }
+  return fetched.override;
+}
+
 export function LiveTrainingView(): ReactElement {
   const runtime = useTrainingRuntimeStore(
     useShallow((state) => ({
@@ -100,6 +122,7 @@ export function LiveTrainingView(): ReactElement {
       phase: state.phase,
       message: state.message,
       error: state.error,
+      warnings: state.warnings,
       currentStep: state.currentStep,
       totalSteps: state.totalSteps,
       currentEpoch: state.currentEpoch,
@@ -110,9 +133,12 @@ export function LiveTrainingView(): ReactElement {
       progressPercent: state.progressPercent,
       elapsedSeconds: state.elapsedSeconds,
       etaSeconds: state.etaSeconds,
+      sessionStartStep: state.sessionStartStep,
       evalEnabled: state.evalEnabled,
       outputDir: state.outputDir,
       isTrainingRunning: state.isTrainingRunning,
+      startModelName: state.startModelName,
+      startProjectName: state.startProjectName,
       lossHistory: state.lossHistory,
       lrHistory: state.lrHistory,
       gradNormHistory: state.gradNormHistory,
@@ -125,11 +151,67 @@ export function LiveTrainingView(): ReactElement {
   const config = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,
+      projectName: state.projectName,
       trainingMethod: state.trainingMethod,
       enableActivationCapture: state.enableActivationCapture,
       dataset: state.dataset,
     })),
   );
+
+  // Show the ACTIVE run's saved config, not the editable form store the user may have changed
+  // since starting (#6853). start_training() commits the run row before the pump, so the job id
+  // alone gates the fetch; the bounded retry below covers the uncommitted window, and until it
+  // loads ProgressSection falls back to the form store.
+  const [fetchedRunConfig, setFetchedRunConfig] = useState<{
+    jobId: string;
+    override: RunConfigOverride | undefined;
+  } | null>(null);
+  // Retry budget for the transient 404 below, keyed by job so a new run starts fresh.
+  const [fetchAttempt, setFetchAttempt] = useState<{
+    jobId: string;
+    count: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!runtime.jobId) {
+      return;
+    }
+    const jobId = runtime.jobId;
+    if (fetchedRunConfig !== null && fetchedRunConfig.jobId === jobId) {
+      return; // already resolved for this job
+    }
+    const attempts = fetchAttempt?.jobId === jobId ? fetchAttempt.count : 0;
+    const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    getTrainingRun(jobId, controller.signal)
+      .then((detail) => {
+        setFetchedRunConfig({
+          jobId,
+          override: mapRunConfigToOverride(detail.config),
+        });
+      })
+      .catch(() => {
+        // A lookup racing the row commit can miss transiently, and nothing else in the deps changes on
+        // failure, so retry explicitly. Bounded so a genuinely absent row falls back to the form store.
+        if (controller.signal.aborted || attempts >= RUN_CONFIG_FETCH_RETRIES) {
+          return;
+        }
+        retryTimer = setTimeout(() => {
+          setFetchAttempt({ jobId, count: attempts + 1 });
+        }, RUN_CONFIG_FETCH_RETRY_MS);
+      });
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+      }
+    };
+  }, [runtime.jobId, fetchedRunConfig, fetchAttempt]);
+  const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
+
+  const activeProjectName =
+    runtime.startProjectName !== null
+      ? runtime.startProjectName.trim() || null
+      : (config.projectName || "").trim() || null;
 
   const viewData: TrainingViewData = {
     phase: runtime.phase,
@@ -144,13 +226,19 @@ export function LiveTrainingView(): ReactElement {
     progressPercent: runtime.progressPercent,
     elapsedSeconds: runtime.elapsedSeconds,
     etaSeconds: runtime.etaSeconds,
+    sessionStartStep: runtime.sessionStartStep,
     evalEnabled: runtime.evalEnabled,
     message: runtime.message,
     error: runtime.error,
+    warnings: runtime.warnings,
     isTrainingRunning: runtime.isTrainingRunning,
-    modelName: config.selectedModel ?? "",
+    modelName: runtime.startModelName ?? config.selectedModel ?? "",
+    projectName: activeProjectName,
     datasetName: config.dataset ?? null,
-    trainingMethod: config.trainingMethod ?? "",
+    // Prefer the saved run's method: the form may have been edited (e.g. LoRA -> Full) after the
+    // run started, which would relabel the run and hide its saved LoRA rows in the popover.
+    trainingMethod:
+      runConfigOverride?.trainingMethod ?? config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
     gradNormHistory: runtime.gradNormHistory,
@@ -171,7 +259,7 @@ export function LiveTrainingView(): ReactElement {
     (isWaitingForFirstStep && runtime.currentStep <= 0);
 
   return (
-    <div className={cn("relative", showOverlay && "min-h-[72vh]")}>
+    <div className={cn("relative", showOverlay && "min-h-[72dvh]")}>
       <div
         className={cn(
           "relative z-10 flex flex-col gap-4 transition-[filter]",
@@ -179,7 +267,11 @@ export function LiveTrainingView(): ReactElement {
         )}
       >
         <div data-tour="studio-training-progress">
-          <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
+          <ProgressSection
+            key={runtime.jobId ?? "no-job"}
+            data={viewData}
+            configOverride={runConfigOverride}
+          />
         </div>
         <Tabs defaultValue="training">
           <TabsList className="mb-2">
@@ -207,7 +299,7 @@ export function LiveTrainingView(): ReactElement {
                 jobId={runtime.jobId}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center min-h-[300px] gap-3 text-center text-muted-foreground">
+              <div className="flex flex-col items-center justify-center min-h-[calc(300px*var(--ui-space-scale,1))] gap-3 text-center text-muted-foreground">
                 <p className="text-sm">Neuron activation capture is disabled.</p>
                 <p className="text-xs max-w-sm">
                   Enable <span className="font-medium text-foreground">Neuron activation capture</span> in

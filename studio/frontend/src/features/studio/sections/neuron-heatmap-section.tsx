@@ -25,7 +25,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import type { ActivationMetadata, ActivationRecord } from "@/features/training/api/train-api";
+import type { ActivationMetadata, ActivationRecord } from "@/features/training";
 import {
   computeOverlaySets,
   computeViewValues,
@@ -454,7 +454,7 @@ function ModePill({
           {label}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="max-w-[300px] p-3">
+      <TooltipContent side="bottom" className="max-w-[calc(300px*var(--ui-space-scale,1))] p-3">
         {disabled && disabledReason ? (
           <p className="text-xs text-muted-foreground">{disabledReason}</p>
         ) : (
@@ -578,7 +578,7 @@ function HeatmapCanvas({
 
   if (!values) {
     return (
-      <div className="flex h-[120px] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
+      <div className="flex h-[calc(120px*var(--ui-space-scale,1))] w-full items-center justify-center rounded border border-border/40 px-4 text-center">
         <p className="text-xs text-muted-foreground">No activation data yet</p>
       </div>
     );
@@ -688,7 +688,7 @@ function ColorLegend({
             Outlier (&gt;p99)
           </button>
         </TooltipTrigger>
-        <TooltipContent className="max-w-[260px]">
+        <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))]">
           <p className="font-medium mb-1">Outlier detection</p>
           <p className="text-xs/relaxed font-normal">
             All neuron values are sorted and the 99th percentile
@@ -790,7 +790,7 @@ export function ReplayControls({
           onChange={(e) => { stopPlayback(); onStepChange(Number(e.target.value)); }}
           className="h-1 flex-1 cursor-pointer accent-primary"
         />
-        <span className="min-w-[4rem] text-right text-[11px] tabular-nums text-muted-foreground">
+        <span className="min-w-[calc(4rem*var(--ui-space-scale,1))] text-right text-[11px] tabular-nums text-muted-foreground">
           Step {currentStep}
         </span>
       </div>

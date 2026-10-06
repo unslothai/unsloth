@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>__TITLE__ - Unsloth</title>
+    <style>
+      @font-face {
+        font-family: "Hellix";
+        src: url("/p/_assets/fonts/Hellix-Medium.woff") format("woff");
+        font-weight: 500;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Hellix";
+        src: url("/p/_assets/fonts/Hellix-SemiBold.woff2") format("woff2");
+        font-weight: 600;
+        font-display: swap;
+      }
+      :root {
+        color-scheme: light dark;
+        --bg: #fefefd;
+        --fg: #0d0d0d;
+        --muted: #858279;
+        --border: #ececec;
+        --user-bubble: #f5f5f5;
+        --primary: #17b88b;
+        --composer-bg: #ffffff;
+        --composer-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1b1e;
+          --fg: #ececee;
+          --muted: #96979b;
+          --border: #3a3d42;
+          --user-bubble: #2d2e32;
+          --composer-bg: #2d2e32;
+          --composer-shadow: none;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        display: flex;
+        flex-direction: column;
+        font:
+          15.5px/1.6 "Inter",
+          "Inter Variable",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      .heading {
+        font-family: "Hellix", "Space Grotesk", system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 14px 20px;
+      }
+      header img {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+      }
+      .brand {
+        font-family: "Hellix", "Space Grotesk", system-ui, sans-serif;
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .model {
+        margin-left: auto;
+        max-width: 55%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12.5px;
+        color: var(--muted);
+      }
+      #log {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        padding: 8px 16px 24px;
+      }
+      #thread {
+        width: 100%;
+        max-width: 46.5rem;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+      }
+      .welcome {
+        margin: auto;
+        text-align: center;
+        padding: 0 16px;
+        animation: fade 0.25s ease-out;
+      }
+      .welcome h1 {
+        margin: 0;
+        font-weight: 500;
+        font-size: 30px;
+        letter-spacing: -0.02em;
+      }
+      .welcome p {
+        margin: 0.55rem 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .msg {
+        font-size: 15.5px;
+        font-weight: 450;
+        letter-spacing: 0.01em;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+        animation: fade 0.15s ease-out;
+      }
+      .user {
+        align-self: flex-end;
+        max-width: 80%;
+        margin-top: 24px;
+        padding: 10px 16px;
+        border-radius: 24px;
+        background: var(--user-bubble);
+      }
+      .assistant {
+        align-self: stretch;
+        margin-top: 16px;
+        line-height: 1.75;
+      }
+      .error {
+        color: #b42318;
+        border: 1px solid #fecdca;
+        border-radius: 12px;
+        background: #fef3f2;
+        padding: 10px 12px;
+        line-height: 1.5;
+      }
+      @media (prefers-color-scheme: dark) {
+        .error {
+          color: #fda29b;
+          border-color: #7a271a;
+          background: #2d1716;
+        }
+      }
+      .think {
+        margin-bottom: 10px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .think summary {
+        cursor: pointer;
+      }
+      .think div {
+        margin-top: 6px;
+        padding-left: 12px;
+        border-left: 2px solid var(--border);
+      }
+      .cutoff {
+        color: var(--muted);
+        font-style: italic;
+      }
+      .dots {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        height: 1.6em;
+      }
+      .dots i {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--muted);
+        animation: blink 1.2s infinite;
+      }
+      .dots i:nth-child(2) {
+        animation-delay: 0.18s;
+      }
+      .dots i:nth-child(3) {
+        animation-delay: 0.36s;
+      }
+      .composer-wrap {
+        padding: 6px 16px 16px;
+      }
+      form {
+        width: 100%;
+        max-width: 46.5rem;
+        margin: 0 auto;
+      }
+      .composer {
+        display: flex;
+        align-items: flex-end;
+        gap: 8px;
+        padding: 8px 8px 8px 18px;
+        border-radius: 28px;
+        background: var(--composer-bg);
+        box-shadow: var(--composer-shadow);
+      }
+      textarea {
+        flex: 1;
+        border: 0;
+        outline: 0;
+        resize: none;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        line-height: 1.5;
+        max-height: 200px;
+        padding: 8px 0;
+      }
+      textarea::placeholder {
+        color: var(--muted);
+      }
+      .send {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--primary);
+        color: #fff;
+        cursor: pointer;
+      }
+      .send:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .foot {
+        margin: 9px auto 0;
+        max-width: 46.5rem;
+        text-align: center;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      @keyframes blink {
+        0%,
+        80%,
+        100% {
+          opacity: 0.25;
+        }
+        40% {
+          opacity: 1;
+        }
+      }
+      @keyframes fade {
+        from {
+          opacity: 0;
+          transform: translateY(2px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="/p/_assets/circle-logo-small.png" alt="" /><span class="brand"
+        >Unsloth</span
+      ><span class="model">__TITLE__</span>
+    </header>
+    <main id="log">
+      <div id="welcome" class="welcome">
+        <h1 class="heading">Chat with your model</h1>
+        <p>Fine-tuned with Unsloth</p>
+      </div>
+      <div id="thread"></div>
+    </main>
+    <div class="composer-wrap">
+      <form id="f">
+        <div class="composer">
+          <textarea
+            id="i"
+            rows="1"
+            autocomplete="off"
+            placeholder="Message this model..."
+          ></textarea>
+          <button id="b" class="send" aria-label="Send">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 19V5" />
+              <path d="M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        </div>
+        <div class="foot">Served by Unsloth Studio</div>
+      </form>
+    </div>
+    <script>
+      const base = location.pathname.replace(/\/+$/, "");
+      // The capability token rides in ?k=; location.pathname drops it, so carry it
+      // onto the chat request explicitly. Not stored or logged.
+      const k = new URLSearchParams(location.search).get("k");
+      const chatUrl =
+        base + "/v1/chat/completions" + (k ? "?k=" + encodeURIComponent(k) : "");
+      const log = document.getElementById("log"),
+        thread = document.getElementById("thread"),
+        welcome = document.getElementById("welcome");
+      const form = document.getElementById("f"),
+        input = document.getElementById("i"),
+        btn = document.getElementById("b");
+      const msgs = [];
+      const down = () => {
+        log.scrollTop = log.scrollHeight;
+      };
+      function autosize() {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 200) + "px";
+      }
+      input.addEventListener("input", autosize);
+      input.addEventListener("keydown", (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          // send() (not form.requestSubmit, unsupported on Safari < 16) guards the btn.
+          send();
+        }
+      });
+      function add(role) {
+        const d = document.createElement("div");
+        d.className = "msg " + role;
+        thread.appendChild(d);
+        down();
+        return d;
+      }
+      function showError(out, status, body) {
+        out.classList.add("error");
+        // FastAPI wraps errors as {detail: ...}; detail may be a string or a
+        // structured {error: {message}} envelope, so read the string form.
+        let detailText = "";
+        try {
+          const parsed = JSON.parse(body);
+          const detail = parsed.detail;
+          detailText =
+            (typeof detail === "string" ? detail : detail?.error?.message) ||
+            parsed.error?.message ||
+            "";
+        } catch (_) {
+          if (body) detailText = body.slice(0, 300);
+        }
+        if (status === 503) {
+          // 503 covers both "a different model is loaded" (unload it) and a transient
+          // "busy, retry" state; show the server's message so a busy response isn't misreported.
+          out.textContent =
+            detailText ||
+            "Unsloth is currently using another model. To chat with this preview, unload that model in Unsloth, then try again.";
+          return;
+        }
+        out.textContent =
+          "Couldn’t send your message: " +
+          (detailText || "Something went wrong. Please try again.");
+      }
+      async function send() {
+        // One path for button + Enter; ignore while a request is in flight.
+        if (btn.disabled) return;
+        const content = input.value.trim();
+        if (!content) return;
+        if (welcome) welcome.style.display = "none";
+        input.value = "";
+        autosize();
+        btn.disabled = true;
+        msgs.push({ role: "user", content });
+        add("user").textContent = content;
+        const out = add("assistant");
+        const think = document.createElement("details");
+        think.className = "think";
+        think.hidden = true;
+        think.appendChild(document.createElement("summary")).textContent = "Thinking";
+        const thinkText = think.appendChild(document.createElement("div"));
+        const body = document.createElement("div");
+        body.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+        const cutoff = document.createElement("div");
+        cutoff.className = "cutoff";
+        cutoff.setAttribute("role", "status");
+        cutoff.hidden = true;
+        out.append(think, body, cutoff);
+        let acc = "",
+          reasoning = "",
+          truncated = false,
+          complete = false;
+        try {
+          const r = await fetch(chatUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "preview",
+              messages: msgs,
+              stream: true,
+            }),
+          });
+          if (!r.ok) {
+            showError(body, r.status, await r.text());
+            msgs.pop();
+            input.value = content; // restore the prompt so the user can retry
+            autosize();
+            btn.disabled = false;
+            return;
+          }
+          const reader = r.body.getReader(),
+            dec = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i;
+            while ((i = buf.indexOf("\n")) >= 0) {
+              const line = buf.slice(0, i).trim();
+              buf = buf.slice(i + 1);
+              if (!line.startsWith("data:")) continue;
+              const data = line.slice(5).trim();
+              if (data === "[DONE]") {
+                complete = true;
+                continue;
+              }
+              try {
+                const j = JSON.parse(data);
+                const choice = j.choices && j.choices[0];
+                if (!choice) continue;
+                if (choice.finish_reason === "length") truncated = true;
+                const delta = choice.delta || {};
+                if (typeof delta.reasoning_content === "string") {
+                  reasoning += delta.reasoning_content;
+                  if (reasoning.trim()) {
+                    think.hidden = false;
+                    thinkText.textContent = reasoning;
+                    down();
+                  }
+                }
+                if (delta.content) {
+                  acc += delta.content;
+                  body.textContent = acc;
+                  down();
+                }
+              } catch (_) {}
+            }
+          }
+          if (!complete) throw new Error("preview stream ended before completion");
+          const hasContent = Boolean(acc.trim());
+          const hasReasoning = Boolean(reasoning.trim());
+          if (!hasContent && !hasReasoning) {
+            body.classList.add("error");
+            body.textContent = truncated
+              ? "Reply cut off before the model returned an answer. Please try again."
+              : "The model returned an empty reply. Please try again.";
+            msgs.pop();
+            input.value = content;
+            autosize();
+            btn.disabled = false;
+            input.focus();
+            return;
+          }
+          // keep reasoning-only replies so the next prompt preserves role alternation.
+          if (hasContent || hasReasoning) {
+            const reply = { role: "assistant", content: acc };
+            if (hasReasoning) reply.reasoning_content = reasoning;
+            msgs.push(reply);
+          }
+          cutoff.hidden = !truncated;
+          cutoff.textContent = truncated
+            ? "Reply cut off at the preview length limit."
+            : "";
+          if (!acc) body.textContent = "";
+        } catch (err) {
+          // Keep any streamed text, flag the break, restore the prompt for retry.
+          body.textContent = acc ? acc + "\n\n[connection lost]" : "Network error, please retry.";
+          msgs.pop();
+          input.value = content;
+          autosize();
+        }
+        btn.disabled = false;
+        input.focus();
+      }
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        send();
+      });
+      autosize();
+      input.focus();
+    </script>
+  </body>
+</html>

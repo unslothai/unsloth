@@ -1,32 +1,18 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Truth-table tests for `resolve_tool_policy` -- the pure resolver behind
-`unsloth run --enable-tools/--disable-tools`.
-
-Covers:
-  - 127.0.0.1 default-on, explicit on, explicit off
-  - 0.0.0.0 default-off, explicit off
-  - 0.0.0.0 + explicit on: confirm prompt unless --silent or --yes,
-    abort on negative answer.
-"""
+"""Truth-table tests for `resolve_tool_policy`: no flag installs no process-wide
+OVERRIDE on any bind (loopback, --secure tunnel, raw network), so a request's own
+`enable_tools: false` is honored -- tools still default on for a request that
+omits the field, via the backend's separate tool-policy default. Explicit on/off
+wins, and the resolver never prompts (yes/silent/prompt kept for compatibility)."""
 
 import pytest
-import typer
 
 from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
 
 def _never_prompt(_msg: str) -> bool:
-    raise AssertionError("prompt should not have been called")
-
-
-def _prompt_yes(_msg: str) -> bool:
-    return True
-
-
-def _prompt_no(_msg: str) -> bool:
-    return False
+    raise AssertionError("resolve_tool_policy must not prompt")
 
 
 class TestLocalhostHost:
@@ -40,9 +26,9 @@ class TestLocalhostHost:
             silent = False,
             prompt = _never_prompt,
         )
-        assert result is (True if flag in (None, True) else False)
+        assert result is flag
 
-    def test_default_is_on(self):
+    def test_default_is_unset(self):
         assert (
             resolve_tool_policy(
                 host = "127.0.0.1",
@@ -51,7 +37,7 @@ class TestLocalhostHost:
                 silent = False,
                 prompt = _never_prompt,
             )
-            is True
+            is None
         )
 
     def test_explicit_off(self):
@@ -68,134 +54,55 @@ class TestLocalhostHost:
 
 
 class TestZeroHost:
-    def test_default_is_off(self):
+    @pytest.mark.parametrize(
+        "flag, yes, silent, expected",
+        [
+            # A network bind installs no override, so the UI's tool pills (which send enable_tools: false when all
+            # off) are honored rather than overridden.
+            pytest.param(None, False, False, None, id = "default_is_unset"),
+            pytest.param(False, False, False, False, id = "explicit_off_no_prompt"),
+            pytest.param(True, False, False, True, id = "explicit_on_no_prompt"),
+            # Retained for backward compatibility; they no longer gate the result.
+            pytest.param(
+                None, True, True, None, id = "yes_and_silent_accepted_but_do_not_change_result"
+            ),
+        ],
+    )
+    def test_zero_host_cases(self, flag, yes, silent, expected):
         assert (
             resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = None,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
+                host = "0.0.0.0", flag = flag, yes = yes, silent = silent, prompt = _never_prompt
             )
-            is False
+            is expected
         )
-
-    def test_explicit_off_no_prompt(self):
-        assert (
-            resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = False,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
-            )
-            is False
-        )
-
-    def test_explicit_on_silent_skips_prompt(self):
-        assert (
-            resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = False,
-                silent = True,
-                prompt = _never_prompt,
-            )
-            is True
-        )
-
-    def test_explicit_on_yes_skips_prompt(self):
-        assert (
-            resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = True,
-                silent = False,
-                prompt = _never_prompt,
-            )
-            is True
-        )
-
-    def test_explicit_on_prompt_yes(self):
-        assert (
-            resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _prompt_yes,
-            )
-            is True
-        )
-
-    def test_explicit_on_prompt_no_aborts(self):
-        with pytest.raises(typer.Exit) as exc_info:
-            resolve_tool_policy(
-                host = "0.0.0.0",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _prompt_no,
-            )
-        assert exc_info.value.exit_code == 1
 
 
 class TestIsExternalHost:
-    @pytest.mark.parametrize(
-        "host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"]
-    )
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"])
     def test_loopback_aliases_are_local(self, host):
         assert is_external_host(host) is False
 
     @pytest.mark.parametrize(
-        "host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com"]
+        "host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.5", "10.0.0.1", "example.com"]
     )
     def test_non_loopback_is_external(self, host):
         assert is_external_host(host) is True
 
 
 class TestSpecificNetworkIP:
-    """Binding to a specific LAN IP must follow the same rules as 0.0.0.0."""
+    """Binding to a specific LAN IP follows the same rules as 0.0.0.0."""
 
-    def test_default_is_off(self):
+    @pytest.mark.parametrize(
+        "host, flag, expected",
+        [
+            pytest.param("192.168.1.5", None, None, id = "default_is_unset"),
+            pytest.param("192.168.1.5", True, True, id = "explicit_on_no_prompt"),
+            pytest.param("192.168.1.5", False, False, id = "explicit_off"),
+            pytest.param("localhost", True, True, id = "localhost_alias_does_not_prompt"),
+        ],
+    )
+    def test_specific_network_i_p_cases(self, host, flag, expected):
         assert (
-            resolve_tool_policy(
-                host = "192.168.1.5",
-                flag = None,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
-            )
-            is False
-        )
-
-    def test_explicit_on_prompts(self):
-        seen = []
-
-        def _prompt(msg: str) -> bool:
-            seen.append(msg)
-            return True
-
-        assert (
-            resolve_tool_policy(
-                host = "192.168.1.5",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _prompt,
-            )
-            is True
-        )
-        assert any("192.168.1.5" in m for m in seen)
-
-    def test_localhost_alias_does_not_prompt(self):
-        assert (
-            resolve_tool_policy(
-                host = "localhost",
-                flag = True,
-                yes = False,
-                silent = False,
-                prompt = _never_prompt,
-            )
-            is True
+            resolve_tool_policy(host = host, flag = flag, yes = False, silent = False, prompt = _never_prompt)
+            is expected
         )

@@ -134,7 +134,7 @@ function buildSamplerParams(
     if (!raw) {
       return {};
     }
-    // UI historically used "uuid4" as a "format". data_designer uuid sampler is always uuid4.
+    // UI historically used "uuid4" as a format; data_designer uuid is always uuid4.
     if (raw.toLowerCase() === "uuid4") {
       return {};
     }

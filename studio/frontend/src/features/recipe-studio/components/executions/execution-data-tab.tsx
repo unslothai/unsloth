@@ -45,7 +45,7 @@ function formatGitHubSourceMessage(execution: RecipeExecutionRecord): string {
     return "Collecting repository threads before rows are available.";
   }
   if (source.status === "rate_limited") {
-    return source.message ?? "Waiting for GitHub rate limit. Studio will resume automatically.";
+    return source.message ?? "Waiting for GitHub rate limit. Unsloth will resume automatically.";
   }
   return source.message ?? "Collecting repository threads before rows are available.";
 }
@@ -177,7 +177,14 @@ export function ExecutionDataTab({
   return (
     <div className="mt-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold">Dataset sample</p>
+        <div className="space-y-0.5">
+          <p className="text-sm font-semibold">Dataset sample</p>
+          {isExecutionInProgress(execution.status) && execution.dataset.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Live preview: new rows appear as each batch finishes.
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {datasetColumnNames.length > 0 && (
             <DropdownMenu>

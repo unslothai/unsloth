@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -13,8 +10,10 @@
 # limitations under the License.
 
 import torch
+from unsloth_zoo.utils import Version
 from .utils import (
-    _maybe_fake_quantize_activations,
+    _has_multiple_active_adapters,
+    addmm_,
     fast_dequantize,
     QUANT_STATE,
     get_lora_parameters,
@@ -23,6 +22,27 @@ from .utils import (
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+
+_is_compiling = torch.compiler.is_compiling
+
+# Inductor before torch 2.11 miscompiles these Functions' traced backward (wrong LoRA gradients).
+TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
+
+
+def _apply(function, *args):
+    return function.apply(*args)
+
+
+if not TRACE_LORA_FUNCTIONS:
+    _apply = torch._dynamo.disable(_apply)
+
+
+def _has_activation_fake_quantizer(proj):
+    # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
+    for module in (getattr(proj, "base_layer", proj), *proj.lora_A.values(), *proj.lora_B.values()):
+        if module._modules.get("activation_fake_quantizer") is not None:
+            return True
+    return False
 
 
 class LoRA_MLP(torch.autograd.Function):
@@ -164,48 +184,33 @@ class LoRA_MLP(torch.autograd.Function):
         d_upA = torch.empty_like(upA)
         d_upB = torch.empty_like(upB)
 
-        # Down projection LoRA weights
-        # d_downA = h.t() @ (dY @ downB.t())
-        # d_downB = (downA.t() @ h.t()) @ dY
-        # d_downA *= downS
-        # d_downB *= downS
+        # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
-        # Up projection LoRA weights
-        # d_upA   = X.t() @ (df @ upB.t())
-        # d_upB   = (upA.t() @ X.t()) @ df
-        # d_upA  *= upS
-        # d_upB  *= upS
-        d_upA.addmm_(X.t(), df @ upB.t(), alpha = upS, beta = 0)
+        up_dB = df @ upB.t()
+        gate_dB = de @ gateB.t()
+
+        # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
+        d_upA.addmm_(X.t(), up_dB, alpha = upS, beta = 0)
         d_upB.addmm_(upA.t() @ X.t(), df, alpha = upS, beta = 0)
 
-        # Gate projection LoRA weights
-        # d_gateA = X.t() @ (de @ gateB.t())
-        # d_gateB = (gateA.t() @ X.t()) @ de
-        # d_gateA *= gateS
-        # d_gateB *= gateS
-        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha = gateS, beta = 0)
+        # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
+        d_gateA.addmm_(X.t(), gate_dB, alpha = gateS, beta = 0)
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
-        # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
-        # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+        # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
+        # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
+        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
-        # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
-        dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
+        addmm_(dX, up_dB, upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        # dX += de @ gateW.t()
-        dX.addmm_(de, gateW.t())
+        addmm_(dX, de, gateW.t())
         del gateW
-        # dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
-        dX.addmm_(de @ gateB.t(), gateA.t(), alpha = gateS)
+        addmm_(dX, gate_dB, gateA.t(), alpha = gateS)
 
-        # gateW, gateW_quant, gateA, gateB, gateS,
-        #  upW,    upW_quant,   upA,   upB,   upS,
-        # downW, downW_quant, downA, downB, downS,
         return (
             dX.view(batch, seq_len, hd),
             None,
@@ -232,12 +237,21 @@ class LoRA_MLP(torch.autograd.Function):
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
 
-def apply_lora_mlp_swiglu(self, X, inplace = True):
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
+def apply_lora_mlp_swiglu(
+    self,
+    X,
+    inplace = True,
+):
+    if any(
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        for proj in (self.gate_proj, self.up_proj, self.down_proj)
+    ):
+        return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -264,12 +278,21 @@ def apply_lora_mlp_swiglu(self, X, inplace = True):
 from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
 
 
-def apply_lora_mlp_geglu_exact(self, X, inplace = True):
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
+def apply_lora_mlp_geglu_exact(
+    self,
+    X,
+    inplace = True,
+):
+    if any(
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        for proj in (self.gate_proj, self.up_proj, self.down_proj)
+    ):
+        return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -297,11 +320,16 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 
 def apply_lora_mlp_geglu_approx(self, X):
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
+    if any(
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        for proj in (self.gate_proj, self.up_proj, self.down_proj)
+    ):
+        return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -379,9 +407,8 @@ class LoRA_QKV(torch.autograd.Function):
     ):
         dtype = X.dtype
 
-        # bitsandbytes 8-bit matmul expects 2D inputs.
-        # TorchInductor/AOTAutograd fails on 3D tensors during backward,
-        # so we explicitly flatten the sequence dimension.
+        # bitsandbytes 8-bit matmul expects 2D inputs, and TorchInductor/AOTAutograd fails on 3D tensors
+        # during backward, so flatten the sequence dimension explicitly.
         orig_shape = X.shape
         X_for_matmul = X
         if X.dim() == 3:
@@ -451,8 +478,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
-        ### Weight projection LoRA weights
-        # See our blogpost for more details.
+        # Weight projection LoRA derivatives; see the Unsloth blogpost.
         d_QA = torch.empty_like(QA)
         d_QB = torch.empty_like(QB)
         d_KA = torch.empty_like(KA)
@@ -460,57 +486,37 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA = torch.empty_like(VA)
         d_VB = torch.empty_like(VB)
 
-        # Q Projection
-        # d_QA = X.t() @ (dQ @ QB.t())
-        # d_QB = (QA.t() @ X.t()) @ dQ
-        # d_QA *= QS
-        # d_QB *= QS
-        d_QA.addmm_(X.t(), dQ @ QB.t(), alpha = QS, beta = 0)
+        q_dB = dQ @ QB.t()
+        k_dB = dK @ KB.t()
+        v_dB = dV @ VB.t()
+
+        # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
+        # identical with their own scales.
+        d_QA.addmm_(X.t(), q_dB, alpha = QS, beta = 0)
         d_QB.addmm_(QA.t() @ X.t(), dQ, alpha = QS, beta = 0)
 
-        # K Projection
-        # d_KA = X.t() @ (dK @ KB.t())
-        # d_KB = (KA.t() @ X.t()) @ dK
-        # d_KA *= KS
-        # d_KB *= KS
-        d_KA.addmm_(X.t(), dK @ KB.t(), alpha = KS, beta = 0)
+        d_KA.addmm_(X.t(), k_dB, alpha = KS, beta = 0)
         d_KB.addmm_(KA.t() @ X.t(), dK, alpha = KS, beta = 0)
 
-        # V Projection
-        # d_VA = X.t() @ (dV @ VB.t())
-        # d_VB = (VA.t() @ X.t()) @ dV
-        # d_VA *= VS
-        # d_VB *= VS
-        d_VA.addmm_(X.t(), dV @ VB.t(), alpha = VS, beta = 0)
+        d_VA.addmm_(X.t(), v_dB, alpha = VS, beta = 0)
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
-        # Combine derivatives to find dX
-        # dQ
+        # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
+        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
-        # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
-        dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
+        addmm_(dX, q_dB, QA.t(), alpha = QS)
 
-        # dK
         KW = fast_dequantize(KW.t(), KW_quant)
-        # dX += dK @ KW.t()
-        dX.addmm_(dK, KW.t())
+        addmm_(dX, dK, KW.t())
         del KW
-        # dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
-        dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
+        addmm_(dX, k_dB, KA.t(), alpha = KS)
 
-        # dV
         VW = fast_dequantize(VW.t(), VW_quant)
-        # dX += dV @ VW.t()
-        dX.addmm_(dV, VW.t())
+        addmm_(dX, dV, VW.t())
         del VW
-        # dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
-        dX.addmm_(dV @ VB.t(), VA.t(), alpha = VS)
+        addmm_(dX, v_dB, VA.t(), alpha = VS)
 
-        # QW, QW_quant, QA, QB, QS,
-        # KW, KW_quant, KA, KB, KS,
-        # VW, VW_quant, VA, VB, VS,
         return (
             dX.view(batch, seq_len, hd),
             None,
@@ -532,12 +538,21 @@ class LoRA_QKV(torch.autograd.Function):
         )
 
 
-def apply_lora_qkv(self, X, inplace = True):
-    X = _maybe_fake_quantize_activations(X, self.q_proj)
+def apply_lora_qkv(
+    self,
+    X,
+    inplace = True,
+):
+    if any(
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        for proj in (self.q_proj, self.k_proj, self.v_proj)
+    ):
+        return self.q_proj(X), self.k_proj(X), self.v_proj(X)
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
-    Q, K, V = LoRA_QKV.apply(
+    Q, K, V = _apply(
+        LoRA_QKV,
         X,
         QW,
         QW_quant,
@@ -618,30 +633,26 @@ class LoRA_W(torch.autograd.Function):
         d_A = torch.empty_like(A)
         d_B = torch.empty_like(B)
 
-        ### Weight projection LoRA weights
-        # Weight projection
-        # d_A = X.t() @ (dY @ B.t())
-        # d_B = (A.t() @ X.t()) @ dY
-        # d_A *= S
-        # d_B *= S
-        d_A.addmm_(X.t(), dY @ B.t(), alpha = S, beta = 0)
+        y_dB = dY @ B.t()
+
+        # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
+        d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
-        # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
-        dX.addmm_(dY @ B.t(), A.t(), alpha = S)
+        addmm_(dX, y_dB, A.t(), alpha = S)
 
-        # W, W_quant, A, B, S
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 
 
 def apply_lora_o(self, X):
-    X = _maybe_fake_quantize_activations(X, self.o_proj)
+    if _has_multiple_active_adapters(self.o_proj) or _has_activation_fake_quantizer(self.o_proj):
+        return self.o_proj(X)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
-    O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
+    O = _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
     return O
 
 
@@ -650,9 +661,7 @@ IDENTITY_DROPOUT = torch.nn.Identity
 
 @torch._disable_dynamo
 def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-    raise NotImplementedError(
-        "Unsloth: Currently not supported yet - reshaping done incorrectly"
-    )
+    raise NotImplementedError("Unsloth: Currently not supported yet - reshaping done incorrectly")
     self._check_forward_args(x, *args, **kwargs)
     adapter_names = kwargs.pop("adapter_names", None)
 
@@ -661,9 +670,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
             self.unmerge()
         result = self.base_layer(x, *args, **kwargs)
     elif adapter_names is not None:
-        result = self._mixed_batch_forward(
-            x, *args, adapter_names = adapter_names, **kwargs
-        )
+        result = self._mixed_batch_forward(x, *args, adapter_names = adapter_names, **kwargs)
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
@@ -674,24 +681,17 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 return self.base_layer(x, *args, **kwargs)
 
             dropout = self.lora_dropout[active_adapter]
-            if (
-                isinstance(dropout, IDENTITY_DROPOUT)
-                and not self.use_dora[active_adapter]
-            ):
+            if isinstance(dropout, IDENTITY_DROPOUT) and not self.use_dora[active_adapter]:
                 lora_A = self.lora_A[active_adapter].weight
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return LoRA_W.apply(x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
             pass
         pass
 
         result = self.base_layer(x, *args, **kwargs)
-        # As per Tim Dettmers, for 4bit, we need to defensively clone here.
-        # The reason is that in some cases, an error can occur that backprop
-        # does not work on a manipulated view. This issue may be solved with
-        # newer PyTorch versions but this would need extensive testing to be
-        # sure.
+        # Per Tim Dettmers: for 4bit, defensively clone, since backprop can fail on a manipulated view.
         result = result.clone()
 
         for active_adapter in self.active_adapters:

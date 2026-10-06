@@ -34,7 +34,10 @@ export function buildSeedConfig(
   const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
 
-  const endpoint = config.hf_endpoint?.trim() || "https://huggingface.co";
+  // Only an endpoint the user set. The seed is fetched BY THE BACKEND, which
+  // resolves its own HF_ENDPOINT when this is absent; sending the browser's value
+  // would ship a remote client's substitute into a backend-side fetch.
+  const endpoint = config.hf_endpoint?.trim() || null;
   const token = config.hf_token?.trim() || null;
 
   let selectionStrategy: Record<string, unknown> | null = null;
@@ -164,17 +167,24 @@ export function buildSeedDropProcessor(
 ): Record<string, unknown> | null {
   const seedSourceType = config.seed_source_type ?? "hf";
   const loadedCols = (config.seed_columns ?? []).map((c) => c.trim()).filter(Boolean);
+  const selectedDropColumns = (config.seed_drop_columns ?? [])
+    .map((c) => c.trim())
+    .filter(Boolean);
   let cols: string[] = [];
 
   if (seedSourceType === "unstructured") {
     if (!config.drop) {
       return null;
     }
-    cols = loadedCols;
+    cols =
+      selectedDropColumns.length > 0
+        ? loadedCols.length > 0
+          ? selectedDropColumns.filter((col) => loadedCols.includes(col))
+          : selectedDropColumns
+        : loadedCols.length > 0
+          ? loadedCols
+          : ["chunk_text", "source_file"];
   } else {
-    const selectedDropColumns = (config.seed_drop_columns ?? [])
-      .map((c) => c.trim())
-      .filter(Boolean);
     if (selectedDropColumns.length === 0) {
       return null;
     }

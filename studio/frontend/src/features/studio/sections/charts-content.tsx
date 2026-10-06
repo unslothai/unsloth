@@ -58,7 +58,7 @@ function ExpandableChartCard({
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
           </DialogHeader>
-          <div className="mt-2 aspect-video w-full max-h-[calc(100svh-8rem)]">{chart()}</div>
+          <div className="mt-2 aspect-video w-full max-h-[calc(100svh-8rem)] [&_[data-slot=chart]]:h-full">{chart()}</div>
         </DialogContent>
       </Dialog>
     </div>

@@ -22,13 +22,15 @@ export type ValidatorCodeLang =
   | "jsx"
   | "tsx"
   | "python"
+  | "json"
+  | "markdown"
   | "sql:sqlite"
   | "sql:postgres"
   | "sql:mysql"
   | "sql:tsql"
   | "sql:bigquery"
   | "sql:ansi";
-export type ValidatorType = "code" | "oxc";
+export type ValidatorType = "code" | "oxc" | "json" | "markdown";
 export type OxcValidationMode = "syntax" | "lint" | "syntax+lint";
 export type OxcCodeShape = "auto" | "module" | "snippet";
 
@@ -68,6 +70,8 @@ export type RecipeNodeData = {
     | "validator_python"
     | "validator_sql"
     | "validator_oxc"
+    | "validator_json"
+    | "validator_markdown"
     | "expression"
     | "seed"
     | "markdown_note"
@@ -264,6 +268,8 @@ export type ModelConfig = {
   kind: "model_config";
   name: string;
   model: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  gguf_variant?: string;
   provider: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   inference_temperature?: string;
@@ -338,6 +344,8 @@ export type SeedConfig = {
   hf_token?: string;
   hf_endpoint?: string;
   local_file_name?: string;
+  // ui-only: stable per-block id for uploads, since node ids collide across imports
+  unstructured_upload_uid?: string;
   unstructured_file_ids?: string[];
   unstructured_file_names?: string[];
   unstructured_file_sizes?: number[];
