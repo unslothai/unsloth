@@ -288,3 +288,34 @@ def test_gguf_packed_embedding_is_dequantised_and_linears_are_left_packed():
     assert isinstance(model.proj.weight, utils.GGUFParameter)
     # Nothing packed left: a second pass is a no-op.
     assert _dequantize_gguf_outside_linears(model, torch.bfloat16) == 0
+
+
+def test_load_planning_reserves_what_the_decomposition_guard_charges():
+    # The guard charges layers + 1 extra canvas frames; a load planned for one 1024x1024 frame then refused every
+    # default render on a card that had to offload to fit (no calibrated placement to release groups from).
+    from core.inference import diffusion_memory as dm
+
+    fam = detect_family("unsloth/Qwen-Image-Layered-GGUF")
+    assert (dm._QWEN_LAYERED_LAYERS, dm._QWEN_LAYERED_CANVAS) == (
+        fam.layer_count,
+        fam.layer_resolution,
+    )
+    hint = "qwen-image-layered qwen-image-layered-Q4_K_M.gguf unsloth/Qwen-Image-Layered-GGUF"
+    side = fam.layer_resolution
+    extra = (fam.layer_count + 1) * side * side
+    planned = dm.estimate_image_runtime_mib(width = None, height = None, family = hint)
+    assert planned == dm.estimate_image_runtime_mib(
+        width = side, height = side, family = hint, condition_pixels = extra
+    )
+    # Free memory that covers only the planned headroom (an offloaded load): the default render still runs.
+    verdict = dm.image_activation_verdict(
+        device_memory = dm.DeviceMemory("cuda", "cuda", "discrete_vram", 10000, 24576),
+        width = side,
+        height = side,
+        family = hint,
+        source_driven = True,
+        condition_pixels = extra,
+    )
+    assert verdict.action == dm.ACTIVATION_RUN
+    # Other families' planning is untouched.
+    assert dm.estimate_image_runtime_mib(width = None, height = None, family = "qwen-image") == 8192
