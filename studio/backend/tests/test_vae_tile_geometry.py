@@ -453,8 +453,8 @@ def test_tile_geometry(family):
     name, ratio, applied, grid, temporal = geometry(family)
     kept = keep_stock()
     if name in kept:
-        # the image module keeps this VAE on diffusers' tiles on purpose, with a measurement: its reason stands
-        pytest.skip(f"{name} in diffusion_vae_tiling.KEEP_STOCK: {kept[name]}")
+        # because the image module keeps this VAE on diffusers' tiles on purpose, with a measurement: its reason stands
+        pytest.skip(reason = f"{name} in diffusion_vae_tiling.KEEP_STOCK: {kept[name]}")
     floor = ltx_floor() if name == "AutoencoderKLLTX2Video" else None
     floor = floor or SMALLER_GEOMETRY_OK.get(f"{name}@{ratio}x", default_floor())
     bad = {side: (tiles, check_axis(tiles, floor)) for side, tiles in grid.items()}
