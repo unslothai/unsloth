@@ -17,11 +17,13 @@ export const useApprovalStore = create<{ queue: DownloadRequest[] }>(() => ({ qu
 
 /** The origin a remembered answer is kept under: scheme, host and port, as browsers scope site
  *  permissions. A shortened host would let `https://www.example.com`'s answer cover
- *  `http://example.com:8443`, which can be another service. "" for anything but a web page. */
+ *  `http://example.com:8443`, which can be another service. A blob: URL counts as the page that
+ *  made it (its origin, per the URL Standard). "" for anything else: data:, about:, opaque blobs. */
 export function downloadSiteOf(site: string): string {
-  if (!isWebUrl(site)) return "";
+  if (!isWebUrl(site) && !/^blob:/i.test(site)) return "";
   try {
-    return new URL(site).origin;
+    const { origin } = new URL(site);
+    return isWebUrl(origin) ? origin : "";
   } catch {
     return "";
   }

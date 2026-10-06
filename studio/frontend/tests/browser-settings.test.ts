@@ -318,11 +318,17 @@ test("a remembered answer settles the site's other waiting downloads", async () 
 });
 
 test("download answers are kept per origin, never for every site", async () => {
+  const { downloadSiteOf: siteOf } = await import("../src/features/browser/download-approval-queue.ts");
+  // A blob: URL is its creator's; an opaque one, or data: and about:, belongs to no site.
+  assert.equal(siteOf("blob:https://a.example/uuid"), "https://a.example");
+  assert.equal(siteOf("blob:null/uuid"), "");
+  assert.equal(siteOf("data:text/plain,x"), "");
+  assert.equal(siteOf("about:blank"), "");
   const { approveDownload, answerDownload, useApprovalStore } = await import(
     "../src/features/browser/download-approval-queue.ts"
   );
   const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
-  const blob = approveDownload("blob:https://a.example/uuid", "file.bin", "blob:https://a.example/uuid");
+  const blob = approveDownload("blob:null/uuid", "file.bin", "blob:null/uuid");
   const request = useApprovalStore.getState().queue[0];
   assert.equal(request.origin, "");
   answerDownload(request, true, true);
@@ -414,4 +420,17 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   await saving;
   useDownloadSitesStore.getState().setSite("https://b.example", null);
   store.closeTab(tabId);
+});
+
+test("a blocked site's blob: page can't download past the block", async () => {
+  const { approveDownload } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskBeforeDownloading(false);
+  useDownloadSitesStore.getState().setSite("https://a.example", "block");
+  // The page made a blob: document and downloaded from it: still the blocked site asking.
+  assert.equal(await approveDownload("blob:https://a.example/f", "f.zip", "blob:https://a.example/doc"), false);
+  assert.equal(await approveDownload("https://cdn.example/f.zip", "f.zip", "https://b.example/"), true);
+  useDownloadSitesStore.getState().setSite("https://a.example", null);
+  prefs.setAskBeforeDownloading(true);
 });

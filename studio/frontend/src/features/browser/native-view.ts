@@ -12,7 +12,7 @@ import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { hostOf } from "./address";
-import { approveDownload } from "./download-approval-queue";
+import { approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
@@ -118,10 +118,11 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   const entry = tab ? currentEntry(tab) : null;
   // The page that started it is the site asking, as in a browser (blob: and data: downloads have
   // no site of their own). Taken when it started: the tab may show another site by now, whose
-  // remembered answer must not cover this one. Before the view showed a page of its own (site
-  // ""), it is the page that opened the tab, else the address the tab was sent to.
-  const decided =
-    entry?.kind === "web" ? approveDownload(url, name, site || entry.from || entry.url) : Promise.resolve(false);
+  // remembered answer must not cover this one. A blob: page counts as the site that made it.
+  // Before the view showed a page of its own (site ""), or on one with no web origin of its own
+  // (about:, data:), it is the page that opened the tab, else the address the tab was sent to.
+  const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
+  const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
   void decided
     .then(async (allow) => {
       // Refused once the download's prompt has expired (denied): then nothing is downloading.

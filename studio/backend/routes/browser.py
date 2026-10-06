@@ -88,15 +88,16 @@ _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGN
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 # Where markup stops being markup: a comment, an element whose content is text (raw text and
 # RCDATA, noscript as scripting is on, and script itself), or another tag, whose quoted
-# attribute values may hold "<script ...>" as text. A script tag written inside one is shown or
-# ignored, not run.
+# attribute values may hold "<script ...>" as text, or a template, whose content is an inert
+# document. A script tag written inside one is shown or ignored, not run.
 _INERT_START_RE = re.compile(
-    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)\b"
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
     + _TAG_BODY
     + r"|<[a-z][^\s/>]*"
     + _TAG_BODY,
     re.IGNORECASE,
 )
+_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])", re.IGNORECASE)
 _CLOSING_TAG_RES = {
     name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
     for name in (
@@ -1322,7 +1323,11 @@ def _fetch_module(
             "<!--" in text and _SCRIPT_OPEN_RE.search(text)
         ):
             code = re.sub(r"</(script)", r"<\\/\1", text, flags = re.IGNORECASE)
-    _cache_module(key, code, _fresh_for(meta.get("cache_control"), meta.get("age")))
+    # Only the last response's headers are known: a redirect (often "latest" to a versioned file)
+    # may have said not to reuse it, so a redirected answer isn't kept.
+    redirected = str(meta.get("url") or url) != url
+    fresh_for = 0 if redirected else _fresh_for(meta.get("cache_control"), meta.get("age"))
+    _cache_module(key, code, fresh_for)
     return code
 
 
@@ -1341,6 +1346,16 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
             # Any other tag: a script tag can only be text inside it.
             end = match.end()
             spans.append((match.start(), end))
+        elif match.group(1).lower() == "template":
+            # Templates nest: the content runs to the matching close tag.
+            depth, close = 1, None
+            for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
+                depth += -1 if tag.group(1) else 1
+                if depth == 0:
+                    close = tag
+                    break
+            end = close.end() if close else len(page)
+            spans.append((match.end(), close.start() if close else len(page)))
         else:
             name = match.group(1).lower()
             close = (

@@ -638,3 +638,45 @@ def test_a_module_redirected_to_plain_http_keeps_its_tag(monkeypatch):
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
     page = '<p class="a">x</p><script type="module" src="/m.js"></script>'
     assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        '<template><script type="module" src="/m.js"></script></template>',
+        '<template><template></template><script type="module" src="/m.js"></script></template>',
+        '<template id="t"><div><script type="module" src="/m.js"></script>',
+    ],
+)
+def test_a_module_tag_in_a_template_is_left_alone(monkeypatch, page):
+    # Template content is an inert document: its scripts don't run, and code may clone them.
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == []
+
+
+def test_a_module_after_a_template_is_still_inlined(monkeypatch):
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
+    page = '<template><p>x</p></template><script type="module" src="/m.js"></script>'
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == '<template><p>x</p></template><script type="module">ready()</script>'
+
+
+def test_a_redirected_module_is_not_cached(monkeypatch):
+    # Only the final response's headers are seen; the redirect may have been no-store.
+    fetched = []
+
+    def fake_fetch(url, **kwargs):
+        fetched.append(url)
+        kwargs["meta_out"].update(
+            url = "https://example.com/v1.js", cache_control = "public, max-age=600", age = None
+        )
+        return None, b"ready()", "text/javascript"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    page = '<script type="module" src="/latest.js"></script>'
+    for _ in range(2):
+        assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert fetched == ["https://example.com/latest.js"] * 2
