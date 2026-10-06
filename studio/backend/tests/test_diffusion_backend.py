@@ -2086,6 +2086,42 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
         backend.generate(prompt = "make it night", steps = 8)
 
 
+@pytest.mark.parametrize(
+    "gguf_filename, expected",
+    [
+        ("qwen-image-edit-2509-Q6_K.gguf", {"zero_cond_t": False}),
+        ("qwen_image_edit_2509_Q4_K_M.gguf", {"zero_cond_t": False}),
+        ("qwen-image-edit-Q4_K_M.gguf", {"zero_cond_t": False}),
+        ("qwen-image-edit-2511-Q4_K_M.gguf", {}),
+        ("model.gguf", {}),
+    ],
+)
+def test_qwen_edit_gguf_builds_on_its_variant_config(fake_runtime, tmp_path, gguf_filename, expected):
+    """The GGUF denoiser of every Qwen-Image-Edit variant is built on the 2511 companion config, so a
+    variant whose own config leaves zero_cond_t off (2509, the original Edit) overrides that key;
+    2511 and an unnamed file keep the companion config untouched."""
+    (tmp_path / gguf_filename).write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = gguf_filename,
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    assert _FakeTransformer.last["config"].endswith("/Qwen-Image-Edit-2511")
+    assert {k: v for k, v in _FakeTransformer.last.items() if k == "zero_cond_t"} == expected
+
+
+def test_non_qwen_edit_gguf_gets_no_config_override(fake_runtime, tmp_path):
+    (tmp_path / "qwen-image-2512-Q4_K_M.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(
+        backend, tmp_path, gguf_filename = "qwen-image-2512-Q4_K_M.gguf", family_override = "qwen-image"
+    )
+    assert "zero_cond_t" not in _FakeTransformer.last
+
+
 def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):
     """A full-pipeline (no single-file) load on an unsloth/* repo builds the pipe with
     pipeline_cls.from_pretrained(repo_id) -- NO single-file transformer build, NO GGUF

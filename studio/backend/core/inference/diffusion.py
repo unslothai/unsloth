@@ -69,6 +69,7 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    transformer_config_overrides_for,
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
@@ -6603,6 +6604,11 @@ class DiffusionBackend:
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
+                                # The companion config is the family base's (Qwen-Image-Edit-2511); a variant whose
+                                # own config differs (2509: no zero_cond_t) overrides those keys.
+                                **transformer_config_overrides_for(
+                                    fam, gguf_filename, repo_id, base
+                                ),
                             }
                             # Before the prefix shim below, which wraps whatever entry it finds and
                             # finds nothing for a class that is not registered yet.

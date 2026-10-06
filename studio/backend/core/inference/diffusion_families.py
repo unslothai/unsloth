@@ -117,6 +117,11 @@ class DiffusionFamily:
     comfy_flow_shift: Optional[float] = None
     # (lowercased id substring, shift) for checkpoints whose template differs; first match wins.
     comfy_flow_shift_variants: tuple[tuple[str, float], ...] = field(default_factory = tuple)
+    # (lowercased id substring, ((key, value), ...)) for checkpoints whose transformer config differs from
+    # ``base_repo``'s, applied to a single-file denoiser built on that config; first match wins.
+    transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
+        default_factory = tuple
+    )
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -342,8 +347,19 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "qwen-image-edit",
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
-        # The 2509 template samples at ModelSamplingAuraFlow 3.
-        comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),
+        # The 2509 and original Qwen-Image-Edit templates sample at ModelSamplingAuraFlow 3.
+        comfy_flow_shift_variants = (
+            ("qwen-image-edit-2511", 3.1),
+            ("qwen-image-edit-2509", 3.0),
+            ("qwen-image-edit", 3.0),
+        ),
+        # Only the 2511 transformer config sets zero_cond_t (the companion config here); 2509 and the original
+        # Qwen-Image-Edit leave it off. Built with it on, the 2509 Q6_K GGUF is 0.30 LPIPS from its BF16, not 0.02.
+        transformer_config_variants = (
+            ("qwen-image-edit-2511", ()),
+            ("qwen-image-edit-2509", (("zero_cond_t", False),)),
+            ("qwen-image-edit", (("zero_cond_t", False),)),
+        ),
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
@@ -1218,6 +1234,18 @@ def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[floa
             if key in needle:
                 return shift
     return getattr(fam, "comfy_flow_shift", None)
+
+
+def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
+    """Transformer config keys the loaded checkpoint sets differently from the family base repo:
+    the first family variant whose key is in an identifier (GGUF file, repo id, base repo), else
+    none. ``_`` reads as ``-`` so ComfyUI-style file names (``qwen_image_edit_2509``) match too."""
+    for identifier in identifiers:
+        needle = (identifier or "").lower().replace("_", "-")
+        for key, overrides in getattr(fam, "transformer_config_variants", ()) or ():
+            if key in needle:
+                return dict(overrides)
+    return {}
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
