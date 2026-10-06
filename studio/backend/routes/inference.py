@@ -45714,8 +45714,10 @@ async def diffusion_download_plan(
             if split is not None:
                 request.model_path, request.gguf_filename = split
                 kind = resolve_model_kind(split[1])
-            sole = None if split is not None else await asyncio.to_thread(
-                resolve_local_single_file, request.model_path
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
             )
             if sole is not None:
                 request.gguf_filename = sole
@@ -45962,8 +45964,10 @@ async def load_diffusion_model_gated(
             if split is not None:
                 request.model_path, request.gguf_filename = split
                 kind = resolve_model_kind(split[1])
-            sole = None if split is not None else await asyncio.to_thread(
-                resolve_local_single_file, request.model_path
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
             )
             if sole is not None:
                 request.gguf_filename = sole

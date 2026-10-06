@@ -1039,7 +1039,6 @@ def _assert_pick_is_not_speech(
 def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) -> None:
     """Header-only refusal of a local TE / VAE / LoRA / image-DiT pick, before any eviction or load."""
     from .diffusion_content import assert_local_pick_is_dit
-
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
 

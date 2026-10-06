@@ -7167,7 +7167,11 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base, fam.name
+                            gguf_filename,
+                            content_variant_hint(repo_id, gguf_filename),
+                            repo_id,
+                            base,
+                            fam.name,
                         )
                         static_plan = auto_static_skip_plan(
                             (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps

@@ -35,8 +35,18 @@ VAE_FOLDERS = ("vae",)
 _ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS
 # Folders only a ComfyUI ``models/`` dir has; one of them beside a denoiser folder is the tell.
 _COMFY_ONLY_FOLDERS = frozenset(
-    {*_ROLE_FOLDERS, "loras", "clip_vision", "controlnet", "upscale_models", "embeddings",
-     "style_models", "model_patches", "audio_encoders", "latent_upscale_models"}
+    {
+        *_ROLE_FOLDERS,
+        "loras",
+        "clip_vision",
+        "controlnet",
+        "upscale_models",
+        "embeddings",
+        "style_models",
+        "model_patches",
+        "audio_encoders",
+        "latent_upscale_models",
+    }
 )
 EXTRA_MODEL_PATHS_FILE = "extra_model_paths.yaml"
 # The yaml is user-authored config, not a model: never read a large file on the listing path.
@@ -78,7 +88,9 @@ def _split_paths(value) -> list[str]:
     if isinstance(value, str):
         return [line.strip() for line in value.splitlines() if line.strip()]
     if isinstance(value, (list, tuple)):
-        return [str(v).strip() for v in value if isinstance(v, (str, os.PathLike)) and str(v).strip()]
+        return [
+            str(v).strip() for v in value if isinstance(v, (str, os.PathLike)) and str(v).strip()
+        ]
     return []
 
 
@@ -95,7 +107,6 @@ def read_extra_model_paths(yaml_path: Path) -> dict[str, list[Path]]:
         if yaml_path.stat().st_size > _MAX_EXTRA_PATHS_BYTES:
             return out
         import yaml
-
         with open(yaml_path, "r", encoding = "utf-8-sig") as handle:
             config = yaml.safe_load(handle)
     except Exception:  # noqa: BLE001 - a broken user yaml must not break the listing
@@ -256,8 +267,12 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
     Only for a folder holding no ``config.json`` / ``adapter_config.json`` / ``model_index.json``:
     such a folder is one model and is listed whole. Never raises."""
     try:
-        for marker in ("config.json", "adapter_config.json", "model_index.json",
-                       "modular_model_index.json"):
+        for marker in (
+            "config.json",
+            "adapter_config.json",
+            "model_index.json",
+            "modular_model_index.json",
+        ):
             if (folder / marker).exists():
                 return []
         files: list[Path] = []
@@ -288,7 +303,6 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 def _name_detects_family(name: str) -> bool:
     from core.inference.diffusion_families import detect_family
     from core.inference.video_families import detect_video_family
-
     return detect_family(name) is not None or detect_video_family(name) is not None
 
 

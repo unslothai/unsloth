@@ -75,7 +75,9 @@ _MAX_GGUF_KV = 1 << 20
 @dataclass(frozen = True)
 class CheckpointInfo:
     role: str  # one of the ROLE_* constants
-    family: Optional[str] = None  # supported image/video family name when role == dit and recognised
+    family: Optional[str] = (
+        None  # supported image/video family name when role == dit and recognised
+    )
     page: Optional[str] = None  # "image" | "video" | None
     what: str = ""  # human description, e.g. "a VAE"
     layout: str = ""  # "comfy" | "diffusers" | "checkpoint" | "gguf" | ""
@@ -174,7 +176,12 @@ def _read_gguf_header(path: str) -> Optional[tuple[dict[str, list[int]], dict]]:
         if len(head) < 24:
             return None
         magic, version, n_tensors, n_kv = struct.unpack("<IIQQ", head)
-        if magic != _GGUF_MAGIC or version < 2 or n_tensors > _MAX_GGUF_TENSORS or n_kv > _MAX_GGUF_KV:
+        if (
+            magic != _GGUF_MAGIC
+            or version < 2
+            or n_tensors > _MAX_GGUF_TENSORS
+            or n_kv > _MAX_GGUF_KV
+        ):
             return None
         meta: dict[str, str] = {}
         for _ in range(n_kv):
@@ -214,7 +221,14 @@ def _read_gguf_header(path: str) -> Optional[tuple[dict[str, list[int]], dict]]:
 
 # Container prefixes a DiT may sit under: ComfyUI checkpoints (``model.diffusion_model.``),
 # some fp8 repacks (``model.model.``, ``model.``), diffusers-style exports (``transformer.``).
-_DIT_PREFIXES = ("model.diffusion_model.", "diffusion_model.", "model.model.", "model.", "transformer.", "")
+_DIT_PREFIXES = (
+    "model.diffusion_model.",
+    "diffusion_model.",
+    "model.model.",
+    "model.",
+    "transformer.",
+    "",
+)
 
 _LORA_RE = re.compile(
     r"(?:^|\.)(?:lora_[AB]|lora_down|lora_up|lora\.(?:up|down)|lokr_w\d|hada_w\d_[ab])(?:\.|$)|^lora_unet_|^lora_te\d?_"
@@ -232,7 +246,11 @@ def _tops(keys) -> set[str]:
     return {k.split(".", 1)[0] for k in keys}
 
 
-def _dim(shapes: dict[str, list[int]], key: str, axis: int = 0) -> Optional[int]:
+def _dim(
+    shapes: dict[str, list[int]],
+    key: str,
+    axis: int = 0,
+) -> Optional[int]:
     shape = shapes.get(key)
     if not shape or len(shape) <= axis:
         return None
@@ -265,10 +283,19 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
     if "double_blocks" in tops and "single_blocks" in tops and "vector_in" in tops:
         in_ch = _dim(s, "img_in.weight", 1)
         if in_ch not in (None, 64):
-            return _dit(None, "a FLUX.1 Fill/Depth/Canny-style diffusion transformer (not supported)", "comfy")
+            return _dit(
+                None,
+                "a FLUX.1 Fill/Depth/Canny-style diffusion transformer (not supported)",
+                "comfy",
+            )
         info = _dit("flux.1", "a FLUX.1 diffusion transformer", "comfy")
         # schnell is the only FLUX.1 without a guidance embedder; dev / Krea-dev / Kontext share keys.
-        return CheckpointInfo(**{**info.__dict__, "variant": "flux.1-dev" if "guidance_in" in tops else "flux.1-schnell"})
+        return CheckpointInfo(
+            **{
+                **info.__dict__,
+                "variant": "flux.1-dev" if "guidance_in" in tops else "flux.1-schnell",
+            }
+        )
 
     # --- HunyuanImage-2.1 / HunyuanVideo-1.5 (ComfyUI layout)
     if "byt5_in" in tops and "double_blocks" in tops:
@@ -283,7 +310,11 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
     # --- Z-Image / Lumina-Image-2.0 (NextDiT): both carry noise/context refiners + cap_embedder
     if "noise_refiner" in tops and "context_refiner" in tops and "layers" in tops:
         if "cap_pad_token" in tops or "all_x_embedder" in tops or "x_pad_token" in tops:
-            return _dit("z-image", "a Z-Image diffusion transformer", "diffusers" if "all_x_embedder" in tops else "comfy")
+            return _dit(
+                "z-image",
+                "a Z-Image diffusion transformer",
+                "diffusers" if "all_x_embedder" in tops else "comfy",
+            )
         return _dit(
             "lumina-2",
             "a Lumina-Image-2.0 diffusion transformer",
@@ -297,8 +328,14 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         return _dit("krea-2", "a Krea-2 diffusion transformer", "diffusers")
 
     # --- MiniMax-H3 (audio+video)
-    if "token_refiner" in tops and ({"video_patch_proj", "audio_patch_proj"} <= tops or "audio_proj_in" in tops):
-        return _dit("minimax-h3", "a MiniMax-H3 audio-video diffusion transformer", "comfy" if "video_patch_proj" in tops else "diffusers")
+    if "token_refiner" in tops and (
+        {"video_patch_proj", "audio_patch_proj"} <= tops or "audio_proj_in" in tops
+    ):
+        return _dit(
+            "minimax-h3",
+            "a MiniMax-H3 audio-video diffusion transformer",
+            "comfy" if "video_patch_proj" in tops else "diffusers",
+        )
 
     # --- LTX-2 / LTX-2.3 (audio+video); LTX-Video 1 has no audio branch
     if "transformer_blocks" in tops and (
@@ -307,12 +344,20 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         or "av_cross_attn_audio_scale_shift" in tops
         or "audio_caption_projection" in tops
     ):
-        return _dit("ltx-2", "an LTX-2 audio-video diffusion transformer", "diffusers" if "proj_in" in tops else "comfy")
+        return _dit(
+            "ltx-2",
+            "an LTX-2 audio-video diffusion transformer",
+            "diffusers" if "proj_in" in tops else "comfy",
+        )
     if "patchify_proj" in tops and "transformer_blocks" in tops:
         return _dit(None, "an LTX-Video (v0.9) diffusion transformer (not supported)", "comfy")
 
     # --- Wan (ComfyUI: head.modulation / text_embedding; diffusers: condition_embedder / scale_shift_table)
-    if "patch_embedding" in tops and "blocks" in tops and ("head" in tops or "condition_embedder" in tops):
+    if (
+        "patch_embedding" in tops
+        and "blocks" in tops
+        and ("head" in tops or "condition_embedder" in tops)
+    ):
         layout = "diffusers" if "condition_embedder" in tops else "comfy"
         pe = s.get("patch_embedding.weight") or []
         width = pe[0] if pe else None
@@ -322,42 +367,64 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         if in_ch == 48 and width == 3072:
             return _dit("wan2.2-ti2v-5b", "a Wan2.2 TI2V-5B diffusion transformer", layout)
         if in_ch == 16 and width == 5120:
-            return _dit("wan2.2-t2v-a14b", "a Wan 14B text-to-video diffusion transformer (one A14B expert)", layout)
+            return _dit(
+                "wan2.2-t2v-a14b",
+                "a Wan 14B text-to-video diffusion transformer (one A14B expert)",
+                layout,
+            )
         if in_ch == 36:
             return _dit(None, "a Wan image-to-video diffusion transformer (not supported)", layout)
         return _dit(None, "a Wan diffusion transformer of an unsupported size", layout)
 
     # --- HunyuanVideo-1.5 / HunyuanImage-2.1 (diffusers layout)
-    if "transformer_blocks" in tops and ("cond_type_embed" in tops or "image_embedder" in tops) and (
-        "context_embedder_2" in tops or "x_embedder" in tops
+    if (
+        "transformer_blocks" in tops
+        and ("cond_type_embed" in tops or "image_embedder" in tops)
+        and ("context_embedder_2" in tops or "x_embedder" in tops)
     ):
         return _dit("hunyuanvideo-1.5", "a HunyuanVideo-1.5 diffusion transformer", "diffusers")
-    if {"transformer_blocks", "single_transformer_blocks", "x_embedder", "context_embedder"} <= tops and (
-        "time_guidance_embed" in tops or "context_embedder_2" in tops
-    ):
+    if {
+        "transformer_blocks",
+        "single_transformer_blocks",
+        "x_embedder",
+        "context_embedder",
+    } <= tops and ("time_guidance_embed" in tops or "context_embedder_2" in tops):
         return _dit("hunyuanimage-2.1", "a HunyuanImage-2.1 diffusion transformer", "diffusers")
 
     # --- Qwen-Image family (ComfyUI keeps the diffusers names)
     if "transformer_blocks" in tops and "img_in" in tops and "txt_in" in tops:
         if "txt_norm" in tops:
             if "time_text_embed.addition_t_embedding.weight" in s:
-                return _dit("qwen-image-layered", "a Qwen-Image-Layered diffusion transformer", "comfy")
+                return _dit(
+                    "qwen-image-layered", "a Qwen-Image-Layered diffusion transformer", "comfy"
+                )
             if "__index_timestep_zero__" in s:
-                return _dit("qwen-image-edit", "a Qwen-Image-Edit-2511 diffusion transformer", "comfy")
+                return _dit(
+                    "qwen-image-edit", "a Qwen-Image-Edit-2511 diffusion transformer", "comfy"
+                )
             return _dit("qwen-image", "a Qwen-Image diffusion transformer", "comfy")
         if "modulation" in tops or _any(keys, r"^txt_in\.(in_layer|text_norm)"):
             return _dit("qwen-image-2.1", "a Qwen-Image-2.1 diffusion transformer", "comfy")
 
     # --- FLUX.1 (diffusers layout); HunyuanImage diffusers carries context_embedder_2 (above)
-    if {"transformer_blocks", "single_transformer_blocks", "x_embedder", "context_embedder"} <= tops and (
-        "time_text_embed" in tops
-    ):
+    if {
+        "transformer_blocks",
+        "single_transformer_blocks",
+        "x_embedder",
+        "context_embedder",
+    } <= tops and ("time_text_embed" in tops):
         in_ch = _dim(s, "x_embedder.weight", 1)
         if in_ch not in (None, 64):
-            return _dit(None, "a FLUX.1 Fill/Depth/Canny-style diffusion transformer (not supported)", "diffusers")
+            return _dit(
+                None,
+                "a FLUX.1 Fill/Depth/Canny-style diffusion transformer (not supported)",
+                "diffusers",
+            )
         info = _dit("flux.1", "a FLUX.1 diffusion transformer", "diffusers")
         guided = _any(keys, r"^time_text_embed\.guidance_embedder\.")
-        return CheckpointInfo(**{**info.__dict__, "variant": "flux.1-dev" if guided else "flux.1-schnell"})
+        return CheckpointInfo(
+            **{**info.__dict__, "variant": "flux.1-dev" if guided else "flux.1-schnell"}
+        )
 
     # --- SDXL / SD UNets (LDM and diffusers layouts)
     if {"input_blocks", "middle_block", "output_blocks"} <= tops:
@@ -390,7 +457,12 @@ def _match_controlnet(keys) -> bool:
 def _match_text_encoder(keys) -> Optional[str]:
     tops = _tops(keys)
     joined_tail = {k.split(".", 2)[1] if k.count(".") >= 1 else "" for k in keys}
-    if "text_model" in tops or "text_projection" in tops or "transformer" in tops and "text_model" in joined_tail:
+    if (
+        "text_model" in tops
+        or "text_projection" in tops
+        or "transformer" in tops
+        and "text_model" in joined_tail
+    ):
         return "a CLIP text encoder"
     if "encoder" in tops and "shared" in tops:
         return "a T5 text encoder"
@@ -417,7 +489,9 @@ def _match_vae(keys) -> Optional[str]:
         return "a VAE"
     if "encoder" in tops and "decoder" in tops:
         return "a VAE"
-    if "decoder" in tops and ("post_quant_conv" in tops or "latents_mean" in tops or "per_channel_statistics" in tops):
+    if "decoder" in tops and (
+        "post_quant_conv" in tops or "latents_mean" in tops or "per_channel_statistics" in tops
+    ):
         return "a VAE (decoder)"
     return None
 
@@ -452,12 +526,24 @@ def classify_tensors(shapes: dict[str, list[int]], meta: Optional[dict] = None) 
         return CheckpointInfo(ROLE_LORA, what = "a LoRA adapter")
     arch = str((meta or {}).get("general.architecture") or "").lower()
     if arch in _TE_GGUF_ARCHS:
-        return CheckpointInfo(ROLE_TEXT_ENCODER, what = f"a text encoder ({arch} GGUF)", layout = "gguf")
+        return CheckpointInfo(
+            ROLE_TEXT_ENCODER, what = f"a text encoder ({arch} GGUF)", layout = "gguf"
+        )
     if _match_controlnet(keys):
         return CheckpointInfo(ROLE_CONTROLNET, what = "a ControlNet")
 
     tops = _tops(keys)
-    bundled = bool(tops & {"vae", "first_stage_model", "text_encoders", "conditioner", "cond_stage_model", "audio_vae"})
+    bundled = bool(
+        tops
+        & {
+            "vae",
+            "first_stage_model",
+            "text_encoders",
+            "conditioner",
+            "cond_stage_model",
+            "audio_vae",
+        }
+    )
     for prefix in _DIT_PREFIXES:
         sub = _strip(shapes, prefix)
         if not sub:
@@ -465,7 +551,9 @@ def classify_tensors(shapes: dict[str, list[int]], meta: Optional[dict] = None) 
         info = _match_dit(sub)
         if info is not None:
             layout = "gguf" if arch else ("checkpoint" if bundled else info.layout)
-            return CheckpointInfo(info.role, info.family, info.page, info.what, layout, info.variant)
+            return CheckpointInfo(
+                info.role, info.family, info.page, info.what, layout, info.variant
+            )
 
     te = _match_text_encoder(keys)
     if te:
@@ -505,7 +593,11 @@ def inspect_checkpoint(path: str) -> CheckpointInfo:
             parsed = reader(str(path))
         except (OSError, ValueError, struct.error, MemoryError, RecursionError):
             parsed = None
-        info = classify_tensors(*parsed) if parsed else CheckpointInfo(ROLE_UNKNOWN, what = "an unreadable checkpoint header")
+        info = (
+            classify_tensors(*parsed)
+            if parsed
+            else CheckpointInfo(ROLE_UNKNOWN, what = "an unreadable checkpoint header")
+        )
     with _CACHE_LOCK:
         if len(_CACHE) >= _CACHE_MAX:
             _CACHE.clear()

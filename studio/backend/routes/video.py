@@ -179,8 +179,10 @@ async def video_download_plan(
             if split is not None:
                 request.model_path, request.gguf_filename = split
                 kind = resolve_video_model_kind(split[1], None)
-            sole = None if split is not None else await asyncio.to_thread(
-                resolve_local_single_file, request.model_path
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
             )
             if sole is not None:
                 request.gguf_filename = sole
@@ -361,8 +363,10 @@ async def load_video_model_gated(
             if split is not None:
                 request.model_path, request.gguf_filename = split
                 kind = resolve_video_model_kind(split[1], None)
-            sole = None if split is not None else await asyncio.to_thread(
-                resolve_local_single_file, request.model_path
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
             )
             if sole is not None:
                 request.gguf_filename = sole

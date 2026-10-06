@@ -120,7 +120,12 @@ def _corpus() -> set[str]:
     for fams in (df._FAMILIES, vf._FAMILIES):
         for fam in fams:
             for token in (fam.name, *fam.aliases):
-                names |= {token, f"org/{token}-gguf", f"{token}-Q4_K_M.gguf", f"org/{token.upper()}"}
+                names |= {
+                    token,
+                    f"org/{token}-gguf",
+                    f"{token}-Q4_K_M.gguf",
+                    f"org/{token.upper()}",
+                }
             if getattr(fam, "base_repo", None):
                 names.add(fam.base_repo)
     for rel in _AUDIT:
@@ -164,7 +169,10 @@ def test_audit_name_table_before_vs_after():
         vfam = vf.detect_video_family(base)
         assert (fam.name if fam else None) == row["name_image"], rel
         assert (vfam.name if vfam else None) == row["name_video"], rel
-        for before, after in ((row["name_image_before"], row["name_image"]), (row["name_video_before"], row["name_video"])):
+        for before, after in (
+            (row["name_image_before"], row["name_image"]),
+            (row["name_video_before"], row["name_video"]),
+        ):
             if before and after != before:
                 if (before, after) in _INTENDED_RENAMES:
                     renamed += 1
@@ -183,7 +191,10 @@ def test_generation_defaults_read_comfy_names():
     assert df.default_generation_params("flux-2-klein-base-4b.safetensors") == (20, 5.0)
     # unchanged spellings keep their row
     assert df.default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (8, 0.0)
-    assert vf.video_generation_variant("Wan2_2-T2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors") == "a14b"
+    assert (
+        vf.video_generation_variant("Wan2_2-T2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors")
+        == "a14b"
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -219,17 +230,33 @@ def test_fixture_covers_every_single_file_family_in_both_layouts():
     comfy = {r["expect_family"] for r in _AUDIT.values() if r["expect_role"] == dc.ROLE_DIT}
     diffusers = {r["expect_family"] for r in _DIFFUSERS.values()}
     for fam in (
-        "flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "qwen-image-2.1", "z-image", "krea-2",
-        "lumina-2", "hunyuanimage-2.1", "hidream-i1", "wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "ltx-2",
-        "hunyuanvideo-1.5", "minimax-h3",
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "qwen-image",
+        "qwen-image-2.1",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "hunyuanimage-2.1",
+        "hidream-i1",
+        "wan2.2-ti2v-5b",
+        "wan2.2-t2v-a14b",
+        "ltx-2",
+        "hunyuanvideo-1.5",
+        "minimax-h3",
     ):
         assert fam in comfy, fam
     assert len(diffusers) >= 14
 
 
 def test_unsupported_architectures_are_dits_without_a_family():
-    wan_i2v = [r for k, r in _AUDIT.items() if re.search(r"(?<!t)i2v", k.lower()) and "wan" in k.lower()]
-    assert wan_i2v and all(r["expect_role"] == dc.ROLE_DIT and r["expect_family"] is None for r in wan_i2v)
+    wan_i2v = [
+        r for k, r in _AUDIT.items() if re.search(r"(?<!t)i2v", k.lower()) and "wan" in k.lower()
+    ]
+    assert wan_i2v and all(
+        r["expect_role"] == dc.ROLE_DIT and r["expect_family"] is None for r in wan_i2v
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -237,7 +264,11 @@ def test_unsupported_architectures_are_dits_without_a_family():
 # --------------------------------------------------------------------------------------------
 
 
-def _write_safetensors(path: Path, shapes: dict, meta: dict | None = None) -> Path:
+def _write_safetensors(
+    path: Path,
+    shapes: dict,
+    meta: dict | None = None,
+) -> Path:
     """Header-only safetensors (data section absent): the classifier never reads past the header."""
     header = {k: {"dtype": "BF16", "shape": v, "data_offsets": [0, 0]} for k, v in shapes.items()}
     if meta:
@@ -267,7 +298,9 @@ def _row(suffix: str) -> dict:
 
 
 def test_renamed_comfy_dit_resolves_by_content(tmp_path):
-    _write_safetensors(tmp_path / "my_model.safetensors", _row("z_image_int8_convrot.safetensors")["shapes"])
+    _write_safetensors(
+        tmp_path / "my_model.safetensors", _row("z_image_int8_convrot.safetensors")["shapes"]
+    )
     assert df.detect_family("my_model.safetensors") is None
     fam = df.detect_family_for_pick(str(tmp_path), "my_model.safetensors")
     assert fam is not None and fam.name == "z-image"
@@ -275,9 +308,14 @@ def test_renamed_comfy_dit_resolves_by_content(tmp_path):
 
 
 def test_misnamed_dit_follows_its_header(tmp_path):
-    _write_safetensors(tmp_path / "flux1-dev-mine.safetensors", _row("flux-2-klein-4b.safetensors")["shapes"])
+    _write_safetensors(
+        tmp_path / "flux1-dev-mine.safetensors", _row("flux-2-klein-4b.safetensors")["shapes"]
+    )
     assert df.detect_family("flux1-dev-mine.safetensors").name == "flux.1"
-    assert df.detect_family_for_pick(str(tmp_path), "flux1-dev-mine.safetensors").name == "flux.2-klein"
+    assert (
+        df.detect_family_for_pick(str(tmp_path), "flux1-dev-mine.safetensors").name
+        == "flux.2-klein"
+    )
 
 
 def test_name_breaks_ties_between_same_architecture_variants(tmp_path):
@@ -322,7 +360,9 @@ def test_gguf_text_encoder_and_dit(tmp_path):
 
 
 def test_wrong_page_is_refused_with_the_right_page(tmp_path):
-    _write_safetensors(tmp_path / "flux_like.safetensors", _row("wan2.2_ti2v_5B_fp16.safetensors")["shapes"])
+    _write_safetensors(
+        tmp_path / "flux_like.safetensors", _row("wan2.2_ti2v_5B_fp16.safetensors")["shapes"]
+    )
     with pytest.raises(ValueError, match = "Video page"):
         dc.assert_local_pick_is_dit(str(tmp_path), "flux_like.safetensors", "image")
     dc.assert_local_pick_is_dit(str(tmp_path), "flux_like.safetensors", "video")
@@ -330,14 +370,19 @@ def test_wrong_page_is_refused_with_the_right_page(tmp_path):
 
 
 def test_name_veto_is_not_revived_by_content(tmp_path):
-    _write_safetensors(tmp_path / "flux1-dev-inpaint.safetensors", _row("flux1-dev.safetensors")["shapes"])
+    _write_safetensors(
+        tmp_path / "flux1-dev-inpaint.safetensors", _row("flux1-dev.safetensors")["shapes"]
+    )
     assert df.detect_family_for_pick(str(tmp_path), "flux1-dev-inpaint.safetensors") is None
 
 
 def test_unreadable_or_unknown_header_keeps_the_name_verdict(tmp_path):
     (tmp_path / "flux1-dev-broken.safetensors").write_bytes(b"\x00" * 4)
     _write_safetensors(tmp_path / "flux1-dev-odd.safetensors", {"foo.weight": [4, 4]})
-    assert dc.inspect_checkpoint(str(tmp_path / "flux1-dev-broken.safetensors")).role == dc.ROLE_UNKNOWN
+    assert (
+        dc.inspect_checkpoint(str(tmp_path / "flux1-dev-broken.safetensors")).role
+        == dc.ROLE_UNKNOWN
+    )
     assert dc.offer_as_dit(str(tmp_path / "flux1-dev-odd.safetensors"))
     for name in ("flux1-dev-broken.safetensors", "flux1-dev-odd.safetensors"):
         assert df.detect_family_for_pick(str(tmp_path), name).name == "flux.1"
@@ -345,19 +390,28 @@ def test_unreadable_or_unknown_header_keeps_the_name_verdict(tmp_path):
 
 
 def test_remote_and_override_picks_are_untouched(tmp_path):
-    assert df.detect_family_for_pick("Comfy-Org/Qwen-Image_ComfyUI", "qwen_image_vae.safetensors").name == "qwen-image"
+    assert (
+        df.detect_family_for_pick("Comfy-Org/Qwen-Image_ComfyUI", "qwen_image_vae.safetensors").name
+        == "qwen-image"
+    )
     _write_safetensors(tmp_path / "x.safetensors", _row("flux-2-klein-4b.safetensors")["shapes"])
     assert df.detect_family_for_pick(str(tmp_path), "x.safetensors", "flux.1").name == "flux.1"
-    dc.assert_local_pick_is_dit("Comfy-Org/Qwen-Image_ComfyUI", "qwen_image_vae.safetensors", "image")
+    dc.assert_local_pick_is_dit(
+        "Comfy-Org/Qwen-Image_ComfyUI", "qwen_image_vae.safetensors", "image"
+    )
 
 
 def test_header_read_is_bounded_and_cached(tmp_path, monkeypatch):
     big = tmp_path / "huge.safetensors"
     big.write_bytes(struct.pack("<Q", 1 << 40) + b"{}")
     assert dc.inspect_checkpoint(str(big)).role == dc.ROLE_UNKNOWN
-    path = _write_safetensors(tmp_path / "z.safetensors", _row("z_image_bf16.safetensors")["shapes"])
+    path = _write_safetensors(
+        tmp_path / "z.safetensors", _row("z_image_bf16.safetensors")["shapes"]
+    )
     first = dc.inspect_checkpoint(str(path))
-    monkeypatch.setattr(dc, "_read_safetensors_header", lambda p: pytest.fail("re-read a cached header"))
+    monkeypatch.setattr(
+        dc, "_read_safetensors_header", lambda p: pytest.fail("re-read a cached header")
+    )
     assert dc.inspect_checkpoint(str(path)) is first
 
 
@@ -365,7 +419,9 @@ def test_local_pick_file_rejects_escaping_names(tmp_path):
     (tmp_path / "a.safetensors").write_bytes(b"")
     assert dc.local_pick_file(str(tmp_path), "../a.safetensors") is None
     assert dc.local_pick_file(str(tmp_path), "a.safetensors") == str(tmp_path / "a.safetensors")
-    assert dc.local_pick_file(str(tmp_path / "a.safetensors"), None) == str(tmp_path / "a.safetensors")
+    assert dc.local_pick_file(str(tmp_path / "a.safetensors"), None) == str(
+        tmp_path / "a.safetensors"
+    )
     assert dc.local_pick_file("org/repo", "a.safetensors") is None
 
 
@@ -377,14 +433,21 @@ def test_classifier_is_torch_free():
         "import sys; import core.inference.diffusion_content, core.inference.family_name_match; "
         "assert 'torch' not in sys.modules and 'diffusers' not in sys.modules"
     )
-    subprocess.run([sys.executable, "-c", code], check = True, cwd = Path(__file__).resolve().parents[1])
+    subprocess.run(
+        [sys.executable, "-c", code], check = True, cwd = Path(__file__).resolve().parents[1]
+    )
 
 
 def test_qwen_image_21_header_wins_over_a_plain_qwen_image_name(tmp_path):
     """A Qwen-Image-2.1 DiT read as plain Qwen-Image is rebuilt at the wrong width (4096 vs 3072)."""
-    _write_safetensors(tmp_path / "qwen_image_mine.safetensors", _row("qwen_image_2.1_bf16.safetensors")["shapes"])
+    _write_safetensors(
+        tmp_path / "qwen_image_mine.safetensors", _row("qwen_image_2.1_bf16.safetensors")["shapes"]
+    )
     assert df.detect_family("qwen_image_mine.safetensors").name == "qwen-image"
-    assert df.detect_family_for_pick(str(tmp_path), "qwen_image_mine.safetensors").name == "qwen-image-2.1"
+    assert (
+        df.detect_family_for_pick(str(tmp_path), "qwen_image_mine.safetensors").name
+        == "qwen-image-2.1"
+    )
 
 
 def test_flux1_dev_krea_schnell_defaults(tmp_path):
@@ -392,16 +455,26 @@ def test_flux1_dev_krea_schnell_defaults(tmp_path):
     assert df.default_generation_params("flux1-krea-dev_fp8_scaled.safetensors", base) == (20, 3.5)
     assert df.default_generation_params("flux1-dev-fp8.safetensors", base) == (20, 3.5)
     assert df.default_generation_params("flux1-schnell-fp8.safetensors", base) == (4, 0.0)
-    assert df.default_generation_params("flux1-dev-kontext_fp8_scaled.safetensors", base) == (20, 2.5)
+    assert df.default_generation_params("flux1-dev-kontext_fp8_scaled.safetensors", base) == (
+        20,
+        2.5,
+    )
     assert df.default_generation_params("krea2_turbo_bf16.safetensors") == (8, 0.0)
     # renamed files: the keys separate schnell (no guidance_in) from dev / Krea-dev
-    _write_safetensors(tmp_path / "a.safetensors", _row("flux1-krea-dev_fp8_scaled.safetensors")["shapes"])
-    _write_safetensors(tmp_path / "b.safetensors", _row("Comfy-Org/flux1-schnell/flux1-schnell.safetensors")["shapes"])
+    _write_safetensors(
+        tmp_path / "a.safetensors", _row("flux1-krea-dev_fp8_scaled.safetensors")["shapes"]
+    )
+    _write_safetensors(
+        tmp_path / "b.safetensors",
+        _row("Comfy-Org/flux1-schnell/flux1-schnell.safetensors")["shapes"],
+    )
     hint_a = dc.content_variant_hint(str(tmp_path), "a.safetensors")
     hint_b = dc.content_variant_hint(str(tmp_path), "b.safetensors")
     assert (hint_a, hint_b) == ("flux.1-dev", "flux.1-schnell")
     assert df.default_generation_params("a.safetensors", hint_a, str(tmp_path), base) == (20, 3.5)
     assert df.default_generation_params("b.safetensors", hint_b, str(tmp_path), base) == (4, 0.0)
     fam = df.detect_family("flux.1")
-    assert df.comfy_flow_shift_for(fam, "a.safetensors", hint_a, base) == df.comfy_flow_shift_for(fam, "flux1-dev")
+    assert df.comfy_flow_shift_for(fam, "a.safetensors", hint_a, base) == df.comfy_flow_shift_for(
+        fam, "flux1-dev"
+    )
     assert df.comfy_flow_shift_for(fam, "b.safetensors", hint_b, base) is None

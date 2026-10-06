@@ -78,7 +78,6 @@ def _stub_header_check(monkeypatch):
 @pytest.fixture(autouse = True)
 def _registrable_tmp(monkeypatch):
     from hub.storage import scan_folders
-
     monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [])
 
@@ -87,7 +86,10 @@ def _st(path: Path, keys = ("x.weight",)) -> Path:
     """A real (tiny) safetensors file: 8-byte LE header length + JSON header + data."""
     path.parent.mkdir(parents = True, exist_ok = True)
     header = json.dumps(
-        {k: {"dtype": "BF16", "shape": [1], "data_offsets": [2 * i, 2 * i + 2]} for i, k in enumerate(keys)}
+        {
+            k: {"dtype": "BF16", "shape": [1], "data_offsets": [2 * i, 2 * i + 2]}
+            for i, k in enumerate(keys)
+        }
     ).encode()
     path.write_bytes(struct.pack("<Q", len(header)) + header + b"\0\0" * len(keys))
     return path
@@ -297,9 +299,7 @@ def test_extra_model_paths_refuses_system_folders(tmp_path, monkeypatch):
     denied = tmp_path / "system"
     (denied / "dits").mkdir(parents = True)
     monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [str(denied)])
-    (tmp_path / "extra_model_paths.yaml").write_text(
-        f"x:\n  diffusion_models: {denied / 'dits'}\n"
-    )
+    (tmp_path / "extra_model_paths.yaml").write_text(f"x:\n  diffusion_models: {denied / 'dits'}\n")
     assert comfy_models.comfy_layout(tmp_path) is None
 
 
@@ -337,7 +337,10 @@ def test_split_local_checkpoint_path(tmp_path):
     from core.inference.diffusion import split_local_checkpoint_path
 
     files = _comfy_diffusion_folder(tmp_path)
-    assert split_local_checkpoint_path(str(files["flux"])) == (str(tmp_path), "flux1-dev.safetensors")
+    assert split_local_checkpoint_path(str(files["flux"])) == (
+        str(tmp_path),
+        "flux1-dev.safetensors",
+    )
     assert split_local_checkpoint_path(str(tmp_path)) is None
     assert split_local_checkpoint_path(str(files["gguf"])) is None
     assert split_local_checkpoint_path(str(tmp_path / "missing.safetensors")) is None
@@ -390,9 +393,7 @@ def test_renamed_file_row_takes_its_family_from_the_header(tmp_path, monkeypatch
         else diffusion_content.CheckpointInfo(diffusion_content.ROLE_UNKNOWN),
     )
     [row] = [
-        r
-        for r in local_inventory._scan_models_dir(tmp_path)
-        if r.path == str(files["renamed"])
+        r for r in local_inventory._scan_models_dir(tmp_path) if r.path == str(files["renamed"])
     ]
     assert "flux.1" in catalog_classification._local_family_needles(row)
     assert catalog_classification._local_model_task(row) == "text-to-image"

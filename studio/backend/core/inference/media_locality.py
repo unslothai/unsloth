@@ -89,9 +89,7 @@ def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
         return pick
     split = split_local_checkpoint_path(pick.model_path)
     if split is not None:
-        return replace(
-            pick, model_path = split[0], gguf_filename = split[1], model_kind = "single_file"
-        )
+        return replace(pick, model_path = split[0], gguf_filename = split[1], model_kind = "single_file")
     sole = resolve_local_single_file(pick.model_path)
     if sole is None:
         return pick

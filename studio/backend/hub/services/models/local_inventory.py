@@ -423,7 +423,10 @@ def _scan_models_dir(
 
 
 def loose_diffusion_checkpoint_rows(
-    folder: Path, *, limit: int | None = None, entry_limit: int | None = None
+    folder: Path,
+    *,
+    limit: int | None = None,
+    entry_limit: int | None = None,
 ) -> List[LocalModelInfo]:
     """One row per loose single-file diffusion checkpoint in ``folder`` (a ComfyUI
     ``diffusion_models/`` holds dozens side by side). Each row's path IS the file, so a pick loads

@@ -456,7 +456,10 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
 
 
 def _scan_models_dir(
-    models_dir: Path, *, limit: int | None = None, loose_files: bool = False
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+    loose_files: bool = False,
 ) -> List[LocalModelInfo]:
     """``loose_files``: list a lone loose checkpoint as its file row, never as the folder (a
     ComfyUI role folder is a container, not a model)."""
