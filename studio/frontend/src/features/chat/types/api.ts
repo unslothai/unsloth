@@ -700,6 +700,9 @@ export interface OpenAIChatCompletionsRequest {
    *  call, "auto" only on calls flagged unsafe, "off" never, "full" never and drops the
    *  sandbox. Unset behaves as "ask". */
   permission_mode?: "ask" | "auto" | "off" | "full";
+  /** "high" (default) adds the OS sandbox when it works; "low" runs Python/Terminal on software
+   *  safeguards only. Full access overrides both. */
+  sandbox_level?: "high" | "low";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */

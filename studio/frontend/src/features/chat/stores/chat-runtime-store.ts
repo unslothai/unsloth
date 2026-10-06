@@ -154,10 +154,13 @@ export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
+export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
 /** Local tool-call gate: "ask" every call, "auto" only high-risk ones, "off" never but keeps the
  *  sandbox, "full" drops both and is session-only. */
 export type PermissionMode = "ask" | "auto" | "off" | "full";
+/** "high" adds the OS sandbox (bubblewrap, Seatbelt, MXC) to the software safeguards; "low" uses only those. */
+export type SandboxLevel = "high" | "low";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -744,6 +747,8 @@ const MIRRORED_SETTINGS = {
         ? loadPermissionMode()
         : undefined,
   },
+  // MIRRORED_ENUM_VALUES keeps a server value to "high" or "low".
+  sandboxLevel: { storageKey: CHAT_SANDBOX_LEVEL_KEY, ...STRING_SETTING },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
   ragTopK: { storageKey: CHAT_RAG_TOP_K_KEY, ...NUMBER_SETTING },
@@ -1863,6 +1868,15 @@ function loadShowCanvasMenuItem(): boolean {
 
 /** "full" is never restored: it disables the sandbox and every confirmation gate, so it needs
  *  the warning dialog each session. First run derives from the legacy confirm toggle. */
+/** Anything but an explicit "low" (missing, garbled, a newer value) reads as the default, "high". */
+export function normalizeSandboxLevel(raw: unknown): SandboxLevel {
+  return raw === "low" ? "low" : "high";
+}
+
+export function loadSandboxLevel(): SandboxLevel {
+  return normalizeSandboxLevel(readStorageValue(CHAT_SANDBOX_LEVEL_KEY));
+}
+
 function loadPermissionMode(): PermissionMode {
   return normalizeStoredPermissionMode(
     readStorageValue(CHAT_PERMISSION_MODE_KEY),
@@ -2382,6 +2396,7 @@ type ChatRuntimeStore = {
   /** Permission level. Single source of truth for the bypass dropdowns; bypassPermissions and
    *  confirmToolCalls mirror it. "full" is session-only. */
   permissionMode: PermissionMode;
+  sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
    *  it does not leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -2662,6 +2677,7 @@ type ChatRuntimeStore = {
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  setSandboxLevel: (level: SandboxLevel) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
@@ -2774,6 +2790,7 @@ type ScalarSettingKey =
   | "mcpEnabledForChat"
   | "confirmToolCalls"
   | "permissionMode"
+  | "sandboxLevel"
   | "ragSource"
   | "ragMode"
   | "ragTopK"
@@ -2825,6 +2842,7 @@ const SCALAR_SETTING_KEYS = [
   "mcpEnabledForChat",
   "confirmToolCalls",
   "permissionMode",
+  "sandboxLevel",
   "ragSource",
   "ragMode",
   "ragTopK",
@@ -4182,6 +4200,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // confirmation gate, so it needs the warning dialog each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
+  sandboxLevel: loadSandboxLevel(),
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -5492,6 +5511,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
+    }),
+  setSandboxLevel: (sandboxLevel) =>
+    set(() => {
+      saveString(CHAT_SANDBOX_LEVEL_KEY, sandboxLevel);
+      return { sandboxLevel };
     }),
   setPermissionMode: (permissionMode) =>
     set((state) => {
