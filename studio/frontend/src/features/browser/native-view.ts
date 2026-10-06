@@ -381,7 +381,7 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
 }
 
 // The page as it was when a menu hid it, painted on its placeholder so the panel doesn't go blank.
-let snapshot: { element: HTMLElement; url: string } | null = null;
+let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null;
 let shownBounds: Bounds | null = null;
 
 function clearSnapshot(): void {
@@ -411,12 +411,13 @@ async function paintSnapshot(tabId: string): Promise<void> {
   element.style.backgroundPosition = `${bounds.x - box.left}px ${bounds.y - box.top}px`;
   element.style.backgroundSize = `${bounds.width}px ${bounds.height}px`;
   element.style.backgroundRepeat = "no-repeat";
-  snapshot = { element, url };
+  snapshot = { tabId, element, url };
 }
 
 async function applyView(desired: Desired): Promise<void> {
   if (!desired || "covered" in desired) {
-    clearSnapshot();
+    // Still covered over the same tab, as when a menu closes and reopens mid-capture: keep its picture.
+    if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
     if (desired) await paintSnapshot(desired.tabId);
     setShownView(null);
     await call("browser_view_show", { tabId: null });
