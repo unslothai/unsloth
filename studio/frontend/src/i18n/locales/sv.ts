@@ -1307,17 +1307,19 @@ export const sv = {
         "Windows-sandlådan (MXC) kräver Windows 11 24H2 (version 26100) eller senare, så den är inte tillgänglig på den här datorn.",
       permissionsIntro:
         "Välj när verktyg frågar först, och om Python och Terminal även körs i OS-sandlådan.",
+      permissionLabel: "Verktygsbehörigheter",
+      levelPickerTitle: "Hur ska kod köras i sandlåda?",
+      levelOff: "Inaktiverad",
+      levelOffShort: "Fullständig åtkomst stänger av sandlådan",
+      levelHighDetail:
+        "OS-sandlåda. Python och Terminal körs i OS-sandlådan (bubblewrap, Seatbelt eller MXC) ovanpå programvarusandlådan. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
+      levelLowDetail:
+        "Programvarusandlåda. Python och Terminal körs bara med programvarusandlådan, utanför OS-sandlådan. Riskabla anrop frågar först om du inte har valt Fullständig åtkomst.",
       levelLabel: "Sandlåda",
       levelHigh: "Hög",
       levelLow: "Låg",
-      levelHighShort: "OS-sandlåda",
-      levelLowShort: "Programvarusandlåda",
-      levelHelp:
-        "Låg: programvarusandlåda. Hög: OS-sandlåda. Läs mer i Inställningar > Sandlåda.",
-      levelHighDescription:
-        "Hög: OS-sandlåda. Python och Terminal körs i OS-sandlådan (bubblewrap, Seatbelt eller MXC) ovanpå programvarusandlådan. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
-      levelLowDescription:
-        "Låg: programvarusandlåda. Python och Terminal körs bara med programvarusandlådan, utanför OS-sandlådan. Riskabla anrop frågar först om du inte har valt Fullständig åtkomst.",
+      levelHighShort: "Lägger till OS-isolering för Python och Terminal",
+      levelLowShort: "Endast programvara. Riskabel kod frågar först",
       levelFullAccessNote:
         "Fullständig åtkomst stänger av sandlådan. Den här inställningen gäller igen när du väljer en annan nivå.",
       learnMore: "Läs mer",
@@ -2948,6 +2950,8 @@ export const sv = {
         modelMultilingual: "Flerspråkig",
         modelEnglish: "Engelska",
         modelTypedDecisions: "Typade beslut",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Rekommenderas",
         device: "Kör på",
         deviceDescription:
@@ -2958,11 +2962,13 @@ export const sv = {
         notDownloaded: "Inte hämtad · {size}",
         downloading: "Hämtar …",
         downloaded: "Hämtad · läses in vid första begäran",
+        ready: "Redo · läses in vid första begäran",
         installing: "Installerar …",
         loading: "Läser in …",
         loadedOn: "Inläst på {device}",
         download: "Hämta",
         downloadConfirmTitle: "Hämta Laya {model}?",
+        downloadConfirmTitleModel: "Hämta {model}?",
         downloadConfirmBody:
           "Decision API behöver denna modell för att besvara begäranden. Ungefär {size}, hämtas en gång och sparas i din Hugging Face-cache.",
         unload: "Avlasta",
@@ -3088,6 +3094,9 @@ export const sv = {
       configDescription: "Spara och läs in konfigurationer",
       modelLabel: "Modell",
       modelTooltip: "Basmodellen som du vill finjustera.",
+      checkpointLabel: "Kontrollpunkt",
+      checkpointTooltip:
+        "Laya-kontrollpunkten som ska finjusteras. Den flerspråkiga passar de flesta datauppsättningar.",
       methodLabel: "Metod",
       methodTooltip:
         "Hur modellen tränas. LoRA och QLoRA uppdaterar små adaptrar i stället för varje vikt.",
@@ -3551,6 +3560,10 @@ export const sv = {
         learningRatePositive: "Ange en inlärningshastighet större än noll.",
         embeddingLearningRateRange:
           "Ange en inlärningshastighet för inbäddning som är större än 0 och mindre än 1.",
+        decisionColumnsMissing:
+          "Beslutsmodeller behöver kolumnerna state, questions och gold (eller answers). Saknas: {columns}.",
+        decisionOwnerOnly:
+          "Endast ägaren av Studio kan finjustera beslutsmodeller.",
         hfDatasetRequired: "Välj först en Hugging Face-datauppsättning.",
         hfDatasetSplitRequired: "Välj eller ange först en träningsdelning.",
         localDatasetRequired: "Välj först en lokal datauppsättning.",
@@ -3712,6 +3725,10 @@ export const sv = {
       title: "Träningsförlopp",
       liveMetrics: "Träningsmått i realtid",
       exportGguf: "Exportera till GGUF",
+      useInDecisionApi: "Använd i Decision API",
+      decisionApiEnabled: "Decision API hanterar nu {name}.",
+      decisionApiFailed:
+        "Det gick inte att byta Decision API till den här modellen.",
       openConfig: "Öppna träningskonfiguration",
       configLabel: "Träningskonfiguration",
       hyperparams: "Hyperparametrar",
@@ -4070,6 +4087,7 @@ export const sv = {
       source: "Källa",
       fileType: "Filtyp",
       clearFilters: "Rensa filter",
+      workflow: "Skapad med",
       uploaded: "Uppladdade",
       generated: "Genererade",
       documents: "Dokument",
@@ -4086,6 +4104,13 @@ export const sv = {
       sortSize: "Storlek",
       sortAscending: "Stigande",
       sortDescending: "Fallande",
+    },
+    audio: {
+      play: "Spela upp {name}",
+      pause: "Pausa {name}",
+      playFailed: "Det gick inte att spela upp {name}",
+      fromRun: "Från samma körning",
+      downloadRun: "Hämta alla",
     },
     create: {
       note: "Anteckning",
