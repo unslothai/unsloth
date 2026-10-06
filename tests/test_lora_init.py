@@ -191,3 +191,34 @@ def test_calibration_patch_does_not_trigger_lazy_module_getattr(monkeypatch):
         monkeypatch.setattr(module, name, getattr(fn, "__wrapped__", fn))
     lora_init.patch_peft_calibration_eager()
     assert names and not set(asked) & set(names)
+
+
+def test_fast_init_kill_switch_and_force(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_FAST_LORA_INIT", "0")
+    original = LoraLayer.pissa_init
+    with lora_init.fast_lora_init():
+        assert LoraLayer.pissa_init is original
+    with lora_init.fast_lora_init(force = True):
+        assert LoraLayer.pissa_init is lora_init._pissa_init
+        with lora_init.fast_lora_init():
+            assert LoraLayer.pissa_init is lora_init._pissa_init
+    assert LoraLayer.pissa_init is original
+
+
+def test_fast_pissa_saves_record_their_algorithm(tmp_path):
+    import json
+
+    class _Model:
+        def save_pretrained(self, save_directory, **kwargs):
+            for sub in ("", "second"):
+                (tmp_path / sub).mkdir(exist_ok = True)
+                (tmp_path / sub / "adapter_config.json").write_text("{}")
+
+    model = _Model()
+    assert not lora_init.adapter_used_fast_pissa(str(tmp_path))
+    lora_init.record_fast_pissa(model)
+    lora_init.record_fast_pissa(model)
+    model.save_pretrained(str(tmp_path))
+    for sub in ("", "second"):
+        assert json.loads((tmp_path / sub / lora_init.SIDECAR).read_text())["pissa"]
+    assert lora_init.adapter_used_fast_pissa(str(tmp_path))

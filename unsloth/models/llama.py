@@ -4099,10 +4099,12 @@ class FastLlamaModel:
                 gc.collect()
                 clean_gpu_cache()
 
-        from .lora_init import fast_lora_init
+        from .lora_init import fast_lora_init, record_fast_pissa
 
-        with fast_lora_init():
+        with fast_lora_init() as fast:
             model = _get_peft_model(model, lora_config)
+        if fast["pissa"]:
+            record_fast_pissa(model)
         snapshot_residual_lora_init(model, init_lora_weights)
 
         try:

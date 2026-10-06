@@ -41,7 +41,7 @@ from .mistral_format import (
     mistral_format_redirect,
     prepare_mistral_format_checkpoint,
 )
-from .lora_init import fast_lora_init
+from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -1620,8 +1620,15 @@ class FastLanguageModel(FastLlamaModel):
                     local_files_only = local_files_only,
                     cache_dir = kwargs.get("cache_dir"),
                 )
-            # Residual inits (PiSSA) re-run at load: rebuild the base the adapter was trained on.
-            with fast_lora_init():
+            # PEFT re-runs PiSSA at load: rebuild the residual with the algorithm that made the adapter.
+            fast_pissa = adapter_used_fast_pissa(
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
+            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
                 model = PeftModel.from_pretrained(
                     model,
                     old_model_name,
@@ -1632,6 +1639,8 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     **peft_load_kwargs,
                 )
+            if fast_pissa:
+                record_fast_pissa(model)
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -2858,8 +2867,15 @@ class FastModel(FastBaseModel):
                     local_files_only = local_files_only,
                     cache_dir = kwargs.get("cache_dir"),
                 )
+            fast_pissa = adapter_used_fast_pissa(
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
             try:
-                with fast_lora_init():
+                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
                     model = PeftModel.from_pretrained(
                         model,
                         old_model_name,
@@ -2878,6 +2894,8 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            if fast_pissa:
+                record_fast_pissa(model)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)

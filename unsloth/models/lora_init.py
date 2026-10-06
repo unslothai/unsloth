@@ -3,7 +3,9 @@
 
 import contextlib
 import functools
+import json
 import os
+import threading
 import torch
 
 __all__ = [
@@ -212,6 +214,7 @@ def _pissa_init(self, adapter_name, init_lora_weights):
             weight.device.type != "cuda" or torch.cuda.get_device_capability(weight.device)[0] >= 8
         )
         n_iter, n_oversamples = int(parts[-1]), (r // 4 if r >= 64 and tf32 else 0)
+    _STATE["pissa"] = True
     W = transpose(weight.to(torch.float32), self.fan_in_fan_out)
     U, S, Vh = randomized_svd(W, r, n_oversamples = n_oversamples, n_iter = n_iter)
     scaling = self.scaling[adapter_name]
@@ -246,34 +249,73 @@ def _mica_init(self, adapter_name):
 
 
 _ORIGINAL = {}
+_STATE = {"pissa": False}
+# One owner at a time: the swap is process-wide, so a second thread must not build layers mid-restore.
+_LOCK = threading.RLock()
+SIDECAR = "unsloth_lora_init.json"
 
 
 @contextlib.contextmanager
-def fast_lora_init():
+def fast_lora_init(force = False):
     """Swap PEFT's LoraLayer.pissa_init / mica_init for the fast versions during get_peft_model.
 
-    UNSLOTH_FAST_LORA_INIT=0 keeps PEFT's own SVD.
+    Yields a dict whose "pissa" is True once a layer took the fast PiSSA path. UNSLOTH_FAST_LORA_INIT=0
+    keeps PEFT's own SVD unless `force` (reloading an adapter that recorded the fast path).
     """
-    if os.environ.get("UNSLOTH_FAST_LORA_INIT", "1") == "0" or _ORIGINAL:
-        # Nested use keeps the outer swap.
-        yield
-        return
-    from peft.tuners.lora.layer import LoraLayer
+    with _LOCK:
+        if _ORIGINAL or (not force and os.environ.get("UNSLOTH_FAST_LORA_INIT", "1") == "0"):
+            # Nested use keeps the outer swap.
+            yield _STATE
+            return
+        from peft.tuners.lora.layer import LoraLayer
 
-    swapped = []
-    for name, fn in (("pissa_init", _pissa_init), ("mica_init", _mica_init)):
-        original = LoraLayer.__dict__.get(name)
-        if original is None:
-            continue
-        _ORIGINAL[name] = original
-        setattr(LoraLayer, name, fn)
-        swapped.append((name, original))
+        swapped = []
+        for name, fn in (("pissa_init", _pissa_init), ("mica_init", _mica_init)):
+            original = LoraLayer.__dict__.get(name)
+            if original is None:
+                continue
+            _ORIGINAL[name] = original
+            setattr(LoraLayer, name, fn)
+            swapped.append((name, original))
+        _STATE["pissa"] = False
+        try:
+            yield _STATE
+        finally:
+            for name, original in swapped:
+                setattr(LoraLayer, name, original)
+            _ORIGINAL.clear()
+
+
+def record_fast_pissa(model):
+    """PEFT re-runs PiSSA when loading an adapter, and only the same algorithm rebuilds the residual base
+    training saw: saves of this model mark their adapter folders so Unsloth's loaders can tell."""
+    original = model.save_pretrained
+    if getattr(original, "_unsloth_fast_pissa", False):
+        return
+
+    @functools.wraps(original)
+    def save_pretrained(save_directory, *args, **kwargs):
+        out = original(save_directory, *args, **kwargs)
+        if kwargs.get("is_main_process", True):
+            for root, _, files in os.walk(save_directory):
+                if "adapter_config.json" in files:
+                    with open(os.path.join(root, SIDECAR), "w", encoding = "utf-8") as f:
+                        json.dump({"pissa": "unsloth_randomized_svd"}, f)
+        return out
+
+    save_pretrained._unsloth_fast_pissa = True
+    model.save_pretrained = save_pretrained
+
+
+def adapter_used_fast_pissa(path, **hub_kwargs):
+    if os.path.isdir(path):
+        return os.path.isfile(os.path.join(path, SIDECAR))
     try:
-        yield
-    finally:
-        for name, original in swapped:
-            setattr(LoraLayer, name, original)
-        _ORIGINAL.clear()
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(path, SIDECAR, **{k: v for k, v in hub_kwargs.items() if v is not None})
+        return True
+    except Exception:
+        return False
 
 
 # Calibration hooks added after compilation are not guarded on (skip_nnmodule_hook_guards), so compiled
