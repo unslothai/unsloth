@@ -53,7 +53,7 @@ export function useSttSidecar({
   selectedSttRepoRef.current = selectedSttRepo;
   const sttStatusRefreshGeneration = useRef(0);
   const audioCppRuntime = useRef<AudioCppRuntimeStatus | null>(null);
-  // State, unlike the ref: the page shows it, while the ref only gates a pick.
+  // state drives the page display; the ref only gates a pick.
   const [runtimeUpdate, setRuntimeUpdate] =
     useState<ReturnType<typeof audioCppRuntimeUpdate>>(null);
   const sttLoadGeneration = useRef(0);

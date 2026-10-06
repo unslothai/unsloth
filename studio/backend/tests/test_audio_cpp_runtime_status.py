@@ -42,7 +42,7 @@ def test_runtime_available_with_espeak(monkeypatch):
 
 
 def test_runtime_available_without_espeak(monkeypatch):
-    # A custom or upstream build: no install record, no eSpeak data beside the server.
+    # custom or upstream builds lack install records and eSpeak data beside the server.
     _patch(monkeypatch, binary = "/usr/local/bin/audiocpp_server", record = {}, espeak = False)
     assert inference._audio_cpp_runtime_status() == {
         "available": True,
@@ -96,7 +96,7 @@ def _managed(
     record,
     ladder = _LADDER,
 ):
-    """A Studio-managed install of ``record`` and the releases setup would install."""
+    """a Studio-managed install of ``record`` and the releases setup would install."""
     for name in _SETUP_SKIPS:
         monkeypatch.delenv(name, raising = False)
     _patch(monkeypatch, binary = str(tmp_path / "audiocpp_server"), record = record, espeak = True)
@@ -116,7 +116,7 @@ def test_managed_install_of_the_pinned_release_is_current(monkeypatch, tmp_path)
 
 
 def test_managed_fallback_install_is_current(monkeypatch, tmp_path):
-    # Setup falls back to the upstream release when the fork cannot serve the host.
+    # setup falls back to the upstream release when the fork cannot serve the host.
     _managed(
         monkeypatch, tmp_path, {"published_repo": "0xShug0/audio.cpp", "release_tag": "v0.9.0"}
     )
@@ -124,7 +124,7 @@ def test_managed_fallback_install_is_current(monkeypatch, tmp_path):
 
 
 def test_managed_install_of_an_old_release_is_outdated(monkeypatch, tmp_path):
-    # Setup keeps the old tree when the release lookup fails after a pin bump.
+    # setup keeps the old tree when the release lookup fails after a pin bump.
     _managed(
         monkeypatch,
         tmp_path,

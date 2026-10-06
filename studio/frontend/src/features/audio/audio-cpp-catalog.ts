@@ -33,22 +33,22 @@ export interface AudioCppModel {
   id: string;
   task: AudioCppTask;
   workflows?: readonly AudioCppWorkflow[];
-  /** ASR only: the primary language codes the model transcribes. Absent = multilingual. */
+  /** ASR only: primary language codes; absent means multilingual. */
   languages?: readonly string[];
-  /** Phonemizes with eSpeak-ng, which upstream runtime bundles lack (backend needs_espeak). */
+  /** uses eSpeak-ng phonemization, absent from upstream runtime bundles. */
   needsEspeak?: boolean;
   stems?: readonly string[];
 }
 
-/** The `audio_cpp_runtime` block of /api/inference/audio/stt/status. */
+/** the `audio_cpp_runtime` block of `/api/inference/audio/stt/status`. */
 export interface AudioCppRuntimeStatus {
   available: boolean;
   espeak: boolean;
   backend: string | null;
   release_tag: string | null;
-  /** The release `unsloth studio update` installs; null when Studio cannot tell or does not manage the runtime. */
+  /** update target tag; null for unmanaged or unknown runtimes. */
   expected_tag?: string | null;
-  /** A Studio-managed runtime that is not that release. Absent on older servers. */
+  /** managed runtime differs from the target; absent on older servers. */
   outdated?: boolean;
 }
 

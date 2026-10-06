@@ -36,8 +36,7 @@ export function audioCppRuntimeProblem(
   return null;
 }
 
-/** The installed and expected releases when Studio's managed audio runtime is not the one this
- *  Studio installs (setup keeps the old one when it cannot reach the release), else null. */
+/** setup keeps the old managed runtime when it cannot reach the release. */
 export function audioCppRuntimeUpdate(
   runtime: AudioCppRuntimeStatus | null | undefined,
 ): { installed: string; expected: string } | null {

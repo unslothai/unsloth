@@ -562,7 +562,7 @@ test("an outdated managed runtime names both releases; anything else shows no no
   assert.equal(audioCppRuntimeUpdate(current), null);
   assert.equal(audioCppRuntimeUpdate(null), null);
   assert.equal(audioCppRuntimeUpdate(undefined), null);
-  // A server older than these fields, or one that cannot name either release.
+  // support servers older than these fields or unable to name either release.
   assert.equal(
     audioCppRuntimeUpdate({ available: true, espeak: true, backend: null, release_tag: "v0.8.0" }),
     null,

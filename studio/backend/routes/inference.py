@@ -24154,7 +24154,7 @@ _AUDIO_CPP_RUNTIME_MISSING = {
 
 
 def _audio_cpp_release_ladder() -> list:
-    """The ``(repo, tag)`` releases ``unsloth studio update`` installs, read from the installer."""
+    """the installer-defined ``(repo, tag)`` releases for ``unsloth studio update``."""
     studio_dir = str(Path(__file__).resolve().parents[2])
     if studio_dir not in sys.path:
         sys.path.insert(0, studio_dir)
@@ -24164,7 +24164,7 @@ def _audio_cpp_release_ladder() -> list:
 
 
 def _audio_cpp_runtime_status() -> dict:
-    """What the installed audio.cpp runtime can run, so the Audio page can mark rows before a load."""
+    """reports runtime capabilities so the Audio page can mark models before loading."""
     try:
         from core.inference import audio_cpp_server
 
@@ -24185,8 +24185,8 @@ def _audio_cpp_runtime_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
-    # Only the tree setup manages: a binary the user pointed Studio at is theirs to update, and
-    # setup.sh / setup.ps1 skip the managed install under any of these, wherever it resolves.
+    # only the managed tree can be updated; user-supplied binaries remain user-managed.
+    # setup skips managed installs under any of these variables, regardless of resolved path.
     setup_skips = (
         os.environ.get("AUDIOCPP_SERVER_PATH")
         or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
@@ -24202,7 +24202,7 @@ def _audio_cpp_runtime_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated
         logger.debug("audio.cpp release lookup failed: %s", exc)
         ladder = []
-    # A None tag tracks the latest release, which a record cannot be checked against.
+    # a None tag tracks the latest release, so an installed release cannot be compared.
     if status["release_tag"] and ladder and all(tag for _, tag in ladder):
         status["expected_tag"] = ladder[0][1]
         status["outdated"] = (record.get("published_repo"), release_tag) not in ladder
