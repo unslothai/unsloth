@@ -1024,8 +1024,7 @@ def estimate_image_runtime_mib(
     batch = max(1, int(batch_size or 1))
     cond = max(0, int(condition_pixels or 0))
     if width is None and height is None and "qwen-image-layered" in (family or "").lower():
-        # Planning call: a decomposition always runs at the layered canvas with output + input + layers frames, which
-        # is what the generation guard charges, so the load must reserve it rather than one 1024x1024 frame.
+        # Planning call: reserve what the generation guard charges a decomposition, not one 1024x1024 frame.
         w = h = _QWEN_LAYERED_CANVAS
         cond = (_QWEN_LAYERED_LAYERS + 1) * w * h
     pixel_scale = ((w * h + cond) * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
