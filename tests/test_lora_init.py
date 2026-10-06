@@ -303,3 +303,35 @@ def test_pissa_niter_width_is_device_independent(monkeypatch):
             model, LoraConfig(r = 64, target_modules = ["0"], init_lora_weights = "pissa_niter_4")
         )
     assert seen == [0]
+
+
+def test_swap_state_is_per_call():
+    with lora_init.fast_lora_init(force = True) as first:
+        first["pissa"] = True
+    with lora_init.fast_lora_init(force = True) as second:
+        assert not second["pissa"]
+    # A caller reading its flag after the lock is released is unaffected by later swaps.
+    assert first["pissa"]
+
+
+@pytest.mark.parametrize("alpha", [0, 16])
+def test_merge_conversion_matches_the_live_adapter(alpha):
+    from peft import LoraConfig, get_peft_model
+    from unsloth.models._utils import lora_relative_to_original_base, snapshot_residual_lora_init
+
+    torch.manual_seed(0)
+    linear = torch.nn.Linear(64, 48, bias = False)
+    W = linear.weight.detach().clone()
+    config = LoraConfig(r = 8, lora_alpha = alpha, target_modules = ["0"], init_lora_weights = "olora")
+    model = get_peft_model(torch.nn.Sequential(linear), config)
+    snapshot_residual_lora_init(model, "olora")
+    layer = model.base_model.model[0]
+    with torch.no_grad():
+        layer.lora_B["default"].weight.add_(0.05 * torch.randn_like(layer.lora_B["default"].weight))
+    x = torch.randn(5, 64)
+    live = model(x)
+    with lora_relative_to_original_base(model):
+        s = layer.scaling["default"]
+        merged = W + s * layer.lora_B["default"].weight @ layer.lora_A["default"].weight
+    assert torch.isfinite(merged).all()
+    torch.testing.assert_close(x @ merged.T, live, atol = 1e-4, rtol = 1e-4)

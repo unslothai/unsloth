@@ -5986,6 +5986,8 @@ def lora_relative_to_original_base(model):
             if not initial:
                 continue
             for k, (A0, B0, scaling0) in initial.items():
+                if not scaling0:
+                    continue  # lora_alpha = 0: the base rewrite was a no-op
                 a, b = module.lora_A[k], module.lora_B[k]
                 swapped.append((module, k, module.scaling[k], a, a.weight, b, b.weight))
                 B = b.weight.detach() * (module.scaling[k] / scaling0)

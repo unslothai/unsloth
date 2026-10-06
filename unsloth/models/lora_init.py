@@ -293,6 +293,7 @@ def fast_lora_init(force = False):
     Yields a dict whose "pissa" is True once a layer took the fast PiSSA path. UNSLOTH_FAST_LORA_INIT=0
     keeps PEFT's own SVD unless `force` (reloading an adapter that recorded the fast path).
     """
+    global _STATE
     with _LOCK:
         if _ORIGINAL:
             # Nested use keeps the outer swap.
@@ -311,7 +312,8 @@ def fast_lora_init(force = False):
             _ORIGINAL[name] = _ORIGINAL_ANY[name] = original
             setattr(LoraLayer, name, fn)
             swapped.append((name, original))
-        _STATE["pissa"] = False
+        # A fresh dict per swap: callers read it after the lock is released.
+        _STATE = {"pissa": False}
         _OWNER["thread"] = threading.get_ident()
         try:
             yield _STATE
