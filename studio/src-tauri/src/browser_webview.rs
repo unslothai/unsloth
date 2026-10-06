@@ -150,7 +150,12 @@ struct ViewsState {
     urls: HashMap<String, String>,
     /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
     downloads: HashMap<String, Vec<PathBuf>>,
+    /// Starts per tab, kept when its view closes so reopening it doesn't reset the budget.
     download_starts: HashMap<String, VecDeque<Instant>>,
+    /// Starts across every tab.
+    download_starts_all: VecDeque<Instant>,
+    /// Dangerous downloads under a neutral name until the reader keeps or discards them, by id.
+    staged: HashMap<String, Staged>,
     polling: bool,
     /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
     muted: HashSet<String>,
@@ -225,6 +230,8 @@ enum BrowserEvent {
         tab_id: String,
         url: String,
     },
+    /// For a staged (dangerous) download, `id` names it to keep or discard, `name` is the name it
+    /// will be kept under, and `needs_approval` is set once it has finished.
     Download {
         tab_id: String,
         url: String,
@@ -233,6 +240,10 @@ enum BrowserEvent {
         size: Option<u64>,
         done: bool,
         success: bool,
+        id: Option<String>,
+        needs_approval: bool,
+        /// Marked as from the internet: false if that failed, absent where there is no mark.
+        marked: Option<bool>,
     },
 }
 
@@ -600,26 +611,39 @@ fn bounded_title(title: String) -> String {
 // Pages can download without a click: cap concurrent and per-minute starts to protect the disk.
 const MAX_DOWNLOADS_IN_FLIGHT: usize = 3;
 const DOWNLOADS_PER_WINDOW: usize = 5;
+/// Across all tabs, so opening more tabs doesn't buy more downloads.
+const DOWNLOADS_PER_WINDOW_ALL: usize = 10;
 const DOWNLOAD_WINDOW: Duration = Duration::from_secs(60);
 
-fn download_allowed(in_flight: usize, starts: &mut VecDeque<Instant>, now: Instant) -> bool {
-    while starts
-        .front()
-        .is_some_and(|start| now.duration_since(*start) >= DOWNLOAD_WINDOW)
-    {
-        starts.pop_front();
+fn download_allowed(
+    in_flight: usize,
+    tab: &mut VecDeque<Instant>,
+    all: &mut VecDeque<Instant>,
+    now: Instant,
+) -> bool {
+    for starts in [&mut *tab, &mut *all] {
+        while starts
+            .front()
+            .is_some_and(|start| now.duration_since(*start) >= DOWNLOAD_WINDOW)
+        {
+            starts.pop_front();
+        }
     }
-    if in_flight >= MAX_DOWNLOADS_IN_FLIGHT || starts.len() >= DOWNLOADS_PER_WINDOW {
+    if in_flight >= MAX_DOWNLOADS_IN_FLIGHT
+        || tab.len() >= DOWNLOADS_PER_WINDOW
+        || all.len() >= DOWNLOADS_PER_WINDOW_ALL
+    {
         return false;
     }
-    starts.push_back(now);
+    tab.push_back(now);
+    all.push_back(now);
     true
 }
 
-/// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
-/// destinations of downloads still in flight, which don't exist on disk yet.
-fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>) -> PathBuf {
-    let name = suggested
+/// The page's suggested name made safe for a file name. Trailing dots and spaces go, as Windows
+/// drops them anyway (so `setup.exe.` is `setup.exe`).
+fn safe_download_name(suggested: &Path) -> String {
+    suggested
         .file_name()
         .and_then(|name| name.to_str())
         .map(|name| {
@@ -632,9 +656,25 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
                     }
                 })
                 .collect::<String>()
+                .trim_end_matches(['.', ' '])
+                .to_string()
         })
         .filter(|name| !name.trim_matches('.').is_empty())
-        .unwrap_or_else(|| "download".into());
+        .unwrap_or_else(|| "download".into())
+}
+
+/// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
+/// destinations of downloads still in flight, which don't exist on disk yet. None when every
+/// numbered variant is taken, rather than a name that would overwrite.
+fn download_destination(
+    dir: &Path,
+    suggested: &Path,
+    reserved: &HashSet<&Path>,
+) -> Option<PathBuf> {
+    free_destination(dir, &safe_download_name(suggested), reserved)
+}
+
+fn free_destination(dir: &Path, name: &str, reserved: &HashSet<&Path>) -> Option<PathBuf> {
     // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
     let same = |a: &Path, b: &Path| {
         if cfg!(any(windows, target_os = "macos")) {
@@ -644,11 +684,11 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
         }
     };
     let free = |path: &Path| !path.exists() && !reserved.iter().any(|taken| same(taken, path));
-    let candidate = dir.join(&name);
+    let candidate = dir.join(name);
     if free(&candidate) {
-        return candidate;
+        return Some(candidate);
     }
-    let path = Path::new(&name);
+    let path = Path::new(name);
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -660,11 +700,178 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
             None => dir.join(format!("{stem} ({n})")),
         })
         .find(|p| free(p))
-        .unwrap_or(candidate)
 }
 
-/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it.
-fn mark_downloaded(path: &Path, url: &Url) {
+/// File types that run code or install something when opened (shared with the panel).
+fn dangerous_extensions() -> &'static HashSet<String> {
+    static SET: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        #[derive(Deserialize)]
+        struct Policy {
+            extensions: Vec<String>,
+        }
+        let policy: Policy = serde_json::from_str(include_str!(
+            "../../frontend/src/features/browser/dangerous-file-types.json"
+        ))
+        .expect("dangerous-file-types.json");
+        policy
+            .extensions
+            .into_iter()
+            .map(|ext| ext.to_lowercase())
+            .collect()
+    })
+}
+
+/// Whether a file of this name runs or installs something: by its last extension, after the
+/// trailing dots and spaces Windows ignores. A dotfile (`.bashrc`) has no extension.
+fn dangerous_download(name: &str) -> bool {
+    let name = name.trim_end_matches(['.', ' ']);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => dangerous_extensions().contains(&name[dot + 1..].to_lowercase()),
+        _ => false,
+    }
+}
+
+/// A neutral, non-executable name for a dangerous download until the reader keeps it.
+fn staged_destination(dir: &Path, reserved: &HashSet<&Path>) -> Option<PathBuf> {
+    (0..8)
+        .map(|_| {
+            dir.join(format!(
+                "Unconfirmed {:016x}.download",
+                rand::random::<u64>()
+            ))
+        })
+        .find(|path| !path.exists() && !reserved.contains(path.as_path()))
+}
+
+/// Where a download came from, for the file's internet mark: no credentials, query or fragment,
+/// which can carry tokens. Web addresses only.
+fn sanitized_source(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut clean = url.clone();
+    let _ = clean.set_username("");
+    let _ = clean.set_password(None);
+    clean.set_query(None);
+    clean.set_fragment(None);
+    Some(clean.to_string())
+}
+
+enum StagedState {
+    Downloading,
+    Ready {
+        marked: Option<bool>,
+    },
+    /// A keep is moving it; neither keep nor discard may start.
+    Claimed,
+}
+
+struct Staged {
+    path: PathBuf,
+    /// The name it is kept under.
+    name: String,
+    state: StagedState,
+}
+
+const UNMARKED_KEEP: &str = "This file couldn't be marked as downloaded from the internet, so it \
+can't be kept here. Download it in your system browser instead.";
+
+/// Publish a staged download under its name without ever replacing a file: a hard link fails if
+/// the name is taken, and keeps the internet mark, which belongs to the file.
+fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
+    let (staged, name, marked) = {
+        let mut inner = views.lock().unwrap();
+        let entry = inner.staged.get_mut(id).ok_or("No such download")?;
+        let marked = match entry.state {
+            StagedState::Ready { marked } => marked,
+            StagedState::Downloading => return Err("The download hasn't finished".into()),
+            StagedState::Claimed => return Err("The download is already being kept".into()),
+        };
+        if marked == Some(false) {
+            return Err(UNMARKED_KEEP.into());
+        }
+        entry.state = StagedState::Claimed;
+        (entry.path.clone(), entry.name.clone(), marked)
+    };
+    let release = |error: String| {
+        if let Some(entry) = views.lock().unwrap().staged.get_mut(id) {
+            entry.state = StagedState::Ready { marked };
+        }
+        Err(error)
+    };
+    match std::fs::symlink_metadata(&staged) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => {
+            views.lock().unwrap().staged.remove(id);
+            return Err("The download is no longer a plain file".into());
+        }
+        Err(_) => {
+            views.lock().unwrap().staged.remove(id);
+            return Err("The download is gone".into());
+        }
+    }
+    let Some(dir) = staged.parent() else {
+        return release("The download is gone".into());
+    };
+    for _ in 0..3 {
+        let target = {
+            let inner = views.lock().unwrap();
+            let reserved: HashSet<&Path> = inner
+                .downloads
+                .values()
+                .flatten()
+                .map(PathBuf::as_path)
+                .collect();
+            free_destination(dir, &name, &reserved)
+        };
+        let Some(target) = target else {
+            return release(format!("No free name for {name} in the download folder"));
+        };
+        match std::fs::hard_link(&staged, &target) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&staged);
+                views.lock().unwrap().staged.remove(id);
+                return Ok(target
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or(name));
+            }
+            // Taken since it was picked: pick again.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // No hard links here (FAT, exFAT): never fall back to a rename or copy that can replace.
+            Err(error) => return release(format!("Couldn't keep {name}: {error}")),
+        }
+    }
+    release(format!("Couldn't keep {name}: its name keeps being taken"))
+}
+
+/// Delete a finished staged download. Never one still downloading or being kept.
+fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
+    let path = {
+        let mut inner = views.lock().unwrap();
+        match inner.staged.get(id).map(|entry| &entry.state) {
+            None => return Err("No such download".into()),
+            Some(StagedState::Downloading) => return Err("The download hasn't finished".into()),
+            Some(StagedState::Claimed) => return Err("The download is being kept".into()),
+            Some(StagedState::Ready { .. }) => {}
+        }
+        inner.staged.remove(id).map(|entry| entry.path)
+    };
+    if let Some(path) = path {
+        match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("Couldn't delete the download: {error}"))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it. Whether that
+/// worked (FAT, exFAT and some network drives keep no mark); None where there is no mark.
+fn mark_downloaded(path: &Path, url: &Url) -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -678,9 +885,10 @@ fn mark_downloaded(path: &Path, url: &Url) {
             CString::new(path.as_os_str().as_bytes()),
             CString::new("com.apple.quarantine"),
         ) else {
-            return;
+            return Some(false);
         };
-        unsafe {
+        let _ = url;
+        let result = unsafe {
             libc::setxattr(
                 path.as_ptr(),
                 name.as_ptr(),
@@ -688,21 +896,24 @@ fn mark_downloaded(path: &Path, url: &Url) {
                 value.len(),
                 0,
                 0,
-            );
-        }
-        let _ = url;
+            )
+        };
+        Some(result == 0)
     }
     #[cfg(windows)]
     {
         let mut stream = path.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
-        let _ = std::fs::write(
-            stream,
-            format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={url}\r\n"),
-        );
+        let host = sanitized_source(url)
+            .map(|source| format!("HostUrl={source}\r\n"))
+            .unwrap_or_default();
+        Some(std::fs::write(stream, format!("[ZoneTransfer]\r\nZoneId=3\r\n{host}")).is_ok())
     }
     #[cfg(not(any(target_os = "macos", windows)))]
-    let _ = (path, url);
+    {
+        let _ = (path, url);
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -964,8 +1175,11 @@ fn create_view<R: Runtime>(
                     let Some(dir) = downloads_dir.as_deref() else {
                         return false;
                     };
+                    let name = safe_download_name(destination);
+                    // Saved under a neutral name until the reader keeps it.
+                    let dangerous = dangerous_download(&name);
                     // Picked and recorded under one lock, so two downloads can't take one name.
-                    let path = {
+                    let admitted = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
                         // macOS reports no path when a download finishes, so two of one URL at
@@ -974,49 +1188,73 @@ fn create_view<R: Runtime>(
                             return false;
                         }
                         let in_flight = inner.downloads.values().map(Vec::len).sum();
-                        let starts = inner
-                            .download_starts
-                            .entry(download_tab.clone())
-                            .or_default();
-                        if !download_allowed(in_flight, starts, Instant::now()) {
-                            drop(inner);
-                            emit(
-                                app,
-                                BrowserEvent::Download {
-                                    tab_id: download_tab.clone(),
-                                    url: url.to_string(),
-                                    name: destination
-                                        .file_name()
-                                        .map(|name| name.to_string_lossy().into_owned())
-                                        .unwrap_or_default(),
-                                    path: None,
-                                    size: None,
-                                    done: true,
-                                    success: false,
-                                },
-                            );
-                            return false;
+                        let ViewsState {
+                            download_starts,
+                            download_starts_all,
+                            ..
+                        } = &mut *inner;
+                        let tab_starts = download_starts.entry(download_tab.clone()).or_default();
+                        if !download_allowed(
+                            in_flight,
+                            tab_starts,
+                            download_starts_all,
+                            Instant::now(),
+                        ) {
+                            None
+                        } else {
+                            let path = {
+                                let reserved: HashSet<&Path> = inner
+                                    .downloads
+                                    .values()
+                                    .flatten()
+                                    .map(PathBuf::as_path)
+                                    .collect();
+                                if dangerous {
+                                    staged_destination(dir, &reserved)
+                                } else {
+                                    free_destination(dir, &name, &reserved)
+                                }
+                            };
+                            path.map(|path| {
+                                inner
+                                    .downloads
+                                    .entry(url.to_string())
+                                    .or_default()
+                                    .push(path.clone());
+                                let id = dangerous.then(|| {
+                                    let id = rand::random::<u64>().to_string();
+                                    inner.staged.insert(
+                                        id.clone(),
+                                        Staged {
+                                            path: path.clone(),
+                                            name: name.clone(),
+                                            state: StagedState::Downloading,
+                                        },
+                                    );
+                                    id
+                                });
+                                (path, id)
+                            })
                         }
-                        let path = {
-                            let reserved: HashSet<&Path> = inner
-                                .downloads
-                                .values()
-                                .flatten()
-                                .map(PathBuf::as_path)
-                                .collect();
-                            download_destination(dir, destination, &reserved)
-                        };
-                        inner
-                            .downloads
-                            .entry(url.to_string())
-                            .or_default()
-                            .push(path.clone());
-                        path
                     };
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                    let Some((path, id)) = admitted else {
+                        emit(
+                            app,
+                            BrowserEvent::Download {
+                                tab_id: download_tab.clone(),
+                                url: url.to_string(),
+                                name,
+                                path: None,
+                                size: None,
+                                done: true,
+                                success: false,
+                                id: None,
+                                needs_approval: false,
+                                marked: None,
+                            },
+                        );
+                        return false;
+                    };
                     *destination = path;
                     emit(
                         app,
@@ -1028,12 +1266,15 @@ fn create_view<R: Runtime>(
                             size: None,
                             done: false,
                             success: false,
+                            id,
+                            needs_approval: false,
+                            marked: None,
                         },
                     );
                     true
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    let recorded = {
+                    let (path, staged) = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
                         let pending = inner.downloads.entry(url.to_string()).or_default();
@@ -1045,29 +1286,61 @@ fn create_view<R: Runtime>(
                         if pending.is_empty() {
                             inner.downloads.remove(url.as_str());
                         }
-                        recorded
+                        let path = path.or(recorded);
+                        let staged = path.as_deref().and_then(|path| {
+                            inner
+                                .staged
+                                .iter()
+                                .find(|(_, entry)| entry.path == path)
+                                .map(|(id, entry)| (id.clone(), entry.name.clone()))
+                        });
+                        (path, staged)
                     };
-                    let path = path.or(recorded);
-                    if let (true, Some(path)) = (success, path.as_deref()) {
-                        mark_downloaded(path, &url);
+                    let marked = match (success, path.as_deref()) {
+                        (true, Some(path)) => mark_downloaded(path, &url),
+                        _ => None,
+                    };
+                    if let Some((id, _)) = &staged {
+                        let state = app.state::<BrowserViews>();
+                        let mut inner = state.inner.lock().unwrap();
+                        if success {
+                            if let Some(entry) = inner.staged.get_mut(id) {
+                                entry.state = StagedState::Ready { marked };
+                            }
+                        } else if let Some(entry) = inner.staged.remove(id) {
+                            // A failed download leaves nothing to keep.
+                            let _ = std::fs::remove_file(entry.path);
+                        }
                     }
+                    let size = path
+                        .as_deref()
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .map(|m| m.len());
+                    let (name, path, id) = match staged {
+                        // Its neutral path stays out of the panel; the name is the one it keeps.
+                        Some((id, name)) => (name, None, Some(id)),
+                        None => (
+                            path.as_deref()
+                                .and_then(|p| p.file_name())
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            path.map(|p| p.to_string_lossy().into_owned()),
+                            None,
+                        ),
+                    };
                     emit(
                         app,
                         BrowserEvent::Download {
                             tab_id: download_tab.clone(),
                             url: url.to_string(),
-                            name: path
-                                .as_deref()
-                                .and_then(|p| p.file_name())
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                            size: path
-                                .as_deref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .map(|m| m.len()),
-                            path: path.map(|p| p.to_string_lossy().into_owned()),
+                            needs_approval: success && id.is_some(),
+                            name,
+                            size,
+                            path,
                             done: true,
                             success,
+                            id,
+                            marked,
                         },
                     );
                     true
@@ -1420,7 +1693,7 @@ pub fn browser_view_close<R: Runtime>(
     {
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
-        inner.download_starts.remove(&tab_id);
+        // `download_starts` stays: a reopened view must not get a fresh download budget.
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             set_shown(&state, &mut inner, None);
@@ -1430,6 +1703,28 @@ pub fn browser_view_close<R: Runtime>(
         page.close().map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// Keep a staged dangerous download under its name; returns the name it got.
+#[tauri::command]
+pub fn browser_download_keep<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+    id: String,
+) -> Result<String, String> {
+    require_main(&webview)?;
+    keep_staged(&state.inner, &id)
+}
+
+/// Delete a staged dangerous download.
+#[tauri::command]
+pub fn browser_download_discard<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+    id: String,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    discard_staged(&state.inner, &id)
 }
 
 #[tauri::command]
@@ -1826,34 +2121,255 @@ mod tests {
     #[test]
     fn pages_get_a_few_downloads_at_once_and_a_minute() {
         let start = Instant::now();
-        let mut starts = VecDeque::new();
+        let (mut starts, mut all) = (VecDeque::new(), VecDeque::new());
         assert!(!download_allowed(
             MAX_DOWNLOADS_IN_FLIGHT,
             &mut starts,
+            &mut all,
             start
         ));
         for _ in 0..DOWNLOADS_PER_WINDOW {
-            assert!(download_allowed(0, &mut starts, start));
+            assert!(download_allowed(0, &mut starts, &mut all, start));
         }
-        assert!(!download_allowed(0, &mut starts, start));
-        assert!(download_allowed(0, &mut starts, start + DOWNLOAD_WINDOW));
+        assert!(!download_allowed(0, &mut starts, &mut all, start));
+        assert!(download_allowed(
+            0,
+            &mut starts,
+            &mut all,
+            start + DOWNLOAD_WINDOW
+        ));
+    }
+
+    #[test]
+    fn more_tabs_dont_buy_more_downloads() {
+        let start = Instant::now();
+        let mut all = VecDeque::new();
+        let mut tabs: Vec<VecDeque<Instant>> = (0..4).map(|_| VecDeque::new()).collect();
+        let mut allowed = 0;
+        for tab in tabs.iter_mut() {
+            for _ in 0..DOWNLOADS_PER_WINDOW {
+                allowed += usize::from(download_allowed(0, tab, &mut all, start));
+            }
+        }
+        assert_eq!(allowed, DOWNLOADS_PER_WINDOW_ALL);
+        // A fresh tab (or a reopened view) gets nothing more inside the minute.
+        assert!(!download_allowed(0, &mut VecDeque::new(), &mut all, start));
+        assert!(download_allowed(
+            0,
+            &mut VecDeque::new(),
+            &mut all,
+            start + DOWNLOAD_WINDOW
+        ));
     }
 
     #[test]
     fn downloads_get_a_free_safe_name() {
         let dir = tempfile::tempdir().unwrap();
         let none = HashSet::new();
-        let name = |suggested: &str| download_destination(dir.path(), Path::new(suggested), &none);
+        let name = |suggested: &str| {
+            download_destination(dir.path(), Path::new(suggested), &none).unwrap()
+        };
         std::fs::write(name("report.pdf"), b"x").unwrap();
         assert_eq!(name("report.pdf"), dir.path().join("report (1).pdf"));
         let first = dir.path().join("report (1).pdf");
         let reserved = HashSet::from([first.as_path()]);
         assert_eq!(
             download_destination(dir.path(), Path::new("report.pdf"), &reserved),
-            dir.path().join("report (2).pdf")
+            Some(dir.path().join("report (2).pdf"))
         );
         assert_eq!(name(".."), dir.path().join("download"));
         assert_eq!(name("/x/evil\u{7}name.sh"), dir.path().join("evil_name.sh"));
+        // Windows drops trailing dots and spaces, so they can't hide the real extension.
+        assert_eq!(name("setup.exe. ."), dir.path().join("setup.exe"));
+    }
+
+    #[test]
+    fn a_download_with_no_free_name_is_refused_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken: Vec<PathBuf> = std::iter::once(dir.path().join("a.pdf"))
+            .chain((1..10_000).map(|n| dir.path().join(format!("a ({n}).pdf"))))
+            .collect();
+        let reserved: HashSet<&Path> = taken.iter().map(PathBuf::as_path).collect();
+        assert_eq!(
+            download_destination(dir.path(), Path::new("a.pdf"), &reserved),
+            None
+        );
+    }
+
+    #[test]
+    fn dangerous_types_match_the_panels_list() {
+        #[derive(Deserialize)]
+        struct Case {
+            name: String,
+            dangerous: bool,
+        }
+        #[derive(Deserialize)]
+        struct Fixture {
+            cases: Vec<Case>,
+        }
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../frontend/tests/fixtures/dangerous-download-names.json"
+        ))
+        .unwrap();
+        assert!(!fixture.cases.is_empty());
+        for case in fixture.cases {
+            assert_eq!(
+                dangerous_download(&case.name),
+                case.dangerous,
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn staged_downloads_get_a_neutral_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = staged_destination(dir.path(), &HashSet::new()).unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let hex = name
+            .strip_prefix("Unconfirmed ")
+            .and_then(|rest| rest.strip_suffix(".download"))
+            .unwrap();
+        assert_eq!(hex.len(), 16);
+        assert!(hex
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(!dangerous_download(name));
+    }
+
+    #[test]
+    fn download_sources_drop_credentials_queries_and_fragments() {
+        let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
+        assert_eq!(
+            source("https://user:pass@example.com:8443/a/b.exe?X-Amz-Signature=secret#frag"),
+            Some("https://example.com:8443/a/b.exe".into())
+        );
+        assert_eq!(
+            source("http://example.com/file.zip"),
+            Some("http://example.com/file.zip".into())
+        );
+        assert_eq!(source("data:application/octet-stream;base64,AAAA"), None);
+        assert_eq!(source("blob:https://example.com/1234"), None);
+    }
+
+    mod staged {
+        use super::*;
+
+        fn stage(views: &Mutex<ViewsState>, path: &Path, name: &str, state: StagedState) -> String {
+            let id = rand::random::<u64>().to_string();
+            views.lock().unwrap().staged.insert(
+                id.clone(),
+                Staged {
+                    path: path.to_path_buf(),
+                    name: name.into(),
+                    state,
+                },
+            );
+            id
+        }
+
+        fn ready(marked: Option<bool>) -> StagedState {
+            StagedState::Ready { marked }
+        }
+
+        #[test]
+        fn keeping_publishes_under_its_name_and_drops_the_staged_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let staged = dir.path().join("Unconfirmed 0123456789abcdef.download");
+            std::fs::write(&staged, b"payload").unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "setup.exe", ready(Some(true)));
+            assert_eq!(keep_staged(&views, &id).unwrap(), "setup.exe");
+            assert!(!staged.exists());
+            assert_eq!(
+                std::fs::read(dir.path().join("setup.exe")).unwrap(),
+                b"payload"
+            );
+            assert!(views.lock().unwrap().staged.is_empty());
+            // Kept once: the id is gone.
+            assert!(keep_staged(&views, &id).is_err());
+        }
+
+        #[test]
+        fn keeping_never_replaces_a_file_with_that_name() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("setup.exe"), b"mine").unwrap();
+            let staged = dir.path().join("Unconfirmed 1.download");
+            std::fs::write(&staged, b"theirs").unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "setup.exe", ready(None));
+            assert_eq!(keep_staged(&views, &id).unwrap(), "setup (1).exe");
+            assert_eq!(
+                std::fs::read(dir.path().join("setup.exe")).unwrap(),
+                b"mine"
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("setup (1).exe")).unwrap(),
+                b"theirs"
+            );
+        }
+
+        #[test]
+        fn an_unmarked_download_is_not_kept() {
+            let dir = tempfile::tempdir().unwrap();
+            let staged = dir.path().join("Unconfirmed 2.download");
+            std::fs::write(&staged, b"x").unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "setup.exe", ready(Some(false)));
+            assert_eq!(keep_staged(&views, &id).unwrap_err(), UNMARKED_KEEP);
+            assert!(staged.exists() && !dir.path().join("setup.exe").exists());
+            // It can still be thrown away.
+            discard_staged(&views, &id).unwrap();
+            assert!(!staged.exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn a_staged_path_swapped_for_a_link_is_not_kept() {
+            let dir = tempfile::tempdir().unwrap();
+            let elsewhere = dir.path().join("secret.txt");
+            std::fs::write(&elsewhere, b"secret").unwrap();
+            let staged = dir.path().join("Unconfirmed 3.download");
+            std::os::unix::fs::symlink(&elsewhere, &staged).unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "setup.exe", ready(Some(true)));
+            assert!(keep_staged(&views, &id).is_err());
+            assert!(!dir.path().join("setup.exe").exists());
+            assert!(views.lock().unwrap().staged.is_empty());
+        }
+
+        #[test]
+        fn unknown_unfinished_or_claimed_downloads_are_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let staged = dir.path().join("Unconfirmed 4.download");
+            std::fs::write(&staged, b"x").unwrap();
+            let views = Mutex::new(ViewsState::default());
+            assert!(keep_staged(&views, "12345").is_err());
+            assert!(discard_staged(&views, "12345").is_err());
+            let downloading = stage(&views, &staged, "a.exe", StagedState::Downloading);
+            assert!(keep_staged(&views, &downloading).is_err());
+            assert!(discard_staged(&views, &downloading).is_err());
+            let claimed = stage(&views, &staged, "a.exe", StagedState::Claimed);
+            assert!(keep_staged(&views, &claimed).is_err());
+            assert!(discard_staged(&views, &claimed).is_err());
+            assert!(staged.exists());
+        }
+
+        #[test]
+        fn discarding_deletes_once() {
+            let dir = tempfile::tempdir().unwrap();
+            let staged = dir.path().join("Unconfirmed 5.download");
+            std::fs::write(&staged, b"x").unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "a.exe", ready(Some(true)));
+            discard_staged(&views, &id).unwrap();
+            assert!(!staged.exists());
+            assert!(discard_staged(&views, &id).is_err());
+            // Already gone from disk is still a clean discard.
+            let gone = stage(&views, &staged, "a.exe", ready(Some(true)));
+            discard_staged(&views, &gone).unwrap();
+        }
     }
 
     #[cfg(any(windows, target_os = "macos"))]
