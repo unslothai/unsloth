@@ -352,6 +352,17 @@ def _video_comfy_key_map(fam: Any) -> Any:
     return None
 
 
+def _h3_single_file_task(
+    fam: Any, kind: str, gguf_filename: Optional[str], h3_task: Optional[str]
+) -> Optional[str]:
+    """The partition an H3 ComfyUI denoiser file serves (its name), unless the request set one."""
+    if not (getattr(fam, "modular_workflow", None) and kind == "single_file"):
+        return h3_task
+    from .video_minimax_h3_comfy import h3_comfy_task
+
+    return h3_task or h3_comfy_task(gguf_filename)
+
+
 def _video_comfy_resident(plan: Any, bf16_plan: Any = None) -> bool:
     """A single-file load never re-plans for a runtime quant, so the DiT is resident only if every plan keeps it."""
     return all(plan_keeps_transformer_resident(p) for p in (plan, bf16_plan) if p is not None)
@@ -395,10 +406,19 @@ def _video_comfy_resident_mib(
     name = getattr(fam, "name", None)
     keep_int8 = keep_fp8 = False
     exclude: tuple = ()
+    filters: dict = {}
     if keep:
         try:
-            from .diffusion_transformer_quant import exclude_tokens_for_scheme
+            from .diffusion_transformer_quant import (
+                DEFAULT_MIN_LINEAR_FEATURES,
+                divisible_for_scheme,
+                exclude_tokens_for_scheme,
+            )
             exclude = exclude_tokens_for_scheme(TQ_INT8, name)
+            filters = {
+                "min_features": DEFAULT_MIN_LINEAR_FEATURES,
+                "fp8_divisible": divisible_for_scheme(TQ_FP8),
+            }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
         keep_int8 = bool(
@@ -413,6 +433,7 @@ def _video_comfy_resident_mib(
         keep_fp8 = keep_fp8,
         keep_key = keep_key,
         exclude_tokens = exclude,
+        **filters,
     )
 
 
@@ -647,12 +668,12 @@ def _assert_video_precision_for_target(
     # F.linear, no torchao and no fp8 tensor cores. Left to the code below, the request is first rewritten int8 -> fp8
     # by effective_te_quant (H3 has no keep-bf16 schedule) and then refused for want of hardware neither the rewrite nor
     # the real loader needs, so a supported CPU load comes back as a 409. Whether the artifact suits THIS base is
-    # decided at the seed, which is not a host-level impossibility and so is not this gate's question. PIPELINE loads
-    # only. The hosted conditioner is a Diffusers-path artifact; the native GGUF path picks its Q2/Q4 encoder off the
+    # decided at the seed, which is not a host-level impossibility and so is not this gate's question. Diffusers-path
+    # loads only (a pipeline, or an H3 ComfyUI denoiser file). The hosted conditioner is a Diffusers-path artifact; the native GGUF path picks its Q2/Q4 encoder off the
     # denoiser filename and discards text_encoder_quant entirely, so exempting it would let an explicit request through
     # to a load that answers it at an unrelated precision -- the very thing the fail-closed contract exists to stop.
     if (
-        model_kind == "pipeline"
+        model_kind in ("pipeline", "single_file")
         and getattr(fam, "modular_workflow", None)
         and h3_te_quant_scheme(te_mode) is not None
     ):
@@ -2633,7 +2654,7 @@ class VideoBackend:
                 f"model{gguf_hint}, or a ComfyUI-quantized MiniMax-H3 denoiser "
                 f"(minimax_h3_*_int8_convrot / *_fp8_scaled .safetensors) as its denoiser."
             )
-        if fam.modular_workflow and kind == "pipeline":
+        if fam.modular_workflow and kind in ("pipeline", "single_file"):
             # Metal cannot place a modular workflow at all. _load_h3_modular_pipeline hands every non-CPU device to
             # ComponentsManager.enable_auto_cpu_offload, which reads torch.<device>.mem_get_info and raises
             # NotImplementedError for a device module without one; torch.mps has never exposed it. Refuse here, before
@@ -2651,6 +2672,7 @@ class VideoBackend:
                     f"torch device exposing mem_get_info, and Metal (MPS) does not have it."
                     f"{gguf_hint}"
                 )
+        if fam.modular_workflow and kind == "pipeline":
             # Same normaliser the load uses, so a malformed value raises the identical message it would below and only a
             # real scheme reaches the availability check.
             requested_scheme = normalize_transformer_quant(transformer_quant)
@@ -2990,6 +3012,10 @@ class VideoBackend:
                 else resolve_video_base_repo(fam, kwargs.get("base_repo"))
             )
             kwargs["base_repo"] = base
+            # Before the plan: it stages the partition the file serves (transformer_ref/ for ref2va).
+            kwargs["h3_task"] = _h3_single_file_task(
+                fam, kind, kwargs.get("gguf_filename"), kwargs.get("h3_task")
+            )
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes
             # those dense shards.
             te_sources = self._te_prequant_sources(
@@ -3005,14 +3031,19 @@ class VideoBackend:
             # UNSET H3 precision can resolve to a hosted checkpoint too, and that has to be settled HERE rather than
             # only inside the loader: decided late, the pull stages the dense denoiser the load never opens AND the
             # replacement arrives inline, outside this plan's progress, cancel and disk preflight.
-            h3_auto_denoiser = self._h3_planned_auto_denoiser_scheme(
-                fam,
-                base = base,
-                transformer_quant = kwargs.get("transformer_quant"),
-                text_encoder_quant = kwargs.get("text_encoder_quant"),
-                speed_mode = kwargs.get("speed_mode"),
-                h3_task = kwargs.get("h3_task"),
-                gpu_ordinal = kwargs.get("gpu_ordinal"),
+            # An H3 single file is its own denoiser: no hosted one is planned (or fetched) around it.
+            h3_auto_denoiser = (
+                self._h3_planned_auto_denoiser_scheme(
+                    fam,
+                    base = base,
+                    transformer_quant = kwargs.get("transformer_quant"),
+                    text_encoder_quant = kwargs.get("text_encoder_quant"),
+                    speed_mode = kwargs.get("speed_mode"),
+                    h3_task = kwargs.get("h3_task"),
+                    gpu_ordinal = kwargs.get("gpu_ordinal"),
+                )
+                if kind != "single_file"
+                else None
             )
             video_auto_denoiser = self._video_planned_auto_denoiser_scheme(
                 fam,
@@ -4847,6 +4878,7 @@ class VideoBackend:
         if is_h3_native(fam, kind):
             return self._h3_native_download_plan(repo_id, gguf_filename or "", hf_token = hf_token)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+        h3_task = _h3_single_file_task(fam, kind, gguf_filename, h3_task)
         # The same resolution the load makes, so an H3 auto pick the loader will serve from a hosted checkpoint is not
         # staged dense here first: that is 66.3 GB the panel downloads and the load never opens, and the replacement
         # would then arrive outside this plan.
@@ -4861,8 +4893,9 @@ class VideoBackend:
                 # Sizes the file set from device capacity, so it has to read the selected card.
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             )
-            or transformer_quant
-        )
+            if kind != "single_file"
+            else None
+        ) or transformer_quant
         video_planned = self._video_planned_auto_denoiser_scheme(
             fam,
             base = base,
@@ -5710,7 +5743,8 @@ class VideoBackend:
                 fam = fam,
                 target = target,
                 comfy_checkpoint = comfy_checkpoint,
-                repo_id = base if comfy_checkpoint else repo_id,
+                repo_id = repo_id,
+                gguf_filename = gguf_filename,
                 display_repo_id = display_repo_id,
                 base = base,
                 kind = kind,
@@ -7118,6 +7152,7 @@ class VideoBackend:
         local_files_only: bool = False,
         transformer_cache: Optional[str] = None,
         comfy_checkpoint: Optional[str] = None,
+        gguf_filename: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -7170,7 +7205,9 @@ class VideoBackend:
         }
         if hf_token:
             load_kwargs["token"] = hf_token
-        pipe = diffusers.ModularPipeline.from_pretrained(_base_local_dir or repo_id, **load_kwargs)
+        pipe = diffusers.ModularPipeline.from_pretrained(
+            _base_local_dir or (base if comfy_checkpoint else repo_id), **load_kwargs
+        )
         transformer_quant_engaged: Optional[str] = None
         transformer_quant_reason = "released bfloat16 components"
         # "auto" asks the backend to choose. The auto LADDER is still not it -- that quantises a dense module on device,
@@ -7257,6 +7294,22 @@ class VideoBackend:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
 
             # torchao only: H3's pin / stream / residency path is built on torchao weights, like the hosted ones.
+            h3_int8 = (
+                "torchao" if comfy_int8_backend(umem_target, fam.name, base) == "torchao" else None
+            )
+            h3_fp8 = (
+                "torchao" if comfy_fp8_backend(umem_target, fam.name, base) == "torchao" else None
+            )
+            if (
+                comfy_scheme is not None
+                and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
+            ):
+                # Refused before the load: dequantized, the denoiser would be the 40 GB bfloat16 model.
+                raise RuntimeError(
+                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
+                    f"Load '{fam.base_repo}' instead."
+                )
             transformer = load_h3_comfy_transformer(
                 getattr(diffusers, fam.transformer_class),
                 comfy_checkpoint,
@@ -7267,16 +7320,8 @@ class VideoBackend:
                 hf_token = hf_token,
                 cache_dir = hub_cache_dir(),
                 local_files_only = local_files_only,
-                int8_backend = (
-                    "torchao"
-                    if comfy_int8_backend(umem_target, fam.name, base) == "torchao"
-                    else None
-                ),
-                fp8_backend = (
-                    "torchao"
-                    if comfy_fp8_backend(umem_target, fam.name, base) == "torchao"
-                    else None
-                ),
+                int8_backend = h3_int8,
+                fp8_backend = h3_fp8,
                 target = umem_target,
                 logger = logger,
             )
@@ -8134,6 +8179,7 @@ class VideoBackend:
                 placed_ordinal = placed_cuda_ordinal(umem_target),
                 dtype = str(dtype).replace("torch.", ""),
                 kind = kind,
+                gguf_filename = gguf_filename if comfy_checkpoint else None,
                 engine = "diffusers",
                 h3_task = workflow,
                 offload_policy = offload_policy,

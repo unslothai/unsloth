@@ -261,6 +261,8 @@ def comfy_resident_mib(
     compute_bytes: int = 2,
     keep_key: Any = None,
     exclude_tokens: Any = (),
+    min_features: int = 0,
+    fp8_divisible: int = 0,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
@@ -268,7 +270,8 @@ def comfy_resident_mib(
     nothing reliable here (an fp8 file Studio runs natively is not upcast; an int8 one with no runtime is).
     ``keep_key(key)`` limits the count to the keys the loader reads (a file bundling other components);
     an int8 layer whose name holds one of ``exclude_tokens`` is priced dequantized, as Studio's int8 filter
-    leaves it. None when the header cannot be read. Torch-free."""
+    leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
+    not multiples of ``fp8_divisible``). None when the header cannot be read. Torch-free."""
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
         if scan is None:
@@ -277,15 +280,24 @@ def comfy_resident_mib(
     except Exception:  # noqa: BLE001 -- unknown size: the caller keeps its own estimate
         return None
     header.pop("__metadata__", None)
-    kept = {
-        name + ".weight": (
+
+    def _fits(shape: Any, divisible: int) -> bool:
+        if len(shape or ()) != 2:
+            return False
+        out_f, in_f = (int(d) for d in shape)
+        if min(out_f, in_f) < min_features:
+            return False
+        return not divisible or not (out_f % divisible or in_f % divisible)
+
+    kept = {}
+    for name, layer in scan.layers.items():
+        shape = (header.get(name + ".weight") or {}).get("shape")
+        kept[name + ".weight"] = (
             layer.format == INT8_TENSORWISE
             and keep_int8
             and not any(t in name + ".weight" for t in exclude_tokens)
-        )
-        or (layer.format == FP8_E4M3 and keep_fp8)
-        for name, layer in scan.layers.items()
-    }
+            and _fits(shape, 0)
+        ) or (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
     total = 0
     for key, entry in header.items():
         if keep_key is not None and not keep_key(key):

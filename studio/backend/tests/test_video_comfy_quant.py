@@ -556,3 +556,81 @@ def test_a_class_without_a_converter_uses_its_registered_layout(h3like_file, mon
         int8_backend = None,
     )
     assert _cos(model.ff.proj.weight, dense.ff.proj.weight) > 0.9999
+
+
+def test_h3_single_file_task_comes_from_the_file_name_unless_requested():
+    from core.inference.video import _h3_single_file_task
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    ref = "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+    assert _h3_single_file_task(h3, "single_file", ref, None) == "ref2va"
+    assert _h3_single_file_task(h3, "single_file", ref, "fl2va") == "fl2va"
+    assert _h3_single_file_task(h3, "pipeline", None, None) is None
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert _h3_single_file_task(wan, "single_file", ref, None) is None
+
+
+def test_h3_single_file_is_refused_on_metal(monkeypatch):
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.video import VideoBackend
+
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: DiffusionDeviceTarget(
+            device = "mps",
+            dtype = None,
+            backend = "mps",
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+            supports_float64 = False,
+        ),
+    )
+    with pytest.raises(ValueError, match = "cannot run on Apple Silicon"):
+        VideoBackend().validate_load_request(
+            "MiniMaxAI/MiniMax-H3",
+            gguf_filename = "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+            model_kind = "single_file",
+        )
+
+
+def test_h3_single_file_conditioner_skips_the_generic_precision_gate(monkeypatch):
+    from core.inference.video import assert_video_precision_available
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    monkeypatch.setattr(
+        "core.inference.video.precision_fallback_allowed", lambda: False, raising = False
+    )
+    monkeypatch.setattr(
+        "core.inference.video.te_quant_supported", lambda *_a, **_k: False, raising = False
+    )
+    assert_video_precision_available(
+        fam,
+        model_kind = "single_file",
+        text_encoder_quant = "int8",
+        checkpoint_filename = "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    )
+
+
+def test_resident_mib_prices_layers_the_runtime_filter_skips_at_bf16(tmp_path):
+    big, small, ragged = (2048, 1024), (2048, 64), (2048, 1000)
+    tensors = {}
+    for name, shape, fmt, dtype in (
+        ("i_big", big, "int8_tensorwise", torch.int8),
+        ("i_small", small, "int8_tensorwise", torch.int8),
+        ("f_ragged", ragged, "float8_e4m3fn", torch.float8_e4m3fn),
+    ):
+        tensors[f"{name}.weight"] = torch.zeros(shape, dtype = dtype)
+        tensors[f"{name}.weight_scale"] = torch.ones(shape[0], 1)
+        tensors[f"{name}.comfy_quant"] = _conf(format = fmt)
+    path = _save(tmp_path / "filter.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    kw = dict(keep_int8 = True, keep_fp8 = True)
+    loose = cq.comfy_resident_mib(path, scan, **kw)
+    strict = cq.comfy_resident_mib(path, scan, **kw, min_features = 128, fp8_divisible = 16)
+    extra = 2048 * 64 + 2048 * 1000  # i_small and f_ragged: stored 1 B, priced 2 B
+    assert strict * 1024 * 1024 - loose * 1024 * 1024 >= extra - 1024 * 1024
+    assert strict > loose
