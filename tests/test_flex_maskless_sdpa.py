@@ -88,7 +88,6 @@ def test_a_dropped_mask_that_stays_on_flex_is_still_causal(case):
 
 
 def test_counters_do_not_mutate_while_compiling(qkv, monkeypatch):
-    # A Python counter mutated inside a compiled region makes Dynamo recompile every call.
     q, k, v = qkv
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
     before = dict(U.FLEX_MASKLESS_SDPA_STATS)

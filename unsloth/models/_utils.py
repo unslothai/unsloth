@@ -715,7 +715,7 @@ def _causal_block_mask(query, key):
     if block_mask is None:
         from torch.nn.attention.flex_attention import create_block_mask
 
-        # Uncompiled builds materialize Q x KV (10 GB at 32k); inference tensors break a later backward.
+        # Uncompiled builds materialize Q x KV; inference tensors break a later backward.
         with torch.inference_mode(False):
             block_mask = create_block_mask(
                 lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
