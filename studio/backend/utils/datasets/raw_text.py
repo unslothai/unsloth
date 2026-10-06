@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from itertools import islice
 from typing import Literal, TYPE_CHECKING
 
@@ -74,13 +75,21 @@ def _text_columns(dataset: Dataset, string_cols: list[str]) -> list[str]:
     return [col for col in string_cols if col not in typed] or string_cols
 
 
+# One unit per CJK / kana / Thai character (scripts written without spaces), else per word, with
+# unspaced runs cut every 16 characters: minified code counts by length, an id or hash stays short.
+_UNSPACED = "\u0e00-\u0e7f\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff"
+_TEXT_UNIT = re.compile(f"[{_UNSPACED}]|[^\\s{_UNSPACED}]{{1,16}}")
+
+
 def _pick_text_column(dataset: Dataset, text_cols: list[str]) -> str:
     if len(text_cols) == 1:
         return text_cols[0]
     rows = list(islice(dataset.select_columns(text_cols), 100))
     return max(
         text_cols,
-        key = lambda col: sum(len(row[col].split()) for row in rows if isinstance(row[col], str)),
+        key = lambda col: sum(
+            len(_TEXT_UNIT.findall(row[col])) for row in rows if isinstance(row[col], str)
+        ),
     )
 
 

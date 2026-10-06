@@ -41,3 +41,11 @@ def test_raw_text_uses_the_requested_column_without_the_choice_warning():
     assert list(result.dataset["text"]) == ["Short."]
     assert result.source_column == "body"
     assert not any("auto-selecting" in notice.message for notice in result.notices)
+
+
+def test_raw_text_scores_unspaced_scripts_by_length_not_by_spaces():
+    doc = "自然语言处理是计算机科学领域与人工智能领域中的一个重要方向。"
+    result = prepare_raw_text_dataset(
+        Dataset.from_dict({"content": [doc, doc], "source": ["news article", "news article"]})
+    )
+    assert list(result.dataset["text"]) == [doc, doc]
