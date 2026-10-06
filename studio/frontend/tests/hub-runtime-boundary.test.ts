@@ -255,7 +255,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   );
   assert.match(
     modelInspector,
-    /const nonGgufRuntimeAvailable =\s*!chatOnlyMeasured && unslothSupport\.status !== "unsupported";[\s\S]*?nonGgufRuntimeAvailable,\s*\}\);/,
+    /nonGgufRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
   );
   assert.match(modelInspector, /const runEligible = isHubModelRunEligible\(/);
   assert.match(
