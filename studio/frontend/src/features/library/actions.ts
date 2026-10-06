@@ -3,6 +3,13 @@
 
 import type { useNavigate } from "@tanstack/react-router";
 import { zipSync } from "fflate";
+import { usePlatformStore } from "@/config/env";
+import {
+  isTtsAudioType,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
+} from "@/features/audio/audio-page-policy";
+import { audioWorkflowForAudioType } from "@/features/audio/workflows";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { listLoras } from "@/features/chat";
 import {
@@ -199,6 +206,26 @@ export async function chatWithModel(
     .catch(() => undefined);
   if (getAuthSessionEpoch() !== epoch) return;
   if (scanned?.audio_type) {
+    const { audio_type: audioType, export_type: exportType } = scanned;
+    if (
+      isTtsAudioType(audioType, exportType === "gguf") &&
+      trainedTtsCheckpointIsLoadable(audioType, exportType) &&
+      // The Audio page's picker hides what the Mac runtime cannot run; never load it from here.
+      (usePlatformStore.getState().deviceType !== "mac" ||
+        trainedTtsCheckpointIsRunnableOnMac(audioType, exportType))
+    ) {
+      void navigate({
+        to: "/audio",
+        search: {
+          model: model.path,
+          loadId: model.path,
+          // Native checkpoints need it for their custom-code approval and runtime checks.
+          audioType,
+          workflow: audioWorkflowForAudioType(audioType),
+        },
+      });
+      return;
+    }
     toast(translate("library.toast.speechModel", { name: item.name }), {
       description: translate("library.toast.speechModelDescription"),
     });

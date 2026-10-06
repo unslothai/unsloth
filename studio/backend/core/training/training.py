@@ -268,6 +268,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_dataset_image": values.get("is_dataset_image", False),
         "is_dataset_audio": values.get("is_dataset_audio", False),
         "is_embedding": values.get("is_embedding", False),
+        "is_decision": values.get("is_decision", False),
+        "model_subfolder": values.get("model_subfolder"),
+        "decision_layout": values.get("decision_layout"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),
         "embedding_learning_rate": values.get("embedding_learning_rate"),
@@ -436,7 +439,8 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
 def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     resume = bool(config.get("resume_from_checkpoint"))
     model_name = config["model_name"]
-    if is_local_path(model_name):
+    # The decision trainer resolves its own Laya cache, which holds no config.json to pin.
+    if is_local_path(model_name) or config.get("is_decision"):
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
