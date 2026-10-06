@@ -145,6 +145,27 @@ test("remote origin prefers the live tunnel and falls back to the local one", ()
   assert.equal(remoteApiOrigin(null, ""), "");
 });
 
+test("a loopback page with LAN access on shows the LAN address", () => {
+  const lan = ["http://192.168.1.24:8888", "http://10.0.0.7:8888"];
+  assert.equal(
+    remoteApiOrigin(null, "http://127.0.0.1:8888", lan),
+    "http://192.168.1.24:8888",
+  );
+  assert.equal(
+    remoteApiOrigin(null, "http://localhost:8888", lan),
+    "http://192.168.1.24:8888",
+  );
+  assert.equal(remoteApiOrigin(TUNNEL, "http://127.0.0.1:8888", lan), TUNNEL);
+  assert.equal(
+    remoteApiOrigin(null, "http://10.0.0.7:8888", lan),
+    "http://10.0.0.7:8888",
+  );
+  assert.equal(
+    remoteApiOrigin(null, "http://127.0.0.1:8888", []),
+    "http://127.0.0.1:8888",
+  );
+});
+
 // ── remoteAccessAutoStartReadOnly ──
 
 test("auto-start is read-only with no status, or under Colab ownership", () => {

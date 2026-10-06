@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   loadLanAccess,
   startLanAccess,
@@ -246,6 +247,7 @@ export function LanAccessSection() {
 
   const applyStatus = useCallback((next: LanAccessStatus) => {
     setStatus(next);
+    usePlatformStore.setState({ lanUrls: next.urls });
   }, []);
 
   useEffect(() => {

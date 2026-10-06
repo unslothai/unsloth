@@ -16,6 +16,7 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
+export { loadLanAccess } from "./api/lan-access";
 export { loadMultiModelEnabled } from "./api/multi-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export { listOpenAIModels } from "./api/openai-models";
