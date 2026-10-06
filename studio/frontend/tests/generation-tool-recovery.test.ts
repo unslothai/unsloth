@@ -23,6 +23,9 @@ const { createGenerationToolRecovery } = await import(
 const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
   "../src/features/chat/utils/run-checkpoint-scheduler.ts"
 );
+const { providerCompactionReplayToolCallCount } = await import(
+  "../src/features/chat/utils/provider-compaction.ts"
+);
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -56,8 +59,23 @@ test("replay adds new cards and applies their results", () => {
 test("recovery keeps provider compaction at its tool-call boundary", () => {
   const carried: Carried[] = [];
   const replay = createGenerationToolRecovery(carried, "run").apply;
-  replay(start(), 12, 1);
-  replay(end(), 20, 2);
+  replay(
+    {
+      type: "tool_start",
+      tool_call_id: "hosted_0",
+      tool_name: "web_search",
+      arguments: { _server_tool: true },
+    },
+    0,
+    1,
+  );
+  replay(
+    { type: "tool_end", tool_call_id: "hosted_0", result: "hosted" },
+    0,
+    2,
+  );
+  replay(start(), 12, 3);
+  replay(end(), 20, 4);
 
   assert.deepEqual(
     replay(
@@ -69,7 +87,7 @@ test("recovery keeps provider compaction at its tool-call boundary", () => {
         },
       },
       20,
-      3,
+      5,
     ),
     {
       providerCompaction: {
@@ -79,6 +97,32 @@ test("recovery keeps provider compaction at its tool-call boundary", () => {
       },
       providerCompactionAfterToolCalls: 1,
     },
+  );
+});
+
+test("provider compaction boundaries match replayable call serialization", () => {
+  assert.equal(
+    providerCompactionReplayToolCallCount([
+      {
+        type: "tool-call",
+        toolName: "studio_load_skill",
+        result: "loaded",
+      },
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        args: { _server_tool: true },
+        result: "hosted",
+      },
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        args: { google: { native_part: { functionCall: {} } } },
+      },
+      { type: "tool-call", toolName: "edit_file" },
+      { type: "tool-call", toolName: "edit_file", result: "ok" },
+    ]),
+    2,
   );
 });
 

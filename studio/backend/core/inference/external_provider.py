@@ -7806,7 +7806,13 @@ def _build_usage_chunk(
         uncached_input = last_usage.get("input_tokens") or 0
         cache_creation = last_usage.get("cache_creation_input_tokens") or 0
         cache_read = last_usage.get("cache_read_input_tokens") or 0
-        prompt_tokens = uncached_input + cache_creation + cache_read
+        # Anthropic reports provider-compaction work as separate usage.iterations entries and excludes
+        # it from the top-level input/output counts. Fold those billed iterations into the standard
+        # OpenAI-shaped totals so monitors and cost consumers do not undercount the turn.
+        compaction_input = last_usage.get("compaction_input_tokens") or 0
+        compaction_output = last_usage.get("compaction_output_tokens") or 0
+        prompt_tokens = uncached_input + cache_creation + cache_read + compaction_input
+        completion_tokens += compaction_output
         if not (prompt_tokens or completion_tokens):
             return None
         usage_block: dict[str, Any] = {
@@ -7817,6 +7823,9 @@ def _build_usage_chunk(
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
         }
+        if compaction_input or compaction_output:
+            usage_block["compaction_input_tokens"] = compaction_input
+            usage_block["compaction_output_tokens"] = compaction_output
         # Forward the 5m/1h cache-write breakdown so cost calc applies the 2x 1h premium instead of defaulting to 5m
         # on chat-style.
         cc_breakdown = last_usage.get("cache_creation")

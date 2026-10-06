@@ -7087,7 +7087,11 @@ export function createOpenAIStreamAdapter(
                     // Compaction items arrive before the provider content they introduce. Remember
                     // how much of this stored run preceded it so replay does not put a later marker
                     // ahead of earlier Studio tool rounds that the marker already summarizes.
-                    providerCompactionAfterToolCalls = toolCallParts.length;
+                    providerCompactionAfterToolCalls = toolCallParts.filter(
+                      (part) =>
+                        part.toolName !== "studio_load_skill" &&
+                        toolCallPartSurvivesOpenAIReplay(part),
+                    ).length;
                   }
                   continue;
                 }

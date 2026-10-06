@@ -260,6 +260,6 @@ test("provider compaction replay stays on the tool-loop subturn that produced it
   assert.equal(providerCompactionAssistant(replay, 2), final);
   assert.match(
     adapter,
-    /providerCompactionAfterToolCalls = toolCallParts\.length/,
+    /providerCompactionAfterToolCalls = toolCallParts\.filter\([\s\S]*toolCallPartSurvivesOpenAIReplay\(part\)[\s\S]*\)\.length/,
   );
 });
