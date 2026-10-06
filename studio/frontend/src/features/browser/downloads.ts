@@ -100,7 +100,8 @@ function linkDownload(page: BrowserPage, url: string): BrowserDownload {
 
 /** Save what a link points at, fetched through the panel's proxy so any site works. */
 export async function saveLinkAs(url: string): Promise<void> {
-  const pending = fetchBrowserPage({ url }, new AbortController().signal).then((page) => linkDownload(page, url));
+  const controller = new AbortController();
+  const pending = fetchBrowserPage({ url }, controller.signal).then((page) => linkDownload(page, url));
   // The dialog needs the menu click, which a slow fetch outlasts: ask with the resolved name
   // when the fetch is quick, else with the URL's.
   let target: SaveHandle | null | undefined;
@@ -112,6 +113,8 @@ export async function saveLinkAs(url: string): Promise<void> {
     try {
       target = await pickSaveTarget(quick?.name ?? fileNameFromUrl(url));
     } catch (error) {
+      // No save after all: stop the fetch, which the backend drops on disconnect.
+      controller.abort();
       pending.catch(() => undefined);
       if (isDownloadCancelled(error)) return;
       throw error;
