@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "name": "setup.exe",
+      "dangerous": true
+    },
+    {
+      "name": "SETUP.EXE",
+      "dangerous": true
+    },
+    {
+      "name": "report.pdf",
+      "dangerous": false
+    },
+    {
+      "name": "report.pdf.exe",
+      "dangerous": true
+    },
+    {
+      "name": "installer.exe.",
+      "dangerous": true
+    },
+    {
+      "name": "installer.exe . ",
+      "dangerous": true
+    },
+    {
+      "name": "notes.txt",
+      "dangerous": false
+    },
+    {
+      "name": "archive.zip",
+      "dangerous": false
+    },
+    {
+      "name": "Tool.dmg",
+      "dangerous": true
+    },
+    {
+      "name": "run.command",
+      "dangerous": true
+    },
+    {
+      "name": "script.PS1",
+      "dangerous": true
+    },
+    {
+      "name": "photo.jpg",
+      "dangerous": false
+    },
+    {
+      "name": "x.App",
+      "dangerous": true
+    },
+    {
+      "name": "page.html",
+      "dangerous": false
+    },
+    {
+      "name": "data.json",
+      "dangerous": false
+    },
+    {
+      "name": "noext",
+      "dangerous": false
+    },
+    {
+      "name": ".bashrc",
+      "dangerous": false
+    },
+    {
+      "name": "deploy.sh",
+      "dangerous": true
+    },
+    {
+      "name": "lib.dylib",
+      "dangerous": true
+    },
+    {
+      "name": "shortcut.lnk",
+      "dangerous": true
+    },
+    {
+      "name": "link.url",
+      "dangerous": true
+    },
+    {
+      "name": "readme",
+      "dangerous": false
+    },
+    {
+      "name": "movie.mp4",
+      "dangerous": false
+    },
+    {
+      "name": "disk.iso",
+      "dangerous": true
+    },
+    {
+      "name": "",
+      "dangerous": false
+    }
+  ]
+}
