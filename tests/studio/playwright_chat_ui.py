@@ -268,6 +268,22 @@ def exercise_permission_mode_controls(page, shoot):
         expect(menu).to_be_visible()
         return menu
 
+    def sandbox_chip(menu):
+        """The "Sandbox Low ›" chip that opens the level picker."""
+        # PR 12855 replaced the Low/High switch with this chip.
+        chip = menu.locator(".sandbox-level-chip")
+        expect(chip).to_be_visible()
+        return chip
+
+    def pick_sandbox_level(menu, label):
+        """Open the level picker from the chip and pick ``label`` ("Low" or "High")."""
+        sandbox_chip(menu).click()
+        # The picker is a submenu portalled after the permission menu, so it is the last menu.
+        picker = page.get_by_role("menu").last
+        option = picker.get_by_role("menuitem", name = re.compile(rf"^{label}\b"))
+        expect(option).to_be_visible()
+        option.click()
+
     def choose(label):
         menu = open_menu()
         item = menu.get_by_role("menuitem").filter(has_text = label).first
@@ -545,8 +561,8 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
-    # Without a sandbox: Run automatically applies at once, the Sandbox switch reads Low, and sliding it
-    # to High opens the install popup, whose "Use Low sandbox" keeps Low.
+    # Without a sandbox: Run automatically applies at once, the Sandbox chip reads Low, and picking
+    # High opens the install popup, whose "Use Low sandbox" keeps Low.
     choose("Approve for me")
     expect_mode("Approve for me")
     # Landed on the install first, or the reload hydrates the previous "off" back.
@@ -567,10 +583,11 @@ def exercise_permission_mode_controls(page, shoot):
     expect(menu.get_by_text("Permissions", exact = True)).to_be_visible()
     if menu.get_by_text("OS sandbox not available").count() != 0:
         fail("the Run automatically row still carries the 'OS sandbox not available' hint")
-    switch = menu.get_by_role("menuitemcheckbox")
-    expect(switch).to_have_attribute("aria-checked", "false")
-    expect(switch).to_contain_text("Low")
-    switch.click()
+    # Without an OS sandbox the chip reads Low, and picking High opens the setup popup.
+    chip = sandbox_chip(menu)
+    expect(chip).to_contain_text("Low")
+    expect(chip).not_to_contain_text("High")
+    pick_sandbox_level(menu, "High")
     setup = page.get_by_role("alertdialog")
     expect(setup.get_by_role("heading", name = "OS sandbox is not available")).to_be_visible()
     # The command rides on Copy command (and Settings > Sandbox), not as a block of text in the popup.
@@ -591,10 +608,10 @@ def exercise_permission_mode_controls(page, shoot):
     expect_server_mode("low", key = "sandboxLevel")
     sandbox_answer["ready"] = True
     reload_and_wait_for_pill()
-    # With a working sandbox the switch turns High again, and stays High for the next browser's run.
-    switch = open_menu().get_by_role("menuitemcheckbox")
-    expect(switch).to_contain_text("Low")
-    switch.click()
+    # With a working sandbox picking High sticks, and stays High for the next browser's run.
+    menu = open_menu()
+    expect(sandbox_chip(menu)).to_contain_text("Low")
+    pick_sandbox_level(menu, "High")
     page.wait_for_function("() => localStorage.getItem('unsloth_chat_sandbox_level') === 'high'")
     page.keyboard.press("Escape")
     expect_server_mode("high", key = "sandboxLevel")
