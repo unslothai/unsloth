@@ -32,6 +32,7 @@ from hub.utils.paths import (
     lmstudio_model_dirs,
     normalize_path,
     ollama_model_dirs,
+    omlx_model_dirs,
     outputs_root,
     path_is_same_or_child,
     studio_root,
@@ -62,6 +63,7 @@ class _LocalInventorySources(NamedTuple):
     ollama_dirs: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
+    omlx_dirs: tuple[Path, ...] = ()
 
 
 _LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...], int]
@@ -82,6 +84,7 @@ class _LocalCacheChanged(RuntimeError):
 
 
 # Local aliases keep the extracted code close to the original implementation.
+LocalModelSource = model_common.LocalModelSource
 _is_model_directory = model_common._is_model_directory
 _local_inventory_id = model_common._local_inventory_id
 _local_model_info = model_common._local_model_info
@@ -337,6 +340,7 @@ def _local_inventory_sources() -> _LocalInventorySources:
         tuple(ollama_model_dirs()),
         tuple(hermes_model_dirs()),
         tuple(known_hf_hub_caches()),
+        tuple(omlx_model_dirs()),
     )
 
 
@@ -660,8 +664,14 @@ def _scan_hf_cache(
     return found
 
 
-def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
-    """Scan an LM Studio models dir (``publisher/model-name`` folders of GGUFs, or top-level standalone GGUFs)."""
+def _scan_lmstudio_dir(
+    lm_dir: Path,
+    *,
+    entry_limit: int | None = None,
+    source: LocalModelSource = "lmstudio",
+) -> List[LocalModelInfo]:
+    """Scan a ``publisher/model-name`` tree (or top-level standalone GGUFs); LM Studio and oMLX
+    share this layout, ``source`` names the app."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -673,7 +683,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             updated_at = None
         rows = _classify_local_path(
             lm_dir,
-            "lmstudio",
+            source,
             updated_at = updated_at,
         )
         return _apply_payload_partial(lm_dir, rows)
@@ -707,7 +717,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         updated_at = None
                     rows = _classify_local_path(
                         child,
-                        "lmstudio",
+                        source,
                         updated_at = updated_at,
                     )
                     found.extend(_apply_payload_partial(child, rows))
@@ -721,7 +731,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     updated_at = None
                 rows = _classify_local_path(
                     child,
-                    "lmstudio",
+                    source,
                     updated_at = updated_at,
                 )
                 found.extend(_apply_payload_partial(child, rows))
@@ -744,7 +754,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = None
                         rows = _classify_local_path(
                             model_dir,
-                            "lmstudio",
+                            source,
                             display_name = model_dir.name,
                             model_id = model_id,
                             updated_at = updated_at,
@@ -761,7 +771,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = None
                         rows = _classify_local_path(
                             model_dir,
-                            "lmstudio",
+                            source,
                             model_id = f"{child.name}/{model_dir.stem}",
                             updated_at = updated_at,
                         )
@@ -952,6 +962,7 @@ async def _collect_models_from_default_sources(
     hermes_dirs: tuple[Path, ...],
     known_hf_caches: tuple[Path, ...],
     custom_folders: list[dict],
+    omlx_dirs: tuple[Path, ...] = (),
 ) -> List[LocalModelInfo]:
     local_models = await _scan_source("models directory", _scan_models_dir, models_root)
     hf_sources = [("HF cache", hf_cache_dir, True)]
@@ -976,6 +987,12 @@ async def _collect_models_from_default_sources(
             continue
         seen_hf.add(key)
         hf_sources.append(("previous HF cache", previous_cache, False))
+    # oMLX also serves models--* repos kept under its own roots.
+    for omlx_dir in omlx_dirs:
+        key = os.path.normcase(str(omlx_dir.resolve(strict = False)))
+        if key not in seen_hf:
+            seen_hf.add(key)
+            hf_sources.append(("oMLX HF cache", omlx_dir, False))
 
     discovered_sources = []
     custom_sources = []
@@ -1027,6 +1044,13 @@ async def _collect_models_from_default_sources(
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
+
+    for omlx_dir in omlx_dirs:
+        local_models += await _scan_source(
+            "oMLX",
+            lambda path: _scan_lmstudio_dir(path, source = "omlx"),
+            omlx_dir,
+        )
 
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
@@ -1228,10 +1252,10 @@ async def _load_custom_folders() -> list[dict]:
 def _merge_custom_rows_listed_natively(
     custom_models: List[LocalModelInfo], native_models: List[LocalModelInfo]
 ) -> tuple[list[LocalModelInfo], list[LocalModelInfo]]:
-    """A custom folder overlapping the models dir or LM Studio re-lists their models (#9164)."""
+    """A custom folder overlapping the models dir, LM Studio or oMLX re-lists their models (#9164)."""
     native: dict[tuple[str, str], LocalModelInfo] = {}
     for model in native_models:
-        if model.source in ("models_dir", "lmstudio"):
+        if model.source in ("models_dir", "lmstudio", "omlx"):
             native.setdefault((_inventory_physical_identity(model.path), model.model_format), model)
     if not native:
         return list(native_models), list(custom_models)
@@ -1242,8 +1266,8 @@ def _merge_custom_rows_listed_natively(
         # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
         if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
             kept_custom.append(model)
-        elif twin.source == "lmstudio" and model.capabilities.can_train:
-            # The train picker refuses LM Studio rows, so the trainable custom row wins.
+        elif twin.source in ("lmstudio", "omlx") and model.capabilities.can_train:
+            # The train picker refuses LM Studio and oMLX rows, so the trainable custom row wins.
             replaced.add(id(twin))
             kept_custom.append(model)
     return [m for m in native_models if id(m) not in replaced], kept_custom
@@ -1317,9 +1341,16 @@ async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, known_hf_caches = (
-        sources
-    )
+    (
+        hf_cache_dir,
+        legacy_hf,
+        hf_default,
+        lm_dirs,
+        ollama_dirs,
+        hermes_dirs,
+        known_hf_caches,
+        omlx_dirs,
+    ) = sources
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -1344,6 +1375,7 @@ async def _scan_local_models_response(
             hermes_dirs,
             known_hf_caches,
             custom_folders,
+            omlx_dirs = omlx_dirs,
         )
         models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
