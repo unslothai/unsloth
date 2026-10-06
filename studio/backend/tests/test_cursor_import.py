@@ -115,6 +115,11 @@ def test_a_windows_drive_slug_has_no_colon_and_strips_the_home_prefix(cursor_hom
     assert discovery._workspace_name("home-ME-gone-app", None) == "gone-app"
 
 
+def test_a_windows_slug_walks_from_the_folder_after_the_drive(monkeypatch):
+    monkeypatch.setattr(discovery.os, "name", "nt")
+    assert discovery._resolve_roots("C")[0][1] == 1
+
+
 def test_names_the_no_folder_window_for_what_it_is(cursor_home):
     write_transcript(cursor_home, discovery.NO_FOLDER_SLUG, "s3", [turn("user", "hi")])
 

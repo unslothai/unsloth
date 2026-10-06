@@ -42,12 +42,12 @@ def state_slug(project_path: Path) -> str:
     return re.sub(r"[\\/:]+", "-", str(project_path)).strip("-")
 
 
-def _resolve_roots(first_token: str) -> list[Path]:
-    """Where a slug's first token starts from on this platform."""
+def _resolve_roots(first_token: str) -> list[tuple[Path, int]]:
+    """Where a slug's walk starts on this platform, and at which token (Windows: after the drive)."""
     if os.name != "nt":
-        return [Path("/")]
+        return [(Path("/"), 0)]
     if re.fullmatch(r"[A-Za-z]:?", first_token):
-        return [Path(f"{first_token[0]}:{os.sep}")]
+        return [(Path(f"{first_token[0]}:{os.sep}"), 1)]
     return []
 
 
@@ -73,8 +73,8 @@ def resolve_state_slug(slug: str, *, budget: int = _RESOLVE_BUDGET) -> Optional[
             if child.is_dir():
                 walk(child, end)
 
-    for root in _resolve_roots(tokens[0]):
-        walk(root, 0)
+    for root, start in _resolve_roots(tokens[0]):
+        walk(root, start)
     return found[0] if len(found) == 1 else None
 
 
