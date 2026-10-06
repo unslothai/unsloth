@@ -319,7 +319,9 @@ def test_a_spawn_after_a_video_reformat_still_execs(tmp_path):
         "print('exit', box[0].wait(), flush = True)\n"
     )
     # The hang is in a child that never execs, so bound the whole scenario from outside.
-    result = subprocess.run([sys.executable, str(script)], capture_output = True, text = True, timeout = 120)
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output = True, text = True, timeout = 120
+    )
     assert result.stdout.strip() == "exit 0", result.stdout + result.stderr
 
 

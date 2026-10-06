@@ -402,7 +402,9 @@ def _adopt_fork_reset() -> None:
         return
     _fork_reset_installed = True
     try:
-        os.register_at_fork(before = _free_thread_local_native_caches, after_in_child = _reset_after_fork)
+        os.register_at_fork(
+            before = _free_thread_local_native_caches, after_in_child = _reset_after_fork
+        )
     except (AttributeError, RuntimeError):
         pass
 
