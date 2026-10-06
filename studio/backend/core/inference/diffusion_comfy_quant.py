@@ -10,8 +10,9 @@ Stock ``from_single_file`` casts the codes as weights and drops the scales: the 
 
 From the header alone: int8_tensorwise (optionally ConvRot) maps into Studio's int8 runtime with codes and
 per-row scales unchanged; float8_e4m3fn into Studio's per-row fp8 runtime (scalar scale repeated per row);
-where neither runs, or for layers Studio keeps in bf16 and float8_e5m2, layers dequantize. Any other
-format is refused by name, never mis-loaded.
+nvfp4 into Studio's FlashInfer NVFP4 Linear and mxfp8 into a ``torch._scaled_mm`` block-scaled Linear
+(``diffusion_comfy_block``); where none runs, or for layers Studio keeps in bf16 and float8_e5m2, layers
+dequantize. Any other format is refused by name, never mis-loaded.
 
 Row mapping: the family's converter runs once on float64 row tags ``(source key, row)``; the tags that
 come out say which source rows each diffusers weight holds. A converter that splices columns, changes
@@ -26,6 +27,8 @@ import os
 import struct
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
 
 COMFY_QUANT_SUFFIX = ".comfy_quant"
 QUANT_METADATA_KEY = "_quantization_metadata"
@@ -56,6 +59,8 @@ _CONSUMED = {
     INT8_TENSORWISE: (".weight_scale",),
     "float8_e4m3fn": (".weight_scale", ".input_scale"),
     "float8_e5m2": (".weight_scale", ".input_scale"),
+    NVFP4: (".weight_scale", ".weight_scale_2", ".input_scale", ".pre_quant_scale"),
+    MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
 
@@ -197,6 +202,8 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
             why = f"{fmt} declared but there is no {name}.weight"
         elif len(weight.get("shape") or ()) != 2:
             why = f"{fmt} weight of shape {weight.get('shape')} (only 2-D linears are supported)"
+        elif fmt in BLOCK_SIZES:
+            why = f"ConvRot on {fmt}" if convrot else _block_layer_problem(name, fmt, weight, header)
         elif fmt == INT8_TENSORWISE and weight.get("dtype") != "I8":
             why = f"int8_tensorwise weight stored as {weight.get('dtype')}"
         elif fmt in FP8_FORMATS and weight.get("dtype") not in ("U8", FP8_FORMATS[fmt]):
@@ -258,6 +265,8 @@ def comfy_resident_mib(
     *,
     keep_int8: bool,
     keep_fp8: bool,
+    keep_nvfp4: bool = False,
+    keep_mxfp8: bool = False,
     compute_bytes: int = 2,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
@@ -276,8 +285,12 @@ def comfy_resident_mib(
     kept = {
         name + ".weight": (layer.format == INT8_TENSORWISE and keep_int8)
         or (layer.format == FP8_E4M3 and keep_fp8)
+        or (layer.format == NVFP4 and keep_nvfp4)
+        or (layer.format == MXFP8 and keep_mxfp8)
         for name, layer in scan.layers.items()
     }
+    # an nvfp4 byte holds two weights
+    packed = {name + ".weight" for name, layer in scan.layers.items() if layer.format == NVFP4}
     total = 0
     for key, entry in header.items():
         shape = entry.get("shape") or ()
@@ -287,7 +300,7 @@ def comfy_resident_mib(
         dtype = str(entry.get("dtype", ""))
         stored = numel * _DTYPE_BYTES.get(dtype, 2)
         if key in kept:
-            total += stored if kept[key] else numel * compute_bytes
+            total += stored if kept[key] else numel * compute_bytes * (2 if key in packed else 1)
         elif key.endswith(COMFY_QUANT_SUFFIX) or any(key.endswith(s) for s in _SCALE_SUFFIXES):
             total += stored
         elif dtype.startswith(("F", "BF")):
@@ -295,6 +308,55 @@ def comfy_resident_mib(
         else:
             total += stored
     return -(-total // (1024 * 1024)) if total > 0 else None
+
+
+def _numel(entry: Optional[dict]) -> int:
+    n = 1
+    for d in (entry or {}).get("shape") or ():
+        n *= int(d)
+    return n
+
+
+def _block_layer_problem(name: str, fmt: str, weight: dict, header: dict) -> Optional[str]:
+    """Why an ``nvfp4`` / ``mxfp8`` layer cannot be decoded, from its header entries, or None."""
+    rows, stored = (int(d) for d in weight["shape"])
+    if fmt == NVFP4:
+        if weight.get("dtype") != "U8":
+            return f"nvfp4 weight stored as {weight.get('dtype')}"
+        cols = stored * 2
+    else:
+        if weight.get("dtype") not in ("F8_E4M3", "U8"):
+            return f"mxfp8 weight stored as {weight.get('dtype')}"
+        cols = stored
+    block = BLOCK_SIZES[fmt]
+    if cols % block:
+        return f"{fmt} weight with {cols} columns (not a multiple of {block})"
+    scale = header.get(name + ".weight_scale")
+    want = ("F8_E4M3", "U8") if fmt == NVFP4 else ("F8_E8M0", "U8")
+    if scale is None:
+        return f"{fmt} declared but {name}.weight_scale is missing"
+    if scale.get("dtype") not in want:
+        return f"{fmt} block scales stored as {scale.get('dtype')}"
+    if _numel(scale) != tiled_scale_numel(rows, cols // block):
+        return f"{fmt} block scales of shape {scale.get('shape')} for a {rows}x{cols} weight (not the 128x4 tiled layout)"
+    if fmt == NVFP4:
+        second = header.get(name + ".weight_scale_2")
+        if second is None or _numel(second) != 1:
+            return f"nvfp4 needs a scalar {name}.weight_scale_2"
+        smooth = header.get(name + ".pre_quant_scale")
+        if smooth is not None and _numel(smooth) != cols:
+            return f"pre_quant_scale of shape {smooth.get('shape')} for {cols} input features"
+    entry = header.get(name + ".input_scale")
+    if entry is not None and _numel(entry) != 1:
+        return f"input_scale of shape {entry.get('shape')} (only a per-tensor scale is supported)"
+    leftover = [
+        s
+        for s in _SCALE_SUFFIXES
+        if name + s in header and _LEGACY_RENAME.get(s, s) not in _CONSUMED[fmt]
+    ]
+    if leftover:
+        return f"{fmt} layer carries {', '.join(leftover)}, which this format does not use"
+    return None
 
 
 def _is_power_of_four(size: Any) -> bool:
@@ -311,8 +373,8 @@ def comfy_quant_error(scan: Optional[ComfyQuantScan], filename: str = "") -> Opt
     return (
         f"{filename or 'This checkpoint'} is a ComfyUI-quantized checkpoint Studio cannot run "
         f"faithfully: {shown}{more}. Supported ComfyUI formats are int8_tensorwise (with or "
-        "without ConvRot), float8_e4m3fn and float8_e5m2; use the bf16 file, a GGUF, or Studio's "
-        "own int8 / fp8 transformer quantization instead."
+        "without ConvRot), float8_e4m3fn, float8_e5m2, nvfp4 and mxfp8; use the bf16 file, a GGUF, "
+        "or Studio's own int8 / fp8 transformer quantization instead."
     )
 
 
@@ -339,6 +401,55 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
         cols = weight.shape[1]
         weight = (weight.reshape(rows, cols // group, group) @ h).reshape(rows, cols)
     return weight.to(dtype)
+
+
+@dataclass
+class _BlockWeight:
+    """A converted nvfp4 / mxfp8 weight: row segments ``(codes, plain scales, extras)`` from one or more layers."""
+
+    fmt: str
+    parts: list
+
+
+def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
+    """Dense weight of a block-format weight, each source segment with its own tensor / smoothing scale."""
+    import torch
+
+    from .diffusion_comfy_block import dequant_block
+
+    dense = [
+        dequant_block(
+            fmt,
+            codes,
+            scale,
+            tensor_scale = extra.get("tensor_scale"),
+            pre_quant_scale = extra.get("pre_quant_scale"),
+            dtype = dtype,
+        )
+        for codes, scale, extra in parts
+    ]
+    return dense[0] if len(dense) == 1 else torch.cat(dense)
+
+
+def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
+    """``(codes, scales, tensor_scale, input_scale)`` when one runtime Linear can hold ``value`` exactly, else None:
+    nvfp4 needs one per-tensor scale over all segments and no input smoothing. Rows from several layers share an
+    input, so the largest static input_scale is kept (none clips); any segment without one makes the activation
+    scale dynamic (None), as ComfyUI does for such a layer."""
+    import torch
+
+    extras = [extra for _c, _s, extra in value.parts]
+    codes = torch.cat([c for c, _s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][0]
+    scale = torch.cat([s for _c, s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][1]
+    if value.fmt == MXFP8:
+        return codes, scale, None, None
+    tensor_scales = {e.get("tensor_scale") for e in extras}
+    input_scales = [e.get("input_scale") for e in extras]
+    if len(tensor_scales) != 1 or None in tensor_scales:
+        return None
+    if any(e.get("pre_quant_scale") is not None for e in extras):
+        return None
+    return codes, scale, tensor_scales.pop(), None if None in input_scales else max(input_scales)
 
 
 def _int8_tensor(name: str, codes: Any, scale: Any, dtype: Any) -> Optional[Any]:
@@ -678,6 +789,8 @@ def load_comfy_quant_transformer(
     *,
     int8_backend: Optional[str],
     fp8_backend: Optional[str] = None,
+    nvfp4_backend: Optional[str] = None,
+    mxfp8_backend: Optional[str] = None,
     family: Optional[str] = None,
     target: Any = None,
     fast_accum: Optional[bool] = None,
@@ -693,17 +806,22 @@ def load_comfy_quant_transformer(
     their codes and scales, as torchao ``Int8Tensor`` weights under ConvRot-rotating Linears
     (``"torchao"``) or as native int8 twins (``"native"``); with an ``fp8_backend``
     (``comfy_fp8_backend``) the ``float8_e4m3fn`` layers Studio's own fp8 filter selects do the same,
-    as per-row ``Float8Tensor`` weights or native fp8 twins. Everything else is dequantized to the
-    compute dtype. ``finalize`` applies the small-M padding here (the single-file path); the hosted
+    as per-row ``Float8Tensor`` weights or native fp8 twins; with an ``nvfp4_backend`` / ``mxfp8_backend``
+    (``diffusion_comfy_block.comfy_block_backend``) the nvfp4 / mxfp8 layers the matching Studio filter selects
+    keep their codes on Studio's FlashInfer NVFP4 Linear / the ``torch._scaled_mm`` MXFP8 Linear. Everything
+    else is dequantized to the compute dtype. ``finalize`` applies the small-M padding here (the single-file path); the hosted
     prequant loader passes False and pads after placement, as for its own checkpoints. Raises
     ``ValueError`` for a checkpoint it must refuse."""
     import torch
     from safetensors.torch import load_file
 
+    from .diffusion_comfy_block import build_runtime_linear, decode_layer, dequant_block, logical_cols
     from .diffusion_transformer_quant import (
         DEFAULT_MIN_LINEAR_FEATURES,
         TQ_FP8,
         TQ_INT8,
+        TQ_MXFP8,
+        TQ_NVFP4,
         divisible_for_scheme,
         exclude_tokens_for_scheme,
         make_filter_fn,
@@ -718,6 +836,7 @@ def load_comfy_quant_transformer(
     if dtype is not torch.bfloat16:
         # Studio's fp8 runtime asserts bf16 weights; an fp16 / fp32 pipeline dequantizes them instead.
         fp8_backend = None
+        mxfp8_backend = None
     state = load_file(str(path))
     state.pop(LEGACY_SCALED_FP8_KEY, None)
     for key in [k for k in state if k.endswith(COMFY_QUANT_SUFFIX)]:
@@ -737,19 +856,37 @@ def load_comfy_quant_transformer(
     def _dtype_for(key: str) -> Any:
         return torch.float32 if fp16_keep and any(m in key.split(".") for m in keep_fp32) else dtype
 
-    backends = {INT8_TENSORWISE: int8_backend, FP8_E4M3: fp8_backend}
-    sources: list = []  # (layer, codes, scale) kept for a runtime
+    backends = {
+        INT8_TENSORWISE: int8_backend,
+        FP8_E4M3: fp8_backend,
+        NVFP4: nvfp4_backend,
+        MXFP8: mxfp8_backend,
+    }
+    sources: list = []  # (layer, codes, scale, block extras or None) kept for a runtime
     dequantized = 0
     for layer in scan.layers.values():
         codes = state.pop(layer.name + ".weight")
         scale = state.pop(layer.name + ".weight_scale")
-        # Activations are quantized per row at runtime, as for Studio's own fp8; input_scale is unused.
-        state.pop(layer.name + ".input_scale", None)
-        if layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
+        # int8 / fp8 / mxfp8 activations are quantized per call; only nvfp4 uses its static input_scale.
+        input_scale = state.pop(layer.name + ".input_scale", None)
+        extra = None
+        if layer.format in BLOCK_SIZES:
+            tensor_scale = state.pop(layer.name + ".weight_scale_2", None)
+            extra = {
+                "tensor_scale": None if tensor_scale is None else float(tensor_scale.float().reshape(-1)[0]),
+                "input_scale": None if input_scale is None else float(input_scale.float().reshape(-1)[0]),
+                "pre_quant_scale": state.pop(layer.name + ".pre_quant_scale", None),
+            }
+            # row-major from here: codes [N, *] beside plain [N, K / block] scales
+            codes, scale = decode_layer(layer.format, codes, scale)
+        elif layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
         if backends.get(layer.format) or fp16_keep:
-            sources.append((layer, codes, scale))
+            sources.append((layer, codes, scale, extra))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
+        elif extra is not None:
+            state[layer.name + ".weight"] = _dequant_parts(layer.format, [(codes, scale, extra)], dtype)
+            dequantized += 1
         else:
             state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, dtype)
             dequantized += 1
@@ -783,7 +920,7 @@ def load_comfy_quant_transformer(
 
     def _convert_tagged(width: Optional[int]) -> dict:
         # float64 row tags, ``width`` columns wide (None: real width); converted tags name each output's source rows.
-        for index, (layer, codes, _scale) in enumerate(sources):
+        for index, (layer, codes, *_rest) in enumerate(sources):
             rows = torch.arange(codes.shape[0], dtype = torch.float64) + index * _TAG
             cols = codes.shape[1] if width is None else width
             state[layer.name + ".weight"] = rows.view(-1, 1).expand(codes.shape[0], cols)
@@ -801,6 +938,15 @@ def load_comfy_quant_transformer(
             if len(kinds) != 1:
                 raise ValueError(f"{name}: rows from layers of different formats or ConvRot groups")
             fmt, group = kinds.pop()
+            if fmt in BLOCK_SIZES:
+                blocks = [(sources[i][1][r : r + n], sources[i][2][r : r + n], sources[i][3]) for i, r, n in segments]
+                logical = (sum(n for _i, _r, n in segments), logical_cols(fmt, blocks[0][0]))
+                if name in wanted and tuple(wanted[name].shape) != logical:
+                    raise ValueError(
+                        f"{name}: rebuilt as {logical}, the model expects {tuple(wanted[name].shape)}"
+                    )
+                out[name] = _BlockWeight(fmt, blocks)
+                continue
             parts = [sources[i][1][r : r + n] for i, r, n in segments]
             # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy
             codes = parts[0] if len(parts) == 1 else torch.cat(parts)
@@ -829,7 +975,7 @@ def load_comfy_quant_transformer(
                 converted[key] = value.to(_dtype_for(key))
 
     min_features = DEFAULT_MIN_LINEAR_FEATURES if min_features is None else int(min_features)
-    schemes = {INT8_TENSORWISE: TQ_INT8, FP8_E4M3: TQ_FP8}
+    schemes = {INT8_TENSORWISE: TQ_INT8, FP8_E4M3: TQ_FP8, NVFP4: TQ_NVFP4, MXFP8: TQ_MXFP8}
     filters = {
         fmt: make_filter_fn(
             min_features,
@@ -841,8 +987,33 @@ def load_comfy_quant_transformer(
     modules = dict(model.named_modules())
     rotations: dict = {}
     native: dict = {}
-    built = {TQ_INT8: 0, TQ_FP8: 0}
+    block_native: dict = {}  # fqn -> (fmt, codes, scale, tensor_scale, input_scale, bias)
+    built = {TQ_INT8: 0, TQ_FP8: 0, TQ_NVFP4: 0, TQ_MXFP8: 0}
     for name, value in list(converted.items()):
+        if isinstance(value, _BlockWeight):
+            fmt = value.fmt
+            fqn = name[: -len(".weight")] if name.endswith(".weight") else name
+            module = modules.get(fqn)
+            runtime = _block_runtime_args(value)
+            if (
+                backends.get(fmt) is not None
+                and runtime is not None
+                and isinstance(module, torch.nn.Linear)
+                and name.endswith(".weight")
+                and filters[fmt](module, fqn)
+                and not any(m in fqn.split(".") for m in keep_fp32)
+            ):
+                codes, scale, tensor_scale, input_scale = runtime
+                bias = converted.get(fqn + ".bias")
+                if torch.is_tensor(bias):
+                    bias = bias.to(dtype)
+                block_native[fqn] = (fmt, codes, scale, tensor_scale, input_scale, bias)
+                del converted[name]
+                built[schemes[fmt]] += 1
+            else:
+                converted[name] = _dequant_parts(fmt, value.parts, _dtype_for(name))
+                dequantized += 1
+            continue
         if not isinstance(value, tuple):
             continue
         codes, scale, group, fmt = value
@@ -901,6 +1072,21 @@ def load_comfy_quant_transformer(
             setattr(parent, leaf, layer)
             converted[fqn + ".weight_q"] = layer.weight_q
             converted[fqn + ".weight_scale"] = layer.weight_scale
+        for fqn, (fmt, codes, scale, tensor_scale, input_scale, bias) in block_native.items():
+            parent_name, _, leaf = fqn.rpartition(".")
+            parent = model.get_submodule(parent_name) if parent_name else model
+            layer = build_runtime_linear(
+                fmt,
+                getattr(parent, leaf),
+                codes,
+                scale,
+                tensor_scale = tensor_scale,
+                input_scale = input_scale,
+                bias = bias,
+            )
+            setattr(parent, leaf, layer)
+            for buffer_name, buffer in layer.named_buffers(recurse = False):
+                converted[f"{fqn}.{buffer_name}"] = buffer
 
     _install_native(model)
     missing, unexpected = model.load_state_dict(converted, strict = False, assign = True)
@@ -923,6 +1109,8 @@ def load_comfy_quant_transformer(
     del converted
     # from_single_file ends with model.to(torch_dtype): buffers built in __init__ (Wan's float64 rope) follow it
     for module_name, module in model.named_modules():
+        if module_name in block_native:
+            continue  # fp32 scales / alpha the block kernels need; codes are not floating
         for buffer_name, buffer in list(module._buffers.items()):
             if buffer is not None and buffer.is_floating_point():
                 want = _dtype_for(f"{module_name}.{buffer_name}")
@@ -949,7 +1137,7 @@ def load_comfy_quant_transformer(
                 warm_rotation_cache(model, device, dtype)
             except Exception:  # noqa: BLE001 -- only saves one recompile
                 pass
-    native_schemes = {v[3] for v in native.values()}
+    native_schemes = {v[3] for v in native.values()} | {schemes[v[0]] for v in block_native.values()}
     on_torchao = {s for s, count in built.items() if count and s not in native_schemes}
     if finalize:
         from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
@@ -962,12 +1150,18 @@ def load_comfy_quant_transformer(
             model._unsloth_runtime_quant = max(built, key = lambda s: built[s])
         except Exception:  # noqa: BLE001 -- marker is best-effort
             pass
+    if built[TQ_NVFP4]:
+        try:
+            model._unsloth_nvfp4_backend = nvfp4_backend
+        except Exception:  # noqa: BLE001 -- marker is best-effort
+            pass
     model.eval()
     convrot = len(rotated) + sum(1 for v in native.values() if v[2])
     if logger is not None:
         logger.info(
             "diffusion.comfy_quant: %s loaded from a ComfyUI checkpoint (%s): %d int8 layers kept as "
-            "int8 (%s, %d ConvRot), %d fp8 layers kept as fp8 (%s), %d layers dequantized to %s",
+            "int8 (%s, %d ConvRot), %d fp8 layers kept as fp8 (%s), %d nvfp4 layers kept as nvfp4 (%s), "
+            "%d mxfp8 layers kept as mxfp8 (%s), %d layers dequantized to %s",
             transformer_cls.__name__,
             ", ".join(f"{k} x{v}" for k, v in sorted(scan.counts().items())),
             built[TQ_INT8],
@@ -975,11 +1169,15 @@ def load_comfy_quant_transformer(
             convrot,
             built[TQ_FP8],
             f"{fp8_backend} runtime" if built[TQ_FP8] else "no fp8 runtime",
+            built[TQ_NVFP4],
+            f"{nvfp4_backend} runtime" if built[TQ_NVFP4] else "no nvfp4 runtime",
+            built[TQ_MXFP8],
+            f"{mxfp8_backend} runtime" if built[TQ_MXFP8] else "no mxfp8 runtime",
             dequantized,
             str(dtype).replace("torch.", ""),
         )
     try:
-        model._unsloth_comfy_quant = {
+        info = {
             "backend": int8_backend if built[TQ_INT8] else None,
             "int8": built[TQ_INT8],
             "convrot": convrot,
@@ -987,6 +1185,11 @@ def load_comfy_quant_transformer(
             "fp8": built[TQ_FP8],
             "dequantized": dequantized,
         }
+        for fmt, backend in ((NVFP4, nvfp4_backend), (MXFP8, mxfp8_backend)):
+            if scan.counts().get(fmt):
+                info[f"{fmt}_backend"] = backend if built[schemes[fmt]] else None
+                info[fmt] = built[schemes[fmt]]
+        model._unsloth_comfy_quant = info
     except Exception:  # noqa: BLE001 -- diagnostic marker only
         pass
     return model

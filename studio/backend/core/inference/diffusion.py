@@ -274,6 +274,7 @@ from .diffusion_denoiser_prequant import (
     pipeline_seed_supported,
     prequant_artifact_label,
 )
+from .diffusion_comfy_block import comfy_block_backend, comfy_block_backends
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
@@ -5453,8 +5454,13 @@ class DiffusionBackend:
                 _ensure_attention_backend_installed(preinstall_backend, logger)
         except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
-        # Install FlashInfer only when a pre-quantised checkpoint will load: the on-the-fly build is torchao.
+        # Install FlashInfer only when a pre-quantised checkpoint will load: the on-the-fly build is torchao. A ComfyUI
+        # nvfp4 single file is one too: its codes only stay nvfp4 on the FlashInfer Linear.
         if (
+            kind == "single_file"
+            and nvfp4_diffusion_enabled()
+            and self._comfy_single_file_holds_nvfp4(repo_id, gguf_filename)
+        ) or (
             dense_quant_supported_kind(kind)
             and nvfp4_diffusion_enabled()
             and TQ_NVFP4
@@ -6754,6 +6760,9 @@ class DiffusionBackend:
                                         base,
                                         offload = _comfy_offload,
                                     ),
+                                    **comfy_block_backends(
+                                        comfy_scan, target, fam.name, dtype = dtype, logger = logger
+                                    ),
                                     family = fam.name,
                                     target = target,
                                     fast_accum = transformer_quant_fast_accum,
@@ -7776,6 +7785,29 @@ class DiffusionBackend:
             return None
 
     @staticmethod
+    def _comfy_single_file_holds_nvfp4(repo_id: Optional[str], filename: Optional[str]) -> bool:
+        """Whether this single-file pick is a ComfyUI checkpoint with nvfp4 layers, read from the header of a file
+        already on disk (local path or the hub cache). Never downloads, never raises."""
+        try:
+            if not repo_id or not filename:
+                return False
+            local_root = Path(str(repo_id)).expanduser()
+            if local_root.exists():
+                path = str(resolve_local_gguf_child(local_root, filename))
+            else:
+                from huggingface_hub import try_to_load_from_cache
+
+                path = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
+            if not isinstance(path, str):
+                return False
+            from .diffusion_comfy_quant import scan_comfy_quant
+
+            scan = scan_comfy_quant(path)
+            return bool(scan is not None and not scan.problems and scan.counts().get("nvfp4"))
+        except Exception:  # noqa: BLE001 - an install hint only: the load decides on its own
+            return False
+
+    @staticmethod
     def _comfy_single_file_resident_mib(
         single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
     ) -> Optional[int]:
@@ -7792,6 +7824,13 @@ class DiffusionBackend:
                 scan,
                 keep_int8 = comfy_int8_backend(target, name, base) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+                **{
+                    f"keep_{fmt}": backend is not None
+                    for fmt, backend in (
+                        ("nvfp4", comfy_block_backend("nvfp4", target, name)[0]),
+                        ("mxfp8", comfy_block_backend("mxfp8", target, name)[0]),
+                    )
+                },
             )
         except Exception:  # noqa: BLE001 - a planning aid: the file-size estimate stands
             return None
