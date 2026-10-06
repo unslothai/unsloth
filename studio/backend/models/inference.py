@@ -194,7 +194,7 @@ class LoadRequest(BaseModel):
             "supported on XPU, and physical IDs are unsupported when the parent "
             "visibility mask uses "
             "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
-            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "with MIG or unresolvable UUID entries and ZE_AFFINITY_MASK with subdevice tokens "
             "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
             "models the fitter may pin the smallest subset of this pool that fits."
         ),
