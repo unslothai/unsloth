@@ -3138,6 +3138,21 @@ html[data-chat-font] .aui-root {
 		background-color: var(--dropdown-lift-surface) !important;
 	}
 
+	/* Browser menus in dark: the toolbar pills' colour, with one shadow colour.
+	   The surface resolves on <html> so --accent can be reassigned below. */
+	.dark {
+		--browser-menu-surface: var(--accent);
+	}
+	.dark .browser-menu[data-slot] {
+		--accent: color-mix(in srgb, var(--browser-menu-surface), white 10%);
+		--accent-foreground: #fff;
+		background-color: var(--browser-menu-surface) !important;
+		box-shadow: 0 0 14px 0 var(--background) !important;
+	}
+	.dark .browser-menu [data-slot$="-separator"] {
+		background-color: color-mix(in srgb, var(--card), white 16%);
+	}
+
 	/* Library menus in dark: the sidebar menus' surface, text, hover, dividers and red. */
 	.dark :is([data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"]):is(.library-actions-menu, .library-menu) {
 		--library-menu-surface: color-mix(in srgb, var(--card), white 6.5%);
