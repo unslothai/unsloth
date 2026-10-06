@@ -35,6 +35,8 @@ const EDGE_PROBE_PX = 8;
 const MAX_POSITION_FRAMES = 6;
 
 let canvasContext: CanvasRenderingContext2D | null | undefined;
+// Sub-menus whose fill this module set inline, so a theme switch can clear it.
+const inlineFills = new WeakSet<HTMLElement>();
 
 function getCanvasContext(doc: Document): CanvasRenderingContext2D | null {
   if (canvasContext === undefined) {
@@ -253,6 +255,7 @@ function applySurround(
         win.getComputedStyle(parent).backgroundColor,
         "important",
       );
+      inlineFills.add(dropdown);
       return;
     }
 
@@ -267,6 +270,15 @@ function applySurround(
     );
     dropdown.toggleAttribute(BLEND_ATTR, blends);
   });
+}
+
+/** Drops everything applySurround set, for light mode. */
+function clearSurround(dropdown: HTMLElement): void {
+  dropdown.style.removeProperty(SURROUND_VAR);
+  dropdown.removeAttribute(BLEND_ATTR);
+  if (inlineFills.delete(dropdown)) {
+    dropdown.style.removeProperty("background-color");
+  }
 }
 
 export function watchDropdownSurround(win: Window): void {
@@ -288,4 +300,27 @@ export function watchDropdownSurround(win: Window): void {
     }
   });
   observer.observe(doc.body, { childList: true, subtree: true });
+
+  // Menus left open across a theme switch: clear them for light, re-measure them for dark.
+  let dark = root.classList.contains("dark");
+  new MutationObserver(() => {
+    const next = root.classList.contains("dark");
+    if (next === dark) return;
+    dark = next;
+    const open = [...doc.querySelectorAll<HTMLElement>(DROPDOWN_SELECTOR)];
+    if (!dark) {
+      for (const el of open) clearSurround(el);
+      return;
+    }
+    // Wait out the theme's colour fades, or the probe reads them halfway.
+    const fades = doc
+      .getAnimations()
+      .filter((animation) => animation instanceof CSSTransition)
+      .map((animation) => animation.finished);
+    void Promise.allSettled(fades).then(() => {
+      if (!root.classList.contains("dark")) return;
+      // Document order puts a parent menu before its sub-menu.
+      for (const el of open) applySurround(win, el);
+    });
+  }).observe(root, { attributes: true, attributeFilter: ["class"] });
 }
