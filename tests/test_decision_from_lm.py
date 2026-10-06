@@ -543,3 +543,27 @@ def test_long_states_are_cut_in_training_but_read_in_full_by_predict(monkeypatch
     monkeypatch.setattr(decision, "_clef_decide", spy)
     FastDecisionModel.predict(model, processor, long_row["state"], long_row["questions"])
     assert seen["max_length"] == decision.CLEF_SERVE_MAX_LEN and seen["tokens"] > 512
+
+
+def test_backbone_stays_on_one_device_unless_the_caller_places_it(monkeypatch):
+    from unsloth.models import decision, decision_from_lm, loader
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("device_map"))
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(loader.FastModel, "from_pretrained", capture)
+    index = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    for kwargs in ({}, {"device_map": "auto"}):
+        with pytest.raises(Captured):
+            decision_from_lm._load_backbone(TINY_QWEN3, 64, None, False, False, None, False, kwargs)
+    # The default from-LM path: a plain LLM with no decision_head argument becomes a Clef model.
+    with pytest.raises(Captured):
+        FastDecisionModel.from_pretrained(TINY_QWEN3, max_seq_length = 64)
+    assert seen == [{"": f"cuda:{index}"}, "auto", {"": f"cuda:{index}"}]

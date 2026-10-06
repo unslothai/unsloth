@@ -182,7 +182,7 @@ def _norm_pool_op(
 
 
 @_norm_pool_op.register_fake
-def _(hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype):
+def _norm_pool_fake(hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype):
     batch, length, size = hidden.shape
     return (
         hidden.new_empty((batch, length, memory_weight.shape[0]), dtype = matmul_dtype),
@@ -220,7 +220,7 @@ def _norm_pool_backward_op(
 
 
 @_norm_pool_backward_op.register_fake
-def _(
+def _norm_pool_backward_fake(
     grad_memory,
     grad_pooled,
     hidden,

@@ -250,7 +250,10 @@ test("a superseded microphone request releases its stream", () => {
     hook,
     /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/,
   );
-  assert.match(card, /useAudioSource\(\{ value, onChange, maxRecordSeconds, active \}\)/);
+  assert.match(
+    card,
+    /useAudioSource\(\{ value, onChange, maxRecordSeconds, active \}\)/,
+  );
   assert.match(
     hook,
     /const abortAll = useCallback\(\(\) => \{\s*acquisition\.current \+= 1;/,
@@ -267,6 +270,45 @@ test("picking a new source clears an earlier error", () => {
   assert.match(
     hook,
     /seenKey\.current = valueKey;\s*if \(valueKey && \(phase === "error" \|\| phase === "expired"\)\) \{\s*dispatch\(\{ type: "reset" \}\);\s*\}/,
+  );
+});
+
+test("a history pick carries a transcript only from speech clips", async () => {
+  assert.match(
+    card,
+    /onChange\(clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\)\)/,
+  );
+  const { clipReference } = await import(
+    "../src/features/audio/audio-run-request.ts"
+  );
+  const clip = { id: "c", prompt: "Hello there.", duration_s: 2 };
+  for (const workflow of ["speak", "clone", "edit"]) {
+    assert.equal(clipReference({ ...clip, workflow }).transcript, "Hello there.");
+  }
+  // Convert and Music prompts are labels, not what the clip says.
+  assert.equal(clipReference({ ...clip, workflow: "convert" }).transcript, null);
+  assert.equal(clipReference({ ...clip, workflow: "music" }).transcript, null);
+});
+
+test("a new selection clears the old one's error or expiry so it loads", () => {
+  assert.match(
+    hook,
+    /if \(valueKey && \(phase === "error" \|\| phase === "expired"\)\) \{\s*dispatch\(\{ type: "reset" \}\);\s*\}/,
+  );
+  const failed = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
+    type: "fail",
+    message: "x",
+  });
+  assert.deepEqual(
+    audioSourceReducer(failed, { type: "reset" }),
+    INITIAL_AUDIO_SOURCE_STATE,
+  );
+});
+
+test("an upload that replaces a selection clears it, so a failed upload cannot run the old one", () => {
+  assert.match(
+    hook,
+    /dispatch\(\{ type: "upload-start", name: fileName, key: localKey \}\);\s*(\/\/[^\n]*\n\s*)?onChangeRef\.current\(null\);/,
   );
 });
 

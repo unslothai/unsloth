@@ -91,7 +91,7 @@ def _head_from(head_init, hidden_size, token, revision):
 
 
 def _load_backbone(model_name, max_len, dtype, load_in_4bit, full_finetuning, token, gc, kwargs):
-    from .decision import _clef_bnb_config, _device
+    from .decision import _clef_bnb_config, _device, _pin_device_map
 
     if _device().type != "cpu":
         from .loader import FastModel
@@ -100,6 +100,7 @@ def _load_backbone(model_name, max_len, dtype, load_in_4bit, full_finetuning, to
         # config, and a float16 request puts Qwen3.5 on Unsloth's float32 path.
         if load_in_4bit and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
+        _pin_device_map(kwargs)
         backbone, processor = FastModel.from_pretrained(
             str(model_name),
             max_seq_length = max_len,

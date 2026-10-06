@@ -1581,6 +1581,8 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     legacy.write_bytes(b"weights")
     source = _prequant_source()
     asked: list = []
+    absent: set = set()
+    no_exist = object()  # huggingface_hub's sentinel for a recorded 404
 
     def _cache(
         repo_id,
@@ -1588,6 +1590,8 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
         cache_dir = None,
     ):
         asked.append((repo_id, filename, cache_dir))
+        if filename in absent:
+            return no_exist
         return str(tmp_path / filename) if (tmp_path / filename).is_file() else None
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
@@ -1596,7 +1600,7 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
         lambda *a, **k: pytest.fail("the cache probe must never download"),
     )
 
-    assert prequant_checkpoint_cached(source, cache_dir = "/models/hub") is True
+    assert prequant_checkpoint_cached(source, cache_dir = "/models/hub", online = True) is True
     # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
@@ -1605,11 +1609,20 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # most repos do not have yet, primary-only would report every existing .pt repo as "would
     # download several GB" and hand the pick to GGUF while its checkpoint sat in the cache. The
     # preference is unaffected: the downloader still asks for the better name first.
+    # It loads, though, only when the names ahead of it are absent from the Hub. Online and never
+    # asked about the model-name file, the load would download that one first, so this is a miss.
     ckpt.unlink()
-    assert prequant_checkpoint_cached(source) is True
+    assert prequant_checkpoint_cached(source, online = True) is False
+    # The resolver's own 404 on it left a .no_exist marker: now the legacy name is what loads.
+    absent.add("Z-Image-Turbo-FP8.pt")
+    assert prequant_checkpoint_cached(source, online = True) is True
+    # Offline the load walks to the cached legacy name whatever the Hub holds.
+    absent.clear()
+    assert prequant_checkpoint_cached(source, online = False) is True
     # Neither name cached -> same answer, for the ordinary reason.
     legacy.unlink()
-    assert prequant_checkpoint_cached(source) is False
+    assert prequant_checkpoint_cached(source, online = True) is False
+    assert prequant_checkpoint_cached(source, online = False) is False
 
 
 def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatch, tmp_path):
@@ -2535,7 +2548,7 @@ def test_a_cached_pickle_is_not_evidence_for_a_safetensors_artifact(monkeypatch)
     monkeypatch.setattr(
         pq,
         "cached_checkpoint_path",
-        lambda source, cache_dir = None, names = None: next(
+        lambda source, cache_dir = None, names = None, **kw: next(
             (v for k, v in cached.items() if names is None or k in names), None
         ),
     )
@@ -2845,3 +2858,41 @@ def test_the_download_plan_probes_with_the_user_token():
 
     src = inspect.getsource(DiffusionBackend.download_plan)
     assert '{**load_kwargs, "base_repo": base, "hf_token": hf_token}' in src
+
+
+def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, tmp_path):
+    import os
+
+    import core.inference.diffusion_compile_cache as cc
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cache"))
+    monkeypatch.delenv(pq.FINGERPRINT_MODE_ENV, raising = False)
+    ckpt_file = tmp_path / "w.safetensors"
+    ckpt_file.write_bytes(b"weights")
+    expected = {"a.weight": "x", "b.weight": "y"}
+    meta = {"fingerprint": {"modules": expected}}
+    calls: list = []
+
+    def fingerprint(state_dict, *, select = None):
+        calls.append(select)
+        return {"modules": dict(state_dict)}
+
+    monkeypatch.setattr(pq, "packed_weight_fingerprint", fingerprint)
+    assert pq._verify_packed_fingerprint(expected, meta, path = ckpt_file)
+    assert pq._verify_packed_fingerprint(expected, meta, path = ckpt_file)
+    assert len(calls) == 1  # the second load of the unchanged file skips the md5 pass
+    # A changed file (size / mtime) is checked in full again, and a mismatch is never remembered.
+    ckpt_file.write_bytes(b"weights, rebuilt")
+    os.utime(ckpt_file, ns = (1, 1))
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert len(calls) == 3
+    # Without a path (or outside full mode) nothing is remembered.
+    assert pq._verify_packed_fingerprint(expected, meta)
+    assert pq._verify_packed_fingerprint(expected, meta)
+    assert len(calls) == 5

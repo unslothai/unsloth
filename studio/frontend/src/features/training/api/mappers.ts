@@ -159,7 +159,11 @@ export function buildTrainingStartPayload(
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding || isDecision ? false : config.packing,
-    optim: isDecision ? "adamw_torch" : config.optimizerType,
+    // Laya's recipe needs torch AdamW; Clef keeps its recipe's (8-bit) optimizer.
+    optim:
+      isDecision && config.decisionLayout !== "clef"
+        ? "adamw_torch"
+        : config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
     lora_r: config.loraRank,

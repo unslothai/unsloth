@@ -1229,6 +1229,9 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
     request.decision_layout = None
     if not request.is_decision:
         return
+    # Decision models train on one GPU, so admission and chat coexistence are sized for that one.
+    if request.gpu_ids and len(request.gpu_ids) > 1:
+        request.gpu_ids = request.gpu_ids[:1]
     from core.systemone.catalog import CHECKPOINTS, CLEF_DEFAULTS_REPO, LAYA_REPO
     from utils.account_context import is_owner_context
     from utils.models.model_config import decision_layout
@@ -1303,7 +1306,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
             for key, value in (defaults.get(section) or {}).items():
                 if key in unset:
                     setattr(request, key, value)
-        if llm and "learning_rate" in unset and request.training_type == "Full Finetuning":
+        if "learning_rate" in unset and request.training_type == "Full Finetuning":
             request.learning_rate = _DECISION_FULL_FINETUNING_LR
         return
     request.decision_layout = "laya"

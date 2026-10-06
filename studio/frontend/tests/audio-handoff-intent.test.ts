@@ -24,7 +24,7 @@ test("unknown tasks, workflows and audio types are dropped", () => {
   assert.deepEqual(
     validateAudioSearch({
       task: "text-to-image",
-      workflow: "separate",
+      workflow: "remix",
       audioType: "not-a-type",
       loadId: "   ",
     }),
@@ -34,6 +34,9 @@ test("unknown tasks, workflows and audio types are dropped", () => {
     validateAudioSearch({ workflow: 3, task: ["text-to-speech"] }),
     {},
   );
+  assert.deepEqual(validateAudioSearch({ workflow: "separate" }), {
+    workflow: "separate",
+  });
 });
 
 test("the params the route accepted before pass through unchanged", () => {
@@ -53,7 +56,7 @@ test("the params the route accepted before pass through unchanged", () => {
 });
 
 test("a workflow param is kept when it names a workflow", () => {
-  for (const workflow of ["speak", "clone", "music", "transcribe"]) {
+  for (const workflow of ["speak", "clone", "edit", "music", "transcribe"]) {
     assert.deepEqual(validateAudioSearch({ workflow }), { workflow });
   }
 });

@@ -91,6 +91,14 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown, useActivePermissionMode } from "./permission-mode-select";
+export {
+  type SandboxSetupAction,
+  type SandboxSetupJob,
+  type SandboxSetupOperation,
+  forgetSandboxCapability,
+  loadSandboxSetup,
+  startSandboxSetup,
+} from "./api/sandbox-capability";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {
@@ -218,6 +226,7 @@ export {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
@@ -381,6 +390,14 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export {
+  type DocumentAnnotation,
+  type DocumentAnnotations,
+  annotationsOfFile,
+  createAnnotationsFile,
+  isAnnotationsContent,
+  parseAnnotationsContent,
+} from "./utils/document-annotations";
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,

@@ -779,3 +779,11 @@ def test_cancel_during_calibration_saves_nothing(base, studio_home):
     complete = _of(events, "complete")[-1]
     assert (complete["output_dir"], complete["status_message"]) == (None, "Training cancelled")
     assert not outputs_root().exists() or not any(outputs_root().iterdir())
+
+
+def test_held_out_decisions_count_every_clef_question():
+    from core.training.decision_trainer import _decision_count
+
+    laya = [{"row": 0}, {"row": 1}]
+    clef = [{"row": 0, "labels": [0, 1, 2]}, {"row": 1, "labels": [1]}]
+    assert (_decision_count(laya), _decision_count(clef)) == (2, 4)

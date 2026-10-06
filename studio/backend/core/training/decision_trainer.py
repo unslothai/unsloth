@@ -32,6 +32,11 @@ class _Stopped(Exception):
     pass
 
 
+def _decision_count(items: list) -> int:
+    # A Clef item holds every question of its row, as split_holdout counts them.
+    return sum(len(item.get("labels", (None,))) for item in items)
+
+
 def _studio_validate(name: str, question) -> None:
     from fastapi import HTTPException
     from pydantic import ValidationError
@@ -392,7 +397,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     if not eval_items:
         items, eval_items = FastDecisionModel.split_holdout(items, seed)
         if eval_items:
-            status(f"Holding out {len(eval_items):,} decisions to calibrate confidence...")
+            status(
+                f"Holding out {_decision_count(eval_items):,} decisions to calibrate confidence..."
+            )
     elif len(eval_items) > EVAL_MAX:
         eval_items = random.Random(seed).sample(eval_items, EVAL_MAX)
 
@@ -455,7 +462,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     base_metrics = None
     if eval_items:
-        status(f"Evaluating the base model on {len(eval_items):,} held-out decisions...")
+        status(
+            f"Evaluating the base model on {_decision_count(eval_items):,} held-out decisions..."
+        )
         base_metrics = FastDecisionModel.evaluate(model, tokenizer, eval_items)
         logger.info("Base held-out metrics: %s", base_metrics)
     check_stop()
@@ -508,7 +517,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         or None,
         "steps": trainer.state.global_step,
         "epochs": round(trainer.state.epoch or 0, 2),
-        "heldout_decisions": len(eval_items),
+        "heldout_decisions": _decision_count(eval_items),
         "heldout_accuracy_base": base_metrics and round(base_metrics["accuracy"], 4),
         "heldout_accuracy": tuned_metrics and round(tuned_metrics["accuracy"], 4),
         "heldout_ece_base": base_metrics and round(base_metrics["ece"], 4),
@@ -521,7 +530,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     logger.info("Decision model saved to %s: %s", output_dir, model.decision_config["training"])
 
     message = "Decision training completed"
-    if base_metrics and tuned_metrics and len(eval_items) >= MIN_REPORTED_ITEMS:
+    if base_metrics and tuned_metrics and _decision_count(eval_items) >= MIN_REPORTED_ITEMS:
         message = (
             f"Held-out accuracy {base_metrics['accuracy']:.2f} -> {tuned_metrics['accuracy']:.2f}, "
             f"calibration error {tuned_metrics['ece']:.2f}"

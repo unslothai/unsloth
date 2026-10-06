@@ -213,7 +213,7 @@ def test_python_older_than_3_10_cannot_train_decision_models(route, monkeypatch)
     [("LoRA/QLoRA", 8e-4), ("Full Finetuning", 2.5e-5)],
 )
 def test_api_runs_without_hyperparameters_get_the_laya_recipe(
-    route, tmp_path, training_type, learning_rate
+    route, device, tmp_path, training_type, learning_rate
 ):
     base = _laya_folder(tmp_path / "laya")
     config = _started_config(route, _request(model_name = str(base), training_type = training_type))
@@ -228,7 +228,7 @@ def test_api_runs_without_hyperparameters_get_the_laya_recipe(
     assert (config["lora_r"], config["lora_alpha"], config["lora_dropout"]) == (64, 64, 0.0)
 
 
-def test_api_runs_keep_the_hyperparameters_they_set(route, tmp_path):
+def test_api_runs_keep_the_hyperparameters_they_set(route, device, tmp_path):
     base = _laya_folder(tmp_path / "laya")
     config = _started_config(
         route,
@@ -578,6 +578,13 @@ def test_api_clef_runs_get_the_clef_recipe_and_keep_qlora(route, device, tmp_pat
     assert (laya["decision_layout"], laya["load_in_4bit"]) == ("laya", False)
 
 
+def test_api_clef_full_finetuning_gets_the_full_finetuning_rate(route, device, tmp_path):
+    clef = str(_clef_folder(tmp_path / "clef"))
+    config = _started_config(route, _request(model_name = clef, training_type = "Full Finetuning"))
+
+    assert float(config["learning_rate"]) == 2.5e-5
+
+
 def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, device, tmp_path):
     clef = _clef_folder(tmp_path / "clef")
     laya = _laya_folder(tmp_path / "laya")
@@ -588,6 +595,20 @@ def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, device, tmp_p
     with pytest.raises(HTTPException) as refused:
         route._validate_decision_request(_request(model_name = str(clef), model_subfolder = "v2"))
     assert "model_subfolder" in refused.value.detail
+
+
+def test_a_decision_run_is_planned_on_the_one_gpu_it_uses(route, device, tmp_path):
+    request = _request(model_name = str(_laya_folder(tmp_path / "laya")), gpu_ids = [2, 3])
+    route._validate_decision_request(request)
+    assert request.gpu_ids == [2]
+
+
+def test_a_local_clef_in_a_subfolder_is_detected_as_clef(route, device, tmp_path):
+    _clef_folder(tmp_path / "parent" / "clef")
+    request = _request(model_name = str(tmp_path / "parent"), model_subfolder = "clef")
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(request)
+    assert "Clef repos hold one checkpoint" in refused.value.detail
 
 
 def test_a_hub_clef_repo_is_a_decision_model(route, device):

@@ -68,6 +68,8 @@ CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+CHAT_HEADER_MENU = FRONTEND / "features/chat/components/chat-header-menu.tsx"
+BROWSER_TOGGLE = FRONTEND / "features/browser/browser-toggle.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
@@ -2689,11 +2691,13 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
-    # The chat page's 30px round controls, including the collapsed New Chat button and the
-    # save-temporary-chat button beside them. The header they sit in grows with the setting, so
-    # one left fixed shrinks against its own row.
+    # The chat header's 30px round controls, including the collapsed New Chat button, the chat
+    # menu and temporary-chat buttons, and the browser's new-tab button. The header they sit in
+    # grows with the setting, so one left fixed shrinks against its own row.
     (CHAT_PAGE, "!", "size", "30px", 1),
-    (CHAT_PAGE, "", "size", "30px", 4),
+    (CHAT_PAGE, "", "size", "30px", 2),
+    (CHAT_HEADER_MENU, "", "size", "30px", 2),
+    (BROWSER_TOGGLE, "", "size", "30px", 1),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the

@@ -34,7 +34,6 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.llama_custom_config import LlamaCppConfigFields
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -55,7 +54,7 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-class LoadRequest(LlamaCppConfigFields):
+class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -174,6 +173,16 @@ class LoadRequest(LlamaCppConfigFields):
             from core.inference.mlx_inference import encode_mlx_kv_quant
             self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
         return self
+
+    mlx_int8_prefill: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: run quantized projections with int8 activations on Apple "
+            "neural accelerators for faster prompt processing. Lossy: outputs change and "
+            "accuracy drops. Applied only when the model supports it; the status reports the "
+            "reason otherwise."
+        ),
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -559,7 +568,7 @@ class SttLoadRequest(BaseModel):
         return self
 
 
-class ValidateModelRequest(LlamaCppConfigFields):
+class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -847,7 +856,6 @@ class ValidateModelResponse(BaseModel):
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
-    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     resident: bool = Field(
@@ -1036,6 +1044,27 @@ class EstimateMemoryRequest(BaseModel):
     # Unresolved, the reference reads as a Hub id and the panel is told the estimate is
     # unavailable for a row it was offered.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class Int8PrefillAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX int8 prefill."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class Int8PrefillAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX int8 prefill, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', or unsloth_zoo's own reason ('nax_unavailable', "
+        "'no_eligible_projections', 'probe_failed').",
+    )
 
 
 class EstimateMemoryResponse(BaseModel):
@@ -1335,8 +1364,6 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
-    requested_llama_cpp_config: Optional[Dict[str, Any]] = None
-    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
 
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
@@ -1386,6 +1413,30 @@ class _InferenceRuntimeFields(BaseModel):
             "Request fields the model refuses to run without (Maya1: ['instruct'], a voice "
             "description sent as instructions)."
         ),
+    )
+    audio_music: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "Music studio capabilities of an audio.cpp music model: {modes: [{id: song|sfx|edit, "
+            "...}]} with lyrics, description, instrumental, section_case, duration and "
+            "variations for song and sfx, and actions, max_ranges and max_source_s for edit. "
+            "None for a model the Music studio does not drive (and native MiniMax)."
+        ),
+    )
+    audio_options_by_workflow: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
+        None, description = "Options per Audio workflow where they differ from audio_options."
+    )
+    audio_workflow_tasks: Optional[Dict[str, str]] = Field(
+        None, description = "audio.cpp server task per workflow, e.g. {'convert:singing': 'svc'}."
+    )
+    audio_server_task: Optional[str] = Field(
+        None, description = "audio.cpp server task the running server was started with."
+    )
+    audio_convert: Optional[Dict[str, Any]] = Field(
+        None, description = "What the model offers on Convert; None when it does not convert."
+    )
+    audio_convert_route: Optional[str] = Field(
+        None, description = "Seed-VC route the running server was started with."
     )
 
     @model_validator(mode = "after")
@@ -1562,6 +1613,17 @@ class _InferenceRuntimeFields(BaseModel):
     )
     mlx_kv_quant_note: Optional[str] = Field(
         None, description = "Caveat that applies when KV quantization is active"
+    )
+    mlx_int8_prefill: Optional[bool] = Field(
+        None, description = "Whether MLX int8 prefill is active for the loaded model"
+    )
+    mlx_int8_prefill_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX int8 prefill"
+    )
+    mlx_int8_prefill_reason: Optional[str] = Field(
+        None,
+        description = "Why requested int8 prefill is not active, as unsloth_zoo reports it "
+        "(for example nax_unavailable or no_eligible_projections)",
     )
     chat_template: Optional[str] = Field(
         None,
@@ -2419,6 +2481,8 @@ class ChatCompletionRequest(BaseModel):
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
+    # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
+    _off_confirm_opt_out: bool = PrivateAttr(default = False)
 
     model: str = Field(
         "default",
@@ -2687,16 +2751,18 @@ class ChatCompletionRequest(BaseModel):
             "limited to client-tool or response_format passthrough and retries after "
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
             "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
-            "Both truncation policies preserve system messages and tool-call groups."
+            "Both truncation policies preserve system messages and tool-call groups. "
+            "MLX models honor 'truncate_oldest' only."
         ),
     )
     context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
         None,
         description = (
-            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "[x-unsloth] How a local GGUF or MLX chat compacts once context_overflow is "
             "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
             "instructions (Unsloth default). 'rolling' drops oldest complete turns. "
-            "Unset uses UNSLOTH_CONTEXT_POLICY."
+            "Unset uses UNSLOTH_CONTEXT_POLICY. On MLX only Unsloth-tool chats start a "
+            "reset."
         ),
     )
     compaction_headroom_ratio: Optional[float] = Field(
@@ -3037,6 +3103,9 @@ class ChatCompletionRequest(BaseModel):
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
         elif self.permission_mode == "off":
+            self._off_confirm_opt_out = (
+                "confirm_tool_calls" in self.model_fields_set and self.confirm_tool_calls is False
+            )
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
@@ -3956,7 +4025,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' ('Run automatically') never pauses while Python and Terminal run in the OS sandbox and otherwise pauses their high-risk calls in a streaming UI chat, 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -4476,6 +4545,11 @@ class DiffusionGenerateRequest(BaseModel):
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the image while it denoises (generate-progress "
+        "'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     allow_oversized: bool = Field(
         False,
         description = "Run even when the generate-time memory check estimates this size will not "
@@ -4751,8 +4825,13 @@ class DiffusionGenerateProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
-        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+        None,
+        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
     )
+    preview: Optional[str] = Field(
+        None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -5140,12 +5219,14 @@ class AudioGalleryItem(BaseModel):
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
-        None, description = "Audio page workflow that made the clip: speak, clone or music"
+        None,
+        description = "Audio page workflow that made the clip: speak, clone, edit, convert, music or separate",
     )
     order_at: Optional[float] = Field(
         None,
         description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
+    group_id: Optional[str] = Field(None, description = "Clips made by one run share this id")
     role: Optional[str] = Field(None, description = "The clip's part in its run, e.g. output")
     source_clip_id: Optional[str] = Field(
         None, description = "History clip the run took its reference from"
@@ -5155,6 +5236,20 @@ class AudioGalleryItem(BaseModel):
         None, description = "Language, options, speed and whether a transcript was used"
     )
     reference_name: Optional[str] = Field(None, description = "Name of the reference clip or voice")
+    source_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its recording from"
+    )
+    source_name: Optional[str] = Field(None, description = "Name of the recording a run converted")
+    target_builtin: Optional[str] = Field(
+        None, description = "Built-in voice a conversion converted to"
+    )
+    target_clip_id: Optional[str] = Field(
+        None, description = "History clip a conversion took its target voice from"
+    )
+    target_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its target voice from"
+    )
+    source_saved: bool = Field(False, description = "Served at /audio/gallery/{id}/source/file")
 
 
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
@@ -5168,7 +5263,8 @@ _AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image",
 
 def _names_a_file(name: str, value: Any) -> bool:
     words = re.split(r"[^a-z0-9]+", name.lower())
-    if any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+    # Vevo2's target_voice is a file, but neither of its words gives that away.
+    if name.lower() == "target_voice" or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
         return True
     return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 
@@ -5194,8 +5290,59 @@ class AudioRunInputs(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     reference: Optional[AudioSourceRef] = None
+    source: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
+    target: Optional[AudioSourceRef] = None
+    # A 5 minute source (CONVERT_SOURCE_MAX_SECONDS) runs well past 4000 characters of speech.
+    source_text: Optional[str] = Field(None, max_length = 16000)
+
+
+class AudioConvertParams(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["speech", "singing"] = "speech"
+    pitch: Optional[int] = Field(None, ge = -24, le = 24)
+    pitch_auto: bool = False
+    style: Literal["source", "target"] = "source"
+    voice: Optional[Literal["default", "manthos", "chocola", "fraise"]] = None
+
+
+class AudioRunEdit(BaseModel):
+    """Words: client-rendered DotTTS markup or FireRedAudio instructions, checked against both
+    transcripts. Delivery (FireRedAudio): numbers only."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["words", "delivery"] = "words"
+    markup: Optional[str] = Field(None, max_length = 8000)
+    instructions: Optional[List[Annotated[str, Field(min_length = 1, max_length = 300)]]] = Field(
+        None, max_length = 8
+    )
+    speed: Optional[float] = Field(None, ge = 0.5, le = 2.0)
+    pitch_steps: Optional[int] = Field(None, ge = 1, le = 12)
+
+
+class AudioMusicRange(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    start_s: float = Field(..., ge = 0, le = 24 * 3600)
+    end_s: float = Field(..., gt = 0, le = 24 * 3600)
+
+    @model_validator(mode = "after")
+    def _ordered(self):
+        if self.end_s <= self.start_s:
+            raise ValueError("A range must end after it starts.")
+        return self
+
+
+class AudioMusicEdit(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    action: Literal["repaint", "extend", "cover", "continue", "inpaint", "restyle"]
+    ranges: List[AudioMusicRange] = Field(default_factory = list, max_length = 8)
+    strength: Optional[float] = Field(None, ge = 0, le = 1)
+    extend_s: Optional[float] = Field(None, gt = 0, le = 600)
 
 
 class AudioRunRequest(BaseModel):
@@ -5203,17 +5350,58 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak"]
-    text: str = Field(..., min_length = 1)
+    workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"]
+    # Required except for a conversion or a separation (the routes answer those given text with a 400).
+    text: Optional[str] = None
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
     inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
+    mode: Optional[Literal["song", "sfx", "edit"]] = None
+    lyrics: Optional[str] = Field(None, max_length = 20000)
+    instrumental: bool = False
+    duration_s: Optional[float] = Field(None, ge = 0.5, le = 600)
+    variations: int = Field(1, ge = 1, le = 4)
+    # Music edits carry an action; speech edits (workflow edit) never do.
+    edit: Optional[Union[AudioMusicEdit, AudioRunEdit]] = None
     options: Optional[Dict[str, Any]] = Field(
         None, description = "Per-model options, as listed in audio_options or by a tool panel"
     )
     speed: Optional[float] = Field(None, ge = 0.25, le = 4.0)
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
+    convert: Optional[AudioConvertParams] = None
+
+    @model_validator(mode = "after")
+    def _fields_of_the_workflow(self):
+        inputs = self.inputs
+        if self.workflow == "convert":
+            if self.text is not None:
+                raise ValueError("A conversion takes no text.")
+            if inputs.reference is not None or inputs.emotion is not None:
+                raise ValueError("A conversion takes inputs.source and inputs.target.")
+            if self.convert is None:
+                self.convert = AudioConvertParams()
+            return self
+        if self.text is None and self.workflow != "separate":
+            raise ValueError("text is required.")
+        # inputs.source also carries a Music edit's clip; the route refuses it elsewhere.
+        if self.convert is not None or any(
+            v is not None for v in (inputs.target, inputs.source_text)
+        ):
+            raise ValueError("convert and the target inputs are for workflow convert.")
+        return self
+
+    @model_validator(mode = "after")
+    def _edit_fields(self):
+        if self.workflow == "edit" and not isinstance(self.edit, AudioRunEdit):
+            raise ValueError("Send edit with workflow edit.")
+        if isinstance(self.edit, AudioRunEdit) and self.workflow != "edit":
+            raise ValueError("A speech edit is for workflow edit.")
+        if self.workflow == "edit" and (
+            self.inputs.reference is not None or self.inputs.emotion is not None
+        ):
+            raise ValueError("An edit takes inputs.source, not a reference or emotion clip.")
+        return self
 
     @field_validator("options")
     @classmethod
@@ -5226,6 +5414,17 @@ class AudioRunRequest(BaseModel):
             if isinstance(option, (dict, list)):
                 raise ValueError(f"Option '{name}' must be a single value.")
         return value
+
+    @model_validator(mode = "after")
+    def _workflow_fields(self):
+        if self.workflow == "music":
+            if self.mode is None:
+                raise ValueError("Pick a music mode: song, sfx or edit.")
+            if self.text is None:
+                raise ValueError("text is required for music.")
+        elif self.workflow not in ("convert", "separate") and not self.text:
+            raise ValueError("text must not be empty.")
+        return self
 
 
 class AudioRunClip(BaseModel):
@@ -5245,6 +5444,8 @@ class AudioRunAudio(BaseModel):
 
 class AudioRunResponse(BaseModel):
     clips: List[AudioRunClip] = Field(default_factory = list)
+    # One separation's stems share it; None for a single clip.
+    group_id: Optional[str] = None
     model: str
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"
@@ -5268,12 +5469,55 @@ class AudioInputTranscribeRequest(BaseModel):
     engine: Optional[str] = Field(None, max_length = 64)
     device: Optional[Literal["auto", "cpu", "gpu"]] = None
     language: Optional[str] = Field(None, max_length = 64)
+    purpose: Literal["reference", "convert"] = "reference"
 
 
 class AudioInputTranscript(BaseModel):
     text: str
     language: Optional[str] = None
     model: str
+
+
+class TranscribeSourceRef(BaseModel):
+    """The audio to transcribe, by id: an upload, a history clip or a saved voice. Exactly one."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        named = [v for v in (self.input_id, self.clip_id, self.voice_id) if v]
+        if len(named) != 1:
+            raise ValueError("Name exactly one of input_id, clip_id or voice_id.")
+        return self
+
+
+class TranscribeSourceRequest(BaseModel):
+    """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    source: TranscribeSourceRef
+    model: str = Field(..., min_length = 1, max_length = 512)
+    engine: Optional[str] = Field(None, max_length = 64)
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None
+    language: Optional[str] = Field(None, max_length = 64)
+    timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
+    speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
+    title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+
+
+class TranscriptPatch(BaseModel):
+    """``PATCH /audio/transcripts/{id}``: archive or restore, and name speakers (None clears)."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    archived: Optional[bool] = None
+    # transcript_gallery.set_speaker_names validates ids and lengths against the record.
+    speaker_names: Optional[Dict[str, Optional[str]]] = None
 
 
 class AudioVoice(BaseModel):
@@ -5566,6 +5810,11 @@ class VideoGenerateRequest(BaseModel):
         "where a downloaded model that is not the resident one is loaded first; omit to use "
         "whatever is loaded. The Video page never sends it.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the first frame while the clip denoises "
+        "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
     # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
@@ -5815,7 +6064,7 @@ class VideoGenerateProgressResponse(BaseModel):
     active: bool = Field(False, description = "Whether a generation is running")
     phase: Optional[str] = Field(
         None,
-        description = "Current phase: queued | denoise | export | completed | failed | null",
+        description = "Current phase: queued | encode | denoise | decode | export | completed | failed | null",
     )
     step: int = Field(0, description = "Denoising steps completed so far")
     total: int = Field(0, description = "Total denoising steps for this run")
@@ -5823,6 +6072,11 @@ class VideoGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps (alias of total)")
     fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    preview: Optional[str] = Field(
+        None,
+        description = "Live latent preview of the first frame being denoised, as a JPEG data URL",
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
     video: Optional[GalleryVideo] = Field(
         None, description = "Saved gallery record when phase is 'completed'"
     )
