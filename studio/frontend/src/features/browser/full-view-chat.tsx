@@ -129,7 +129,7 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
               side="top"
               align="end"
               sideOffset={8}
-              className="min-w-60 rounded-[20px] p-1.5"
+              className="browser-menu min-w-60 rounded-[20px] p-1.5"
             >
               <DropdownMenuItem onSelect={closePanel}>
                 <HugeiconsIcon
