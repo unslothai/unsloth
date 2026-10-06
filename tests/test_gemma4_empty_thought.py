@@ -154,7 +154,9 @@ def test_generation_prompt_matches_google_26b():
     msgs = [{"role": "user", "content": "Hi"}]
     out = _render(NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True)
     assert out == f"<bos><|turn>user\nHi<turn|>\n<|turn>model\n{EMPTY}"
-    out = _render(NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True, enable_thinking = True)
+    out = _render(
+        NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True, enable_thinking = True
+    )
     assert out == "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n"
 
 
@@ -180,7 +182,10 @@ def test_list_content():
         {"role": "assistant", "content": "4", "reasoning_content": "2+2=4"},
         {"role": "assistant", "content": "4", "reasoning": "2+2=4"},
         {"role": "assistant", "content": "<|channel>thought\n2+2=4<channel|>4"},
-        {"role": "assistant", "content": [{"type": "text", "text": "<|channel>thought\nx<channel|>4"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "<|channel>thought\nx<channel|>4"}],
+        },
     ],
 )
 def test_turns_with_thinking_are_unchanged(assistant):
@@ -210,10 +215,16 @@ def test_roles_must_alternate_still_raises():
 
 def test_get_chat_template_switches_only_gemma4_names():
     body = next(
-        node for node in _TREE.body
+        node
+        for node in _TREE.body
         if isinstance(node, ast.FunctionDef) and node.name == "get_chat_template"
     )
     src = ast.get_source_segment(_SOURCE, body)
     assert "_gemma4_wants_empty_thought(_processor, old_tokenizer)" in src
     assert "type_chat_template in GEMMA4_TEMPLATE_NAMES" in src
-    assert set(NS["GEMMA4_TEMPLATE_NAMES"]) == {"gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking"}
+    assert set(NS["GEMMA4_TEMPLATE_NAMES"]) == {
+        "gemma-4",
+        "gemma4",
+        "gemma-4-thinking",
+        "gemma4-thinking",
+    }
