@@ -16916,7 +16916,9 @@ def _empty_result_with_requested_images(
 
 
 def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
-    """Search Wikipedia's API independently of ddgs, using the guarded HTTP fetcher."""
+    """Search English Wikipedia independently of ddgs, using the guarded HTTP fetcher."""
+    # ddgs already includes Wikipedia, but its engine uses a one-result OpenSearch lookup.
+    # Full-text search here can recover from that lookup or the ddgs integration failing.
     from html import unescape
 
     params = urllib.parse.urlencode({
@@ -16999,10 +17001,13 @@ def _web_search(
         from .web_access_policy import check_url_access, scope_search_query
 
         effective_query = scope_search_query(query, website_policy)
+        # Ask for more candidates when policy restricts domains: allowed hits may rank below blocked ones.
+        # Check the domain lists, not the dict; an unrestricted normalized policy is also truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
+        # Bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
         client, results, last_error = None, [], None
         rejected_results = False
@@ -17014,10 +17019,14 @@ def _web_search(
             engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
-            # Keep the existing provider budget, including for the client reused by image search.
+            # As before, the primary budget starts after imports and engine resolution succeed.
+            # Resetting here preserves that budget; the earlier deadline covers setup failures.
             # Reserving time for Wikipedia would cut off otherwise successful slow searches.
             deadline = time.monotonic() + timeout if timeout else None
             client = DDGS(timeout = timeout)
+            # ddgs applies timeout per client. Give each tier only the remaining shared budget,
+            # rather than restarting it; retain the successful client for automatic image search.
+            # ddgs raises on an empty sweep, so an exception must also advance to the next tier.
             for backend in engine_tiers:
                 if cancel_event is not None and cancel_event.is_set():
                     return "Search cancelled."
@@ -17030,7 +17039,7 @@ def _web_search(
                     candidates = client.text(effective_query, max_results = wanted, backend = backend)
                     results = _usable_search_results(candidates, website_policy)
                     rejected_results = rejected_results or bool(candidates and not results)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
                     last_error = exc
                     continue
                 if results:
@@ -17057,10 +17066,8 @@ def _web_search(
                     logger.debug("Independent Wikipedia search failed", exc_info = True)
             if cancel_event is not None and cancel_event.is_set():
                 return "Search cancelled."
-            if not results and last_error is not None:
-                raise last_error
-        if cancel_event is not None and cancel_event.is_set():
-            return "Search cancelled."
+        if not results and last_error is not None:
+            raise last_error
         if not results:
             return _empty_result_with_requested_images(
                 EMPTY_SEARCH_RESULTS[1] if rejected_results and restricted else EMPTY_SEARCH_RESULTS[0],

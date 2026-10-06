@@ -7,7 +7,7 @@ Drives the real DDGS engine selector through ``execute_tool``; only each engine'
 replaced, so the tier strings really are resolved by ddgs and a fan-out cannot hide.
 """
 
-import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -185,35 +185,29 @@ def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_cal
 
     monkeypatch.setattr(DDGS, "__init__", recording_init)
 
-    # Tier 1 burns most of the budget before coming back empty, so tier 2 runs with what is left.
-    def slow_tier_one(name):
-        if name in TIER1:
-            return "empty"
-        return "results"
+    engine_calls.install(lambda name: "empty" if name in TIER1 else "results")
+    clock = SimpleNamespace(now = 100.0)
+    monkeypatch.setattr(tools, "time", SimpleNamespace(monotonic = lambda: clock.now))
+    real_text = DDGS.text
+    searched_tiers = []
 
-    engine_calls.install(slow_tier_one)
-    for name in TIER1:
-        cls = ENGINES["text"].get(name)
-        if cls is not None:
-            inner = cls.search
-            monkeypatch.setattr(
-                cls, "search", lambda self, q, _i = inner, **k: (time.sleep(0.3), _i(self, q, **k))[1]
-            )
+    def timed_text(self, *args, **kwargs):
+        searched_tiers.append(kwargs["backend"])
+        try:
+            return real_text(self, *args, **kwargs)
+        finally:
+            # Advance only Studio's clock, keeping actual ddgs engine selection deterministic.
+            clock.now += 1
 
-    tools.execute_tool("web_search", {"query": "unsloth"}, timeout = 3)
+    monkeypatch.setattr(DDGS, "text", timed_text)
+    # Timeout belongs to the executor, not the model-provided tool arguments.
+    result = tools.execute_tool("web_search", {"query": "unsloth"}, timeout = 3)
 
-    tier_budgets = [b for b in budgets if isinstance(b, (int, float))]
-    assert len(tier_budgets) >= 2, f"expected a client per tier, saw {budgets}"
-    assert all(0 < budget <= 3 for budget in tier_budgets)
-    # Each value is the budget REMAINING when that tier starts, so the invariant is that it shrinks
-    # and never exceeds what the caller asked for. Summing them would be summing overlapping windows.
-    assert tier_budgets == sorted(
-        tier_budgets, reverse = True
-    ), f"budget did not shrink: {tier_budgets}"
-    assert (
-        tier_budgets[-1] < tier_budgets[0]
-    ), f"tier 2 was handed {tier_budgets[-1]}, not the remainder of {tier_budgets[0]}"
-    assert max(tier_budgets) <= tier_budgets[0], "a tier was handed more than the original budget"
+    assert "URL:" in result
+    assert searched_tiers == tools._resolve_engine_tiers(ENGINES["text"])
+    assert set(_names(engine_calls)) & set(TIER2), "the second tier must actually run"
+    # Initial client, first tier, second tier: the latter gets the two seconds left.
+    assert budgets == [3, 3, 2]
 
 
 def test_the_resolver_never_names_an_engine_outside_the_tiers():

@@ -312,3 +312,30 @@ def test_primary_without_deadline_reuses_client_between_tiers(provider, timeout)
     provider.respond = respond
     assert "Title: Primary" in tools._web_search("query", timeout = timeout)
     provider.wiki.assert_not_called()
+
+
+@pytest.mark.parametrize("import_fails", [False, True])
+def test_setup_time_preserves_primary_budget_but_bounds_failed_import_fallback(
+    provider, search_clock, monkeypatch, import_fails
+):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def delayed_import(name, *args, **kwargs):
+        if name == "ddgs":
+            search_clock.now += 2
+            if import_fails:
+                raise ImportError("ddgs unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", delayed_import)
+    result = tools._web_search("query", timeout = 3)
+    if import_fails:
+        assert "Wikipedia-only" in result
+        assert provider.wiki.call_args.args[2:4] == (1, 103)
+        assert not provider.calls
+    else:
+        assert "Title: Primary" in result
+        assert provider.calls[0][2] == 3
+        provider.wiki.assert_not_called()
