@@ -11549,13 +11549,14 @@ def _voice_slot_live() -> bool:
 def _release_chat_for_zero_vram_primary() -> None:
     """A primary that holds no VRAM drops CHAT, unless a model kept alongside or the voice slot still holds it."""
     from core.inference.gpu_arbiter import CHAT, release_if
-
     release_if(
         CHAT,
-        lambda: not _voice_slot_live()
-        and (
-            (not model_slots.slots and not model_slots.stuck and model_slots.loading is None)
-            or not model_slots.holds_vram()
+        lambda: (
+            not _voice_slot_live()
+            and (
+                (not model_slots.slots and not model_slots.stuck and model_slots.loading is None)
+                or not model_slots.holds_vram()
+            )
         ),
     )
 
@@ -21012,7 +21013,7 @@ async def voice_load_model(
         # the preflight, the spawn or the warm-up then sees a load to cancel, and the epoch read
         # above shows it afterwards.
         from core.inference.llama_cpp import voice_load_in_flight
-        
+
         # Per-request cancel: load_model clears the backend event at startup, so an eviction or
         # an unload between the claim and the spawn is only durable through this one.
         load_cancel = threading.Event()
@@ -21026,7 +21027,6 @@ async def voice_load_model(
                 in_flight.__exit__(None, None, None)
 
         try:
-
             # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
             # mirroring the ModelConfig.from_identifier() call in /load, including how it
             # runs: from_identifier scans the HF cache and can resolve Hub metadata, so it
@@ -21087,7 +21087,8 @@ async def voice_load_model(
                 and voice_backend.model_identifier.lower() == config.identifier.lower()
                 and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
                 and getattr(voice_backend, "_n_parallel", 1) == request.parallel
-                and int(getattr(voice_backend, "requested_n_ctx", 0) or 0) == int(request.n_ctx or 0)
+                and int(getattr(voice_backend, "requested_n_ctx", 0) or 0)
+                == int(request.n_ctx or 0)
                 and getattr(voice_backend, "_is_audio", False)
             ):
                 return {
@@ -21149,7 +21150,10 @@ async def voice_load_model(
 
             # The unload that moved the epoch released nothing: its release ran while this load
             # was marked in flight. So the claim is given back here, with the teardown.
-            if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
+            if (
+                unload_epoch is not None
+                and getattr(voice_backend, "_unload_epoch", None) != unload_epoch
+            ):
                 await _undo_load()
                 raise HTTPException(
                     status_code = 409,
@@ -21200,19 +21204,28 @@ async def voice_load_model(
             # warm-up phase absorbs it instead of freezing the user's first spoken reply.
             # Best-effort: a priming failure must never fail an otherwise-good load.
             try:
-                await asyncio.to_thread(voice_backend.generate_audio_response, "Hi there.", audio_type)
+                await asyncio.to_thread(
+                    voice_backend.generate_audio_response, "Hi there.", audio_type
+                )
             except Exception as e:
-                logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
+                logger.warning(
+                    "Voice slot warmup synth failed (first /speech may be slower): %s", e
+                )
             # An unload during the warm-up emptied the slot; the swallowed warm-up error must not
             # turn that into "loaded", and the claim goes back as above.
-            if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
+            if (
+                unload_epoch is not None
+                and getattr(voice_backend, "_unload_epoch", None) != unload_epoch
+            ):
                 await _undo_load()
                 raise HTTPException(
                     status_code = 409,
                     detail = "The voice model was unloaded while it was loading. Load it again.",
                 )
 
-            logger.info("Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type)
+            logger.info(
+                "Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type
+            )
             return {
                 "status": "loaded",
                 "model": voice_backend.model_identifier,
@@ -22809,8 +22822,7 @@ async def openai_audio_speech_stream(
         raise HTTPException(
             status_code = 400,
             detail = (
-                "Streaming speech is local-only. Use /audio/speech for an external "
-                "TTS connection."
+                "Streaming speech is local-only. Use /audio/speech for an external TTS connection."
             ),
         )
     text = body.input.strip()
@@ -22903,9 +22915,7 @@ async def openai_audio_speech_stream(
     # counted as no generation, so /voice/unload and /unload passed their foreign-generation
     # gates and a forced swap stopped the server mid-stream. No cancel keys: nothing addresses it.
     def gen():
-        with _TrackedCancel(
-            threading.Event(), model = _llama_public_model_id(backend), kind = "audio"
-        ):
+        with _TrackedCancel(threading.Event(), model = _llama_public_model_id(backend), kind = "audio"):
             try:
                 yield from backend.generate_audio_response_stream(
                     text = text,

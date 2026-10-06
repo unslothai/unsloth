@@ -529,6 +529,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     try:
         from core.inference.llama_cpp import cancel_voice_loads, voice_load_active
         from routes.inference import get_voice_llama_backend
+
         voice = get_voice_llama_backend()
         # The voice slot is its own llama-server; same CPU-only exemption as above. A load
         # past its training guard but not yet spawned has no process, so cancel it too, or
