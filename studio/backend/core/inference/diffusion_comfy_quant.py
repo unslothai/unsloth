@@ -325,7 +325,6 @@ def refuse_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
     return scan
 
 
-# ------------------------------------------------------------------------------------------- loading
 def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     """``codes * scale`` in float32, the ConvRot rotation undone, cast to ``dtype``."""
     import torch
