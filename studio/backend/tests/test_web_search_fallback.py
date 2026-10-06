@@ -29,7 +29,7 @@ def test_missing_package_recovers():
         patch.object(
             tools,
             "_wikipedia_search",
-            return_value=[
+            return_value = [
                 {
                     "title": "Python",
                     "href": "https://en.wikipedia.org/wiki/Python",
@@ -38,7 +38,7 @@ def test_missing_package_recovers():
             ],
         ) as wiki,
     ):
-        result = tools._web_search("Python", timeout=8)
+        result = tools._web_search("Python", timeout = 8)
         assert "Wikipedia-only" in result and "URL: https://" in result
         wiki.assert_called_once()
 
@@ -48,7 +48,7 @@ def test_missing_package_recovers():
 )
 def test_policy_skips_wikipedia(policy):
     with missing_ddgs(), patch.object(tools, "_wikipedia_search") as wiki:
-        assert tools._web_search("Python", website_policy=policy).startswith("Search failed:")
+        assert tools._web_search("Python", website_policy = policy).startswith("Search failed:")
         wiki.assert_not_called()
 
 
@@ -56,7 +56,7 @@ def test_cancel_skips_network():
     event = threading.Event()
     event.set()
     with patch.object(tools, "_wikipedia_search") as wiki:
-        assert tools._web_search("Python", cancel_event=event) == "Search cancelled."
+        assert tools._web_search("Python", cancel_event = event) == "Search cancelled."
         wiki.assert_not_called()
 
 
@@ -69,14 +69,14 @@ def test_cancel_during_fallback_discards_results():
             {"title": "Python", "href": "https://en.wikipedia.org/wiki/Python", "body": "snippet"}
         ]
 
-    with missing_ddgs(), patch.object(tools, "_wikipedia_search", side_effect=wiki):
-        assert tools._web_search("Python", cancel_event=event) == "Search cancelled."
+    with missing_ddgs(), patch.object(tools, "_wikipedia_search", side_effect = wiki):
+        assert tools._web_search("Python", cancel_event = event) == "Search cancelled."
 
 
 def test_both_fail_preserves_primary_error():
     with (
         missing_ddgs(),
-        patch.object(tools, "_wikipedia_search", side_effect=RuntimeError("offline")),
+        patch.object(tools, "_wikipedia_search", side_effect = RuntimeError("offline")),
     ):
         assert "import of ddgs halted" in tools._web_search("Python")
 
@@ -90,7 +90,7 @@ def test_api_html_and_url():
         }
     }
     with patch.object(
-        tools, "_fetch_url_raw", return_value=(None, json.dumps(response), "application/json")
+        tools, "_fetch_url_raw", return_value = (None, json.dumps(response), "application/json")
     ) as fetch:
         result = tools._wikipedia_search("A & B", 5, 3, None, None, None)
         assert result == [
@@ -110,7 +110,7 @@ FALLBACK_RESULT = [
 @pytest.fixture
 def provider(monkeypatch):
     """Control provider responses without making network calls or depending on ddgs's lazy proxy."""
-    state = SimpleNamespace(calls=[], respond=lambda client, query, **kwargs: PRIMARY_RESULT)
+    state = SimpleNamespace(calls = [], respond = lambda client, query, **kwargs: PRIMARY_RESULT)
 
     class DDGS:
         def __init__(self, timeout):
@@ -120,27 +120,27 @@ def provider(monkeypatch):
             state.calls.append((query, kwargs["backend"], self.timeout, kwargs["max_results"]))
             return state.respond(self, query, **kwargs)
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS=DDGS))
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = DDGS))
     monkeypatch.setitem(
         sys.modules,
         "ddgs.engines",
-        SimpleNamespace(ENGINES={"text": {"wikipedia": object(), "google": object()}}),
+        SimpleNamespace(ENGINES = {"text": {"wikipedia": object(), "google": object()}}),
     )
-    state.wiki = Mock(return_value=FALLBACK_RESULT)
+    state.wiki = Mock(return_value = FALLBACK_RESULT)
     monkeypatch.setattr(tools, "_wikipedia_search", state.wiki)
     return state
 
 
 @pytest.fixture
 def search_clock(monkeypatch):
-    clock = SimpleNamespace(now=100.0)
-    monkeypatch.setattr(tools, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    clock = SimpleNamespace(now = 100.0)
+    monkeypatch.setattr(tools, "time", SimpleNamespace(monotonic = lambda: clock.now))
     return clock
 
 
 @pytest.mark.parametrize("timeout", [0.6, 9, 300, None, 0])
 def test_primary_success_keeps_full_provider_timeout(provider, search_clock, timeout):
-    result = tools._web_search("current information", timeout=timeout)
+    result = tools._web_search("current information", timeout = timeout)
     assert "Title: Primary" in result
     assert len(provider.calls) == 1
     query, backend, budget, wanted = provider.calls[0]
@@ -160,7 +160,7 @@ def test_primary_late_success_is_not_replaced(provider, search_clock, blocked):
 
     provider.respond = respond
     policy = {"blockedDomains": ["wikipedia.org"]} if blocked else None
-    result = tools._web_search("current information", website_policy=policy)
+    result = tools._web_search("current information", website_policy = policy)
     assert "Title: Primary" in result
     provider.wiki.assert_not_called()
 
@@ -189,7 +189,7 @@ def test_primary_image_search_retains_client_budget(provider, monkeypatch, searc
         return "\nIMAGES_FOUND" if client.timeout >= 8 else ""
 
     monkeypatch.setattr(tools, "_web_search_images_suffix", images)
-    result = tools._web_search("current information", timeout=9, include_images=True)
+    result = tools._web_search("current information", timeout = 9, include_images = True)
     assert "IMAGES_FOUND" in result
     assert budgets == [9]
     provider.wiki.assert_not_called()
@@ -210,13 +210,13 @@ def test_primary_eight_parallel_successes_all_use_provider(provider):
         return PRIMARY_RESULT
 
     provider.respond = respond
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(tools._web_search, f"query {i}", timeout=5) for i in range(8)]
+    with ThreadPoolExecutor(max_workers = 8) as pool:
+        futures = [pool.submit(tools._web_search, f"query {i}", timeout = 5) for i in range(8)]
         try:
             admitted = all_entered.wait(1)
         finally:
             release.set()
-        results = [future.result(timeout=5) for future in futures]
+        results = [future.result(timeout = 5) for future in futures]
     assert admitted, f"Only {len(entered)} successful requests reached the provider"
     assert all("Title: Primary" in result for result in results)
     provider.wiki.assert_not_called()
@@ -228,14 +228,14 @@ def test_fallback_uses_only_remaining_budget(provider, search_clock):
         return []
 
     provider.respond = respond
-    assert "Wikipedia-only" in tools._web_search("query", timeout=9)
+    assert "Wikipedia-only" in tools._web_search("query", timeout = 9)
     assert provider.wiki.call_args.args[2:4] == (1, 109)
 
 
 @pytest.mark.parametrize("timeout", [30, None])
 def test_fallback_has_its_own_five_second_cap(provider, search_clock, timeout):
     provider.respond = lambda *args, **kwargs: []
-    assert "Wikipedia-only" in tools._web_search("query", timeout=timeout)
+    assert "Wikipedia-only" in tools._web_search("query", timeout = timeout)
     assert provider.wiki.call_args.args[2:4] == (5, 105)
 
 
@@ -245,7 +245,7 @@ def test_fallback_does_not_extend_exhausted_budget(provider, search_clock):
         raise TimeoutError("primary timeout")
 
     provider.respond = respond
-    assert "primary timeout" in tools._web_search("query", timeout=9)
+    assert "primary timeout" in tools._web_search("query", timeout = 9)
     provider.wiki.assert_not_called()
 
 
@@ -255,7 +255,7 @@ def test_primary_overrun_success_keeps_legacy_behavior(provider, search_clock):
         return PRIMARY_RESULT
 
     provider.respond = respond
-    assert "Title: Primary" in tools._web_search("query", timeout=9)
+    assert "Title: Primary" in tools._web_search("query", timeout = 9)
     provider.wiki.assert_not_called()
 
 
@@ -281,7 +281,7 @@ def test_filtered_first_tier_continues_to_usable_second_tier(provider):
         return PRIMARY_RESULT
 
     provider.respond = respond
-    result = tools._web_search("query", website_policy={"blockedDomains": ["blocked.example"]})
+    result = tools._web_search("query", website_policy = {"blockedDomains": ["blocked.example"]})
     assert "Title: Primary" in result
     assert "blocked.example/page" not in result
     assert len(provider.calls) == 2
@@ -296,7 +296,7 @@ def test_cancel_during_primary_discards_answer_without_fallback(provider):
         return PRIMARY_RESULT
 
     provider.respond = respond
-    assert tools._web_search("query", cancel_event=event) == "Search cancelled."
+    assert tools._web_search("query", cancel_event = event) == "Search cancelled."
     provider.wiki.assert_not_called()
 
 

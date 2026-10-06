@@ -16921,14 +16921,23 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     # Full-text search here can recover from that lookup or the ddgs integration failing.
     from html import unescape
 
-    params = urllib.parse.urlencode({
-        "action": "query", "list": "search", "srsearch": query,
-        "format": "json", "srlimit": min(max_results, 50), "srnamespace": 0,
-    })
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": min(max_results, 50),
+            "srnamespace": 0,
+        }
+    )
     error, body, _ = _fetch_url_raw(
         "https://en.wikipedia.org/w/api.php?" + params,
-        timeout = timeout, deadline = deadline, cancel_event = cancel_event,
-        website_policy = website_policy, raw_bytes_max = 1024 * 1024,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        website_policy = website_policy,
+        raw_bytes_max = 1024 * 1024,
         extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
     )
     if error:
@@ -16939,7 +16948,8 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
     return [
         {
             "title": item["title"],
-            "href": "https://en.wikipedia.org/wiki/" + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "href": "https://en.wikipedia.org/wiki/"
+            + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
             "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
         }
         for item in payload["query"]["search"]
@@ -16949,10 +16959,11 @@ def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, websi
 
 def _usable_search_results(results, website_policy):
     from .web_access_policy import check_url_access
-
     return [
-        r for r in results
-        if isinstance(r, dict) and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+        r
+        for r in results
+        if isinstance(r, dict)
+        and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
     ]
 
 
@@ -17058,7 +17069,14 @@ def _web_search(
                     if deadline is not None:
                         fallback_deadline = min(fallback_deadline, deadline)
                     results = _usable_search_results(
-                        _wikipedia_search(query, wanted, fallback_timeout, fallback_deadline, cancel_event, website_policy),
+                        _wikipedia_search(
+                            query,
+                            wanted,
+                            fallback_timeout,
+                            fallback_deadline,
+                            cancel_event,
+                            website_policy,
+                        ),
                         website_policy,
                     )
                     wikipedia_fallback = bool(results)
@@ -17070,7 +17088,9 @@ def _web_search(
             raise last_error
         if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[1] if rejected_results and restricted else EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1]
+                if rejected_results and restricted
+                else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -17099,8 +17119,11 @@ def _web_search(
             )
         text = "\n\n---\n\n".join(parts)
         if wikipedia_fallback:
-            text = "General web search was unavailable or returned no usable results. " \
-                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n" + text
+            text = (
+                "General web search was unavailable or returned no usable results. "
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n"
+                + text
+            )
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
