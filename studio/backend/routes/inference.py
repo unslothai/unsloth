@@ -27201,6 +27201,7 @@ def _fit_external_context(
     payload,
     *,
     saved_transcript: bool = True,
+    tools: Optional[list[dict]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
@@ -27217,8 +27218,22 @@ def _fit_external_context(
         _sticky_compaction_state,
     )
 
+    tool_tokens = _openai_llama_admission_injected_tool_tokens(tools)
+
     def _count(fitted):
-        return estimate_messages_tokens_conservative(messages_without_unpriced_media(fitted))
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(fitted)
+        media_tokens = _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = image_parts,
+            message_video_clips = _conversation_video_clips(fitted),
+        )
+        return (
+            estimate_messages_tokens_conservative(
+                messages_without_unpriced_media(estimate_messages)
+            )
+            + media_tokens
+            + tool_tokens
+        )
 
     context_length = payload.compaction_threshold
     max_tokens = _effective_max_tokens(payload)
@@ -28002,6 +28017,7 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools
     _refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))
     if run_studio_tool_loop:
         # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves this
@@ -28037,7 +28053,10 @@ async def _proxy_to_external_provider(
 
         async def _external_context_fitter(messages):
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
-                _fit_external_context, messages, payload
+                _fit_external_context,
+                messages,
+                payload,
+                tools = _external_fit_tools,
             )
             truncation_line = None
             if (
@@ -28060,7 +28079,10 @@ async def _proxy_to_external_provider(
         and _rolling_context_policy(payload) is not None
     ):
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
-            _fit_external_context, chat_messages, payload
+            _fit_external_context,
+            chat_messages,
+            payload,
+            tools = _external_fit_tools,
         )
 
     cancel_event = threading.Event()

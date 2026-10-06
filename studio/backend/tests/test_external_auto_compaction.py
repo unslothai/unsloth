@@ -336,3 +336,61 @@ def test_a_tool_round_does_not_replay_the_saved_transcript_boundary(monkeypatch)
     working, _, _ = ri._fit_external_context(_long_chat(), payload, saved_transcript = False)
     assert len(_long_chat()) - len(saved) == 20
     assert len(saved) < len(working) < len(_long_chat())
+
+
+def test_external_fit_reserves_image_embeddings():
+    messages = [
+        {"role": "system", "content": "Keep this."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "old image"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,cGljdHVyZQ=="},
+                },
+            ],
+        },
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest question"},
+    ]
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "latest question"}],
+        provider_type = "openrouter",
+        model = "a-model",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 3_000,
+        context_window = 4_000,
+        max_tokens = 512,
+    )
+
+    fitted, truncation, _ = ri._fit_external_context(messages, payload)
+    assert truncation and truncation["dropped_messages"] == 2
+    assert fitted[-1]["content"] == "latest question"
+
+
+def test_external_fit_reserves_tool_schemas():
+    messages = _long_chat(turns = 2, turn = "word " * 80)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "latest question"}],
+        provider_type = "openrouter",
+        model = "a-model",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 3_000,
+        context_window = 4_000,
+        max_tokens = 512,
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "large_tool",
+                "description": "schema " * 1_200,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    fitted, truncation, _ = ri._fit_external_context(messages, payload, tools = tools)
+    assert truncation and truncation["dropped_messages"] > 0
+    assert fitted[-1]["content"] == "latest question"
