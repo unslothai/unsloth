@@ -99,6 +99,12 @@ function CaptionGlyph({
   const corner = Math.min(2, 2.5 - inset);
   // round caps overshoot their endpoints, so the x ends pull in to keep its old size
   const tip = inset * 1.5;
+  // shift the x left by its pull-in plus a quarter device pixel of cap so both gaps match; not at
+  // 100%, where the half-pixel shift blurs it
+  const nudge =
+    kind === "close" && scale > 1
+      ? ((tip - inset) * pixels) / (10 * scale) + 0.25 / scale
+      : 0;
   return (
     <svg
       aria-hidden="true"
@@ -111,6 +117,7 @@ function CaptionGlyph({
       strokeLinecap="round"
       strokeLinejoin="round"
       className="shrink-0"
+      style={nudge ? { transform: `translateX(-${nudge}px)` } : undefined}
     >
       {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
       {kind === "maximize" && (
