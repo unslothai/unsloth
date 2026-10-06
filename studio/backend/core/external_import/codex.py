@@ -56,10 +56,12 @@ def list_projects(home: Path) -> list[SourceProject]:
         source = meta.get("source")
         if isinstance(source, dict) and "subagent" in source:
             continue
-        cwd = str(meta.get("cwd") or "")
-        slug = re.sub(r"[^A-Za-z0-9]+", "-", cwd).strip("-") or _UNKNOWN_FOLDER
-        by_cwd.setdefault(slug, []).append(path)
-    return [SourceProject(slug, display_name(slug), paths) for slug, paths in by_cwd.items()]
+        # The raw cwd is the identity (hashed into the project id); "a-b" and "a/b" stay apart.
+        by_cwd.setdefault(str(meta.get("cwd") or _UNKNOWN_FOLDER), []).append(path)
+    return [
+        SourceProject(cwd, display_name(re.sub(r"[^A-Za-z0-9]+", "-", cwd)), paths)
+        for cwd, paths in by_cwd.items()
+    ]
 
 
 def _output_text(output) -> str:

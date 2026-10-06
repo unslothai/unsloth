@@ -573,3 +573,37 @@ def test_every_appended_branch_is_reparented_past_a_deleted_message(claude_home)
     ids = {m["id"] for m in rows}
     assert len(rows) == 3
     assert all(m["parentId"] is None or m["parentId"] in ids for m in rows)
+
+
+def test_an_emptied_studio_keeps_unrelated_tombstones(claude_home):
+    _session(claude_home)
+    studio_db.upsert_chat_thread(
+        {
+            "id": "native",
+            "title": "mine",
+            "modelType": "base",
+            "modelId": "",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    studio_db.delete_chat_threads(["native"])
+
+    assert run_import(claude.SOURCE).new_chats == 1
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(
+            {
+                "id": "native",
+                "title": "stale tab",
+                "modelType": "base",
+                "modelId": "",
+                "createdAt": 1,
+                "updatedAt": 2,
+            }
+        )
+
+
+def test_codex_cwds_that_only_differ_in_punctuation_stay_apart(codex_home):
+    _rollout(codex_home, cwd = "/work/a-b", sid = "a")
+    _rollout(codex_home, cwd = "/work/a/b", sid = "b")
+    assert len(codex.list_projects(codex_home)) == 2

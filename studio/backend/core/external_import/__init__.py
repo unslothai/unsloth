@@ -86,6 +86,11 @@ def project_id_for(source: Source, slug: str) -> str:
     return stable_id(source.key, slug)
 
 
+def session_id_of(path: Path) -> str:
+    # Not path.stem: Codex compresses old x.jsonl to x.jsonl.zst, same session.
+    return path.name.split(".", 1)[0]
+
+
 def thread_id_for(source: Source, session_id: str) -> str:
     return stable_id(f"{source.key}-thread", session_id)
 
@@ -247,8 +252,7 @@ def _late_tool_results(transcript: Transcript) -> list[dict]:
 
 
 def _import_session(source: Source, path: Path, project_id: str, summary: ImportSummary) -> bool:
-    # Not path.stem: Codex compresses old x.jsonl to x.jsonl.zst, same session.
-    session_id = path.name.split(".", 1)[0]
+    session_id = session_id_of(path)
     thread_id = thread_id_for(source, session_id)
     try:
         transcript = source.read_transcript(path, thread_id, session_id)
@@ -309,10 +313,16 @@ def _import_project(
 def run_import(source: Source, *, home: Optional[Path] = None) -> ImportSummary:
     summary = ImportSummary()
     now_ms = int(time.time() * 1000)
-    # An empty Studio (clear-all, fresh database) is a blank slate: deleted ids may come back.
+    projects = source.list_projects(source.home(home))
+    # An empty Studio (clear-all, fresh database) is a blank slate for this source's chats only:
+    # other tombstones still stop a stale tab resurrecting a chat the user deleted.
     if not studio_db.list_chat_threads():
-        studio_db.lift_all_chat_thread_tombstones()
-    for project in source.list_projects(source.home(home)):
+        studio_db.lift_chat_thread_tombstones(
+            thread_id_for(source, session_id_of(p))
+            for project in projects
+            for p in project.sessions
+        )
+    for project in projects:
         _import_project(source, project, summary, now_ms)
     logger.info(
         "external_import_finished",

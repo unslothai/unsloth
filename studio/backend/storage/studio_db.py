@@ -2563,11 +2563,13 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
         )
 
 
-def lift_all_chat_thread_tombstones() -> None:
-    """Forget every deleted thread id, so an import into an emptied Studio can recreate them."""
+def lift_chat_thread_tombstones(thread_ids: Iterable[str]) -> None:
+    """Forget these deleted thread ids, so an import into an emptied Studio can recreate them."""
     conn = get_connection()
     try:
-        conn.execute("DELETE FROM chat_thread_tombstones")
+        conn.executemany(
+            "DELETE FROM chat_thread_tombstones WHERE id = ?", [(i,) for i in set(thread_ids)]
+        )
         conn.commit()
     finally:
         conn.close()
