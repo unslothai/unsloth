@@ -295,3 +295,178 @@ def test_head_init_warm_starts_from_a_matching_head(tmp_path):
 def test_unknown_decision_head_is_refused():
     with pytest.raises(ValueError, match = "decision_head"):
         FastDecisionModel.from_pretrained(TINY_QWEN3, decision_head = "pointer")
+
+
+def _typed_decision_rows(n):
+    # Shaped like LocalLLaMA/typed-decisions: JSON strings for state, questions and gold.
+    import json
+
+    rows = []
+    for i in range(n):
+        outage = i % 2 == 1
+        state = {
+            "ticket": f"T-{i}",
+            "message": "the server is down again" if outage else "my invoice was paid twice",
+        }
+        questions = {
+            "team": {
+                "type": "choice",
+                "instructions": "Which team should handle this?",
+                "criteria": {"billing": "invoices, refunds", "technical": "bugs, outages"},
+            },
+            "refund": {
+                "type": "noul",
+                "instructions": "Does the customer ask for a refund?",
+                "criteria": {"false": "No refund.", "true": "A refund is asked for."},
+            },
+            "urgency": {
+                "type": "score",
+                "instructions": "How urgent is this?",
+                "criteria": ["not urgent", "soon", "today"],
+            },
+        }
+        p = 0.8
+        gold = {
+            "team": {
+                "type": "choice",
+                "label": "technical" if outage else "billing",
+                "probabilities": {
+                    "technical": p if outage else 1 - p,
+                    "billing": 1 - p if outage else p,
+                },
+            },
+            "refund": {
+                "type": "noul",
+                "label": str(not outage).lower(),
+                "noul": 0.2 if outage else 0.9,
+            },
+            "urgency": {"type": "score", "label": "2" if outage else "0"},
+        }
+        rows.append(
+            {
+                "id": f"row-{i}",
+                "workflow": "customer_service",
+                "state": json.dumps(state),
+                "questions": json.dumps(questions),
+                "gold": json.dumps(gold),
+                "n_questions": 3,
+            }
+        )
+    return rows
+
+
+@pytest.mark.skipif(
+    not _qwen3_5_runs_here(), reason = "causal_conv1d is installed but there is no CUDA device"
+)
+def test_the_decision_notebook_runs_unchanged_on_a_plain_qwen3_5(tmp_path, monkeypatch):
+    # unslothai/notebooks#380's call sequence, on a tiny Qwen3.5 with no decision_head argument.
+    from datasets import Dataset
+    from real_accelerator import has_real_cuda
+    from transformers import TrainingArguments
+
+    from unsloth import is_bfloat16_supported
+
+    monkeypatch.chdir(tmp_path)
+    four_bit = has_real_cuda()  # The notebook loads in 4-bit, which needs a GPU.
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        model_name = TINY_QWEN3_5, max_seq_length = 2048, load_in_4bit = four_bit
+    )
+    assert getattr(model, "is_clef", False)
+    model = FastDecisionModel.get_peft_model(
+        model,
+        r = 16,
+        lora_alpha = 16,
+        lora_dropout = 0,
+        use_gradient_checkpointing = "unsloth",
+        random_state = 3407,
+    )
+    dataset = Dataset.from_list(_typed_decision_rows(40))
+    items, report = FastDecisionModel.build_dataset(dataset, tokenizer, model)
+    assert report["skipped"] == 0 and report["total"] == 120
+    train_items, eval_items = FastDecisionModel.split_holdout(items, seed = 3407)
+    assert train_items and eval_items
+    FastDecisionModel.evaluate(model, tokenizer, eval_items)
+
+    # fp16 = True where bfloat16 is missing (a T4): DecisionTrainer settles Clef's precision.
+    bf16 = is_bfloat16_supported() and has_real_cuda()
+    trainer = DecisionTrainer(
+        model = model,
+        processing_class = tokenizer,
+        train_dataset = train_items,
+        eval_dataset = eval_items,
+        args = TrainingArguments(
+            per_device_train_batch_size = 8,
+            gradient_accumulation_steps = 4,
+            warmup_steps = 1,
+            max_steps = 2,
+            learning_rate = 2e-4,
+            lr_scheduler_type = "cosine",
+            weight_decay = 0.01,
+            bf16 = bf16,
+            fp16 = has_real_cuda() and not bf16,
+            eval_strategy = "epoch",
+            logging_steps = 1,
+            output_dir = "outputs",
+            report_to = "none",
+            seed = 3407,
+        ),
+    )
+    trainer.train()
+    # The trainer's own checkpoint: adapters and the exact float32 head, not the shared-weight backbone.
+    from safetensors.torch import load_file
+
+    checkpoint = tmp_path / "outputs" / "checkpoint-2"
+    assert (checkpoint / "adapter_model.safetensors").is_file()
+    saved = load_file(str(checkpoint / "joint_head.safetensors"))
+    for name, value in model.head.state_dict().items():
+        assert torch.equal(saved[name], value.detach().cpu().float()), name
+    FastDecisionModel.calibrate(model, tokenizer, eval_items)
+    test_items, _ = FastDecisionModel.build_dataset(
+        Dataset.from_list(_typed_decision_rows(6)), tokenizer, model
+    )
+    assert 0 <= FastDecisionModel.evaluate(model, tokenizer, test_items)["accuracy"] <= 1
+
+    FastDecisionModel.for_inference(model)
+    state = "Hi, I was charged twice for invoice #4411. Please refund the duplicate today."
+    questions = {
+        "team": {
+            "type": "choice",
+            "instructions": "Which team should handle this?",
+            "criteria": {
+                "billing": "invoices, payments, refunds",
+                "technical": "bugs, outages, errors",
+                "sales": "pricing, new plans",
+            },
+        },
+        "refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"},
+        "urgency": {
+            "type": "score",
+            "instructions": "How urgent is this?",
+            "criteria": ["not urgent", "soon", "today"],
+        },
+    }
+    answers = FastDecisionModel.predict(model, tokenizer, state, questions)
+    assert answers["team"]["answer"] in ("billing", "technical", "sales")
+    assert isinstance(answers["refund"]["answer"], bool)
+    assert answers["urgency"]["answer"] in (0, 1, 2)
+    for name, result in answers.items():
+        probabilities = {k: round(v, 3) for k, v in result["probabilities"].items()}
+        assert sum(probabilities.values()) == pytest.approx(1, abs = 0.01), name
+    assert set(answers["refund"]["probabilities"]) == {"false", "true"}
+
+    model.save_pretrained("decision_model")
+    assert (tmp_path / "decision_model" / "adapter_config.json").is_file()
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        model_name = "decision_model", max_seq_length = 2048, load_in_4bit = four_bit
+    )
+    again = FastDecisionModel.predict(model, tokenizer, state, questions)
+    for name in questions:
+        assert (
+            again[name]["answer"] == answers[name]["answer"]
+            or max(answers[name]["probabilities"].values()) < 0.6
+        )
+        for key, value in answers[name]["probabilities"].items():
+            assert again[name]["probabilities"][key] == pytest.approx(value, abs = 0.05)
+    model.save_pretrained_merged("decision_model_16bit", tokenizer, save_method = "merged_16bit")
+    assert (tmp_path / "decision_model_16bit" / "config.json").is_file()
+    assert (tmp_path / "decision_model_16bit" / "joint_head.safetensors").is_file()

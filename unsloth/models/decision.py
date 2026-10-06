@@ -126,6 +126,38 @@ def _is_clef_repo(model_name, prefix, token, revision) -> Optional[bool]:
     return prefix + _CLEF_HEAD_FILES[1] in files
 
 
+def _is_plain_lm(model_name, subfolder, token, revision, local_files_only) -> bool:
+    # Neither a Laya nor a Clef checkpoint, but a model FastModel loads: it gets a new Clef head.
+    # Unknown (offline, no access) answers False, so the checkpoint loader names what is missing.
+    markers = {_FILES[0], _CLEF_HEAD_FILES[1]}
+    if subfolder:
+        return False
+    root = Path(str(model_name)).expanduser()
+    if root.is_dir():
+        has = lambda name: (root / name).is_file()
+        return (has("config.json") or has(_ADAPTER_CONFIG)) and not any(map(has, markers))
+    from huggingface_hub import constants
+
+    if not (local_files_only or constants.HF_HUB_OFFLINE):
+        try:
+            from huggingface_hub import HfApi
+            files = HfApi(token = token).list_repo_files(str(model_name), revision = revision)
+        except Exception:
+            files = None
+        if files is not None:
+            names = {name.rsplit("/", 1)[-1] for name in files}
+            return bool({"config.json", _ADAPTER_CONFIG} & set(files)) and not (names & markers)
+    from huggingface_hub import try_to_load_from_cache
+
+    def cached(name) -> bool:
+        try:
+            return isinstance(try_to_load_from_cache(str(model_name), name, revision = revision), str)
+        except Exception:
+            return False
+
+    return (cached("config.json") or cached(_ADAPTER_CONFIG)) and not any(map(cached, markers))
+
+
 def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only) -> Path:
     root = Path(model_name).expanduser()
     if not root.is_dir():
@@ -611,6 +643,19 @@ def _decision_logits(model, tokenizer, items: list) -> tuple:
     return _logits(model, items, pad_token_id), items
 
 
+def _predicted(question: dict, answer: dict, probabilities: dict) -> dict:
+    # The Decision API answer plus the top option as "answer" (an option for choice, True or
+    # False for noul, the level number for score) and every option's probability.
+    kind = question["type"]
+    best = max(probabilities, key = probabilities.__getitem__)
+    return {
+        **answer,
+        "answer": int(best) if kind == "score" else best == "true" if kind == "noul" else best,
+        "probabilities": answer.get("probabilities")
+        or {key: round(float(value), 4) for key, value in probabilities.items()},
+    }
+
+
 @torch.no_grad()
 def _clef_decide(
     model,
@@ -618,6 +663,7 @@ def _clef_decide(
     state,
     questions: dict,
     max_length = None,
+    predicted = False,
 ) -> dict:
     # One Decision API request over every question in one prefill, at served temperatures.
     from .clef import encode_record, systemone_answer
@@ -653,9 +699,11 @@ def _clef_decide(
     )
     answers = {}
     for question, row, scale in zip(encoded.questions, rows, scales):
-        probabilities = (row / scale).softmax(-1).tolist()
-        answers[question.question_id] = systemone_answer(
-            questions[question.question_id], dict(zip(question.option_ids, probabilities))
+        probabilities = dict(zip(question.option_ids, (row / scale).softmax(-1).tolist()))
+        asked = questions[question.question_id]
+        answer = systemone_answer(asked, probabilities)
+        answers[question.question_id] = (
+            _predicted(asked, answer, probabilities) if predicted else answer
         )
     return {
         "answers": answers,
@@ -665,7 +713,13 @@ def _clef_decide(
     }
 
 
-def _laya_decide(model, tokenizer, state, questions: dict) -> dict:
+def _laya_decide(
+    model,
+    tokenizer,
+    state,
+    questions: dict,
+    predicted = False,
+) -> dict:
     from .clef import systemone_answer
 
     common = _laya().common
@@ -693,7 +747,8 @@ def _laya_decide(model, tokenizer, state, questions: dict) -> dict:
     answers = {}
     for (name, question), z, t, options in zip(questions.items(), logits, temperatures, keys):
         probabilities = dict(zip(options, torch.softmax(z / t, -1).tolist()))
-        answers[name] = systemone_answer(question, probabilities)
+        answer = systemone_answer(question, probabilities)
+        answers[name] = _predicted(question, answer, probabilities) if predicted else answer
     return {
         "answers": answers,
         "input_tokens": max(len(item["input_ids"]) for item in items),
@@ -930,10 +985,13 @@ def _stamp_transformers_version(config_file: Path) -> None:
         config_file.write_text(json.dumps(config, indent = 2) + "\n", encoding = "utf-8")
 
 
-def _clef_head_weights(self) -> tuple:
-    # The decision config and head weights both save layouts write.
+def _clef_head_weights(self, exact = False) -> tuple:
+    # The decision config and head weights both save layouts write. exact: a trainer
+    # checkpoint to resume from, so float32 and no temperature folded in.
     config = {**self.decision_config, "fine_tuned": True}
     state = {k: v.detach().to("cpu", torch.float32) for k, v in self.head.state_dict().items()}
+    if exact:
+        return config, {k: v.contiguous() for k, v in state.items()}
     # Folded in, so Cloudflare's loader serves calibrated confidences too; the per-type
     # temperatures Unsloth applies are already relative to it.
     temperature = config.pop("head_temperature", None)
@@ -1010,10 +1068,15 @@ def _save_clef(self, save_directory, tokenizer) -> None:
         )
 
 
-def _save_clef_adapter(self, save_directory, tokenizer) -> None:
+def _save_clef_adapter(
+    self,
+    save_directory,
+    tokenizer,
+    exact = False,
+) -> None:
     # Only the LoRA adapters, the head and the configs; from_pretrained puts them back on the base.
     output = Path(save_directory)
-    config, weights = _clef_head_weights(self)
+    config, weights = _clef_head_weights(self, exact)
     with _staging(output) as staging:
         self.encoder.save_pretrained(str(staging))
         adapter_config = staging / _ADAPTER_CONFIG
@@ -1029,6 +1092,25 @@ def _save_clef_adapter(self, save_directory, tokenizer) -> None:
         (staging / "config.json").unlink(missing_ok = True)
         _write_clef_head(self, staging, config, weights)
         _commit_staged(staging, output, _CLEF_HEAD_FILES[0], stale = _MERGED_FILES)
+
+
+def _load_clef_checkpoint(model, folder: Path) -> None:
+    # Resumes a DecisionTrainer checkpoint: the adapters and the float32 head saved by _save.
+    from safetensors.torch import load_file
+
+    if (
+        not hasattr(model.encoder, "peft_config")
+        or not (folder / "adapter_model.safetensors").is_file()
+    ):
+        raise NotImplementedError(
+            "Unsloth: only LoRA Clef decision runs resume from a checkpoint; start a new run."
+        )
+    from peft import set_peft_model_state_dict
+
+    set_peft_model_state_dict(model.encoder, load_file(str(folder / "adapter_model.safetensors")))
+    device = next(model.head.parameters()).device
+    head = load_file(str(folder / _CLEF_HEAD_FILES[0]), device = str(device))
+    model.head.load_state_dict({k: v.float() for k, v in head.items()}, strict = True)
 
 
 def save_pretrained_clef(
@@ -1072,17 +1154,18 @@ def _attach_clef_saving(model) -> None:
 
 def _clef_mixed_precision(model, args) -> None:
     # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
-    # float16 NaNs the gated delta net; otherwise its bfloat16 weights pair with bf16 only.
+    # float16 NaNs the gated delta net; otherwise bfloat16 weights pair with bf16 only, and a
+    # language model loaded in float16 (a T4) keeps fp16.
     if _clef_forced_float32(model):
         if args.fp16 or args.bf16:
             print("Unsloth: Clef trains in float32 here, since Qwen3.5 cannot train in float16.")
         args.fp16 = args.bf16 = False
-    elif args.fp16:
+    elif args.fp16 and getattr(model._backbone(), "dtype", None) == torch.bfloat16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
         args.fp16, args.bf16 = False, True
     # transformers 5 reads the accelerator's precision from here (4.x from fp16 / bf16).
     if hasattr(args, "mixed_precision"):
-        args.mixed_precision = "bf16" if args.bf16 else "no"
+        args.mixed_precision = "bf16" if args.bf16 else "fp16" if args.fp16 else "no"
 
 
 class _LengthGroupedBatches(torch.utils.data.Sampler):
@@ -1212,6 +1295,37 @@ class DecisionTrainer(Trainer):
     def predict(self, *args, **kwargs):
         with self._dataset_field_order():
             return super().predict(*args, **kwargs)
+
+    def _save(
+        self,
+        output_dir = None,
+        state_dict = None,
+    ):
+        if not getattr(self.model, "is_clef", False):
+            return super()._save(output_dir, state_dict)
+        # Adapters plus the head, not one state dict holding the (shared-weight) backbone.
+        output = Path(self.args.output_dir if output_dir is None else output_dir)
+        tokenizer = self.processing_class or self.model._saved_temp_tokenizer
+        if hasattr(self.model.encoder, "peft_config"):
+            _save_clef_adapter(self.model, output, tokenizer, exact = True)
+        else:
+            _save_clef(self.model, output, tokenizer)
+        torch.save(self.args, str(output / "training_args.bin"))
+
+    def _load_from_checkpoint(
+        self,
+        resume_from_checkpoint,
+        model = None,
+    ):
+        model = self.model if model is None else model
+        if not getattr(model, "is_clef", False):
+            return super()._load_from_checkpoint(resume_from_checkpoint, model)
+        _load_clef_checkpoint(model, Path(resume_from_checkpoint))
+
+    def _load_best_model(self):
+        if not getattr(self.model, "is_clef", False):
+            return super()._load_best_model()
+        _load_clef_checkpoint(self.model, Path(self.state.best_model_checkpoint))
 
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
@@ -1510,6 +1624,11 @@ class FastDecisionModel:
     ):
         if load_in_8bit:
             raise NotImplementedError("Unsloth: decision models do not support load_in_8bit.")
+        if kwargs.get("decision_head") is None and _is_plain_lm(
+            model_name, subfolder, token, revision, local_files_only
+        ):
+            # A plain language model (Qwen3.5, Llama, ...) becomes a Clef-style decision model.
+            kwargs["decision_head"] = "clef"
         if kwargs.get("decision_head") is not None:
             # A plain language model plus a fresh (or given) decision head: see decision_from_lm.py.
             from .decision_from_lm import load_lm_as_decision_model
@@ -1777,17 +1896,18 @@ class FastDecisionModel:
 
     @staticmethod
     def predict(model, tokenizer, state, questions: dict) -> dict:
-        """Answers one Decision API request: {name: answer}, each shaped like the API's answer
-        (choice / confidence / probabilities, score / legend, or noul) with calibrated probabilities.
-        Works for Laya, Clef and language models converted with decision_head = "clef"."""
+        """Answers one Decision API request: {name: answer} at the calibrated temperatures.
+        Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
+        "answer" (the option, True / False for noul, the level number for score) and
+        "probabilities" over every option. Works for Laya, Clef and converted language models."""
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
         state = _parsed(state)
         if getattr(model, "is_clef", False):
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
-            return _clef_decide(model, tokenizer, state, questions)["answers"]
+            return _clef_decide(model, tokenizer, state, questions, predicted = True)["answers"]
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-        return _laya_decide(model, tokenizer, state, questions)["answers"]
+        return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
 
     @staticmethod
     def evaluate(model, tokenizer, items: list) -> dict:
