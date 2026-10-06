@@ -122,9 +122,7 @@ def main() -> int:
             _dll_dir = os.add_dll_directory(bindir)
         except Exception:
             pass
-        # An import the installed vulkan-1.dll cannot satisfy (a pre-1.1 loader has no vkGetPhysicalDeviceFeatures2)
-        # otherwise pops a modal "Entry point not found" box on every probe instead of failing the CDLL call below.
-        # ggml's own dl_load_library sets the same mode for the same reason.
+        # Else a pre-1.1 vulkan-1.dll pops a modal "Entry point not found" box instead of failing CDLL (as ggml's dl_load_library).
         try:
             kernel32 = ctypes.WinDLL("kernel32")
             kernel32.SetErrorMode(kernel32.GetErrorMode() | _SEM_FAILCRITICALERRORS)

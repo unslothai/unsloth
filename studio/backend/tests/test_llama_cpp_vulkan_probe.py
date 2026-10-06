@@ -305,8 +305,7 @@ def test_versioned_only_vulkan_soname_is_probed(tmp_path):
 
 
 def test_windows_probe_sets_the_error_mode_before_loading_ggml(tmp_path, monkeypatch, capsys):
-    """SEM_FAILCRITICALERRORS is OR-ed into the inherited mode before either ggml DLL loads, so a
-    missing vulkan-1.dll export fails the CDLL call instead of popping a modal loader dialog."""
+    """SEM_FAILCRITICALERRORS is OR-ed into the inherited mode before either ggml DLL loads."""
     from core.inference import _vulkan_probe as probe
 
     for name in ("ggml-base.dll", "ggml-vulkan.dll"):
