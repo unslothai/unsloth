@@ -5737,8 +5737,8 @@ def snapshot_residual_lora_init(model, init_lora_weights):
 
 @contextlib.contextmanager
 def lora_relative_to_original_base(model):
-    # Training saw W - s * B0 @ A0 but the merge reads the original W: merge [B, -B0] @ [A; A0] instead
-    # (PEFT's path_initial_model_for_weight_conversion).
+    # Training saw W - s0 * B0 @ A0 but the merge reads the original W: merge s0 * [B * s / s0, -B0] @ [A; A0]
+    # (PEFT's path_initial_model_for_weight_conversion). s0 is the init-time scaling; set_scale may change s.
     swapped = []
     try:
         for module in model.modules():
@@ -5746,19 +5746,18 @@ def lora_relative_to_original_base(model):
             if not initial:
                 continue
             for k, (A0, B0, scaling0) in initial.items():
-                # The base was rewritten with the init-time scaling; set_scale may have changed it since.
-                B0 = B0 * (scaling0 / module.scaling[k])
                 a, b = module.lora_A[k], module.lora_B[k]
-                swapped.append((a, a.weight, b, b.weight))
+                swapped.append((module, k, module.scaling[k], a, a.weight, b, b.weight))
+                B = b.weight.detach() * (module.scaling[k] / scaling0)
+                module.scaling[k] = scaling0
                 a.weight = torch.nn.Parameter(
                     torch.cat([a.weight.detach(), A0.to(a.weight)], 0), requires_grad = False
                 )
-                b.weight = torch.nn.Parameter(
-                    torch.cat([b.weight.detach(), -B0.to(b.weight)], 1), requires_grad = False
-                )
+                b.weight = torch.nn.Parameter(torch.cat([B, -B0.to(B)], 1), requires_grad = False)
         yield
     finally:
-        for a, weight_A, b, weight_B in swapped:
+        for module, k, scaling, a, weight_A, b, weight_B in swapped:
+            module.scaling[k] = scaling
             a.weight = weight_A
             b.weight = weight_B
 
