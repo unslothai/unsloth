@@ -23141,8 +23141,7 @@ async def run_audio_workflow(
     the worker gets a prepared copy's path, never bytes."""
     if not request.url.path.startswith("/v1/"):
         return await _dispatch_audio_run(body, request, current_subject)
-    # An API run is media traffic like /v1/audio/speech; the Audio page's own runs stay out of
-    # the monitor, as they always have.
+    # Only API runs are monitored, like /v1/audio/speech; the Audio page's are not.
     async with _monitored_media_request(
         request,
         model = public_model_id(body.model) or body.model,
@@ -23928,7 +23927,6 @@ async def openai_audio_transcriptions(
     granularities = timestamp_granularities if isinstance(timestamp_granularities, list) else []
     has_language = isinstance(language, str) and language.strip()
     serving_engine = _resolve_serving_stt_engine(engine)
-    # audio.cpp reports times, speakers and the language, reading the audio in place.
     timed = serving_engine == "audiocpp" and (
         fmt in ("verbose_json", "diarized_json") or bool(granularities)
     )
@@ -23997,8 +23995,7 @@ async def openai_audio_transcriptions(
             if path is not None:
                 await asyncio.to_thread(path.unlink, True)
         text = str(result.get("text", ""))
-        # Required by OpenAI's schema, so a null fails validation inside the official clients.
-        # Engines that detect none were refused above when no language was sent.
+        # Required by OpenAI's schema: a null fails validation inside the official clients.
         detected = str(result.get("language") or (language if has_language else "")).strip()
         if fmt == "verbose_json" and not detected:
             raise HTTPException(
