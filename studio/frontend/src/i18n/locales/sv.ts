@@ -15,7 +15,6 @@ export const sv = {
     openDefaultApp: "Öppna i standardappen",
     openWith: "Öppna med",
     unslothBrowser: "Unsloth-webbläsaren",
-    canvas: "Canvas",
     newChat: "Ny chatt",
     browserTab: "Ny webbläsarflik",
     saveAs: "Spara som…",
@@ -220,7 +219,6 @@ export const sv = {
       copied: "Kopierat",
       copyFailed: "Det gick inte att kopiera filen.",
       wrap: "Radbryt",
-      canvas: "Canvas",
     },
     pages: {
       history: "Historik",
@@ -376,27 +374,24 @@ export const sv = {
       "Text- och bildchatt på NVIDIA-GPU:er. Första inläsningen kan ta längre tid.",
   },
   sandboxSetup: {
-    unavailable: "OS-sandlåda inte tillgänglig",
-    title: "Ingen OS-sandlåda på den här datorn ännu",
-    description:
-      "Kör automatiskt håller Python och Terminal i OS-sandlådan. Tills den fungerar här frågar riskabla anrop först.",
+    levelTitle: "OS-sandlådan är inte tillgänglig",
+    levelDescription:
+      "Installera den för att använda Hög, eller behåll Låg (programvarusandlåda).",
+    useLow: "Använd sandlåda Låg",
     checking: "Kontrollerar sandlådan på den här datorn…",
     install: "Installera sandlåda",
     windowsSetup: "Konfigurera Windows-sandlåda",
     copyCommand: "Kopiera kommando",
     copied: "Kommandot kopierat",
     copyFailed: "Det gick inte att kopiera kommandot",
-    commandHint:
-      "Eller kör detta på datorn som kör Unsloth och välj sedan läget igen:",
+    copiedRunIt:
+      "Kommandot kopierat. Kör det i en terminal på datorn som kör Unsloth och växla sedan till Hög.",
     ownerOnly: "Endast ägaren kan installera den, från datorn som kör Unsloth.",
-    runInTerminal:
-      "Unsloth kan inte fråga efter ditt lösenord här. Kör detta i en terminal på datorn som kör Unsloth och välj sedan läget igen:",
-    useAnyway: "Använd ändå (riskabla anrop frågar först)",
-    cancel: "Avbryt",
-    close: "Stäng",
+    windowsNote:
+      "Kräver ett administratörssteg efter varje omstart. MXC är en förhandsversion, inte en säkerhetsgräns.",
     running:
       "Konfigurerar. Godkänn lösenords- eller administratörsfrågan på datorn som kör Unsloth…",
-    succeeded: "OS-sandlådan är klar. Kör automatiskt är på.",
+    succeeded: "OS-sandlådan är klar. Sandlåda Hög är på.",
     stillUnavailable:
       "Konfigurationen slutfördes, men OS-sandlådan klarar fortfarande inte kontrollen.",
     declined: "Lösenords- eller administratörsfrågan avböjdes.",
@@ -1254,6 +1249,23 @@ export const sv = {
         "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
       unsupportedBuild:
         "Windows-sandlådan (MXC) kräver Windows 11 24H2 (version 26100) eller senare, så den är inte tillgänglig på den här datorn.",
+      permissionsIntro:
+        "Välj när verktyg frågar först, och om Python och Terminal även körs i OS-sandlådan.",
+      levelLabel: "Sandlåda",
+      levelHigh: "Hög",
+      levelLow: "Låg",
+      levelHighShort: "OS-sandlåda",
+      levelLowShort: "Programvarusandlåda",
+      levelHelp:
+        "Låg: programvarusandlåda. Hög: OS-sandlåda. Läs mer i Inställningar > Sandlåda.",
+      levelHighDescription:
+        "Hög: OS-sandlåda. Python och Terminal körs i OS-sandlådan (bubblewrap, Seatbelt eller MXC) ovanpå programvarusandlådan. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
+      levelLowDescription:
+        "Låg: programvarusandlåda. Python och Terminal körs bara med programvarusandlådan, utanför OS-sandlådan. Riskabla anrop frågar först om du inte har valt Fullständig åtkomst.",
+      levelFullAccessNote:
+        "Fullständig åtkomst stänger av sandlådan. Den här inställningen gäller igen när du väljer en annan nivå.",
+      learnMore: "Läs mer",
+      managedNote: "Ägaren av den här Unsloth-servern konfigurerar OS-sandlådan.",
     },
     debugging: {
       logSection: "Loggfil",
