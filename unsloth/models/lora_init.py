@@ -2,6 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 import contextlib
+import functools
 import os
 import torch
 
@@ -53,6 +54,13 @@ def _orthonormalize_(Y, shift, failures, householder):
     torch.linalg.solve_triangular(R, Y, upper = True, left = False, out = Y)
 
 
+@functools.lru_cache(maxsize = 8)
+def _sketch(N, q):
+    # One seeded CPU draw per shape: a reloaded adapter re-runs this init (PEFT's from_pretrained) and must
+    # rebuild the same residual on any device; LLM spectra decay too slowly for the sketch not to matter.
+    return torch.randn(N, q, generator = torch.Generator().manual_seed(3407))
+
+
 @torch.no_grad()
 def randomized_svd(
     W,
@@ -81,7 +89,10 @@ def randomized_svd(
     M, N = A.shape
     rank = min(rank, N)
     q = min(rank + (max(rank, 10) if n_oversamples is None else n_oversamples), N)
-    Z = torch.randn(N, q, device = A.device, dtype = A.dtype, generator = generator)
+    if generator is None:
+        Z = _sketch(N, q).to(A.device, copy = True)
+    else:
+        Z = torch.randn(N, q, device = A.device, dtype = A.dtype, generator = generator)
     failures = []
     # Below q = 32 one Householder QR beats CholeskyQR's ~8 launches.
     householder = _safe or q < 32
