@@ -6,8 +6,8 @@
 
 Each caller keeps its own policy (when to probe, how to verify, what to fall back to); this module
 holds the parts they all repeated: the pinned kernel releases, the prebuilt-wheel install loop, the
-HIP-aware source build command and the uninstall command. Stdlib + wheel_utils only, so setup and
-torch-less hosts can import it.
+HIP-aware source build command and the uninstall command. Only stdlib, wheel_utils and child_stdio
+are imported, so setup and torch-less hosts can import it.
 
 The CLI is wheel-only by design: no wheel for this torch / CUDA / Python means nothing is installed
 and the model keeps its torch fallback, never a source build. Installs use --no-deps so torch is

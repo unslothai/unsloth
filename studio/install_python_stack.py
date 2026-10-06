@@ -5447,17 +5447,13 @@ def _warn_still_cpu(expected: str) -> bool:
 def _uninstall_distribution(name: str) -> bool:
     """Remove one distribution from the venv this script targets. True iff it is gone.
 
-    Same shape as the flash-attn removal below: --python sys.executable so a uv that
-    also needs --system cannot remove from the system Python instead, and a pip
-    fallback for the same interpreter. Output is swallowed; the caller reports.
+    --python sys.executable so a uv that also needs --system cannot remove from the
+    system Python instead, and a pip fallback for the same interpreter. Output is
+    swallowed; the caller reports.
     """
-    if USE_UV and shutil.which("uv"):
-        cmd = ["uv", "pip", "uninstall"]
-        if UV_NEEDS_SYSTEM:
-            cmd.append("--system")
-        cmd.extend(["--python", sys.executable, name])
-    else:
-        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", name]
+    cmd = uninstall_command(
+        name, use_uv = USE_UV and bool(shutil.which("uv")), uv_needs_system = UV_NEEDS_SYSTEM
+    )
     _count_install_action()
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
     return removed.returncode == 0
@@ -8155,14 +8151,7 @@ def _remove_rejected_flash_attn() -> bool:
     --system ALONE would remove from the system Python, leaving the rejected wheel in the
     venv while setup reported it gone.
     """
-    cmd = uninstall_command(
-        "flash-attn",
-        use_uv = USE_UV and bool(shutil.which("uv")),
-        uv_needs_system = UV_NEEDS_SYSTEM,
-    )
-    _count_install_action()
-    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
-    return removed.returncode == 0
+    return _uninstall_distribution("flash-attn")
 
 
 def _ensure_flash_attn() -> None:

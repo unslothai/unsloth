@@ -405,13 +405,21 @@ def test_pinned_kernels_match_the_wheel_utils_pins():
     from utils import wheel_utils
 
     cc1d, mamba = kernel_install.CAUSAL_CONV1D, kernel_install.MAMBA_SSM
-    assert (cc1d.package_version, cc1d.release_tag) == (
+    assert (cc1d.package_version, cc1d.release_tag, cc1d.release_base_url) == (
         wheel_utils.CAUSAL_CONV1D_PACKAGE_VERSION,
         wheel_utils.CAUSAL_CONV1D_RELEASE_TAG,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_BASE_URL,
     )
-    assert (mamba.package_version, mamba.release_tag) == (
+    assert (mamba.package_version, mamba.release_tag, mamba.release_base_url) == (
         wheel_utils.MAMBA_SSM_PACKAGE_VERSION,
         wheel_utils.MAMBA_SSM_RELEASE_TAG,
+        wheel_utils.MAMBA_SSM_RELEASE_BASE_URL,
+    )
+    assert (cc1d.import_name, cc1d.pypi_name, mamba.import_name, mamba.pypi_name) == (
+        "causal_conv1d",
+        "causal-conv1d",
+        "mamba_ssm",
+        "mamba-ssm",
     )
     url = cc1d.wheel_url(_env("2.10.0+cu128", "12.8"))
     assert url.startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu12torch2.10")

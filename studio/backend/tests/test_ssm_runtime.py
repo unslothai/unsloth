@@ -4,8 +4,7 @@
 """Tests for utils.ssm_runtime: the inference-side auto-install of SSM/Mamba kernels.
 
 Covers detection, wheel-first install, idempotency, the failure path, the inference
-worker wiring, and a drift guard so the constants/detection stay in lockstep with the
-training worker (the original source of this behaviour).
+worker wiring, and that the training worker shares the same tables and pinned kernels.
 """
 
 import json
