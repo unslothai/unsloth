@@ -250,6 +250,23 @@ def test_new_loads_are_refused_while_the_runtime_is_replaced():
     assert problem == "The audio runtime is being updated. Try again in a moment."
 
 
+def test_a_load_registering_after_the_unload_scan_is_refused():
+    # Preflight can pass just before the flag is set; the registration is what the scan races.
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator.loading_models = set()
+    orchestrator._managed_engine = None
+    config = SimpleNamespace(identifier = "kokoro", audio_cpp = object())
+    audio_cpp_server.UPDATE_IN_PROGRESS.set()
+    try:
+        with pytest.raises(RuntimeError, match = "being updated"):
+            orchestrator.load_model(config)
+    finally:
+        audio_cpp_server.UPDATE_IN_PROGRESS.clear()
+    assert orchestrator.loading_models == set()
+
+
 def test_a_kept_tree_is_not_reported_as_updated(run_env):
     # Exit 0 also means the release lookup could not answer and the intact tree was kept.
     run_env.installer(new_tag = "v0.9.0-unsloth.1")

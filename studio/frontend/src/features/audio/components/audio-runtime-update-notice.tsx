@@ -7,7 +7,7 @@ import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { toast } from "@/lib/toast";
 import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect, useRef } from "react";
 import { audioRuntimeNoticeMode } from "../audio-page-policy";
 
 /** The managed audio runtime is not the release this Studio pins. The owner updates it in place
@@ -28,7 +28,19 @@ export function AudioRuntimeUpdateNotice({
     isOwner,
     offered: Boolean(status?.audio?.update_available),
     applying,
+    checked: status !== null,
   });
+  // The card or another tab can run the job too, so refresh whenever a job this notice followed
+  // settles, not only after its own Update: a stale notice would send the owner to the CLI.
+  const followedJob = useRef(false);
+  useEffect(() => {
+    if (applying) {
+      followedJob.current = true;
+    } else if (followedJob.current) {
+      followedJob.current = false;
+      onUpdated();
+    }
+  }, [applying, onUpdated]);
 
   async function handleUpdate() {
     const result = await apply();
@@ -37,7 +49,6 @@ export function AudioRuntimeUpdateNotice({
       toast.success(
         result.message?.trim() || `audio.cpp updated to ${update.expected}.`,
       );
-      onUpdated();
     } else {
       toast.error(
         `audio.cpp update failed: ${result.error ?? "unknown error"}`,
@@ -65,7 +76,7 @@ export function AudioRuntimeUpdateNotice({
               Some models may not work until it is updated. Ask the Studio owner
               to update it.
             </>
-          ) : mode === "updating" ? null : (
+          ) : mode === "updating" || mode === "checking" ? null : (
             <>Some models may not work until you update. </>
           )}
           {mode === "cli" ? (
