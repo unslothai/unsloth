@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
+import functools
 import io
 import math
 import os
@@ -156,6 +157,37 @@ def _allow_empty_prompt(_rendered_text: str) -> None:
     return None
 
 
+# Filters that stringify their input before finalize runs, so a missing cell would still render "None" / "nan".
+_STRINGIFYING_FILTERS = (
+    "capitalize",
+    "escape",
+    "forceescape",
+    "lower",
+    "replace",
+    "string",
+    "title",
+    "trim",
+    "truncate",
+    "urlencode",
+)
+
+
+def _blank_missing_filter_input(filter_func: Any) -> Any:
+    value_index = 1 if hasattr(filter_func, "jinja_pass_arg") else 0
+
+    @functools.wraps(filter_func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if len(args) > value_index:
+            args = (
+                *args[:value_index],
+                _blank_missing_prompt_value(args[value_index]),
+                *args[value_index + 1 :],
+            )
+        return filter_func(*args, **kwargs)
+
+    return wrapper
+
+
 def _apply_data_designer_prompt_blank_patch() -> None:
     try:
         from data_designer.engine.column_generators.utils.prompt_renderer import (  # pyright: ignore[reportMissingImports]
@@ -174,6 +206,9 @@ def _apply_data_designer_prompt_blank_patch() -> None:
         env = self._render_func_registry[template_name].func.__self__
         env.finalize = _blank_missing_prompt_value
         env._assert_rendered_text_not_empty = _allow_empty_prompt
+        for name in _STRINGIFYING_FILTERS:
+            if name in env.filters:
+                env.filters[name] = _blank_missing_filter_input(env.filters[name])
 
     RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
     setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)

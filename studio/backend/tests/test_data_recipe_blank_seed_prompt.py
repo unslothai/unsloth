@@ -122,3 +122,27 @@ def test_blank_system_prompt_cell_keeps_the_row(tmp_path: Path, provider) -> Non
     assert "Who?" in prompts and "When?" in prompts
     assert "ctx" in systems
     assert "None" not in systems
+
+
+@pytest.mark.parametrize(
+    "template", ["{{ a | string }}", "{{ a | lower }}", "{{ a | title }}", "{{ a | trim }}"]
+)
+def test_stringifying_filters_render_blank_cells_as_empty_text(template: str) -> None:
+    pytest.importorskip("data_designer")
+    from core.data_recipe.service import _apply_data_designer_prompt_blank_patch
+    from data_designer.engine.column_generators.utils.prompt_renderer import (
+        PromptType,
+        RecordBasedPromptRenderer,
+    )
+    from data_designer.engine.models.recipes.response_recipes import TextResponseRecipe
+
+    _apply_data_designer_prompt_blank_patch()
+
+    def render(value):
+        return RecordBasedPromptRenderer(TextResponseRecipe()).render(
+            prompt_template = f"<{template}>", record = {"a": value}, prompt_type = PromptType.USER_PROMPT
+        )
+
+    assert render(None) == "<>"
+    assert render(float("nan")) == "<>"
+    assert render("Ab c") not in ("<>", "<None>")
