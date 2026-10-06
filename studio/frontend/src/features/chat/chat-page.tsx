@@ -319,9 +319,14 @@ const FullViewChatButton = lazy(() =>
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Only what is on screen: background tabs stay mounted under hidden or aria-hidden wrappers.
 function focusableIn(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => element.getAttribute("aria-hidden") !== "true" && element.tabIndex !== -1,
+    (element) =>
+      element.tabIndex !== -1 &&
+      !element.closest('[aria-hidden="true"], [inert]') &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== "hidden",
   );
 }
 

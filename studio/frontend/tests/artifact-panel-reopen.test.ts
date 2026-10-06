@@ -68,6 +68,8 @@ test("the browser over the chat is a modal: focus moves in, is trapped, and Esca
   assert.match(overlay, /\(focusableIn\(dialog\)\[0\] \?\? dialog\)\.focus\(\)/);
   assert.match(overlay, /previous instanceof HTMLElement && previous\.isConnected\) previous\.focus\(\)/);
   assert.match(overlay, /event\.key !== "Tab"/);
+  // Background tabs stay mounted but hidden; the trap counts only what is on screen.
+  assert.match(page, /!element\.closest\('\[aria-hidden="true"\], \[inert\]'\) &&\s*element\.getClientRects\(\)\.length > 0 &&/);
   // Menus, fields and annotating keep their own Escape.
   assert.match(overlay, /event\.defaultPrevented \|\| typing \|\| useBrowserStore\.getState\(\)\.annotateTabId !== null/);
 });
