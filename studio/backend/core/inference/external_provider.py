@@ -1434,6 +1434,8 @@ class ExternalProviderClient:
     ):
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
+        # Returns the messages and max_tokens to send when a deployment refuses server-side compaction.
+        self.fit_without_compaction: Optional[Any] = None
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
@@ -6048,7 +6050,30 @@ class ExternalProviderClient:
                             and body.pop("context_management", None) is not None
                         ):
                             # A deployment without compaction (Azure: "compact_threshold is not enabled") still answers.
-                            continue
+                            if self.fit_without_compaction is None:
+                                continue
+                            fitted, fitted_max_tokens = await asyncio.to_thread(
+                                self.fit_without_compaction, messages
+                            )
+                            async for line in self._stream_openai_responses(
+                                fitted,
+                                model,
+                                temperature,
+                                top_p,
+                                fitted_max_tokens,
+                                enable_thinking,
+                                reasoning_effort,
+                                enabled_tools,
+                                enable_prompt_caching,
+                                openai_code_exec_container_id,
+                                None,
+                                tools,
+                                tool_choice,
+                                response_format,
+                                stream = stream,
+                            ):
+                                yield line
+                            return
                         if expired_container_4xx and not retried:
                             if stream:
                                 yield (

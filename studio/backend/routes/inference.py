@@ -28048,6 +28048,9 @@ async def _proxy_to_external_provider(
         fitted, _, max_tokens = _fit_external_context(messages, payload, saved_transcript = False)
         return fitted, max_tokens
 
+    if _provider_compacts and payload.compaction_threshold and _rolling_context_policy(payload):
+        client.fit_without_compaction = _refit_loop_request
+
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 

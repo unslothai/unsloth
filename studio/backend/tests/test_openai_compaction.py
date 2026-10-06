@@ -234,6 +234,7 @@ def _stream(
     messages,
     threshold = None,
     base_url = "https://api.openai.com/v1",
+    fit = None,
 ):
     monkeypatch.setattr(
         ep_mod,
@@ -247,6 +248,7 @@ def _stream(
             base_url = base_url,
             api_key = "sk-test",
         )
+        client.fit_without_compaction = fit
         lines = [
             line
             async for line in client.stream_chat_completion(
@@ -359,6 +361,40 @@ def test_a_deployment_without_compaction_is_retried_without_it(monkeypatch):
     assert len(bodies) == 2
     assert "context_management" not in bodies[1]
     assert not any('"error"' in line for line in lines)
+
+
+def test_a_deployment_without_compaction_gets_the_locally_fitted_history(monkeypatch):
+    bodies: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        bodies.append(body)
+        if "context_management" in body:
+            return httpx.Response(
+                400, json = {"error": {"message": "compact_threshold is not enabled."}}
+            )
+        return httpx.Response(
+            200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
+        )
+
+    _stream(
+        monkeypatch,
+        handler,
+        messages = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "turn 2"},
+        ],
+        threshold = 96_000,
+        base_url = "https://myres.openai.azure.com/openai/v1",
+        fit = lambda messages: (messages[2:], 9),
+    )
+    assert "turn 1" in json.dumps(bodies[0]["input"])
+    assert "context_management" not in bodies[1]
+    assert "turn 1" not in json.dumps(bodies[1]["input"]) and "turn 2" in json.dumps(
+        bodies[1]["input"]
+    )
+    assert bodies[1]["max_output_tokens"] == 9
 
 
 def test_build_external_messages_passes_the_compaction_item_to_openai():
