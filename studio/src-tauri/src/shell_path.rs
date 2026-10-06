@@ -1,17 +1,10 @@
-//! PATH from the user's login shell, for a GUI launch that never ran their dotfiles.
-//!
-//! Adapted from tauri-apps/fix-path-env-rs (MIT OR Apache-2.0) `fix()`, with one
-//! change, unsloth#12678: a `-c` shell never loads `$HISTFILE` but saves its
-//! history on exit, so an rc that adds one entry (`print -s`, a plugin) rewrote
-//! the user's history file down to that entry on every launch. After the rc files
-//! the probe turns history saving off (zsh `RCS`, which also covers a readonly
-//! HISTFILE, then `unset HISTFILE`) and `exec`s a plain sh to print the
-//! environment, so no logout file, `zshexit` or EXIT trap of the login shell runs.
+//! PATH from the login shell for a GUI launch. Adapted from tauri-apps/fix-path-env-rs
+//! (MIT OR Apache-2.0) `fix()`, except unsloth#12678: a `-c` shell never loads $HISTFILE
+//! but saves history on exit, so the probe disables that save and `exec`s past exit hooks.
 
 const DELIMITER: &str = "_SHELL_ENV_DELIMITER_";
 
-/// Shells that cannot parse the POSIX probe keep the command as it was. A list of
-/// exceptions, not of shells: a versioned or renamed bash/zsh still needs the fix.
+/// Keep the old command; an exception list so a renamed bash/zsh still gets the fix.
 const NON_POSIX_SHELLS: &[&str] = &[
     "fish", "nu", "nushell", "csh", "tcsh", "xonsh", "elvish", "pwsh", "ion", "murex",
 ];
@@ -30,8 +23,7 @@ fn probe_command(shell: &str) -> String {
     if NON_POSIX_SHELLS.contains(&name) {
         return env_command();
     }
-    // eval + `|| :`: a readonly HISTFILE must neither abort the list (zsh) nor trip
-    // ERR_EXIT / `set -e`.
+    // zsh RCS off also covers a readonly HISTFILE; eval + `|| :` survive ERR_EXIT / `set -e`.
     format!(
         "if [ -n \"${{ZSH_VERSION-}}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; \
          eval 'unset HISTFILE' 2>/dev/null || :; \
@@ -173,8 +165,7 @@ mod tests {
                 ZSH.to_string(),
                 Some((".zlogout", "fc -W $HOME/.zsh_history\n")),
             ),
-            // A readonly HISTFILE cannot be unset; RCS still stops the save, and the
-            // failed unset must not end the probe under ERR_EXIT.
+            // Readonly HISTFILE: RCS still stops the save; the failed unset must not abort.
             (
                 "zsh",
                 ".zshrc",
@@ -190,7 +181,6 @@ mod tests {
             .as_nanos();
         let root =
             std::env::temp_dir().join(format!("unsloth-12678-{}-{nanos}", std::process::id()));
-        // create_dir, not _all: a root someone else made first is not ours to fill.
         std::fs::create_dir(&root).unwrap();
         let mut ran = 0;
         for (index, (shell, rc, hist, body, extra)) in cases.into_iter().enumerate() {

@@ -63,20 +63,16 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
 )
 # Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
 
-# unsloth#12678: a -c shell never loads $HISTFILE but still saves its history on
-# exit, so an rc that adds one entry overwrites the user's file with it. Shells
-# that cannot parse the POSIX probe keep the command as it was; a list of
-# exceptions, so a versioned or renamed bash/zsh still gets the fix.
+# Exception list, so a renamed bash/zsh still gets the unsloth#12678 probe.
 _NON_POSIX_SHELLS = frozenset(
     {"fish", "nu", "nushell", "csh", "tcsh", "xonsh", "elvish", "pwsh", "ion", "murex"}
 )
 
 
 def probe_command(shell: str, command: str) -> str:
-    """``command`` for ``shell -ilc``, with no history save, logout file or EXIT trap.
+    """``command`` for ``shell -ilc`` without the exit-time history save (unsloth#12678).
 
-    zsh ``RCS`` off also covers a readonly HISTFILE; ``eval`` + ``|| :`` keep a
-    failed unset from aborting the list (zsh) or tripping ERR_EXIT / ``set -e``.
+    zsh ``RCS`` off covers a readonly HISTFILE; ``eval`` + ``|| :`` survive ERR_EXIT / ``set -e``.
     """
     if os.path.basename(shell) in _NON_POSIX_SHELLS:
         return command

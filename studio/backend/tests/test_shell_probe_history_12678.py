@@ -3,9 +3,7 @@
 
 """unsloth#12678: reading the login shell's environment must not touch its history.
 
-``$SHELL -ilc`` never loads ``$HISTFILE`` but saves its history on exit, so an rc
-that adds an entry, an EXIT trap or a logout file rewrote the user's file. Real
-shells against a throwaway HOME; each case first shows the old command damaging it.
+Real shells, throwaway HOME; each case first shows the old command damaging it.
 """
 
 from __future__ import annotations
@@ -63,8 +61,7 @@ CASES = {
         False,
         "kept",
     ),
-    # A readonly HISTFILE cannot be unset; RCS still stops the save, and the
-    # failed unset must not end the probe under ERR_EXIT.
+    # Readonly HISTFILE: RCS still stops the save; the failed unset must not abort.
     "zsh_readonly_histfile_errexit": (
         "zsh",
         ".zshrc",
@@ -73,8 +70,7 @@ CASES = {
         False,
         "kept",
     ),
-    # bash has no RCS: with HISTFILE locked it appends this session's line, as on
-    # base, but the trap that would rewrite the file no longer runs.
+    # bash has no RCS: appends as on base, but the rewriting trap no longer runs.
     "bash_readonly_histfile_errexit": (
         "bash",
         ".bash_profile",
