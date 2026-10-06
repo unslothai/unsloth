@@ -1957,12 +1957,25 @@ def test_speech_encodes_each_format_and_history_keeps_the_wav(
     assert clip.read_bytes() == _wav()
 
 
-def test_speech_pcm_is_the_bare_samples_with_the_rate_beside_them(stub):
+@pytest.mark.parametrize("rate, channels", [(24000, 1), (44100, 2)])
+def test_speech_pcm_is_openais_24k_mono_samples(stub, monkeypatch, rate, channels):
     stub["use"](QWEN3_BASE, _speak_info())
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x01\x00" * rate * channels)
+    monkeypatch.setattr(
+        _Backend, "generate_audio_response", lambda self, **kw: (buf.getvalue(), rate)
+    )
     with _v1(ALICE) as client:
         response = client.post(
             "/v1/audio/speech", json = {"input": "Hello.", "response_format": "pcm"}
         )
     assert response.status_code == 200, response.text
-    assert response.headers["x-sample-rate"] == "24000"
-    assert response.content == _wav()[44:]
+    assert response.headers["content-type"] == "audio/pcm"
+    # One second of audio: 24000 two-byte mono samples, whatever the model's rate and layout.
+    assert abs(len(response.content) - 48000) <= 2 * 64
+    if (rate, channels) == (24000, 1):
+        assert response.content == buf.getvalue()[44:]
