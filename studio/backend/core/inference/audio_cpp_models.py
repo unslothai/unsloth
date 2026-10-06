@@ -1089,13 +1089,12 @@ def family_policy(
     if family == "fireredtts3" and re.search(r"(^|[-_ /])base([-_ ./]|$)", " ".join(names).lower()):
         return replace(policy, server_task = "clon")
     if family == "dots_tts" and re.search(r"(^|[-_ /])edit([-_ ./]|$)", " ".join(names).lower()):
-        # DotTTS-MF and SOAR only speak.
+        # DotTTS-MF and SOAR support speech only.
         return replace(policy, edit = _DOTS_EDIT)
     return policy
 
 
-# Dictation keys Settings saves and the sub-folder ids of earlier builds, mapped to the folder row
-# and the variant they name. Saved settings keep working through these.
+# maps saved Settings keys and earlier subfolder ids to current rows and variants for compatibility.
 _LEGACY_KEYS: dict[str, tuple[str, Optional[str]]] = {
     "audiocpp-kokoro-82m": ("Kokoro-82M-GGUF", None),
     "audiocpp-kitten-tts-mini": ("KittenTTS-GGUF", None),
@@ -1128,7 +1127,6 @@ _LEGACY_SUBFOLDER_VARIANTS = {
 
 @dataclass(frozen = True)
 class AudioCppRef:
-    """Where a Studio id points: a repo, a folder in it (umbrella rows), or a local GGUF."""
 
     id: str
     repo_id: Optional[str]

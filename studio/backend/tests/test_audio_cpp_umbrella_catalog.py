@@ -165,7 +165,7 @@ def test_the_pickers_offer_every_runnable_folder_on_its_pages():
     "folder", sorted(f for f, (_, pages) in UMBRELLA.items() if "transcribe" in pages)
 )
 def test_dictation_routes_every_transcribe_folder_to_audiocpp(folder):
-    """Settings > Voice lists every Transcribe folder; dictation must send each to the audio runtime."""
+    """every Transcribe folder in Settings > Voice must route dictation to the audio runtime."""
     from core.inference.stt_audiocpp_sidecar import resolve_audio_cpp_stt_model_id
     from routes.inference import _stt_engine_for_model
 
