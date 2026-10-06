@@ -652,7 +652,7 @@ def test_build_tool_cancellation_reaps_the_guest_process_group(
             return ""
         return install._run(
             "vllm",
-            [str(_runner(tmp_path)), sys.executable, "-u", "-c", code],
+            [str(_runner(tmp_path)), sys.executable, "-I", "-S", "-u", "-c", code],
             cancel,
             stdin_pipe = True,
         )
@@ -666,7 +666,8 @@ def test_build_tool_cancellation_reaps_the_guest_process_group(
     thread = threading.Thread(target = provision)
     thread.start()
     try:
-        deadline = time.monotonic() + 10
+        # Python start-up on a loaded -n 4 runner, not the cancellation, sets this wait.
+        deadline = time.monotonic() + 60
         while (
             not (pids.exists() and pids.read_text())
             and thread.is_alive()
