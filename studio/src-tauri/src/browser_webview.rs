@@ -649,7 +649,8 @@ fn safe_download_name(suggested: &Path) -> String {
         .map(|name| {
             name.chars()
                 .map(|c| {
-                    if c.is_control() || "/\\:".contains(c) {
+                    // Bidi controls would let `x\u{202e}fdp.exe` read as `xexe.pdf`.
+                    if c.is_control() || "/\\:".contains(c) || is_bidi_control(c) {
                         '_'
                     } else {
                         c
@@ -661,6 +662,19 @@ fn safe_download_name(suggested: &Path) -> String {
         })
         .filter(|name| !name.trim_matches('.').is_empty())
         .unwrap_or_else(|| "download".into())
+}
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
+fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
 }
 
 /// A free name in `dir` for a download, from the name the page suggested; `reserved` holds the
@@ -675,15 +689,7 @@ fn download_destination(
 }
 
 fn free_destination(dir: &Path, name: &str, reserved: &HashSet<&Path>) -> Option<PathBuf> {
-    // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
-    let same = |a: &Path, b: &Path| {
-        if cfg!(any(windows, target_os = "macos")) {
-            a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-        } else {
-            a == b
-        }
-    };
-    let free = |path: &Path| !path.exists() && !reserved.iter().any(|taken| same(taken, path));
+    let free = |path: &Path| !path.exists() && !reserved.iter().any(|taken| same_path(taken, path));
     let candidate = dir.join(name);
     if free(&candidate) {
         return Some(candidate);
@@ -723,13 +729,11 @@ fn dangerous_extensions() -> &'static HashSet<String> {
 }
 
 /// Whether a file of this name runs or installs something: by its last extension, after the
-/// trailing dots and spaces Windows ignores. A dotfile (`.bashrc`) has no extension.
+/// trailing dots and spaces Windows ignores. A bare `.exe` still runs as one.
 fn dangerous_download(name: &str) -> bool {
     let name = name.trim_end_matches(['.', ' ']);
-    match name.rfind('.') {
-        Some(dot) if dot > 0 => dangerous_extensions().contains(&name[dot + 1..].to_lowercase()),
-        _ => false,
-    }
+    name.rfind('.')
+        .is_some_and(|dot| dangerous_extensions().contains(&name[dot + 1..].to_lowercase()))
 }
 
 /// A neutral, non-executable name for a dangerous download until the reader keeps it.
@@ -1280,20 +1284,31 @@ fn create_view<R: Runtime>(
                         let pending = inner.downloads.entry(url.to_string()).or_default();
                         let index = path
                             .as_ref()
-                            .and_then(|path| pending.iter().position(|p| p == path))
+                            .and_then(|path| pending.iter().position(|p| same_path(p, path)))
                             .unwrap_or(0);
                         let recorded = (index < pending.len()).then(|| pending.remove(index));
                         if pending.is_empty() {
                             inner.downloads.remove(url.as_str());
                         }
-                        let path = path.or(recorded);
-                        let staged = path.as_deref().and_then(|path| {
-                            inner
-                                .staged
-                                .iter()
-                                .find(|(_, entry)| entry.path == path)
-                                .map(|(id, entry)| (id.clone(), entry.name.clone()))
-                        });
+                        // Matched by the path reserved for it too: the engine may report another
+                        // spelling of it, which must not publish a staged file as an ordinary one.
+                        let staged = [recorded.as_deref(), path.as_deref()]
+                            .into_iter()
+                            .flatten()
+                            .find_map(|candidate| {
+                                inner
+                                    .staged
+                                    .iter()
+                                    .find(|(_, entry)| same_path(&entry.path, candidate))
+                                    .map(|(id, entry)| {
+                                        (id.clone(), entry.name.clone(), entry.path.clone())
+                                    })
+                            });
+                        let path = match &staged {
+                            Some((_, _, staged_path)) => Some(staged_path.clone()),
+                            None => path.or(recorded),
+                        };
+                        let staged = staged.map(|(id, name, _)| (id, name));
                         (path, staged)
                     };
                     let marked = match (success, path.as_deref()) {
@@ -2220,6 +2235,24 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn saved_names_drop_bidi_controls() {
+        let name = safe_download_name(Path::new("invoice\u{202e}fdp.exe"));
+        assert_eq!(name, "invoice_fdp.exe");
+        assert!(dangerous_download(&name));
+        assert_eq!(
+            safe_download_name(Path::new("a\u{2066}b\u{200f}.txt")),
+            "a_b_.txt"
+        );
+    }
+
+    #[test]
+    fn a_bare_extension_is_classified() {
+        assert!(dangerous_download(".exe"));
+        assert!(dangerous_download(".sh"));
+        assert!(!dangerous_download(".bashrc"));
     }
 
     #[test]
