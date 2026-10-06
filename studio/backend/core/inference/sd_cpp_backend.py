@@ -1832,10 +1832,8 @@ def _native_condition_images(
     source_sized: bool = False,
 ) -> tuple[int, int, list[bytes]]:
     """(width, height, ordered PNG bytes) for one native reference / edit call, decoded through
-    the diffusers engine's helper. ``source_sized`` is an edit-only family (Kontext,
-    Qwen-Image-Edit): as on the diffusers engine, the output takes the source's size snapped to
-    the family grid, and the source is resized to it, whatever width / height asked for. A
-    ``full_fidelity`` build gets every image as decoded. An older
+    the diffusers engine's helper. ``source_sized`` (edit-only families): the output is the source's size on
+    the family grid, whatever width / height asked for. A ``full_fidelity`` build gets every image as decoded. An older
     build reads references as RGB, so each is flattened over white first (else transparent pixels
     become noise), and its sd-server centre-crops references to the output aspect, so with
     ``pad_to_output`` each is padded to it instead: white for images, black for a separate mask.
@@ -1856,14 +1854,12 @@ def _native_condition_images(
     if source_sized:
         multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
         sw, sh = images[0].size
-        # A source larger than the family renders is scaled down to fit (aspect kept) rather than refused.
         max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
         max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
-        # A source below the minimum side is scaled up to it: the diffusers engine edits it at its own size, which
-        # sd.cpp's size check would refuse, and the caller has no width / height to change.
+        # Fit the bounds instead of refusing: the caller has no width / height to change on an edit-only family.
         up = max(1.0, MIN_OUTPUT_SIDE / float(min(sw, sh)))
         fit = min(up, max_side / float(max(sw, sh)), math.sqrt(max_pixels / float(sw * sh)))
-        # The diffusers engine's own snap (``_snap_to_multiple``): nearest multiple, Python rounding.
+        # Same rounding as diffusion._snap_to_multiple.
         floor = -(-MIN_OUTPUT_SIDE // multiple) * multiple if up > 1.0 else multiple
         width = max(floor if sw <= sh else multiple, int(round(sw * fit / multiple)) * multiple)
         height = max(floor if sh <= sw else multiple, int(round(sh * fit / multiple)) * multiple)
@@ -2901,7 +2897,6 @@ class SdCppDiffusionBackend:
                 hf_token,
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
-                # An edit-only family cannot run at all without its projector, so a missing one fails the load.
                 vision_optional = not getattr(fam, "edit", False),
             )
 
@@ -3631,10 +3626,8 @@ class SdCppDiffusionBackend:
         )
 
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
-        """Whether this load can run an edit workflow natively. A unified-edit family needs its
-        vision projector loaded and a build carrying the family's edit marker. An edit-only family
-        (Kontext, Qwen-Image-Edit) needs its vision projector when its encoder reads the source
-        through one, and the edit marker only when it declares one."""
+        """Whether this load can run an edit natively: unified-edit needs its projector and the build's edit marker;
+        edit-only needs its projector if it declares one, and the marker only if it declares one."""
         if state is None:
             return False
         fam = state.family
@@ -3691,9 +3684,7 @@ class SdCppDiffusionBackend:
 
         from core.inference import diffusion_lora
 
-        # An edit-only family (Kontext, Qwen-Image-Edit) has no text-to-image mode: an input image
-        # with no explicit workflow is an edit, as on the diffusers engine. Re-checked against the
-        # state this call actually runs on below.
+        # Edit-only families: an input image with no workflow is an edit (re-checked under the lock below).
         loaded = self._state
         if (
             workflow is None
@@ -4398,7 +4389,6 @@ class SdCppDiffusionBackend:
         from hub.utils.gguf import extract_quant_token
 
         if getattr(state.family, "edit", False):
-            # Edit-only families have no text-to-image mode, so only "edit", as on the diffusers engine.
             workflows = ["edit"] if self._native_edit_ready(state) else []
         else:
             workflows = ["txt2img"]
@@ -4410,8 +4400,7 @@ class SdCppDiffusionBackend:
         full_fidelity = self._native_reference_fidelity(state)
         conditioning["alpha"] = full_fidelity
         notes: list[str] = []
-        # The alpha and padding notes describe the unified family's condition images and RGBA output. An edit-only
-        # family reads its source as RGB on both engines and renders at the source's own aspect ratio.
+        # The alpha / padding notes are about the unified family's RGBA path; edit-only families are RGB, source-sized.
         if "edit" in workflows and not getattr(state.family, "edit", False):
             if not full_fidelity:
                 notes.append(
