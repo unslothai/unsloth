@@ -40,9 +40,9 @@ test("the web keeps room for the collapse button beside search; desktop does not
     source,
     /SIDEBAR_WIDTH_MIN = isTauri\s*\?\s*SIDEBAR_WIDTH_MIN_DESKTOP\s*:\s*SIDEBAR_WIDTH_MIN_WEB;/,
   );
-  // The header only draws that button off the desktop titlebar.
+  // Off the desktop titlebar, or always in the mobile sheet.
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
-  assert.match(sidebar, /\{!isMobile && !usesDesktopTitlebar && \(/);
+  assert.match(sidebar, /\{\(isMobile \|\| !usesDesktopTitlebar\) && \(/);
 });
 
 test("clamps to the absolute range on a roomy window", () => {

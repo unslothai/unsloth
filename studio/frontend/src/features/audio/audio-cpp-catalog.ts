@@ -33,19 +33,23 @@ export interface AudioCppModel {
   id: string;
   task: AudioCppTask;
   workflows?: readonly AudioCppWorkflow[];
-  /** ASR only: the primary language codes the model transcribes. Absent = multilingual. */
+  /** ASR only: primary language codes; absent means multilingual. */
   languages?: readonly string[];
-  /** Phonemizes with eSpeak-ng, which upstream runtime bundles lack (backend needs_espeak). */
+  /** uses eSpeak-ng phonemization, absent from upstream runtime bundles. */
   needsEspeak?: boolean;
   stems?: readonly string[];
 }
 
-/** The `audio_cpp_runtime` block of /api/inference/audio/stt/status. */
+/** the `audio_cpp_runtime` block of `/api/inference/audio/stt/status`. */
 export interface AudioCppRuntimeStatus {
   available: boolean;
   espeak: boolean;
   backend: string | null;
   release_tag: string | null;
+  /** update target tag; null for unmanaged or unknown runtimes. */
+  expected_tag?: string | null;
+  /** managed runtime differs from the target; absent on older servers. */
+  outdated?: boolean;
 }
 
 const MB = 1024 * 1024;
@@ -58,8 +62,8 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("KittenTTS-GGUF"), task: "tts", needsEspeak: true },
   { id: folder("Piper-TTS-GGUF"), task: "tts", needsEspeak: true },
   { id: folder("Inflect-Micro-v2-GGUF"), task: "tts", needsEspeak: true },
-  { id: folder("PocketTTS-GGUF"), task: "tts" },
-  { id: folder("MOSS-TTS-Nano-100M-GGUF"), task: "tts" },
+  { id: folder("PocketTTS-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("MOSS-TTS-Nano-100M-GGUF"), task: "tts", workflows: ["speak", "clone"] },
   { id: folder("Supertonic-3-GGUF"), task: "tts" },
   { id: folder("Chatterbox-Turbo-GGUF"), task: "tts" },
   { id: folder("VoxCPM2-GGUF"), task: "tts", workflows: ["speak", "clone"] },
@@ -69,18 +73,46 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("CosyVoice3-GGUF"), task: "tts", workflows: ["clone"] },
   { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
-  { id: folder("DotTTS-Edit-GGUF"), task: "tts", workflows: ["speak", "edit"] },
+  { id: folder("DotTTS-Edit-GGUF"), task: "tts", workflows: ["speak", "clone", "edit"] },
   { id: folder("Vevo2-GGUF"), task: "tts", workflows: ["clone", "edit", "convert"] },
   { id: folder("FireRedAudio-GGUF"), task: "tts", workflows: ["clone", "edit"] },
   { id: folder("SeedVC-MLX-GGUF"), task: "tts", workflows: ["convert"] },
   { id: folder("RVC-GGUF"), task: "tts", workflows: ["convert"] },
   { id: folder("MeanVC2-GGUF"), task: "tts", workflows: ["convert"] },
+  { id: folder("Tone-Color-VC-GGUF"), task: "tts", workflows: ["convert"] },
+  { id: folder("Breeze-TTS-2-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("DotTTS-MF-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("DotTTS-SOAR-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  // Speak only: its spec lists clone, but from a short reference clip it may not keep the voice.
+  { id: folder("DramaBox-GGUF"), task: "tts" },
+  { id: folder("Higgs-Audio-v3-TTS-4B-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("Irodori-TTS-500M-v3-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("Irodori-TTS-600M-v3-VoiceDesign-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("Irodori-TTS-v4-Small-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("MOSS-TTS-Local-v1.5-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("MOSS-VoiceGenerator-GGUF"), task: "tts" },
+  { id: folder("MagpieTTS-Multilingual-357M-GGUF"), task: "tts" },
+  { id: folder("Maya1-GGUF"), task: "tts" },
+  { id: folder("NeuTTS-2E-GGUF"), task: "tts" },
+  { id: folder("OmniVoice-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("VibeVoice-1.5B-GGUF"), task: "tts" },
+  { id: folder("VoxCPM1-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("Fish-Audio-S2-Pro-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("Confucius4-TTS-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("FireRedTTS3-Base-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("FireRedTTS3-Instruct-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("IndexTTS2.5-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("MioTTS-1.7B-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("Qwen3-TTS-12Hz-1.7B-Base-GGUF"), task: "tts", workflows: ["clone"] },
   { id: "audio-cpp/MiniMax-Music3-GGUF", task: "music" },
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-SFX-GGUF"), task: "music" },
   { id: folder("ControlFoley-GGUF"), task: "music" },
+  { id: folder("HeartMuLa-GGUF"), task: "music" },
+  { id: folder("MiDashengLM-Gen-GGUF"), task: "music" },
+  { id: folder("Stable-Audio-3-Medium-GGUF"), task: "music" },
   {
     id: folder("HTDemucs-GGUF"),
     task: "sep",
@@ -113,7 +145,40 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
   // Diarizes; Transcribe offers it for the Speakers switch.
   { id: folder("MOSS-Transcribe-Diarize-GGUF"), task: "asr" },
+  { id: folder("Citrinet-ASR-GGUF"), task: "asr" },
+  { id: folder("Cohere-Transcribe-GGUF"), task: "asr" },
+  { id: folder("Fun-ASR-Nano-2512-GGUF"), task: "asr" },
+  { id: folder("GigaAM-ASR-GGUF"), task: "asr" },
+  { id: folder("Granite-Speech-5.0-470M-TurboCTC-GGUF"), task: "asr", languages: ENGLISH },
+  { id: folder("Higgs-Audio-v3-STT-GGUF"), task: "asr" },
+  { id: folder("Hviske-v5.3-GGUF"), task: "asr", languages: ["da"] },
+  { id: folder("Kroko-ASR-GGUF"), task: "asr", languages: ENGLISH },
+  { id: folder("Niagara-ASR-GGUF"), task: "asr", languages: ENGLISH },
+  { id: folder("VibeVoice-ASR-GGUF"), task: "asr" },
+  { id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"), task: "asr" },
 ];
+
+/** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
+export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
+  "CrisperWhisper2.0-GGUF": "needs a newer audio runtime",
+  "KugelAudio-0-Open-GGUF": "needs a newer audio runtime",
+  "OWSM-CTC-GGUF": "needs a newer audio runtime",
+  "OWSM-GGUF": "needs a newer audio runtime",
+  "Sidon-GGUF": "needs a newer audio runtime",
+  "Smart-Turn-v3-GGUF": "needs a newer audio runtime",
+  "MioCodec-25Hz-44.1kHz-v2-GGUF": "the codec MioTTS downloads and loads with",
+  "Qwen3-ForcedAligner-0.6B-GGUF": "the aligner Transcribe uses for Qwen3-ASR timestamps",
+  "MiniMax-H3-Q4-GGUF": "an audio and video package Studio cannot load yet",
+  "Apollo-GGUF": "audio restoration has no page",
+  "AudioSR-GGUF": "audio super-resolution has no page",
+  "UniverSR-GGUF": "audio super-resolution has no page",
+  "PersonaPlex-GGUF": "duplex speech chat has no page",
+  "MMS-Forced-Aligner-GGUF": "forced alignment has no page",
+  "Sortformer-Diar-4spk-v1-GGUF": "speaker diarization has no page",
+  "PulseVAD-GGUF": "voice activity detection has no page",
+  "MuScriptor-Small-GGUF": "music transcription has no page",
+  "Samsone-GGUF": "describes audio rather than transcribing it",
+};
 
 // Families the backend marks speaks=False (audio_cpp_models.FAMILIES), by repo name: Hub rows
 // carry no backend workflows before download. Chatterbox-Turbo is its own family and speaks.
@@ -132,9 +197,9 @@ export function isSpeakAndCloneFamilyId(id: string | null | undefined): boolean 
 }
 
 // Families that clone and convert (chatterbox, vevo2) and the convert-only ones (rvc, seed_vc,
-// meanvc2), by repo name the way the backend's family_from_names reads it.
+// meanvc2, tone_color_vc), by repo name the way the backend's family_from_names reads it.
 const CLONE_AND_CONVERT_FAMILY_HINT = /vevo[-_]?2|chatterbox(?![-_]?turbo)/i;
-const CONVERT_ONLY_FAMILY_HINT = /rvc|seed[-_]?vc|meanvc[-_]?2/i;
+const CONVERT_ONLY_FAMILY_HINT = /rvc|seed[-_]?vc|meanvc[-_]?2|tone[-_]?color/i;
 
 export function isCloneAndConvertFamilyId(id: string | null | undefined): boolean {
   return CLONE_AND_CONVERT_FAMILY_HINT.test(id ?? "");
@@ -251,10 +316,6 @@ export function audioCppWorkflowsFor(
 export function audioCppModelSpeaks(id: string | null | undefined): boolean {
   const model = audioCppModelFor(id);
   return !model || audioCppWorkflowsFor(model).includes("speak");
-}
-
-export function audioCppModelsForTask(task: AudioCppTask): AudioCppModel[] {
-  return AUDIO_CPP_MODELS.filter((model) => model.task === task);
 }
 
 /** Music length the backend clamps to, whatever max_tokens asks for. */

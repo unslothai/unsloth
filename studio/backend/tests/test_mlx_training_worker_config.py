@@ -26,6 +26,9 @@ def _load_worker_module():
         "utils.training_runs",
         "utils.wheel_utils",
         "utils.training_runs",
+        # Imported for real against the stubs above, so dropped again afterwards.
+        "utils.kernel_install",
+        "utils.ssm_runtime",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
@@ -82,6 +85,21 @@ def _load_worker_module():
             "url_exists",
         ):
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
+        # Read at import by utils.kernel_install, which the worker imports.
+        for name in (
+            "redact_url_credentials",
+            "xformers_wheel_url",
+        ):
+            setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
+        for name in (
+            "CAUSAL_CONV1D_PACKAGE_VERSION",
+            "CAUSAL_CONV1D_RELEASE_BASE_URL",
+            "CAUSAL_CONV1D_RELEASE_TAG",
+            "MAMBA_SSM_PACKAGE_VERSION",
+            "MAMBA_SSM_RELEASE_BASE_URL",
+            "MAMBA_SSM_RELEASE_TAG",
+        ):
+            setattr(wheel_utils, name, "")
         sys.modules["utils.wheel_utils"] = wheel_utils
 
         spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)

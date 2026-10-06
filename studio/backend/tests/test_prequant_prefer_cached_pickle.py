@@ -667,3 +667,126 @@ def test_a_local_files_only_load_probes_like_an_offline_one(hub, monkeypatch):
     assert _load(local_files_only = True) is True and seen["inner"] is True
     assert _load(local_files_only = False) is False
     assert pq.prequant_checkpoint_cached(_convrot_dit()) is False
+
+
+# ---- ComfyUI-format twin: the default download, never a re-download of a cached artifact ----
+
+COMFY = "Model-INT8-ComfyUI.safetensors"
+
+
+def _comfy_dit():
+    return _dit(COMFY, "Model-INT8.safetensors", "Model-INT8.pt", "transformer_int8.pt")
+
+
+def test_new_user_downloads_the_comfy_twin(hub):
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, COMFY)]
+    assert hub.fetched == [COMFY]
+
+
+def test_cached_own_safetensors_is_kept_over_the_comfy_twin(hub, caplog):
+    hub.cache("Model-INT8.safetensors")
+    caplog.set_level("INFO")
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, "Model-INT8.safetensors")]
+    assert COMFY not in hub.fetched
+    assert "its ComfyUI-format twin" in caplog.text
+
+
+def test_cached_own_pickle_is_kept_over_both_twins(hub):
+    hub.cache("Model-INT8.pt")
+    assert pq.prefer_cached_pickle_twins(REPO, _comfy_dit().candidate_filenames) == [
+        "Model-INT8.pt",
+        "Model-INT8.safetensors",
+        COMFY,
+        "transformer_int8.pt",
+    ]
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8.pt"]
+
+
+def test_cached_own_pickle_offline_never_asks_for_the_twin(hub):
+    hub.cache("Model-INT8.pt")
+    assert _resolve(_comfy_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.downloads == [("Model-INT8.pt", True)]
+
+
+def test_cached_comfy_twin_stays_first(hub):
+    hub.cache(COMFY)
+    hub.cache("Model-INT8.pt")
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, COMFY)]
+    assert hub.fetched == [COMFY]
+
+
+def test_repo_without_the_twin_falls_back_to_the_old_names(hub):
+    """A repo that does not host the twin yet (or an older publish): one 404, then today's artifact."""
+    hub.hosted = {"Model-INT8.safetensors", "Model-INT8.pt"}
+    assert _resolve(_comfy_dit()) == hub.cached[(REPO, "Model-INT8.safetensors")]
+    assert hub.fetched == [COMFY, "Model-INT8.safetensors"]
+
+
+def test_a_cached_other_artifact_does_not_demote_the_twin(hub):
+    """INT8 cached does not stand in for the INT8-ConvRot twin (different weights); only its own twin moves."""
+    hub.cache("Model-INT8.safetensors")
+    names = (
+        "Model-INT8-ConvRot-ComfyUI.safetensors",
+        "Model-INT8-ConvRot.safetensors",
+        COMFY,
+        "Model-INT8.safetensors",
+    )
+    assert pq.prefer_cached_pickle_twins(REPO, names) == [
+        "Model-INT8-ConvRot-ComfyUI.safetensors",
+        "Model-INT8-ConvRot.safetensors",
+        "Model-INT8.safetensors",
+        COMFY,
+    ]
+
+
+def test_cache_probe_reads_a_cached_own_file_as_free_online(hub):
+    """The planner's no-download answer: the cached own file, not 'must fetch the twin'."""
+    hub.cache("Model-INT8.safetensors")
+    src = _comfy_dit()
+    assert pq.cached_checkpoint_path(src) == hub.cached[(REPO, "Model-INT8.safetensors")]
+    assert pq.cached_checkpoint_path(src) == _resolve(src)
+
+
+def test_dit_planner_stages_the_twin_only_when_nothing_is_cached(hub, monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    api = _Api([COMFY, "Model-INT8.safetensors", "Model-INT8.pt"])
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda token = None: api)
+    assert DiffusionBackend._prequant_source_hub_entry(_comfy_dit(), None, scheme = "int8") == (
+        REPO,
+        COMFY,
+        100,
+    )
+    hub.cache("Model-INT8.safetensors")
+    assert DiffusionBackend._prequant_source_hub_entry(_comfy_dit(), None, scheme = "int8") == (
+        REPO,
+        "Model-INT8.safetensors",
+        101,
+    )
+    # a repo listing without the twin stages today's artifact
+    hub.cached.clear()
+    api.names = ["Model-INT8.safetensors", "Model-INT8.pt"]
+    assert DiffusionBackend._prequant_source_hub_entry(_comfy_dit(), None, scheme = "int8") == (
+        REPO,
+        "Model-INT8.safetensors",
+        100,
+    )
+
+
+def test_a_cached_trailing_fp8_twin_is_used_before_an_uncached_own_file(hub):
+    """fp8 twins trail Studio's own artifact; one that is already cached still wins over downloading the other."""
+    fp8 = _dit(
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
+        "transformer_fp8.pt",
+    )
+    hub.cache("Model-FP8-ComfyUI.safetensors")
+    assert _resolve(fp8) == hub.cached[(REPO, "Model-FP8-ComfyUI.safetensors")]
+    assert hub.fetched == ["Model-FP8-ComfyUI.safetensors"]
+    # nothing cached: Studio's own per-row fp8 is the download
+    hub.cached.clear()
+    hub.downloads.clear()
+    assert _resolve(fp8) == hub.cached[(REPO, "Model-FP8.safetensors")]
+    assert hub.fetched == ["Model-FP8.safetensors"]

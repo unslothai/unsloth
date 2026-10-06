@@ -1521,6 +1521,41 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     assert hops["n"] < 5
 
 
+def test_fetch_url_raw_host_headers_follow_each_hop(monkeypatch):
+    # A header chosen for unsloth.ai must not ride a redirect to another site.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    import core.inference.tools as tools_mod
+
+    sent = []
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            sent.append((req.get_header("Host"), req.get_header("X-unsloth-studio")))
+            raise HTTPError(
+                req.full_url, 302, "Found", {"Location": "https://example.com/next"}, None
+            )
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", ["203.0.113.7"]),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    tools_mod._fetch_url_raw(
+        "https://unsloth.ai/",
+        host_headers = lambda host: {"X-Unsloth-Studio": "1"} if host == "unsloth.ai" else {},
+    )
+    assert sent[0] == ("unsloth.ai", "1")
+    assert sent[1] == ("example.com", None)
+
+
 def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
     # A set cancel_event (client disconnected) stops the fetch before it opens any
     # socket, so a dropped stream cannot leave a tool blocking on the wire.

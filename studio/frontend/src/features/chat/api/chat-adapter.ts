@@ -111,6 +111,11 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
+  providerCompactionConnectionKey,
+  providerCompactionForTarget,
+  providerCompactionPart,
+} from "../utils/provider-compaction";
+import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -118,7 +123,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
-import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  apiCompactionRequestFields,
+  ggufCompactionRequestFields,
+} from "../utils/auto-compaction";
+import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -154,6 +163,7 @@ import {
   providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -184,6 +194,7 @@ import {
 } from "../tool-call-id";
 
 import { buildResearchInferenceRequest } from "../research-inference-request";
+import { customReasoningRequestFields } from "../custom-reasoning";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   buildExternalRoutingFields,
@@ -269,6 +280,7 @@ import type {
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
+  ProviderCompactionContentPart,
 } from "../types/api";
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1273,6 +1285,63 @@ function setAssistantOpenAIResponsesReasoning(
   message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
 }
 
+function providerCompactionAssistant(
+  messages: SerializedMessage[],
+  afterToolCalls: number,
+): SerializedMessage | undefined {
+  const boundary =
+    Number.isInteger(afterToolCalls) && afterToolCalls >= 0
+      ? afterToolCalls
+      : 0;
+  let precedingToolCalls = 0;
+  let lastAssistant: SerializedMessage | undefined;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    lastAssistant = message;
+    if (precedingToolCalls >= boundary) return message;
+    precedingToolCalls += message.tool_calls?.length ?? 0;
+  }
+  return lastAssistant;
+}
+
+/** The provider drops what came before its compaction, so it leads the subturn that produced it. */
+function withProviderCompaction(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+  target: {
+    providerType: string | undefined;
+    modelId: string | undefined;
+    connectionKey: string | undefined;
+  },
+): SerializedMessage[] {
+  const custom = (
+    message as { metadata?: { custom?: Record<string, unknown> } }
+  ).metadata?.custom;
+  const compaction = providerCompactionForTarget(
+    custom,
+    target.providerType,
+    target.modelId,
+    target.connectionKey,
+  );
+  const assistant = providerCompactionAssistant(
+    serialized,
+    typeof custom?.providerCompactionAfterToolCalls === "number"
+      ? custom.providerCompactionAfterToolCalls
+      : 0,
+  );
+  if (!compaction || !assistant) return serialized;
+  const content = assistant.content;
+  assistant.content = [
+    compaction,
+    ...(typeof content === "string"
+      ? content
+        ? [{ type: "text" as const, text: content }]
+        : []
+      : (content ?? [])),
+  ];
+  return serialized;
+}
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1834,12 +1903,6 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends, so the recount prices the same text.
-export const CANVAS_TOOL_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
-export const CANVAS_FALLBACK_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
-
 /** The MCP image bound applied to the run's own tool results, BEFORE they are
  *  serialized. Bounding the OpenAI history afterwards meant every result's image
  *  array was stringified into an envelope on the main thread and then parsed again
@@ -1945,7 +2008,7 @@ export async function buildLocalTokenCountHistory(
   studio_tool_history?: true;
 }> {
   const runtimeState = useChatRuntimeStore.getState();
-  const { params, artifactsEnabled, supportsTools } = runtimeState;
+  const { params } = runtimeState;
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
@@ -1984,24 +2047,6 @@ export async function buildLocalTokenCountHistory(
       role: "system",
       content: combinedSystemPrompt,
     });
-  }
-
-  // Canvas appends one of these on every request, so a count without it reads low.
-  const canvasInstruction = artifactsEnabled
-    ? supportsTools
-      ? CANVAS_TOOL_INSTRUCTION
-      : CANVAS_FALLBACK_INSTRUCTION
-    : "";
-  if (canvasInstruction) {
-    const first = outboundMessages[0];
-    if (first && first.role === "system" && typeof first.content === "string") {
-      outboundMessages[0] = {
-        ...first,
-        content: `${first.content}\n\n${canvasInstruction}`,
-      };
-    } else {
-      outboundMessages.unshift({ role: "system", content: canvasInstruction });
-    }
   }
 
   return {
@@ -2055,7 +2100,6 @@ export async function buildLocalTokenCountExtras(
   const {
     supportsTools,
     toolsEnabled,
-    artifactsEnabled,
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
@@ -2065,6 +2109,7 @@ export async function buildLocalTokenCountExtras(
     bypassPermissions,
     deepResearchEnabled,
     permissionMode,
+    sandboxLevel,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
@@ -2081,6 +2126,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2099,7 +2145,6 @@ export async function buildLocalTokenCountExtras(
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
-    !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
@@ -2110,6 +2155,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2121,6 +2167,7 @@ export async function buildLocalTokenCountExtras(
     // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
+    sandbox_level: sandboxLevel,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -2130,7 +2177,6 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      ...(artifactsEnabled ? ["render_html"] : []),
       // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
       ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
     ],
@@ -2651,6 +2697,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
+  "omlx",
   "hermes",
   "custom",
 ]);
@@ -4875,7 +4922,6 @@ export function createOpenAIStreamAdapter(
         supportsTools,
         toolsEnabled,
         imageToolsEnabled,
-        artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
@@ -4922,6 +4968,12 @@ export function createOpenAIStreamAdapter(
       }
       const externalProvider =
         externalRouting.kind === "external" ? externalRouting.provider : null;
+      const providerCompactionTargetConnectionKey =
+        providerCompactionConnectionKey(
+          externalProvider?.id,
+          externalProvider?.baseUrl,
+          externalProvider?.apiType,
+        );
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -5048,7 +5100,18 @@ export function createOpenAIStreamAdapter(
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = renderedMessages
-        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
+        .flatMap((message) => {
+          const serialized = toOpenAIMessages(message, replayReasoning);
+          return isExternalRequest
+            ? withProviderCompaction(message, serialized, {
+                providerType: toExternalBackendProviderType(
+                  externalProvider?.providerType,
+                ),
+                modelId: externalSelection?.modelId,
+                connectionKey: providerCompactionTargetConnectionKey,
+              })
+            : serialized;
+        })
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -5099,11 +5162,26 @@ export function createOpenAIStreamAdapter(
         });
         throw new Error("A response that stopped mid-thought cannot be resumed here.");
       }
+      const continuationCompaction = continuation
+        ? providerCompactionForTarget(
+            continuation,
+            toExternalBackendProviderType(externalProvider?.providerType),
+            externalSelection?.modelId,
+            providerCompactionTargetConnectionKey,
+          )
+        : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
-          content: continuation.partial,
+          content: continuationCompaction
+            ? [
+                continuationCompaction,
+                ...(continuation.partial
+                  ? [{ type: "text" as const, text: continuation.partial }]
+                  : []),
+              ]
+            : continuation.partial,
           ...(resumedThought ? { reasoning_content: resumedThought } : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
@@ -5228,26 +5306,8 @@ export function createOpenAIStreamAdapter(
         !queuedRunSettings && !continuation,
       );
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
-      const hasOutboundImage = Boolean(imageBase64);
 
-      // Canvas is independent of Search/Code: render_html stays local-only and mirrors the backend image-turn gate.
-      const renderHtmlToolEnabledForThisTurn = Boolean(
-        !isExternalRequest &&
-          supportsTools &&
-          artifactsEnabled &&
-          !hasOutboundImage,
-      );
-      const artifactInstruction = artifactsEnabled
-        ? renderHtmlToolEnabledForThisTurn
-          ? CANVAS_TOOL_INSTRUCTION
-          : CANVAS_FALLBACK_INSTRUCTION
-        : null;
-      const effectiveDisabledToolGuard =
-        disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
-          : disabledToolGuard;
-      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
-      addSystemInstruction(outboundMessages, artifactInstruction);
+      addSystemInstruction(outboundMessages, disabledToolGuard);
 
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);
@@ -5593,6 +5653,24 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let providerCompaction: ProviderCompactionContentPart | undefined =
+        continuationCompaction ?? undefined;
+      let providerCompactionAfterToolCalls: number | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionAfterToolCalls
+          : undefined;
+      let providerCompactionProviderType: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionProviderType
+          : undefined;
+      let providerCompactionModelId: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionModelId
+          : undefined;
+      let providerCompactionOriginConnectionKey: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionConnectionKey
+          : undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5606,6 +5684,11 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        providerCompaction,
+        providerCompactionAfterToolCalls,
+        providerCompactionProviderType,
+        providerCompactionModelId,
+        providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -5994,6 +6077,7 @@ export function createOpenAIStreamAdapter(
                 isReasoningProvider: externalProvider.isReasoningModel === true,
                 baseUrl: externalProvider.baseUrl ?? null,
                 apiType: externalProvider.apiType,
+                reasoningConfig: externalProvider.reasoningConfig,
               },
             )
           : {
@@ -6027,19 +6111,26 @@ export function createOpenAIStreamAdapter(
         reasoningEffortLevels,
       );
       const externalReasoningFields: ReasoningRequestFields =
-        externalReasoningCaps.supportsReasoning
-          ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
-            ? externalReasoningEnabled
-              ? { reasoning_effort: selectedExternalEffort }
-              : externalReasoningCaps.supportsReasoningOff
-                ? { reasoning_effort: "none" }
-                : { reasoning_effort: fallbackExternalEffort }
-            : {
-                thinking: {
-                  type: externalReasoningEnabled ? "enabled" : "disabled",
-                },
-              }
-          : {};
+        externalProvider?.providerType === "custom" &&
+        externalProvider.apiType !== "responses"
+          ? customReasoningRequestFields(
+              externalProvider.reasoningConfig,
+              externalReasoningEnabled,
+              selectedExternalEffort,
+            )
+          : externalReasoningCaps.supportsReasoning
+            ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
+              ? externalReasoningEnabled
+                ? { reasoning_effort: selectedExternalEffort }
+                : externalReasoningCaps.supportsReasoningOff
+                  ? { reasoning_effort: "none" }
+                  : { reasoning_effort: fallbackExternalEffort }
+              : {
+                  thinking: {
+                    type: externalReasoningEnabled ? "enabled" : "disabled",
+                  },
+                }
+            : {};
       const localReasoningFields: ReasoningRequestFields = supportsReasoning
         ? reasoningStyle === "enable_thinking_effort"
           ? // GLM-5.2-style gate plus level, e.g. high|max.
@@ -6247,7 +6338,7 @@ export function createOpenAIStreamAdapter(
             docs:
               supportsStudioToolsForThisTurn &&
               (ragEnabled || projectRagEnabled),
-            artifacts: renderHtmlToolEnabledForThisTurn,
+            artifacts: false,
             confirmToolCalls,
             bypassPermissions,
             permissionMode,
@@ -6453,6 +6544,7 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
+                    sandbox_level: runtime.sandboxLevel,
                     ...(permissionMode === "auto" || permissionMode === "off"
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6541,6 +6633,13 @@ export function createOpenAIStreamAdapter(
                 },
                 { forceRefreshPublicKey },
               )),
+              ...apiCompactionRequestFields({
+                autoCompactEnabled: runtime.autoCompactEnabled,
+                contextLength: resolveModelCatalogEntry(
+                  externalProvider.providerType,
+                  externalModelId,
+                )?.contextLength,
+              }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               ...(openaiCodeExecContainerId
@@ -6634,7 +6733,9 @@ export function createOpenAIStreamAdapter(
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
             // defeat the safe-only exception); "off" omits it too, since an explicit false opts out of
             // its risky-call prompt without an OS sandbox; "ask" sends true, full sends false.
+            // sandbox_level "low" runs Python/Terminal on software safeguards only; Full access overrides it.
             permission_mode: permissionMode,
+            sandbox_level: runtime.sandboxLevel,
             ...(permissionMode === "auto" || permissionMode === "off"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6643,7 +6744,6 @@ export function createOpenAIStreamAdapter(
             ...(supportsTools &&
               (toolsEnabled ||
                 codeToolsEnabled ||
-                renderHtmlToolEnabledForThisTurn ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
@@ -6662,9 +6762,6 @@ export function createOpenAIStreamAdapter(
                       : []),
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
-                      : []),
-                    ...(renderHtmlToolEnabledForThisTurn
-                      ? ["render_html"]
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -6932,8 +7029,11 @@ export function createOpenAIStreamAdapter(
                       ? "It got long, so older turns were removed from the model's " +
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
-                      : "The full conversation is still visible and saved. " +
-                        "Unsloth removed complete older turns from this request so the chat can continue.",
+                      : contextTruncation?.summarized
+                        ? "The full conversation is still visible and saved. " +
+                          "The provider summarized older turns so the chat can continue."
+                        : "The full conversation is still visible and saved. " +
+                          "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -7003,6 +7103,28 @@ export function createOpenAIStreamAdapter(
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: newContainerId,
                     }).catch(() => {});
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "compaction_block") {
+                  const nextCompaction = providerCompactionPart(toolEvent);
+                  if (nextCompaction) {
+                    providerCompaction = nextCompaction;
+                    providerCompactionProviderType =
+                      toExternalBackendProviderType(
+                        externalProvider?.providerType,
+                      );
+                    providerCompactionModelId = externalSelection?.modelId;
+                    providerCompactionOriginConnectionKey =
+                      providerCompactionTargetConnectionKey;
+                    // Compaction items arrive before the provider content they introduce. Remember
+                    // how much of this stored run preceded it so replay does not put a later marker
+                    // ahead of earlier Studio tool rounds that the marker already summarizes.
+                    providerCompactionAfterToolCalls = toolCallParts.filter(
+                      (part) =>
+                        part.toolName !== "studio_load_skill" &&
+                        toolCallPartSurvivesOpenAIReplay(part),
+                    ).length;
                   }
                   continue;
                 }
@@ -8327,6 +8449,12 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              providerCompaction,
+              providerCompactionAfterToolCalls,
+              providerCompactionProviderType,
+              providerCompactionModelId,
+              providerCompactionConnectionKey:
+                providerCompactionOriginConnectionKey,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8496,6 +8624,12 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                providerCompaction,
+                providerCompactionAfterToolCalls,
+                providerCompactionProviderType,
+                providerCompactionModelId,
+                providerCompactionConnectionKey:
+                  providerCompactionOriginConnectionKey,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

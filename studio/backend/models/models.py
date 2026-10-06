@@ -258,13 +258,18 @@ class GgufVariantsResponse(BaseModel):
     )
 
 
+LocalModelSource = Literal[
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+]
+
+
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
+    source: LocalModelSource = Field(
         ...,
         description = "Discovery source",
     )

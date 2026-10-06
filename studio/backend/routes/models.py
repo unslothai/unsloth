@@ -325,6 +325,7 @@ from models.models import (
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
+    LocalModelSource,
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
@@ -652,9 +653,10 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory: ``publisher/model-name`` folders of GGUF files, or
-    standalone GGUFs at the top level."""
+def _scan_lmstudio_dir(
+    lm_dir: Path, *, source: LocalModelSource = "lmstudio"
+) -> List[LocalModelInfo]:
+    """Scan a host-app model root; ``source`` names which app it belongs to."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -669,7 +671,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 id = str(lm_dir),
                 display_name = lm_dir.name,
                 path = str(lm_dir),
-                source = "lmstudio",
+                source = source,
                 model_format = _dir_model_format(lm_dir),
                 updated_at = updated_at,
             ),
@@ -693,7 +695,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             id = str(child),
                             display_name = child.stem,
                             path = str(child),
-                            source = "lmstudio",
+                            source = source,
                             model_format = "gguf",
                             updated_at = updated_at,
                         ),
@@ -711,7 +713,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         id = str(child),
                         display_name = child.name,
                         path = str(child),
-                        source = "lmstudio",
+                        source = source,
                         model_format = _dir_model_format(child),
                         updated_at = updated_at,
                     ),
@@ -742,7 +744,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 model_id = model_id,
                                 display_name = model_dir.name,
                                 path = str(model_dir),
-                                source = "lmstudio",
+                                source = source,
                                 model_format = _dir_model_format(model_dir),
                                 updated_at = updated_at,
                             ),
@@ -762,7 +764,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 model_id = f"{child.name}/{model_dir.stem}",
                                 display_name = model_dir.stem,
                                 path = str(model_dir),
-                                source = "lmstudio",
+                                source = source,
                                 model_format = "gguf",
                                 updated_at = updated_at,
                             ),
@@ -811,6 +813,7 @@ class _CompatLocalInventorySources(NamedTuple):
     known_hf_caches: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...] = ()
     ollama_dirs: tuple[Path, ...] = ()
+    omlx_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
@@ -820,6 +823,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         hf_default_cache_dir,
         legacy_hf_cache_dir,
         lmstudio_model_dirs,
+        omlx_model_dirs,
     )
     from utils.hf_cache_settings import known_hf_hub_caches
     return _CompatLocalInventorySources(
@@ -830,6 +834,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         tuple(known_hf_hub_caches()),
         tuple(hermes_model_dirs()),
         tuple(ollama_model_dirs()),
+        tuple(omlx_model_dirs()),
     )
 
 
@@ -907,6 +912,8 @@ def collect_local_models(
         *sources.known_hf_caches,
         legacy_hf,
         hf_default,
+        # oMLX also serves models--* repos kept under its own roots.
+        *sources.omlx_dirs,
     ):
         cache_real = _safe_resolve(cache_dir)
         if cache_real is None:
@@ -964,9 +971,18 @@ def collect_local_models(
         except Exception as e:
             logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
 
+    for omlx_dir in sources.omlx_dirs:
+        try:
+            local_models += _scan_lmstudio_dir(omlx_dir, source = "omlx")
+        except Exception as e:
+            logger.warning("Error scanning oMLX directory %s: %s", omlx_dir, e)
+
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
+    from hub.services.models.local_inventory import _local_model_path_is_symlink
+
+    custom_identities: set[str] = set()
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1041,6 +1057,16 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
+        # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
+        for m in custom_models:
+            try:
+                below_root = os.path.join(
+                    os.path.realpath(folder_path), os.path.relpath(m.path, folder_path)
+                )
+            except (OSError, ValueError):
+                continue
+            if not _local_model_path_is_symlink(below_root):
+                custom_identities.add(_compat_inventory_path_identity(m.path))
         # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
         # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
@@ -1049,6 +1075,14 @@ def collect_local_models(
             else m.model_copy(update = {"source": "custom"})
             for m in custom_models
         ]
+
+    # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
+    # those (the train picker refuses oMLX rows).
+    local_models = [
+        m
+        for m in local_models
+        if m.source != "omlx" or _compat_inventory_path_identity(m.path) not in custom_identities
+    ]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
     # "Custom Folders" UI section even when the model is also in the HF cache.

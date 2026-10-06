@@ -12,10 +12,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ATTACHMENT_KIND_ICONS, ATTACHMENT_KIND_ICON_CLASS, attachmentFileKind } from "@/features/chat";
 import { useLocale, useT } from "@/i18n";
 import { useSettingsDialogStore } from "@/features/settings";
+import { isTauri } from "@/lib/api-base";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -24,6 +27,7 @@ import {
   Cancel01Icon,
   Delete02Icon,
   FilterMailIcon,
+  Folder01Icon,
   InternetIcon,
   LinkSquare02Icon,
   MoreHorizontalIcon,
@@ -31,7 +35,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";
 import { hostOf } from "./address";
 import { BookmarkEditPopover, bookmarkTitle, removeBookmarkWithUndo } from "./bookmarks";
@@ -39,6 +43,7 @@ import { type Bookmark, useBrowserBookmarksStore } from "./bookmarks-store";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
+import { nativeDownloadsExist, revealNativeDownload } from "./native-downloads";
 import { SiteFavicon } from "./site-favicon";
 import { type InternalPage, useBrowserStore } from "./store";
 
@@ -53,29 +58,6 @@ function addDays(day: number, days: number): number {
   const date = new Date(day);
   date.setDate(date.getDate() + days);
   return date.getTime();
-}
-
-function useDayGroups<Item>(items: Item[], timeOf: (item: Item) => number) {
-  const t = useT();
-  const locale = useLocale();
-  return useMemo(() => {
-    const today = startOfDay(Date.now());
-    const dateFormat = new Intl.DateTimeFormat(locale, { weekday: "long", month: "long", day: "numeric" });
-    const groups: { label: string; items: Item[] }[] = [];
-    for (const item of items) {
-      const day = startOfDay(timeOf(item));
-      const label =
-        day === today
-          ? t("browser.pages.today")
-          : day === addDays(today, -1)
-            ? t("browser.pages.yesterday")
-            : dateFormat.format(day);
-      const last = groups[groups.length - 1];
-      if (last?.label === label) last.items.push(item);
-      else groups.push({ label, items: [item] });
-    }
-    return groups;
-  }, [items, timeOf, locale, t]);
 }
 
 function formatSize(bytes: number, locale: string): string {
@@ -338,7 +320,7 @@ function HistoryRow({
               <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} className="size-4" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-48">
+          <DropdownMenuContent align="end" className="browser-menu min-w-48">
             <DropdownMenuItem onSelect={() => useBrowserStore.getState().openUrl(item.url, { newTab: true })}>
               <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} />
               {t("browser.pages.openPage")}
@@ -354,25 +336,12 @@ function HistoryRow({
   );
 }
 
-function HistoryDay({
-  label,
-  items,
-  tabId,
-  timeFormat,
-  selection,
-  onSelect,
-}: {
-  label: string;
-  items: HistoryItem[];
-  tabId: string;
-  timeFormat: Intl.DateTimeFormat;
-  selection: ReadonlySet<string>;
-  onSelect: (id: string, selected: boolean) => void;
-}) {
+/** A day's entries in a card that folds shut. */
+function DayCard({ label, children }: { label: string; children: ReactNode }) {
   const t = useT();
   const [open, setOpen] = useState(true);
   return (
-    <section className={cn("overflow-hidden rounded-2xl border border-border", CARD_WASH)}>
+    <section className={cn("overflow-hidden rounded-xl border border-border", CARD_WASH)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -387,67 +356,201 @@ function HistoryDay({
           className="size-4 text-muted-foreground"
         />
       </button>
-      {open ? (
-        <ul>
-          {items.map((item) => (
-            <HistoryRow
-              key={item.id}
-              item={item}
-              tabId={tabId}
-              time={timeFormat.format(item.visitedAt)}
-              selected={selection.has(item.id)}
-              onSelect={(selected) => onSelect(item.id, selected)}
-            />
-          ))}
-        </ul>
-      ) : null}
+      {open ? <ul>{children}</ul> : null}
     </section>
   );
 }
 
-function HistoryPage({ tabId }: { tabId: string }) {
+/** Settings > Browser > `current`, each step back a link. */
+function PageCrumbs({ current }: { current: string }) {
+  const t = useT();
+  const openSettings = (tab?: "browser") => useSettingsDialogStore.getState().openDialog(tab);
+  const crumb =
+    "cursor-pointer rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  return (
+    <nav className="flex items-center gap-2 px-6 pt-4 text-ui-14" aria-label={current}>
+      <button type="button" className={crumb} onClick={() => openSettings()}>
+        {t("settings.dialog.title")}
+      </button>
+      <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
+      <button type="button" className={crumb} onClick={() => openSettings("browser")}>
+        {t("browser.settingsTitle")}
+      </button>
+      <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
+      <span className="text-foreground" aria-current="page">
+        {current}
+      </span>
+    </nav>
+  );
+}
+
+/** The time range a history page shows, and the heading that names it. */
+function useRangeFilter() {
   const t = useT();
   const locale = useLocale();
-  const history = useBrowserHistoryStore((state) => state.history);
-  const [query, setQuery] = useState("");
   const [range, setRange] = useState<HistoryRange>("all");
   const [dates, setDates] = useState<DateRange | undefined>();
-  const [datesOpen, setDatesOpen] = useState(false);
-  // Opened once the filter menu has closed, so its focus return doesn't dismiss the picker.
-  const openDatesOnClose = useRef(false);
-  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
-  const [clearOpen, setClearOpen] = useState(false);
-  const needle = query.trim().toLowerCase();
-  const [limit, setLimit] = useState(HISTORY_PAGE_ROWS);
-  const { groups, more } = useMemo(() => {
-    const { since, until } = rangeBounds(range, dates);
-    const dateFormat = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
-    const days: { key: number; label: string; items: HistoryItem[] }[] = [];
-    let shown = 0;
-    for (const item of history) {
-      if (item.visitedAt < since || item.visitedAt >= until) continue;
-      if (needle && !item.title.toLowerCase().includes(needle) && !item.url.toLowerCase().includes(needle)) continue;
-      if (shown === limit) return { groups: days, more: true };
-      shown += 1;
-      const key = startOfDay(item.visitedAt);
-      const last = days[days.length - 1];
-      if (last?.key === key) last.items.push(item);
-      else days.push({ key, label: dateFormat.format(key), items: [item] });
-    }
-    return { groups: days, more: false };
-  }, [history, needle, range, dates, locale, limit]);
+  const bounds = useMemo(() => rangeBounds(range, dates), [range, dates]);
   const heading = useMemo(() => {
     if (range !== "custom") return t(RANGE_LABELS[range].heading);
     if (!dates?.from) return t("browser.pages.customDates");
     const format = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
     return format.formatRange(dates.from, dates.to ?? dates.from);
   }, [range, dates, locale, t]);
+  return { range, setRange, dates, setDates, bounds, heading };
+}
+
+type RangeFilter = ReturnType<typeof useRangeFilter>;
+
+/** The search field, with the range filter (presets or chosen dates) at its end. */
+function SearchWithFilter({
+  query,
+  onQueryChange,
+  placeholder,
+  filter,
+}: {
+  query: string;
+  onQueryChange: (query: string) => void;
+  placeholder: string;
+  filter: RangeFilter;
+}) {
+  const t = useT();
+  const { range, setRange, dates, setDates } = filter;
+  const [datesOpen, setDatesOpen] = useState(false);
+  // Opened once the filter menu has closed, so its focus return doesn't dismiss the picker.
+  const openDatesOnClose = useRef(false);
   const filterOption = (label: string, checked: boolean, onSelect: () => void) => (
     <DropdownMenuItem key={label} role="menuitemradio" aria-checked={checked} onSelect={onSelect}>
       <span className="flex-1">{label}</span>
       <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className={cn("ml-2 size-4", !checked && "invisible")} />
     </DropdownMenuItem>
   );
+  return (
+    <Popover open={datesOpen} onOpenChange={setDatesOpen}>
+      <PopoverAnchor asChild>
+        <label className="mt-8 flex h-11 items-center gap-2.5 rounded-full border border-border pl-4 pr-1.5">
+          <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4.5 shrink-0 text-muted-foreground" />
+          <input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder={placeholder}
+            aria-label={placeholder}
+            spellCheck={false}
+            className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
+          />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label={t("browser.pages.filter")}
+                className={cn(
+                  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  HOVER_WASH,
+                  range !== "all" && "text-foreground",
+                )}
+              >
+                <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={4}
+              className="browser-menu w-max min-w-44"
+              onCloseAutoFocus={(event) => {
+                if (!openDatesOnClose.current) return;
+                openDatesOnClose.current = false;
+                event.preventDefault();
+                setDatesOpen(true);
+              }}
+            >
+              {(Object.keys(RANGE_LABELS) as PresetRange[]).map((id) =>
+                filterOption(t(RANGE_LABELS[id].menu), range === id, () => setRange(id)),
+              )}
+              <DropdownMenuSeparator className="mx-3" />
+              {filterOption(t("browser.pages.customDates"), range === "custom", () => {
+                openDatesOnClose.current = true;
+              })}
+              {range !== "all" && (
+                <>
+                  <DropdownMenuSeparator className="mx-3" />
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setRange("all");
+                      setDates(undefined);
+                    }}
+                  >
+                    <span className="text-muted-foreground">{t("browser.pages.clearFilter")}</span>
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </label>
+      </PopoverAnchor>
+      <PopoverContent align="end" sideOffset={6} className="browser-menu w-auto rounded-2xl p-0">
+        <Calendar
+          mode="range"
+          selected={dates}
+          onSelect={(next) => {
+            setDates(next);
+            setRange(next?.from ? "custom" : "all");
+          }}
+          defaultMonth={dates?.from ?? new Date()}
+          endMonth={new Date()}
+          disabled={{ after: new Date() }}
+          autoFocus
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** Items in the range and matching the search, by day (newest first, as stored), up to `limit`. */
+function useDays<Item>(
+  items: Item[],
+  timeOf: (item: Item) => number,
+  matches: (item: Item) => boolean,
+  bounds: { since: number; until: number },
+  limit = Infinity,
+) {
+  const locale = useLocale();
+  return useMemo(() => {
+    const dateFormat = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
+    const days: { key: number; label: string; items: Item[] }[] = [];
+    let shown = 0;
+    for (const item of items) {
+      const time = timeOf(item);
+      if (time < bounds.since || time >= bounds.until || !matches(item)) continue;
+      if (shown === limit) return { groups: days, more: true };
+      shown += 1;
+      const key = startOfDay(time);
+      const last = days[days.length - 1];
+      if (last?.key === key) last.items.push(item);
+      else days.push({ key, label: dateFormat.format(key), items: [item] });
+    }
+    return { groups: days, more: false };
+  }, [items, timeOf, matches, bounds, locale, limit]);
+}
+
+const visitTime = (item: HistoryItem) => item.visitedAt;
+
+function HistoryPage({ tabId }: { tabId: string }) {
+  const t = useT();
+  const locale = useLocale();
+  const history = useBrowserHistoryStore((state) => state.history);
+  const [query, setQuery] = useState("");
+  const filter = useRangeFilter();
+  const { range, heading } = filter;
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
+  const [clearOpen, setClearOpen] = useState(false);
+  const needle = query.trim().toLowerCase();
+  const [limit, setLimit] = useState(HISTORY_PAGE_ROWS);
+  const matches = useCallback(
+    (item: HistoryItem) =>
+      !needle || item.title.toLowerCase().includes(needle) || item.url.toLowerCase().includes(needle),
+    [needle],
+  );
+  const { groups, more } = useDays(history, visitTime, matches, filter.bounds, limit);
   const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
   const selected = useMemo(() => {
     const ids = new Set(history.map((item) => item.id));
@@ -460,103 +563,18 @@ function HistoryPage({ tabId }: { tabId: string }) {
       else next.delete(id);
       return next;
     });
-  const openSettings = (tab?: "browser") => useSettingsDialogStore.getState().openDialog(tab);
-  const crumb =
-    "cursor-pointer rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
   return (
     <div className="size-full overflow-auto bg-background">
-      <nav className="flex items-center gap-2 px-6 pt-4 text-ui-14" aria-label={t("browser.historySetting")}>
-        <button type="button" className={crumb} onClick={() => openSettings()}>
-          {t("settings.dialog.title")}
-        </button>
-        <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
-        <button type="button" className={crumb} onClick={() => openSettings("browser")}>
-          {t("browser.settingsTitle")}
-        </button>
-        <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5 text-muted-foreground" />
-        <span className="text-foreground" aria-current="page">
-          {t("browser.historySetting")}
-        </span>
-      </nav>
+      <PageCrumbs current={t("browser.historySetting")} />
       <div className="mx-auto flex w-full max-w-3xl flex-col px-6 pb-12 pt-10">
         <h1 className="text-ui-30 font-medium text-foreground">{t("browser.historySetting")}</h1>
-        <Popover open={datesOpen} onOpenChange={setDatesOpen}>
-          <PopoverAnchor asChild>
-            <label className="mt-8 flex h-11 items-center gap-2.5 rounded-full border border-border pl-4 pr-1.5">
-              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4.5 shrink-0 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("browser.pages.searchHistory")}
-                aria-label={t("browser.pages.searchHistory")}
-                spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
-              />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={t("browser.pages.filter")}
-                    className={cn(
-                      "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      HOVER_WASH,
-                      range !== "all" && "text-foreground",
-                    )}
-                  >
-                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  sideOffset={4}
-                  className="library-menu w-max min-w-44"
-                  onCloseAutoFocus={(event) => {
-                    if (!openDatesOnClose.current) return;
-                    openDatesOnClose.current = false;
-                    event.preventDefault();
-                    setDatesOpen(true);
-                  }}
-                >
-                  {(Object.keys(RANGE_LABELS) as PresetRange[]).map((id) =>
-                    filterOption(t(RANGE_LABELS[id].menu), range === id, () => setRange(id)),
-                  )}
-                  <DropdownMenuSeparator className="mx-3" />
-                  {filterOption(t("browser.pages.customDates"), range === "custom", () => {
-                    openDatesOnClose.current = true;
-                  })}
-                  {range !== "all" && (
-                    <>
-                      <DropdownMenuSeparator className="mx-3" />
-                      <DropdownMenuItem
-                        onSelect={() => {
-                          setRange("all");
-                          setDates(undefined);
-                        }}
-                      >
-                        <span className="text-muted-foreground">{t("browser.pages.clearFilter")}</span>
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </label>
-          </PopoverAnchor>
-          <PopoverContent align="end" sideOffset={6} className="w-auto rounded-2xl p-0">
-            <Calendar
-              mode="range"
-              selected={dates}
-              onSelect={(next) => {
-                setDates(next);
-                setRange(next?.from ? "custom" : "all");
-              }}
-              defaultMonth={dates?.from ?? new Date()}
-              endMonth={new Date()}
-              disabled={{ after: new Date() }}
-              autoFocus
-            />
-          </PopoverContent>
-        </Popover>
+        <SearchWithFilter
+          query={query}
+          onQueryChange={setQuery}
+          placeholder={t("browser.pages.searchHistory")}
+          filter={filter}
+        />
         <div className="mt-8 flex h-9 items-center gap-2">
           {selected.size > 0 ? (
             <>
@@ -603,15 +621,18 @@ function HistoryPage({ tabId }: { tabId: string }) {
             </p>
           ) : (
             groups.map((group) => (
-              <HistoryDay
-                key={group.key}
-                label={group.label}
-                items={group.items}
-                tabId={tabId}
-                timeFormat={timeFormat}
-                selection={selected}
-                onSelect={select}
-              />
+              <DayCard key={group.key} label={group.label}>
+                {group.items.map((item) => (
+                  <HistoryRow
+                    key={item.id}
+                    item={item}
+                    tabId={tabId}
+                    time={timeFormat.format(item.visitedAt)}
+                    selected={selected.has(item.id)}
+                    onSelect={(on) => select(item.id, on)}
+                  />
+                ))}
+              </DayCard>
             ))
           )}
           {more ? (
@@ -633,56 +654,216 @@ function HistoryPage({ tabId }: { tabId: string }) {
   );
 }
 
+/** Each platform's own name for showing a file in its folder. */
+function revealLabelKey() {
+  const platform = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  if (/Mac/i.test(platform)) return "browser.pages.showInFinder" as const;
+  if (/Windows/i.test(platform)) return "browser.pages.showInExplorer" as const;
+  return "browser.pages.showInFolder" as const;
+}
+
+/** Desktop downloads missing from disk, by native id; rechecked on window focus. */
+function useMissingDownloads(downloads: DownloadItem[]) {
+  const [missing, setMissing] = useState<ReadonlySet<string>>(() => new Set());
+  const [checks, setChecks] = useState(0);
+  useEffect(() => {
+    if (!isTauri) return;
+    const ids = downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : []));
+    let live = true;
+    const check = () =>
+      nativeDownloadsExist(ids).then(
+        (found) => live && setMissing(new Set(ids.filter((_, index) => !found[index]))),
+        () => undefined,
+      );
+    void check();
+    window.addEventListener("focus", check);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", check);
+    };
+  }, [downloads, checks]);
+  return { missing, recheck: () => setChecks((count) => count + 1) };
+}
+
+const ROW_ACTION = cn(
+  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  HOVER_WASH,
+);
+
+function DownloadRow({
+  item,
+  time,
+  deleted,
+  onRevealFailed,
+}: {
+  item: DownloadItem;
+  time: string;
+  deleted: boolean;
+  onRevealFailed: () => void;
+}) {
+  const t = useT();
+  const locale = useLocale();
+  const kind = attachmentFileKind(item.name, item.contentType);
+  const source = item.url ? hostOf(item.url) : t("browser.pages.fromChat");
+  const revealLabel = t(revealLabelKey());
+  const remove = () => useBrowserHistoryStore.getState().removeDownload(item.id);
+  const nativeId = isTauri && !deleted ? item.nativeId : undefined;
+  const reveal = nativeId
+    ? () =>
+        void revealNativeDownload(nativeId).catch(() => {
+          toast.error(t("browser.pages.revealFailed", { name: item.name }));
+          onRevealFailed();
+        })
+    : undefined;
+  // Files aren't kept; the row reopens the source page.
+  const open = item.url ? () => useBrowserStore.getState().openUrl(item.url ?? "", { newTab: true }) : undefined;
+  return (
+    <LinkContextMenu
+      url={item.url}
+      extra={
+        <>
+          {reveal ? (
+            <MenuRow icon={Folder01Icon} onSelect={reveal}>
+              {revealLabel}
+            </MenuRow>
+          ) : null}
+          <MenuRow icon={Delete02Icon} onSelect={remove}>
+            {t("browser.pages.removeFromHistory")}
+          </MenuRow>
+        </>
+      }
+    >
+      <li
+        className={cn(
+          "relative flex h-16 items-center gap-3 px-4 before:absolute before:inset-x-4 before:top-0 before:h-px before:bg-border",
+          HOVER_WASH,
+          "data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+        )}
+      >
+        <button
+          type="button"
+          onClick={open}
+          disabled={!open}
+          title={`${formatSize(item.size, locale)} · ${source}`}
+          className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-3 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default"
+        >
+          <span
+            className={cn(
+              "flex size-10 shrink-0 items-center justify-center rounded-lg",
+              "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
+            )}
+          >
+            <HugeiconsIcon
+              icon={ATTACHMENT_KIND_ICONS[kind]}
+              strokeWidth={1.75}
+              className={cn("size-4.5", deleted ? "text-muted-foreground" : ATTACHMENT_KIND_ICON_CLASS[kind])}
+            />
+          </span>
+          <span
+            className={cn(
+              "min-w-0 truncate text-ui-14",
+              deleted ? "text-muted-foreground line-through" : "text-foreground",
+            )}
+          >
+            {item.name}
+          </span>
+          {deleted ? (
+            <span className="shrink-0 text-ui-14 text-muted-foreground">{t("browser.pages.deleted")}</span>
+          ) : null}
+          <span className="ml-auto shrink-0 pl-3 text-ui-13 tabular-nums text-muted-foreground">{time}</span>
+        </button>
+        {reveal ? (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button type="button" aria-label={revealLabel} onClick={reveal} className={ROW_ACTION}>
+                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="tooltip-compact">{revealLabel}</TooltipContent>
+          </Tooltip>
+        ) : null}
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={t("browser.pages.removeFromHistory")}
+              onClick={remove}
+              className={ROW_ACTION}
+            >
+              <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-4.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="tooltip-compact">{t("browser.pages.removeFromHistory")}</TooltipContent>
+        </Tooltip>
+      </li>
+    </LinkContextMenu>
+  );
+}
+
+const nameMatches = (needle: string) => (item: DownloadItem) =>
+  !needle ||
+  item.name.toLowerCase().includes(needle) ||
+  (item.url?.toLowerCase().includes(needle) ?? false);
+
 function DownloadsPage() {
   const t = useT();
   const locale = useLocale();
   const downloads = useBrowserHistoryStore((state) => state.downloads);
   const [query, setQuery] = useState("");
+  const filter = useRangeFilter();
   const needle = query.trim().toLowerCase();
-  const matches = useMemo(
-    () => (needle ? downloads.filter((item) => item.name.toLowerCase().includes(needle)) : downloads),
-    [downloads, needle],
-  );
-  const groups = useDayGroups(matches, downloadTime);
+  const matches = useMemo(() => nameMatches(needle), [needle]);
+  const { groups } = useDays(downloads, downloadTime, matches, filter.bounds);
   const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
-  const { removeDownload, clearDownloads } = useBrowserHistoryStore.getState();
+  const { missing, recheck } = useMissingDownloads(downloads);
   return (
-    <PageShell
-      title={t("browser.pages.downloads")}
-      query={query}
-      onQueryChange={setQuery}
-      onClear={clearDownloads}
-      clearLabel={t("browser.pages.clearDownloads")}
-      empty={downloads.length === 0}
-    >
-      <Groups
-        groups={groups}
-        emptyLabel={t(needle ? "browser.pages.noMatches" : "browser.pages.noDownloads")}
-        render={(item) => {
-          const kind = attachmentFileKind(item.name, item.contentType);
-          const source = item.url ? hostOf(item.url) : t("browser.pages.fromChat");
-          return (
-            <Row
-              key={item.id}
-              icon={
-                <HugeiconsIcon
-                  icon={ATTACHMENT_KIND_ICONS[kind]}
-                  strokeWidth={1.75}
-                  className={cn("size-4 shrink-0", ATTACHMENT_KIND_ICON_CLASS[kind])}
-                />
-              }
-              title={item.name}
-              detail={`${formatSize(item.size, locale)} · ${source}`}
-              time={timeFormat.format(item.downloadedAt)}
-              url={item.url}
-              // Files are not kept; reopen the page they came from.
-              onOpen={item.url ? () => useBrowserStore.getState().openUrl(item.url ?? "", { newTab: true }) : undefined}
-              onRemove={() => removeDownload(item.id)}
-            />
-          );
-        }}
-      />
-    </PageShell>
+    <div className="size-full overflow-auto bg-background">
+      <PageCrumbs current={t("browser.downloadsSetting")} />
+      <div className="mx-auto flex w-full max-w-3xl flex-col px-6 pb-12 pt-10">
+        <h1 className="text-ui-30 font-medium text-foreground">{t("browser.downloadsSetting")}</h1>
+        <SearchWithFilter
+          query={query}
+          onQueryChange={setQuery}
+          placeholder={t("browser.pages.searchDownloads")}
+          filter={filter}
+        />
+        <div className="mt-8 flex h-9 items-center gap-2">
+          <h2 className="flex-1 text-ui-15 font-medium text-foreground">{filter.heading}</h2>
+          <button
+            type="button"
+            disabled={downloads.length === 0}
+            onClick={() => useBrowserHistoryStore.getState().clearDownloads()}
+            className={cn(
+              "h-9 cursor-pointer rounded-full px-4 text-ui-14 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-50",
+              BUTTON_WASH,
+            )}
+          >
+            {t("browser.pages.clearAll")}
+          </button>
+        </div>
+        <div className="mt-4 flex flex-col gap-3">
+          {groups.length === 0 ? (
+            <p className="py-10 text-center text-ui-13 text-muted-foreground">
+              {t(needle || filter.range !== "all" ? "browser.pages.noMatches" : "browser.pages.noDownloads")}
+            </p>
+          ) : (
+            groups.map((group) => (
+              <DayCard key={group.key} label={group.label}>
+                {group.items.map((item) => (
+                  <DownloadRow
+                    key={item.id}
+                    item={item}
+                    time={timeFormat.format(item.downloadedAt)}
+                    deleted={item.nativeId !== undefined && missing.has(item.nativeId)}
+                    onRevealFailed={recheck}
+                  />
+                ))}
+              </DayCard>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

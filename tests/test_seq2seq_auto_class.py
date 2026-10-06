@@ -46,3 +46,46 @@ def test_other_configs_keep_their_route(name):
 
 def test_no_config():
     assert not _is_text_seq2seq_config(None)
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("T5Config", True),
+        ("BartConfig", True),
+        ("T5GemmaConfig", True),
+        ("T5Gemma2Config", True),
+        ("VoxtralConfig", False),
+        ("Qwen2AudioConfig", False),
+        ("GraniteSpeechConfig", False),
+        ("WhisperConfig", False),
+        ("LlamaConfig", False),
+        ("Gemma3Config", False),
+    ],
+)
+def test_seq2seq_lm_config_picks_lora_task_and_ga_count(name, expected):
+    from unsloth.models._utils import _is_seq2seq_lm_config
+    assert _is_seq2seq_lm_config(_config(name)) is expected
+
+
+def test_get_batch_samples_dispatch():
+    from types import SimpleNamespace
+    from unsloth.models import _utils
+
+    calls = []
+    dispatch = _utils._make_seq2seq_aware_get_batch_samples(
+        lambda self, *a, **k: calls.append("stock") or "stock"
+    )
+    assert dispatch.__name__ == "_unsloth_get_batch_samples"
+    original = _utils._unsloth_get_batch_samples
+    _utils._unsloth_get_batch_samples = lambda self, *a, **k: calls.append("unsloth") or "unsloth"
+    try:
+        for name, want in (
+            ("T5Gemma2Config", "stock"),
+            ("LlamaConfig", "unsloth"),
+            ("WhisperConfig", "unsloth"),
+        ):
+            trainer = SimpleNamespace(model = SimpleNamespace(config = _config(name)))
+            assert dispatch(trainer, iter([]), 1) == want
+    finally:
+        _utils._unsloth_get_batch_samples = original
