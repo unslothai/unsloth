@@ -3700,6 +3700,7 @@ from models.inference import (
     AudioGalleryFlagsPatch,
     AudioGalleryItem,
     AudioGalleryListResponse,
+    AudioGenerateRequest,
     AudioInputRecord,
     AudioInputTranscribeRequest,
     AudioInputTranscript,
@@ -22440,7 +22441,7 @@ async def audio_download_plan(
 
 @router.post("/audio/generate")
 async def generate_audio(
-    payload: ChatCompletionRequest,
+    payload: AudioGenerateRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
@@ -22474,22 +22475,42 @@ async def generate_audio(
     if not last_user_msg:
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
+    # /chat/completions hands its own request here: no saved voice, and the clip is kept.
+    voice_id = payload.voice_id if isinstance(payload, AudioGenerateRequest) else None
+    persist = payload.persist if isinstance(payload, AudioGenerateRequest) else True
 
     tts_stats: dict = {}
-    generate = lambda: _generate_tts_wav(  # noqa: E731
-        text,
-        payload,
-        request,
-        current_subject,
+    tts_kwargs = {
         # ``or`` like /v1/audio/speech: an explicitly empty model is accepted by the
         # request model, and without this it stops the hook at its falsey check before
         # the idle-stash restore, failing a request the sibling route serves.
-        requested_model = _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
-        stats_holder = tts_stats,
-    )
+        "requested_model": _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
+        "stats_holder": tts_stats,
+    }
+
+    async def generate():
+        if voice_id:
+            # Speaking in a saved voice is a Speak run with that voice as the reference.
+            run = AudioRunRequest(
+                workflow = "speak",
+                text = text,
+                inputs = AudioRunInputs(reference = AudioSourceRef(voice_id = voice_id)),
+                max_tokens = payload.max_tokens,
+            )
+            return await _speak(run, request, current_subject, persist = persist, **tts_kwargs)
+        wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+            text, payload, request, current_subject, **tts_kwargs
+        )
+        record = None
+        if persist:
+            record = await asyncio.to_thread(
+                _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+            )
+        return record, wav_bytes, sample_rate, model_name
+
     # Chat completions monitors the turns it hands here, and the chat's read-aloud is no API traffic.
     if getattr(getattr(request, "url", None), "path", "").rstrip("/") != "/v1/audio/generate":
-        wav_bytes, sample_rate, model_name, audio_type = await generate()
+        persisted_clip, wav_bytes, sample_rate, model_name = await generate()
     else:
         async with _monitored_media_request(
             request,
@@ -22497,12 +22518,9 @@ async def generate_audio(
             prompt = text,
             subject = current_subject,
         ) as monitor_id:
-            wav_bytes, sample_rate, model_name, audio_type = await generate()
+            persisted_clip, wav_bytes, sample_rate, model_name = await generate()
             api_monitor.relabel(monitor_id, model_name)
     truncated = bool((tts_stats.get("stats") or {}).get("truncated"))
-    persisted_clip = await asyncio.to_thread(
-        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
-    )
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -23184,10 +23202,16 @@ async def _dispatch_audio_run(
 
 
 async def _speak(
-    body: AudioRunRequest, request: Request, current_subject: str, **tts_kwargs
+    body: AudioRunRequest,
+    request: Request,
+    current_subject: str,
+    *,
+    persist: bool = True,
+    **tts_kwargs,
 ) -> tuple[Optional[dict[str, Any]], bytes, int, str]:
-    """Clone, or Speak in a saved voice, and keep the clip in history; shared by /audio/run and
-    /audio/speech. ``(record, wav_bytes, sample_rate, model_name)``."""
+    """Clone, or Speak in a saved voice, and keep the clip in history unless ``persist`` is off;
+    shared by /audio/run, /audio/speech and /audio/generate. ``(record, wav_bytes, sample_rate,
+    model_name)``."""
     from core.inference import audio_inputs
 
     if body.workflow == "clone" and body.inputs.reference is None:
@@ -23236,6 +23260,8 @@ async def _speak(
         },
         **tts_kwargs,
     )
+    if not persist:
+        return None, wav_bytes, sample_rate, model_name
     extra_meta: dict[str, Any] = {
         "role": "output",
         "settings": _audio_run_settings(body, reference_text is not None),

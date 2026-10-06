@@ -1355,8 +1355,7 @@ export const es = {
         buttonDescription: "Mostrar en las respuestas del asistente",
         engineLabel: "Motor de TTS",
         engineSystemDescription: "Voces integradas del dispositivo",
-        engineStudioDescription:
-          "Usa el modelo de audio cargado (por ejemplo, Orpheus)",
+        engineStudioDescription: "Usa el modelo de voz cargado en Audio",
         engineSystem: "Voces del sistema",
         engineStudio: "Cargar un modelo de TTS",
         engineCustom: "Endpoint personalizado",
@@ -1371,10 +1370,13 @@ export const es = {
           "Nombre de la voz que espera el endpoint; el valor predeterminado es alloy",
         modelLabel: "Modelo de TTS",
         modelDescription:
-          "Carga un modelo de audio desde el selector de modelos (por ejemplo, Orpheus TTS)",
+          "Carga un modelo de voz en Audio. Sustituye al modelo del chat.",
         openAudioAction: "Abrir Audio",
         voiceLabel: "Voz",
         voiceDescription: "Las mejores voces de este dispositivo",
+        studioVoiceDescription:
+          "Las voces guardadas en Audio requieren un modelo de clonación",
+        studioVoiceDefault: "Voz propia del modelo",
         speedLabel: "Velocidad",
         pitchLabel: "Tono",
         volumeLabel: "Volumen",

@@ -5312,6 +5312,19 @@ class AudioSpeechVoice(BaseModel):
     id: str = Field(..., pattern = _AUDIO_ID_PATTERN)
 
 
+class AudioGenerateRequest(ChatCompletionRequest):
+    """``POST /audio/generate``: speak the last user message, as chat's read aloud does."""
+
+    voice_id: Optional[str] = Field(
+        None,
+        pattern = _AUDIO_ID_PATTERN,
+        description = "[x-unsloth] A saved voice to speak in; the loaded model must clone.",
+    )
+    persist: bool = Field(
+        True, description = "[x-unsloth] Keep the clip in Audio history. Read aloud sends false."
+    )
+
+
 class AudioRunInputs(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
