@@ -155,7 +155,7 @@ test("a pick's Audio search names its file, quant label, load and workflow", () 
     {
       model: "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF",
       quant: "ace-step-q8_0.gguf",
-      ggufQuant: undefined,
+      ggufQuant: "Q8_0",
       task: "text-to-audio",
       audioType: undefined,
       loadId: "/cache/snap",

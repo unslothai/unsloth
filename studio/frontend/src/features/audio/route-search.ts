@@ -119,10 +119,10 @@ export function audioPickSearch(
 ): AudioRouteSearch {
   return {
     model: id,
-    // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant
-    // instead; dropping it made every non-curated GGUF repo arrive as a bare repo id.
+    // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant; both
+    // go along, since the dictation sidecar picks its quant by label alone.
     quant: pick.ggufFilename ?? undefined,
-    ggufQuant: pick.ggufFilename ? undefined : (pick.ggufVariant ?? undefined),
+    ggufQuant: pick.ggufVariant ?? undefined,
     task: pick.task ?? undefined,
     audioType: pick.audioType ?? undefined,
     loadId: pick.loadId ?? undefined,
