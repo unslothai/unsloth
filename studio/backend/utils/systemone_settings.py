@@ -141,12 +141,15 @@ def validate(
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
     # Clef has no CPU path, so a Clef model and a CPU device are never stored together while serving.
+    # Choosing a Clef model with the device unsaid moves the device to GPU with it, the only place it runs.
     active = enabled if enabled is not None else get_enabled()
     if active and local:
         chosen = resolve(get_model() if model is None else model)
         wanted = get_device() if device is None else device
         if getattr(chosen, "layout", None) == "clef" and wanted != "gpu":
-            raise ValueError(CLEF_NEEDS_GPU_SETTING)
+            if device is not None or device_locked():
+                raise ValueError(CLEF_NEEDS_GPU_SETTING)
+            values[DEVICE_KEY] = "gpu"
     return values
 
 

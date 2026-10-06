@@ -504,16 +504,20 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
 
 def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monkeypatch):
     served = _clef_fine_tune(home, "clef_cpu_1")
-    # The device defaults to CPU, which Clef cannot serve on, so the pair is refused instead of stored.
-    refused = _put(client, enabled = True, model = served)
-    assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
+    # The device defaults to CPU, which Clef cannot serve on, so Clef models are listed as unavailable.
     models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
     for name in (served, "clef", "clef-flash"):
         assert models[name]["available"] is False
         assert models[name]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU_SETTING
     assert all(m["available"] for n, m in models.items() if n.startswith("laya"))
+    # Saying CPU out loud with a Clef model is refused.
+    refused = _put(client, enabled = True, model = served, device = "cpu")
+    assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
+    assert client.get("/api/settings/systemone").json()["device"] == "cpu"
 
-    assert _put(client, enabled = True, model = served, device = "gpu").status_code == 200
+    # Picking the Clef model with the device unsaid (Use in Decision API) moves the device to GPU with it.
+    chosen = _put(client, enabled = True, model = served)
+    assert chosen.status_code == 200 and chosen.json()["device"] == "gpu"
     assert _post(client).status_code == 200
     models = client.get("/api/settings/systemone").json()["models"]
     assert all(m["available"] and m["unavailable_reason"] is None for m in models)
