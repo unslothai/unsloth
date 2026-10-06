@@ -152,6 +152,10 @@ def _blank_missing_prompt_value(value: Any) -> Any:
     return value
 
 
+def _allow_empty_prompt(_rendered_text: str) -> None:
+    return None
+
+
 def _apply_data_designer_prompt_blank_patch() -> None:
     try:
         from data_designer.engine.column_generators.utils.prompt_renderer import (  # pyright: ignore[reportMissingImports]
@@ -167,8 +171,9 @@ def _apply_data_designer_prompt_blank_patch() -> None:
 
     def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
         original_prepare(self, template_name, *args, **kwargs)
-        render = self._render_func_registry[template_name]
-        render.func.__self__.finalize = _blank_missing_prompt_value
+        env = self._render_func_registry[template_name].func.__self__
+        env.finalize = _blank_missing_prompt_value
+        env._assert_rendered_text_not_empty = _allow_empty_prompt
 
     RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
     setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)

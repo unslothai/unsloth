@@ -12,6 +12,7 @@ import pytest
 @pytest.fixture(name = "provider")
 def fixture_provider():
     prompts: list[str] = []
+    systems: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -19,6 +20,9 @@ def fixture_provider():
             for message in body["messages"]:
                 if message["role"] == "user":
                     prompts.extend(part["text"] for part in message["content"])
+                elif message["role"] == "system":
+                    content = message["content"]
+                    systems.append(content if isinstance(content, str) else content[0]["text"])
             reply = json.dumps(
                 {
                     "id": "c",
@@ -46,7 +50,7 @@ def fixture_provider():
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target = server.serve_forever, daemon = True).start()
-    yield f"http://127.0.0.1:{server.server_address[1]}/v1", prompts
+    yield f"http://127.0.0.1:{server.server_address[1]}/v1", prompts, systems
     server.shutdown()
 
 
@@ -54,7 +58,7 @@ def test_blank_seed_cells_reach_the_model_as_empty_text(tmp_path: Path, provider
     pytest.importorskip("data_designer")
     from core.data_recipe.service import build_config_builder, create_data_designer
 
-    endpoint, prompts = provider
+    endpoint, prompts, _ = provider
     seed = tmp_path / "seed.csv"
     seed.write_text("question,year,context\nWho?,,\nWhen?,2019,ctx\n", encoding = "utf-8")
     recipe = {
@@ -82,3 +86,39 @@ def test_blank_seed_cells_reach_the_model_as_empty_text(tmp_path: Path, provider
     assert "Who? () " in prompts
     assert any(p.startswith("When? (2019") and p.endswith(") ctx") for p in prompts)
     assert not [p for p in prompts if "None" in p or "nan" in p]
+
+
+def test_blank_system_prompt_cell_keeps_the_row(tmp_path: Path, provider) -> None:
+    pytest.importorskip("data_designer")
+    from core.data_recipe.service import build_config_builder, create_data_designer
+
+    endpoint, prompts, systems = provider
+    seed = tmp_path / "seed.csv"
+    seed.write_text("question,context\nWho?,\nWhen?,ctx\n", encoding = "utf-8")
+    recipe = {
+        "model_providers": [{"name": "p", "endpoint": endpoint, "provider_type": "openai"}],
+        "model_configs": [
+            {"alias": "m", "model": "x", "provider": "p", "inference_parameters": {}}
+        ],
+        "seed_config": {
+            "source": {"seed_type": "local", "path": str(seed)},
+            "sampling_strategy": "ordered",
+        },
+        "columns": [
+            {
+                "column_type": "llm-text",
+                "name": "answer",
+                "model_alias": "m",
+                "system_prompt": "{{ context }}",
+                "prompt": "{{ question }}",
+            }
+        ],
+    }
+
+    designer = create_data_designer(recipe, artifact_path = str(tmp_path / "artifacts"))
+    result = designer.preview(build_config_builder(recipe), num_records = 2)
+
+    assert sorted(result.dataset["question"]) == ["When?", "Who?"]
+    assert "Who?" in prompts and "When?" in prompts
+    assert "ctx" in systems
+    assert "None" not in systems
