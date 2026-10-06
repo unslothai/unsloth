@@ -43,9 +43,10 @@ def _fast_enabled() -> bool:
 _COMPILED = {}
 
 
-# A cold compile of the head costs minutes; it pays off only over a long enough run.
-# Measured in temp/clef_compile_ab (see CLEF_COMPILE_MIN_FORWARDS's derivation in the PR).
-CLEF_COMPILE_MIN_FORWARDS = 2000
+# Compiling the head costs minutes in every process, even with a warm Inductor cache (Dynamo
+# re-traces; new size buckets autotune mid-run), and saves ~0.07 s per batch of 8 on Qwen3.5-2B
+# (B200: 0.40 -> 0.33 s/step; compile +356 s warm, +1043 s cold), so it pays off from ~5000 forwards.
+CLEF_COMPILE_MIN_FORWARDS = 5000
 
 
 def _compile_supported(device, head = None) -> bool:
