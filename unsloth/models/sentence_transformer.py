@@ -153,6 +153,24 @@ def _maybe_upcast_force_float32_inference(st_model):
     return True
 
 
+def _apply_max_seq_length(st_model, max_seq_length):
+    if max_seq_length is None:
+        return
+    embeddings = getattr(getattr(st_model[0], "auto_model", None), "embeddings", None)
+    position_embeddings = getattr(embeddings, "position_embeddings", None)
+    if isinstance(position_embeddings, torch.nn.Embedding):
+        # RoBERTa-style positions start after padding_idx, so 514 rows hold 512 tokens.
+        padding_idx = position_embeddings.padding_idx
+        limit = position_embeddings.num_embeddings - (0 if padding_idx is None else padding_idx + 1)
+        if max_seq_length > limit:
+            print(
+                f"Unsloth: max_seq_length = {max_seq_length} is longer than this model supports. "
+                f"Using {limit}."
+            )
+            max_seq_length = limit
+    st_model.max_seq_length = max_seq_length
+
+
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
@@ -2412,6 +2430,7 @@ class FastSentenceTransformer(FastModel):
             ) and hasattr(st_model[0], "unpad_inputs"):
                 # Refresh ST's cached capability decision after changing the backend.
                 st_model[0].unpad_inputs = st_model[0].unpad_inputs
+            _apply_max_seq_length(st_model, max_seq_length)
             st_model._unsloth_trust_remote_code = trust_remote_code
             return st_model
 
@@ -2539,6 +2558,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _apply_max_seq_length(st_model, max_seq_length)
             _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
