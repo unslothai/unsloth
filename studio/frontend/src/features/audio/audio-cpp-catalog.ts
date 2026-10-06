@@ -46,6 +46,10 @@ export interface AudioCppRuntimeStatus {
   espeak: boolean;
   backend: string | null;
   release_tag: string | null;
+  /** The release `unsloth studio update` installs; null when Studio cannot tell or does not manage the runtime. */
+  expected_tag?: string | null;
+  /** A Studio-managed runtime that is not that release. Absent on older servers. */
+  outdated?: boolean;
 }
 
 const MB = 1024 * 1024;

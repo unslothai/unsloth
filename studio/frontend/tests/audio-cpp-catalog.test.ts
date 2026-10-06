@@ -26,6 +26,7 @@ import {
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
+  audioCppRuntimeUpdate,
   audioSamplingControlsApply,
   isGgufTtsTarget,
   isTtsAudioType,
@@ -542,6 +543,39 @@ test("recommended speech and music picks are refused when the runtime cannot run
     page,
     /audioCppRuntimeProblem\(id, audioCppRuntime\.current\);\s*if \(runtimeProblem\) \{\s*toast\.error\(runtimeProblem, \{ duration: 7000 \}\);\s*return;/,
   );
+});
+
+test("an outdated managed runtime names both releases; anything else shows no notice", () => {
+  const current = {
+    available: true,
+    espeak: true,
+    backend: "cuda",
+    release_tag: "v0.9.0-unsloth.1",
+    expected_tag: "v0.9.0-unsloth.1",
+    outdated: false,
+  };
+  const outdated = { ...current, release_tag: "v0.8.0-unsloth.1", outdated: true };
+  assert.deepEqual(audioCppRuntimeUpdate(outdated), {
+    installed: "v0.8.0-unsloth.1",
+    expected: "v0.9.0-unsloth.1",
+  });
+  assert.equal(audioCppRuntimeUpdate(current), null);
+  assert.equal(audioCppRuntimeUpdate(null), null);
+  assert.equal(audioCppRuntimeUpdate(undefined), null);
+  // A server older than these fields, or one that cannot name either release.
+  assert.equal(
+    audioCppRuntimeUpdate({ available: true, espeak: true, backend: null, release_tag: "v0.8.0" }),
+    null,
+  );
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, expected_tag: null }), null);
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, release_tag: null }), null);
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, available: false }), null);
+  const route = readText("../../backend/routes/inference.py");
+  assert.match(route, /"expected_tag": None,\s*"outdated": False,/);
+  const page = readAudioWorkspaceSource();
+  assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
+  assert.match(page, /\{runtimeUpdate \? \(/);
+  assert.match(page, /<code className="font-mono">unsloth studio update<\/code>/);
 });
 
 test("the capability line names GGUF audio and music, never the runtime's internal type", () => {
