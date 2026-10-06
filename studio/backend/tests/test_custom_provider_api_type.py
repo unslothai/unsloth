@@ -164,7 +164,8 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
                 "id": "resp_route",
                 "status": "completed",
                 "output": [
-                    {"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}
+                    {"type": "compaction", "encrypted_content": "enc_compacted"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "Hello"}]},
                 ],
             },
         )
@@ -199,7 +200,10 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
     assert response.status_code == upstream_status
     body = json.loads(response.body)
     if upstream_status == 200:
-        assert body["choices"][0]["message"]["content"] == "Hello"
+        assert body["choices"][0]["message"]["content"] == [
+            {"type": "compaction", "encrypted_content": "enc_compacted"},
+            {"type": "text", "text": "Hello"},
+        ]
         assert monitor.snapshot()[0]["status"] == "completed"
     else:
         assert "rate limited" in body["error"]["message"]

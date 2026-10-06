@@ -557,6 +557,7 @@ class _Turn:
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
     # result twice
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
+    provider_compaction: dict[str, Any] | None = None
 
     def note_hosted_tool_event(self, event: Any) -> None:
         """Record a provider-side tool call carried on ``_toolEvent``. These reach the client as
@@ -568,10 +569,21 @@ class _Turn:
         unlabelled."""
         if not isinstance(event, dict):
             return
+        kind = event.get("type")
+        if kind == "compaction_block":
+            encrypted = event.get("encrypted_content")
+            content = event.get("content")
+            if isinstance(encrypted, str) and encrypted:
+                self.provider_compaction = {
+                    "type": "compaction",
+                    "encrypted_content": encrypted,
+                }
+            elif isinstance(content, str) and content:
+                self.provider_compaction = {"type": "compaction", "content": content}
+            return
         call_id = event.get("tool_call_id")
         if not isinstance(call_id, str) or not call_id:
             return
-        kind = event.get("type")
         if kind not in ("tool_start", "tool_end"):
             return
 
@@ -1599,6 +1611,20 @@ async def stream_with_studio_tools(
         # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.
         if policy.on_provider_turn_end is not None:
             policy.on_provider_turn_end()
+
+        if turn.provider_compaction is not None:
+            system_messages = [
+                message
+                for message in conversation
+                if isinstance(message, dict) and message.get("role") == "system"
+            ]
+            conversation[:] = [
+                *system_messages,
+                {
+                    "role": "assistant",
+                    "content": [turn.provider_compaction],
+                },
+            ]
 
         # Both of these mean the turn ended before the model finished saying what it wanted: "length" hit the token
         # ceiling, "content_filter" had the output cut by the provider's own filter. Either way a call collected so

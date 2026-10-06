@@ -28025,15 +28025,11 @@ async def _proxy_to_external_provider(
     _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
+    _external_context_fitter = None
     _compaction_fallback = None
-    if (
-        payload.compaction_threshold
-        and _provider_compacts
-        and (provider_type == "openai" or api_type == "responses")
-        and _rolling_context_policy(payload) is not None
-    ):
+    if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
 
-        async def _compaction_fallback(messages):
+        async def _external_context_fitter(messages):
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 _fit_external_context, messages, payload
             )
@@ -28048,9 +28044,13 @@ async def _proxy_to_external_provider(
                 ).rstrip("\n")
             return fitted, fallback_max_tokens, truncation_line
 
+        if _provider_compacts and (provider_type == "openai" or api_type == "responses"):
+            _compaction_fallback = _external_context_fitter
+
     if (
         payload.compaction_threshold
         and not _provider_compacts
+        and not run_studio_tool_loop
         and _rolling_context_policy(payload) is not None
     ):
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
@@ -28131,7 +28131,7 @@ async def _proxy_to_external_provider(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
-                    fit_messages = _refit_loop_request if _fits_locally else None,
+                    message_fitter = (_external_context_fitter if not _provider_compacts else None),
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,

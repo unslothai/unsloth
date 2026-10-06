@@ -6095,6 +6095,7 @@ class ExternalProviderClient:
                         tool_calls: list[dict[str, Any]] = []
                         reasoning_replay_items: list[dict[str, Any]] = []
                         url_citations: list[dict[str, Any]] = []
+                        compaction_part: dict[str, Any] | None = None
                         for item in response_payload.get("output") or []:
                             if not isinstance(item, dict):
                                 continue
@@ -6112,6 +6113,13 @@ class ExternalProviderClient:
                                 reasoning_item = _sanitize_openai_reasoning_replay_item(item)
                                 if reasoning_item:
                                     reasoning_replay_items.append(reasoning_item)
+                            elif item.get("type") == "compaction":
+                                encrypted = item.get("encrypted_content")
+                                if isinstance(encrypted, str) and encrypted:
+                                    compaction_part = {
+                                        "type": "compaction",
+                                        "encrypted_content": encrypted,
+                                    }
                             elif item.get("type") == "message":
                                 content = item.get("content") or []
                                 if isinstance(content, str):
@@ -6165,6 +6173,10 @@ class ExternalProviderClient:
                             "role": "assistant",
                             "content": visible_text or None,
                         }
+                        if compaction_part is not None:
+                            message["content"] = [compaction_part]
+                            if visible_text:
+                                message["content"].append({"type": "text", "text": visible_text})
                         if refusal_parts:
                             message["refusal"] = "".join(refusal_parts)
                         if tool_calls:

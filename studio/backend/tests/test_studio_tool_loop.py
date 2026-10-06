@@ -248,6 +248,61 @@ def test_structured_call_executes_and_continues(executed):
     assert follow_up[-1]["content"] == "RESULT<web_search>"
 
 
+def test_provider_compaction_replaces_history_before_tool_follow_up(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {},
+                    _toolEvent = {
+                        "type": "compaction_block",
+                        "encrypted_content": "opaque-current",
+                    },
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"current"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    # ExternalProviderClient synthesizes this control frame after sanitizing the provider stream.
+    transport.sanitizes_provider_frames = True
+    _run(
+        transport,
+        messages = [
+            {"role": "system", "content": "Keep this instruction."},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "current question"},
+        ],
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert follow_up[0] == {"role": "system", "content": "Keep this instruction."}
+    assert follow_up[1] == {
+        "role": "assistant",
+        "content": [{"type": "compaction", "encrypted_content": "opaque-current"}],
+    }
+    serialized = json.dumps(follow_up)
+    assert "old question" not in serialized
+    assert "current question" not in serialized
+    assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
+
+
 def test_a_conversation_search_here_gets_the_active_branch(executed):
     """The provider loops share the local paths' tool catalogue.
 
