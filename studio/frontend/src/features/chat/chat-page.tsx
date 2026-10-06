@@ -635,6 +635,13 @@ const SingleContent = memo(function SingleContent({
   const showResearchPanel = researchMatchesThread && !isMobile;
   const browserOverlaid = useContext(BrowserOverlaidContext);
   const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
+  // Research outranks the browser in the side pane, so a new browser open (a card, a link) closes it.
+  const handledBrowserOpenRef = useRef(browserOpenSequence);
+  useEffect(() => {
+    if (handledBrowserOpenRef.current === browserOpenSequence) return;
+    handledBrowserOpenRef.current = browserOpenSequence;
+    if (showResearchPanel && browserOpen && !browserOverlaid) closeResearchPanel();
+  }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
   const chatDock = useBrowserStore((state) => state.chatDock);
@@ -3302,6 +3309,14 @@ export function ChatPage({
   }, [view, incognito, setIncognito]);
 
   const browserOpen = useBrowserStore((state) => state.open);
+  const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  // A project has no side pane: only a browser opened from it (a card, a link) shows over it, not
+  // one left open in a chat before.
+  const [projectBrowserBaseline, setProjectBrowserBaseline] = useState<number | null>(null);
+  const projectViewId = view.mode === "project" ? view.projectId : null;
+  useEffect(() => {
+    setProjectBrowserBaseline(projectViewId ? useBrowserStore.getState().openSequence : null);
+  }, [projectViewId]);
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
@@ -4477,9 +4492,15 @@ export function ChatPage({
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
-  // Compare and phones show the browser over the chat.
+  // Compare, projects (no side pane) and phones show the browser over the chat.
   const showBrowserOverlay =
-    active && browserOpen && (view.mode === "compare" || isMobile);
+    active &&
+    browserOpen &&
+    (view.mode === "compare" ||
+      isMobile ||
+      (view.mode === "project" &&
+        projectBrowserBaseline !== null &&
+        browserOpenSequence > projectBrowserBaseline));
 
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the

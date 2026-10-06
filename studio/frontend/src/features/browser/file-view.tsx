@@ -18,7 +18,6 @@ import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file
 import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 
-// With no chat beside the browser, stage the fix and close the overlay so the composer shows.
 // The preview shows at most 200,000 chars (4 bytes each at most): a 50 MB body is never decoded whole.
 const MAX_TEXT_BYTES = 1024 * 1024;
 
@@ -123,18 +122,18 @@ function TextFile({
       <>
         {/* Kept mounted behind the source, so the console keeps its output. */}
         {previewed ? (
-        <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
-          <ArtifactHtmlFrame
-            code={text}
-            title={name}
-            fill={true}
-            reloadNonce={reloadNonce}
-            consoleOpen={view.consoleOpen}
-            onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
-            onOutputCountChange={tabId ? onOutputCountChange : undefined}
-            onFixWithModel={requestEdits ?? stageEditsPrompt}
-          />
-        </div>
+          <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
+            <ArtifactHtmlFrame
+              code={text}
+              title={name}
+              fill={true}
+              reloadNonce={reloadNonce}
+              consoleOpen={view.consoleOpen}
+              onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
+              onOutputCountChange={tabId ? onOutputCountChange : undefined}
+              onFixWithModel={requestEdits ?? stageEditsPrompt}
+            />
+          </div>
         ) : null}
         {source ? sourceView : null}
       </>

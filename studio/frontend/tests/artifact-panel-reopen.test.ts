@@ -78,7 +78,19 @@ test("compare's hidden base view leaves the browser to the overlay, so a page ru
   const page = read("../src/features/chat/chat-page.tsx");
   assert.match(page, /const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;/);
   assert.match(page, /<BrowserOverlaidContext\.Provider value=\{baseBackgrounded\}>/);
-  assert.match(page, /const showBrowserOverlay =\s*active && browserOpen && \(view\.mode === "compare" \|\| isMobile\);/);
+  assert.match(page, /const showBrowserOverlay =\s*active &&\s*browserOpen &&\s*\(view\.mode === "compare" \|\|\s*isMobile \|\|/);
+});
+
+test("a project has no side pane, so a browser opened from it shows over it, not one left open before", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  assert.match(page, /setProjectBrowserBaseline\(projectViewId \? useBrowserStore\.getState\(\)\.openSequence : null\);/);
+  assert.match(page, /\(view\.mode === "project" &&\s*projectBrowserBaseline !== null &&\s*browserOpenSequence > projectBrowserBaseline\)/);
+});
+
+test("opening the browser closes Research, which would otherwise hide it in the side pane", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  assert.match(page, /if \(handledBrowserOpenRef\.current === browserOpenSequence\) return;/);
+  assert.match(page, /if \(showResearchPanel && browserOpen && !browserOverlaid\) closeResearchPanel\(\);/);
 });
 
 test("Request edits stays in overlays, staging the prompt for the visible composer", () => {

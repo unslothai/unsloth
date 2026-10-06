@@ -394,7 +394,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         get().newTab();
         return;
       }
-        set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
+      set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
     closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
     togglePanel: () => (get().open ? get().closePanel() : get().openPanel()),
@@ -413,7 +413,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openPinned: (pinnedId, url, title) => {
       const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);
-        if (shown) {
+      if (shown) {
         set((state) => ({ open: true, activeTabId: shown.id, openSequence: state.openSequence + 1 }));
         return;
       }
@@ -450,7 +450,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const { activeTabId } = get();
       if (options?.newTab === false && activeTabId) {
         get().navigate(activeTabId, { url: target });
-            set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
+        set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
         return;
       }
       if (options?.newTab === undefined && focusExisting(openKey)) return;

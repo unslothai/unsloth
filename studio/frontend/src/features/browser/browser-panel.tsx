@@ -1435,7 +1435,6 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** File controls in the browser chrome, for HTML and code. */
 /** HTML and code use the browser chrome; other files keep the floating controls. */
 function usesBrowserChrome(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
   const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
