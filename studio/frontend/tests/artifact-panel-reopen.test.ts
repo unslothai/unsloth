@@ -52,3 +52,22 @@ test("the panel's resize handle opts out of the double-click reset", () => {
   assert.ok(handle > 0);
   assert.match(page.slice(handle, handle + 300), /disableDoubleClick/);
 });
+
+test("HTML runs whole in the browser; only the source view is capped", () => {
+  const view = read("../src/features/browser/file-view.tsx");
+  assert.match(view, /const bytes = kind === "html" \? blob\.size : MAX_TEXT_BYTES;/);
+  assert.match(view, /<ArtifactHtmlFrame\s+code=\{text\}/);
+  assert.match(view, /<CodeSourceView code=\{preview\.text\}/);
+});
+
+test("the browser over the chat is a modal: focus moves in, is trapped, and Escape closes it", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const overlay = page.slice(page.indexOf("function BrowserOverlay"), page.indexOf("const ProjectSourcesPanel"));
+  assert.match(overlay, /role="dialog"/);
+  assert.match(overlay, /aria-modal=\{true\}/);
+  assert.match(overlay, /\(focusableIn\(dialog\)\[0\] \?\? dialog\)\.focus\(\)/);
+  assert.match(overlay, /previous instanceof HTMLElement && previous\.isConnected\) previous\.focus\(\)/);
+  assert.match(overlay, /event\.key !== "Tab"/);
+  // Menus, fields and annotating keep their own Escape.
+  assert.match(overlay, /event\.defaultPrevented \|\| typing \|\| useBrowserStore\.getState\(\)\.annotateTabId !== null/);
+});

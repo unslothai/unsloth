@@ -80,14 +80,16 @@ function TextFile({
   // HTML runs only once previewed, so opening to source does not run it.
   const [previewed, setPreviewed] = useState(view.mode === "preview");
   if (!previewed && view.mode === "preview") setPreviewed(true);
+  const kind = textFileKind(name, contentType, plainText);
   useEffect(() => {
     let active = true;
-    void blob.slice(0, MAX_TEXT_BYTES).text().then((value) => active && setText(value));
+    // HTML runs whole: a cut document breaks its scripts and closing tags.
+    const bytes = kind === "html" ? blob.size : MAX_TEXT_BYTES;
+    void blob.slice(0, bytes).text().then((value) => active && setText(value));
     return () => {
       active = false;
     };
-  }, [blob]);
-  const kind = textFileKind(name, contentType, plainText);
+  }, [blob, kind]);
   // Stable: the frame reports its counts from an effect that depends on these.
   const onConsoleOpenChange = useCallback(
     (consoleOpen: boolean) => tabId && useBrowserStore.getState().setFileView(tabId, { consoleOpen }),
@@ -129,7 +131,7 @@ function TextFile({
         {previewed ? (
         <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
           <ArtifactHtmlFrame
-            code={preview.text}
+            code={text}
             title={name}
             fill={true}
             reloadNonce={reloadNonce}

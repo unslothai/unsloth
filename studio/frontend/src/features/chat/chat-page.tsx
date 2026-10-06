@@ -124,9 +124,11 @@ import {
   SaveTemporaryChatMenu,
   TemporaryChatSaveBridge,
 } from "./components/temporary-chat-save";
+import { useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   lazy,
   memo,
@@ -311,8 +313,56 @@ const FullViewChatButton = lazy(() =>
   })),
 );
 
-/** The browser over the chat, where it cannot sit beside it. */
+// Sandboxed page frames stay outside the trap: same-origin access would weaken their isolation.
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableIn(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => element.getAttribute("aria-hidden") !== "true" && element.tabIndex !== -1,
+  );
+}
+
+/** The browser over the chat, where it cannot sit beside it. A modal: focus moves in, stays in, and returns on close. */
 function BrowserOverlay(): ReactElement {
+  const t = useT();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    const id = window.setTimeout(() => {
+      const dialog = dialogRef.current;
+      if (dialog && !dialog.contains(document.activeElement)) (focusableIn(dialog)[0] ?? dialog).focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      // Menus, fields and annotating handle their own Escape first.
+      const target = event.target as HTMLElement;
+      const typing = target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+      if (event.defaultPrevented || typing || useBrowserStore.getState().annotateTabId !== null) return;
+      event.preventDefault();
+      useBrowserStore.getState().closePanel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = focusableIn(event.currentTarget);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      event.currentTarget.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm sm:p-4"
@@ -322,7 +372,15 @@ function BrowserOverlay(): ReactElement {
         }
       }}
     >
-      <div className="size-full overflow-hidden border-border bg-background sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-2xl sm:border sm:shadow-xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal={true}
+        aria-label={t("browser.title")}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        className="size-full overflow-hidden border-border bg-background outline-none sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-2xl sm:border sm:shadow-xl"
+      >
         <Suspense fallback={null}>
           <BrowserPanel active={true} />
         </Suspense>

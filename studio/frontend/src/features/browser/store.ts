@@ -18,6 +18,8 @@ export type BrowserEntry =
       contentType: string;
       /** Show as text even if named .html (text extracted from a document). */
       plainText?: boolean;
+      /** The tab's openKey while this entry shows, so Back restores it. */
+      openKey?: string;
     };
 
 export type InternalPage = "history" | "downloads" | "bookmarks";
@@ -172,6 +174,8 @@ function copyTab(tab: BrowserTab): BrowserTab {
     ...createTab({ kind: "newtab" }),
     history: tab.history.map((entry) => {
       const copy = { ...entry };
+      // The original keeps its key; a copy going Back must not claim it.
+      if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
       return copy;
@@ -335,6 +339,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
+    openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
   };
 }
@@ -461,6 +466,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         name: name || "Untitled",
         contentType: contentType || blob.type,
         plainText,
+        ...(openKey ? { openKey } : {}),
       };
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
