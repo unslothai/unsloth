@@ -2682,6 +2682,23 @@ export const en = {
         "Apps using this token immediately lose access. This cannot be undone.",
       revokeAction: 'Revoke "{name}"',
       revoking: "Revoking...",
+      audioApi: {
+        title: "Audio API",
+        description:
+          "Speech, voice cloning, transcription and the Audio page workflows. These calls need an API key.",
+        speak: "Speak",
+        clone: "Clone",
+        transcribe: "Transcribe",
+        workflows: "Workflows",
+        separate: "Separate",
+        convert: "Convert",
+        music: "Music",
+        edit: "Edit",
+        placeholderModel:
+          "No downloaded model can run this example yet, so the model shown is a stand-in. Download one on the Audio page first.",
+        autoSwitchOff:
+          "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
+      },
       decisionApi: {
         title: "Decision API",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",

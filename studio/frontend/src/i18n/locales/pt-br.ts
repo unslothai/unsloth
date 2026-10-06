@@ -2665,6 +2665,21 @@ export const ptBR = {
         "Aplicativos que usam este token perderão o acesso imediatamente. Esta ação não pode ser desfeita.",
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
+      audioApi: {
+        title: "API de áudio",
+        description: "Fala, clonagem de voz, transcrição e os fluxos da página Áudio. Essas chamadas precisam de uma chave de API.",
+        speak: "Falar",
+        clone: "Clonar",
+        transcribe: "Transcrever",
+        workflows: "Fluxos",
+        separate: "Separar",
+        convert: "Converter",
+        music: "Música",
+        edit: "Editar",
+        placeholderModel: "Nenhum modelo baixado consegue rodar este exemplo ainda, então o modelo mostrado é só ilustrativo. Baixe um antes na página Áudio.",
+        autoSwitchOff:
+          "O modelo só é carregado pelo nome com a troca automática de modelo ativada. Ative-a ou carregue antes o modelo na página de Áudio dele.",
+      },
       decisionApi: {
         title: "API de decisões",
         description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo neste computador ou um modelo de decisões das Conexões. Funciona com o SDK da TypeSafe.",

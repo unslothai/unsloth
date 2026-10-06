@@ -15,6 +15,20 @@ type ApiOpenAIModelList = {
 
 const CHAT_TASKS = new Set(["text-generation"]);
 
+export type AudioApiTask = "text-to-speech" | "automatic-speech-recognition";
+
+export type AudioApiModel = {
+  id: string;
+  loaded: boolean;
+  // text-to-speech also covers music models, which /v1/audio/speech serves too.
+  task: AudioApiTask;
+};
+
+const AUDIO_TASKS = new Set<string>([
+  "text-to-speech",
+  "automatic-speech-recognition",
+]);
+
 export function chatModelsFromCatalog(body: unknown): OpenAIModel[] {
   const data = (body as ApiOpenAIModelList | null)?.data;
   if (!Array.isArray(data)) {
@@ -29,6 +43,27 @@ export function chatModelsFromCatalog(body: unknown): OpenAIModel[] {
             id: entry.id,
             loaded: entry.loaded === true,
             quant: typeof entry.quant === "string" ? entry.quant : undefined,
+          },
+        ]
+      : [],
+  );
+}
+
+export function audioModelsFromCatalog(body: unknown): AudioApiModel[] {
+  const data = (body as ApiOpenAIModelList | null)?.data;
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  return data.flatMap((entry) =>
+    typeof entry?.id === "string" &&
+    entry.id &&
+    typeof entry.task === "string" &&
+    AUDIO_TASKS.has(entry.task)
+      ? [
+          {
+            id: entry.id,
+            loaded: entry.loaded === true,
+            task: entry.task as AudioApiTask,
           },
         ]
       : [],

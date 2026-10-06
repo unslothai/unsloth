@@ -32,7 +32,7 @@ import {
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import type {
@@ -403,6 +403,16 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
+/** The Secure HTTPS switch, held by the tab so every example card targets the same base. */
+export function useApiTunnelPref(): [boolean, (next: boolean) => void] {
+  const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
+  const update = useCallback((next: boolean) => {
+    setUseTunnel(next);
+    writeUseTunnelPref(next);
+  }, []);
+  return [useTunnel, update];
+}
+
 // A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.
 function looksLikePath(id: string): boolean {
   return (
@@ -529,7 +539,7 @@ const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
 ];
 const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 
-function HighlightedCode({
+export function HighlightedCode({
   code,
   language,
   redactFromReload,
@@ -561,11 +571,15 @@ function HighlightedCode({
 
 export function UsageExamples({
   apiKey,
+  useTunnel,
+  onUseTunnelChange,
   keylessScope = "off",
   keylessTools = false,
   keylessExposure = null,
 }: {
   apiKey?: string | null;
+  useTunnel: boolean;
+  onUseTunnelChange: (next: boolean) => void;
   /** which routes keyless api access serves, so a placeholder is only used where it works */
   keylessScope?: KeylessApiAccessScope;
   /** whether a keyless caller may drive the server-side tool loop */
@@ -617,7 +631,6 @@ export function UsageExamples({
   // isGguf at the moment of a hand-made pick, null if there has been none this session.
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
-  const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
@@ -850,11 +863,6 @@ export function UsageExamples({
     }
   };
 
-  const handleToggleTunnel = (next: boolean) => {
-    setUseTunnel(next);
-    writeUseTunnelPref(next);
-  };
-
   const handleCopyUrl = async () => {
     if (cloudflareUrl && (await copyToClipboard(cloudflareUrl))) {
       setCopiedUrl(true);
@@ -882,7 +890,7 @@ export function UsageExamples({
               <Switch
                 size="sm"
                 checked={useTunnel}
-                onCheckedChange={handleToggleTunnel}
+                onCheckedChange={onUseTunnelChange}
                 aria-label={t("settings.apiKeys.secureHttps")}
               />
               <span className="text-ui-11 font-medium text-foreground">

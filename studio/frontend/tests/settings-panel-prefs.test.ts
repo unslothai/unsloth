@@ -108,6 +108,21 @@ test("a non-string model is refused rather than handed to the tab", () => {
   assert.equal(out.fineTuneAction, "train");
 });
 
+test("the Audio API tab persists and a non-string is dropped", () => {
+  useSettingsPanelPrefsStore.getState().setApiAudioExample("clone");
+  assert.equal(
+    JSON.parse(store.get(KEY) as string).state.apiAudioExample,
+    "clone",
+  );
+  const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
+  assert.ok(merged);
+  const out = merged(
+    { apiAudioExample: 7 },
+    useSettingsPanelPrefsStore.getState(),
+  ) as { apiAudioExample: unknown };
+  assert.equal(out.apiAudioExample, null);
+});
+
 test("a persisted blob cannot replace the store actions", () => {
   const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
   assert.ok(merged);
