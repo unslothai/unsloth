@@ -1104,8 +1104,9 @@ def collect_local_models(
                 continue
             if not _local_model_path_is_symlink(below_root):
                 custom_identities.add(_compat_inventory_path_identity(m.path))
-        # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
-        # cache) must not re-stamp its rows as generic custom entries.
+        # Keep an already-attributed source (a registered ~/.ollama/models, or a folder shadowing
+        # the HF cache) unless it is a cache-layout copy parked outside every configured cache
+        # root -- that one becomes the custom row the picker lists (see _merge_scan_folder_row).
         local_models += [_merge_scan_folder_row(m, configured_cache_roots) for m in custom_models]
 
     # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
