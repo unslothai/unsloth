@@ -288,6 +288,7 @@ export const es = {
       notMarked: "{name} se guardó, pero no se pudo marcar como descargado de internet, así que tu sistema no avisará antes de abrirlo.",
       keepPrompt: "{name} puede dañar tu equipo. ¿Conservarlo?",
       keepFailed: "No se pudo conservar {name}",
+      discardFailed: "No se pudo eliminar {name}",
       keep: "Conservar",
       discard: "Descartar",
       savePrompt: "{name} puede dañar tu equipo. ¿Guardarlo de todos modos?",

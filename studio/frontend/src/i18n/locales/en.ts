@@ -285,6 +285,7 @@ export const en = {
       notMarked: "{name} was saved but couldn't be marked as downloaded from the internet, so your system won't warn before opening it.",
       keepPrompt: "{name} can harm your computer. Keep it?",
       keepFailed: "Couldn't keep {name}",
+      discardFailed: "Couldn't delete {name}",
       keep: "Keep",
       discard: "Discard",
       savePrompt: "{name} can harm your computer. Save it anyway?",

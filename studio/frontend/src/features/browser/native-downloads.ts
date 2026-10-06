@@ -46,9 +46,11 @@ export type NativeDownloadDeps = {
   t: (key: TranslationKey, values?: InterpolationValues) => string;
 };
 
-// Ids already kept or discarded: sonner keeps a replaced toast's onDismiss, so a late close can't
-// discard a kept file, and a second click can't act twice.
+// Ids with a keep or discard under way or done, so a second click or a late close can't act twice.
 const settled = new Set<string>();
+// Each prompt gets its own toast id: sonner removes a clicked toast's id a moment later, which would
+// also take a follow-up prompt shown under that id.
+let prompts = 0;
 
 export function handleNativeDownload(event: NativeDownloadEvent, deps: NativeDownloadDeps): void {
   const { toast, t } = deps;
@@ -70,33 +72,42 @@ export function handleNativeDownload(event: NativeDownloadEvent, deps: NativeDow
   else toast.success(t("browser.native.downloaded", { name: event.name }));
 }
 
-function askToKeep(event: NativeDownloadEvent, id: string, deps: NativeDownloadDeps, description?: string): void {
+function askToKeep(
+  event: NativeDownloadEvent,
+  id: string,
+  deps: NativeDownloadDeps,
+  failure?: { title: "keepFailed" | "discardFailed"; detail: string },
+): void {
   const { toast, t } = deps;
+  // This prompt answers once; an earlier prompt's late close stays inert after a retry.
+  let answered = false;
+  // Asked again with why the last answer failed; the file is still staged.
+  const retry = (failed: "keepFailed" | "discardFailed") => (error: unknown) => {
+    settled.delete(id);
+    askToKeep(event, id, deps, { title: failed, detail: error instanceof Error ? error.message : String(error) });
+  };
   const discard = () => {
-    if (settled.has(id)) return;
+    if (answered || settled.has(id)) return;
+    answered = true;
     settled.add(id);
-    void deps.call("browser_download_discard", { id }).catch(() => undefined);
+    deps.call("browser_download_discard", { id }).catch(retry("discardFailed"));
   };
   const keep = () => {
-    if (settled.has(id)) return;
+    if (answered || settled.has(id)) return;
+    answered = true;
     settled.add(id);
-    deps.call<string>("browser_download_keep", { id }).then(
-      (name) => {
-        deps.record({ name, url: event.url, size: event.size ?? 0, contentType: "" });
-        toast.success(t("browser.native.downloaded", { name }));
-      },
-      (error: unknown) => {
-        // Still staged: offer Discard, with why it couldn't be kept.
-        settled.delete(id);
-        askToKeep(event, id, deps, error instanceof Error ? error.message : String(error));
-      },
-    );
+    deps.call<string>("browser_download_keep", { id }).then((name) => {
+      deps.record({ name, url: event.url, size: event.size ?? 0, contentType: "" });
+      toast.success(t("browser.native.downloaded", { name }));
+    }, retry("keepFailed"));
   };
-  toast(t(description ? "browser.downloadSafety.keepFailed" : "browser.downloadSafety.keepPrompt", { name: event.name }), {
-    id: `browser-download-${id}`,
+  prompts += 1;
+  toast(t(`browser.downloadSafety.${failure?.title ?? "keepPrompt"}`, { name: event.name }), {
+    id: `browser-download-${id}-${prompts}`,
     duration: Number.POSITIVE_INFINITY,
-    description,
-    action: description ? undefined : { label: t("browser.downloadSafety.keep"), onClick: keep },
+    description: failure?.detail,
+    // Keep stays offered after a failed discard, never after a refused keep.
+    action: failure?.title === "keepFailed" ? undefined : { label: t("browser.downloadSafety.keep"), onClick: keep },
     cancel: { label: t("browser.downloadSafety.discard"), onClick: discard },
     onDismiss: discard,
   });

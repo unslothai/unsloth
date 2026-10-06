@@ -288,6 +288,7 @@ export const de = {
       notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
       keepPrompt: "{name} kann deinem Computer schaden. Behalten?",
       keepFailed: "{name} konnte nicht behalten werden",
+      discardFailed: "{name} konnte nicht gelöscht werden",
       keep: "Behalten",
       discard: "Verwerfen",
       savePrompt: "{name} kann deinem Computer schaden. Trotzdem speichern?",

@@ -289,6 +289,7 @@ export const ja = {
       notMarked: "{name} は保存されましたが、インターネットからダウンロードしたファイルとしてマークできなかったため、開く前にシステムの警告が表示されません。",
       keepPrompt: "{name} はコンピューターに害を与える可能性があります。保存しますか?",
       keepFailed: "{name} を保存できませんでした",
+      discardFailed: "{name} を削除できませんでした",
       keep: "保存",
       discard: "破棄",
       savePrompt: "{name} はコンピューターに害を与える可能性があります。それでも保存しますか?",

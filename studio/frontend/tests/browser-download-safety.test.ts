@@ -76,7 +76,7 @@ test("a staged download asks once; Keep keeps it under the name the app gives ba
   const h = harness(async () => "setup (1).exe");
   handleNativeDownload({ ...finished, name: "setup.exe", id: "s1", needsApproval: true, marked: true }, h.deps as never);
   const prompt = h.shown.at(-1);
-  assert.equal(prompt?.options?.id, "browser-download-s1");
+  assert.match(String(prompt?.options?.id), /^browser-download-s1-\d+$/);
   assert.equal(prompt?.options?.duration, Number.POSITIVE_INFINITY);
   const action = prompt?.options?.action as { onClick: () => void };
   action.onClick();
@@ -103,15 +103,39 @@ test("a refused Keep leaves the file staged with Discard and the reason", async 
     if (command === "browser_download_keep") throw "couldn't mark it";
   });
   handleNativeDownload({ ...finished, name: "setup.exe", id: "s3", needsApproval: true, marked: false }, h.deps as never);
-  (h.shown.at(-1)?.options?.action as { onClick: () => void }).onClick();
+  const first = h.shown.at(-1);
+  (first?.options?.action as { onClick: () => void }).onClick();
   await new Promise((resolve) => setTimeout(resolve, 0));
   const retry = h.shown.at(-1);
-  assert.equal(retry?.options?.id, "browser-download-s3");
+  // A new toast id: sonner removes the clicked toast's id, which would take this prompt with it.
+  assert.notEqual(retry?.options?.id, first?.options?.id);
+  assert.equal(retry?.message, "browser.downloadSafety.keepFailed:setup.exe");
   assert.equal(retry?.options?.description, "couldn't mark it");
   assert.equal(retry?.options?.action, undefined);
+  // The clicked prompt closing late discards nothing.
+  (first?.options?.onDismiss as () => void)();
+  assert.deepEqual(h.calls.map((call) => call.command), ["browser_download_keep"]);
   (retry?.options?.cancel as { onClick: () => void }).onClick();
   assert.deepEqual(h.calls.map((call) => call.command), ["browser_download_keep", "browser_download_discard"]);
   assert.equal(h.recorded.length, 0);
+});
+
+test("a failed Discard asks again, so the staged file is not left behind", async () => {
+  let failures = 1;
+  const h = harness(async (command) => {
+    if (command === "browser_download_discard" && failures-- > 0) throw new Error("in use");
+  });
+  handleNativeDownload({ ...finished, name: "setup.exe", id: "s5", needsApproval: true, marked: true }, h.deps as never);
+  (h.shown.at(-1)?.options?.cancel as { onClick: () => void }).onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const retry = h.shown.at(-1);
+  assert.equal(retry?.message, "browser.downloadSafety.discardFailed:setup.exe");
+  assert.equal(retry?.options?.description, "in use");
+  assert.ok(retry?.options?.action);
+  (retry?.options?.onDismiss as () => void)();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(h.calls.map((call) => call.command), ["browser_download_discard", "browser_download_discard"]);
+  assert.equal(h.shown.length, 2);
 });
 
 test("an ordinary download from a closed tab is recorded; an unmarked one warns", () => {

@@ -156,6 +156,8 @@ struct ViewsState {
     download_starts_all: VecDeque<Instant>,
     /// Dangerous downloads under a neutral name until the reader keeps or discards them, by id.
     staged: HashMap<String, Staged>,
+    /// Bumped when an account switch closes every view; a view's downloads report only while it matches.
+    account_epoch: u64,
     polling: bool,
     /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
     muted: HashSet<String>,
@@ -855,26 +857,31 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
 
 /// Delete a finished staged download. Never one still downloading or being kept.
 fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
-    let path = {
+    let (path, marked) = {
         let mut inner = views.lock().unwrap();
-        match inner.staged.get(id).map(|entry| &entry.state) {
-            None => return Err("No such download".into()),
-            Some(StagedState::Downloading) => return Err("The download hasn't finished".into()),
-            Some(StagedState::Claimed) => return Err("The download is being kept".into()),
-            Some(StagedState::Abandoned) => return Err("No such download".into()),
-            Some(StagedState::Ready { .. }) => {}
-        }
-        inner.staged.remove(id).map(|entry| entry.path)
+        let entry = inner.staged.get_mut(id).ok_or("No such download")?;
+        let marked = match entry.state {
+            StagedState::Ready { marked } => marked,
+            StagedState::Downloading => return Err("The download hasn't finished".into()),
+            StagedState::Claimed => return Err("The download is being kept".into()),
+            StagedState::Abandoned => return Err("No such download".into()),
+        };
+        entry.state = StagedState::Claimed;
+        (entry.path.clone(), marked)
     };
-    if let Some(path) = path {
-        match std::fs::remove_file(&path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(format!("Couldn't delete the download: {error}"))
+    match std::fs::remove_file(&path) {
+        // Back to ready, so the reader can try again (Windows: another process holds it).
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            if let Some(entry) = views.lock().unwrap().staged.get_mut(id) {
+                entry.state = StagedState::Ready { marked };
             }
-            _ => {}
+            Err(format!("Couldn't delete the download: {error}"))
+        }
+        _ => {
+            views.lock().unwrap().staged.remove(id);
+            Ok(())
         }
     }
-    Ok(())
 }
 
 /// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it. Whether that
@@ -1082,6 +1089,12 @@ fn create_view<R: Runtime>(
     let window_tab = tab.clone();
     let download_tab = tab.clone();
     let downloads_dir = app.path().download_dir().ok();
+    let view_epoch = app
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .account_epoch;
 
     #[cfg(target_os = "macos")]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
@@ -1190,6 +1203,9 @@ fn create_view<R: Runtime>(
                     let admitted = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
+                        if inner.account_epoch != view_epoch {
+                            return false;
+                        }
                         // macOS reports no path when a download finishes, so two of one URL at
                         // once couldn't be told apart (and quarantined right): one at a time.
                         if cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str()) {
@@ -1282,9 +1298,10 @@ fn create_view<R: Runtime>(
                     true
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    let (path, staged) = {
+                    let (path, staged, current) = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
+                        let current = inner.account_epoch == view_epoch;
                         let pending = inner.downloads.entry(url.to_string()).or_default();
                         let index = path
                             .as_ref()
@@ -1313,7 +1330,7 @@ fn create_view<R: Runtime>(
                             None => path.or(recorded),
                         };
                         let staged = staged.map(|(id, name, _)| (id, name));
-                        (path, staged)
+                        (path, staged, current)
                     };
                     let marked = match (success, path.as_deref()) {
                         (true, Some(path)) => mark_downloaded(path, &url),
@@ -1341,6 +1358,11 @@ fn create_view<R: Runtime>(
                             // A failed download leaves nothing to keep.
                             let _ = std::fs::remove_file(entry.path);
                         }
+                    }
+                    // Started under the account signed out since: the file stays (marked), but the
+                    // next account's panel never hears of it.
+                    if !current {
+                        return true;
                     }
                     let size = path
                         .as_deref()
@@ -1790,6 +1812,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
             set_shown(&state, &mut inner, None);
+            inner.account_epoch = inner.account_epoch.wrapping_add(1);
             abandon_staged(&mut inner)
         };
         for file in abandoned {
@@ -2460,6 +2483,31 @@ mod tests {
             // Already gone from disk is still a clean discard.
             let gone = stage(&views, &staged, "a.exe", ready(Some(true)));
             discard_staged(&views, &gone).unwrap();
+        }
+
+        #[test]
+        fn a_failed_discard_can_be_retried() {
+            let dir = tempfile::tempdir().unwrap();
+            // A directory can't be removed as a file: stands in for a file another process holds.
+            let staged = dir.path().join("Unconfirmed 8.download");
+            std::fs::create_dir(&staged).unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "a.exe", ready(Some(true)));
+            assert!(discard_staged(&views, &id).is_err());
+            assert!(matches!(
+                views
+                    .lock()
+                    .unwrap()
+                    .staged
+                    .get(&id)
+                    .map(|entry| &entry.state),
+                Some(StagedState::Ready { marked: Some(true) })
+            ));
+            std::fs::remove_dir(&staged).unwrap();
+            std::fs::write(&staged, b"x").unwrap();
+            discard_staged(&views, &id).unwrap();
+            assert!(!staged.exists());
+            assert!(views.lock().unwrap().staged.is_empty());
         }
     }
 

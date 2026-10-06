@@ -288,6 +288,7 @@ export const ko = {
       notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       keepPrompt: "{name}은(는) 컴퓨터에 해를 끼칠 수 있습니다. 보관할까요?",
       keepFailed: "{name}을(를) 보관하지 못했습니다",
+      discardFailed: "{name}을(를) 삭제하지 못했습니다",
       keep: "보관",
       discard: "삭제",
       savePrompt: "{name}은(는) 컴퓨터에 해를 끼칠 수 있습니다. 그래도 저장할까요?",

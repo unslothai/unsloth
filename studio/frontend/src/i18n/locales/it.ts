@@ -287,6 +287,7 @@ export const it = {
       notMarked: "{name} è stato salvato ma non è stato possibile contrassegnarlo come scaricato da Internet, quindi il sistema non avviserà prima di aprirlo.",
       keepPrompt: "{name} può danneggiare il computer. Conservarlo?",
       keepFailed: "Impossibile conservare {name}",
+      discardFailed: "Impossibile eliminare {name}",
       keep: "Conserva",
       discard: "Elimina",
       savePrompt: "{name} può danneggiare il computer. Salvarlo comunque?",

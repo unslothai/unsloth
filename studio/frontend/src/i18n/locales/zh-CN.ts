@@ -288,6 +288,7 @@ export const zhCN = {
       notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
       keepPrompt: "{name} 可能会损害你的电脑。要保留吗?",
       keepFailed: "无法保留 {name}",
+      discardFailed: "无法删除 {name}",
       keep: "保留",
       discard: "丢弃",
       savePrompt: "{name} 可能会损害你的电脑。仍要保存吗?",

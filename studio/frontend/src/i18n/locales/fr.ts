@@ -288,6 +288,7 @@ export const fr = {
       notMarked: "{name} a été enregistré mais n'a pas pu être marqué comme téléchargé depuis Internet ; votre système n'avertira donc pas avant de l'ouvrir.",
       keepPrompt: "{name} peut endommager votre ordinateur. Le conserver ?",
       keepFailed: "Impossible de conserver {name}",
+      discardFailed: "Impossible de supprimer {name}",
       keep: "Conserver",
       discard: "Supprimer",
       savePrompt: "{name} peut endommager votre ordinateur. L'enregistrer quand même ?",

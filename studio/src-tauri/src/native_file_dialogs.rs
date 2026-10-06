@@ -481,9 +481,11 @@ pub async fn save_native_file(
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
         .map(local_dialog_path)
         .transpose()?;
+    // `saved` is only the basename shown to the user; mark the full path.
+    let destination = selected_path.clone();
     let saved = save_selected_file(selected_path, content.as_ref())?;
-    if let (Some(path), Some(source)) = (saved.as_deref(), source.as_ref()) {
-        crate::browser_webview::mark_downloaded(Path::new(path), source);
+    if let (Some(_), Some(path), Some(source)) = (&saved, destination, source.as_ref()) {
+        crate::browser_webview::mark_downloaded(&path, source);
     }
     Ok(saved)
 }

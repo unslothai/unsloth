@@ -288,6 +288,7 @@ export const ar = {
       notMarked: "تم حفظ {name} لكن تعذّر وسمه كملف منزّل من الإنترنت، لذا لن يحذّرك نظامك قبل فتحه.",
       keepPrompt: "قد يضر {name} بجهازك. هل تريد الاحتفاظ به؟",
       keepFailed: "تعذّر الاحتفاظ بـ {name}",
+      discardFailed: "تعذّر حذف {name}",
       keep: "احتفاظ",
       discard: "تجاهل",
       savePrompt: "قد يضر {name} بجهازك. هل تريد حفظه على أي حال؟",

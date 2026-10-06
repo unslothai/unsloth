@@ -288,6 +288,7 @@ export const ptBR = {
       notMarked: "{name} foi salvo, mas não pôde ser marcado como baixado da internet, então seu sistema não avisará antes de abri-lo.",
       keepPrompt: "{name} pode danificar seu computador. Manter?",
       keepFailed: "Não foi possível manter {name}",
+      discardFailed: "Não foi possível excluir {name}",
       keep: "Manter",
       discard: "Descartar",
       savePrompt: "{name} pode danificar seu computador. Salvar mesmo assim?",

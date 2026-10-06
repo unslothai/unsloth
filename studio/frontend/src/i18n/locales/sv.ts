@@ -312,6 +312,7 @@ export const sv = {
       notMarked: "{name} sparades men kunde inte markeras som nedladdad från internet, så systemet varnar inte innan den öppnas.",
       keepPrompt: "{name} kan skada datorn. Behålla den?",
       keepFailed: "Det gick inte att behålla {name}",
+      discardFailed: "Det gick inte att ta bort {name}",
       keep: "Behåll",
       discard: "Kasta",
       savePrompt: "{name} kan skada datorn. Spara ändå?",
