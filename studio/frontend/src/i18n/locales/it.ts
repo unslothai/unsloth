@@ -1143,14 +1143,17 @@ export const it = {
       unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
       permissionsIntro: "Scegli quando gli strumenti chiedono prima e se Python e Terminale vengono eseguiti anche nella sandbox del sistema.",
+      permissionLabel: "Autorizzazioni strumenti",
+      levelPickerTitle: "Come isolare il codice?",
+      levelOff: "Disattivato",
+      levelOffShort: "Accesso completo disattiva la sandbox",
+      levelHighDetail: "Sandbox del sistema. Python e Terminale vengono eseguiti nella sandbox del sistema (bubblewrap, Seatbelt o MXC) oltre alle protezioni software. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
+      levelLowDetail: "Sandbox software. Python e Terminale vengono eseguiti solo con le protezioni software, fuori dalla sandbox del sistema. Le chiamate rischiose chiedono prima, tranne con Accesso completo.",
       levelLabel: "Sandbox",
       levelHigh: "Alto",
       levelLow: "Basso",
-      levelHighShort: "Sandbox del sistema",
-      levelLowShort: "Sandbox software",
-      levelHelp: "Basso: sandbox software. Alto: sandbox del sistema. Scopri di più in Impostazioni > Sandbox.",
-      levelHighDescription: "Alto: sandbox del sistema. Python e Terminale vengono eseguiti nella sandbox del sistema (bubblewrap, Seatbelt o MXC) oltre alle protezioni software. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
-      levelLowDescription: "Basso: sandbox software. Python e Terminale vengono eseguiti solo con le protezioni software, fuori dalla sandbox del sistema. Le chiamate rischiose chiedono prima, tranne con Accesso completo.",
+      levelHighShort: "Python e Terminale girano anche nella sandbox del sistema",
+      levelLowShort: "Solo sandbox software. Il codice rischioso chiede prima",
       levelFullAccessNote: "Accesso completo disattiva la sandbox. Questa impostazione torna valida quando scegli un altro livello.",
       learnMore: "Scopri di più",
       managedNote: "Il proprietario di questo server Unsloth configura la sandbox del sistema.",
@@ -1377,7 +1380,7 @@ export const it = {
         buttonDescription: "Mostralo nelle risposte dell'assistente",
         engineLabel: "Motore TTS",
         engineSystemDescription: "Voci integrate nel dispositivo",
-        engineStudioDescription: "Usa il modello audio caricato (es. Orpheus)",
+        engineStudioDescription: "Usa il modello vocale caricato in Audio",
         engineSystem: "Voci di sistema",
         engineStudio: "Carica un modello TTS",
         engineCustom: "Endpoint personalizzato",
@@ -1392,10 +1395,14 @@ export const it = {
           "Nome della voce atteso dall'endpoint; il valore predefinito è alloy",
         modelLabel: "Modello TTS",
         modelDescription:
-          "Carica un modello audio dal selettore dei modelli (es. Orpheus TTS)",
+          "Carica un modello vocale in Audio. Sostituisce il modello della chat.",
         openAudioAction: "Apri Audio",
         voiceLabel: "Voce",
         voiceDescription: "Le migliori voci disponibili su questo dispositivo",
+        studioVoiceDescription:
+          "Le voci salvate in Audio richiedono un modello di clonazione",
+        studioVoiceDefault: "Voce propria del modello",
+        studioVoiceSaved: "Voce salvata",
         speedLabel: "Velocità",
         pitchLabel: "Tono",
         volumeLabel: "Volume",
@@ -2447,6 +2454,16 @@ export const it = {
       importingChats: "Importazione chat: {count} finora ({percent}%)...",
       importedChatCountPartial: "Importate {count} conversazioni in Recenti; {failed} non sono state salvate.",
       importFailed: "Importazione non riuscita.",
+      importFromSource: "Importa da {source}",
+      importFromSourceDescription:
+        "Copia le tue conversazioni di {source} in Studio, raggruppate per progetto.",
+      importingAction: "Importazione...",
+      importedSourceOneChat: "1 conversazione importata da {source}.",
+      importedSourceChatCount:
+        "{count} conversazioni importate da {source}.",
+      sourceUpdated: "Aggiunti {count} nuovi messaggi da {source}.",
+      sourceUpToDate: "Le conversazioni di {source} sono già aggiornate.",
+      importedSourcePartial: "Alcune conversazioni di {source} non sono state importate.",
       clearHistory: "Cancella la cronologia delle chat",
       clearHistoryDescription:
         "Elimina la cronologia delle chat da questo dispositivo.",
@@ -2564,6 +2581,11 @@ export const it = {
       exportFailed: "Impossibile esportare le chat",
       description:
         "Gestisci la cronologia delle chat e i file caricati su questo dispositivo.",
+      manageFiles: {
+        label: "Gestisci file",
+        description: "Cerca, ordina e organizza immagini, video, audio e file.",
+        action: "Apri libreria",
+      },
       archivedChats: "Chat archiviate",
       archivedChatsDescription:
         "Visualizza e gestisci le chat che hai archiviato.",
@@ -2723,6 +2745,8 @@ export const it = {
         modelMultilingual: "Multilingue",
         modelEnglish: "Inglese",
         modelTypedDecisions: "Decisioni tipizzate",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Consigliato",
         device: "Esegui su",
         deviceDescription: "La GPU risponde più velocemente, ma tiene la memoria riservata fino al riavvio.",
@@ -2732,11 +2756,13 @@ export const it = {
         notDownloaded: "Non scaricato · {size}",
         downloading: "Download in corso…",
         downloaded: "Scaricato · si carica alla prima richiesta",
+        ready: "Pronto · si carica alla prima richiesta",
         installing: "Installazione…",
         loading: "Caricamento…",
         loadedOn: "Caricato su {device}",
         download: "Scarica",
         downloadConfirmTitle: "Scaricare Laya {model}?",
+        downloadConfirmTitleModel: "Scaricare {model}?",
         downloadConfirmBody:
           "L'API decisionale ha bisogno di questo modello per rispondere alle richieste. Circa {size}, scaricato una sola volta nella cache di Hugging Face.",
         unload: "Rimuovi dalla memoria",
@@ -2908,6 +2934,9 @@ export const it = {
       methodLabel: "Metodo",
       methodTooltip:
         "Il modo in cui viene addestrato il modello. LoRA e QLoRA aggiornano piccoli adattatori anziché tutti i pesi.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "Il checkpoint Laya da sottoporre a fine-tuning. Multilingue va bene per la maggior parte dei dataset.",
       datasetLabel: "Dataset",
       datasetTooltip:
         "I dati di addestramento usati per il fine-tuning del modello.",
@@ -3372,6 +3401,10 @@ export const it = {
           "Inserisci un tasso di apprendimento maggiore di zero.",
         embeddingLearningRateRange:
           "Inserisci un tasso di apprendimento degli embedding maggiore di 0 e minore di 1.",
+        decisionColumnsMissing:
+          "I modelli decisionali richiedono le colonne state, questions e gold (o answers). Mancano: {columns}.",
+        decisionOwnerOnly:
+          "Solo il proprietario di Studio può eseguire il fine-tuning dei modelli decisionali.",
         hfDatasetRequired: "Seleziona prima un dataset Hugging Face.",
         hfDatasetSplitRequired:
           "Seleziona o inserisci prima uno split di addestramento.",
@@ -3543,6 +3576,10 @@ export const it = {
       title: "Avanzamento dell'addestramento",
       liveMetrics: "Metriche di addestramento in tempo reale",
       exportGguf: "Esporta in GGUF",
+      useInDecisionApi: "Usa nell'API decisionale",
+      decisionApiEnabled: "L'API decisionale ora usa {name}.",
+      decisionApiFailed:
+        "Impossibile passare l'API decisionale a questo modello.",
       openConfig: "Apri la configurazione di addestramento",
       configLabel: "Configurazione di addestramento",
       hyperparams: "Iperparametri",
@@ -3816,7 +3853,7 @@ export const it = {
       videosTitle: "Ancora nessun video",
       videosDescription: "I video che carichi o generi compaiono qui.",
       audioTitle: "Ancora nessun audio",
-      audioDescription: "Il parlato che generi nella pagina Audio compare qui.",
+      audioDescription: "Il parlato, la musica e le tracce che crei nella pagina Audio compaiono qui.",
       modelsTitle: "Ancora nessun modello con fine-tuning",
       modelsDescription: "I modelli che addestri o esporti in Unsloth compaiono qui.",
       createFolder: "Crea cartella",
@@ -3869,6 +3906,7 @@ export const it = {
       source: "Origine",
       fileType: "Tipo di file",
       clearFilters: "Rimuovi filtri",
+      workflow: "Creato con",
       uploaded: "Caricati",
       sortAscending: "Crescente",
       sortDescending: "Decrescente",
@@ -3885,6 +3923,13 @@ export const it = {
       sortName: "Nome",
       sortModified: "Modificato",
       sortSize: "Dimensione",
+    },
+    audio: {
+      play: "Riproduci {name}",
+      pause: "Metti in pausa {name}",
+      playFailed: "Impossibile riprodurre {name}",
+      fromRun: "Dalla stessa esecuzione",
+      downloadRun: "Scarica tutto",
     },
     create: {
       note: "Nota",

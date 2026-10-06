@@ -4,7 +4,7 @@
 // Stays mounted across tab switches (__root.tsx), so `active` gates polling, popovers and the recorder.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
-import { SparklesIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -323,6 +323,7 @@ export function AudioPage({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
+    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     setLastSttRepo,
@@ -387,6 +388,7 @@ export function AudioPage({
     loadMore,
     selectClip,
     handleDeleteClip,
+    handleDeleteGroup,
     handleArchiveClip,
     handleTogglePin,
     historyReorder,
@@ -1688,10 +1690,9 @@ export function AudioPage({
               settingsFadeClass,
             )}
           >
-            {/* One child, so the scroll fades see the rail grow (they watch only the first child): with
-                the heading first, opening Advanced left the bottom fade over the last controls. */}
+            {/* keep one child because scroll fades watch only the first child. */}
             <div className="flex flex-col gap-4">
-              {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
+              {/* match Images and Video headings to keep media panes level (#7986). */}
               <div className="mb-2 grid gap-1.5">
                 <WorkflowTitleMenu
                   workflow={pageWorkflow}
@@ -1703,6 +1704,31 @@ export function AudioPage({
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
+                {runtimeUpdate ? (
+                  <p
+                    role="status"
+                    className="mt-1 flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={Alert02Icon}
+                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                    />
+                    <span>
+                      Your audio runtime is{" "}
+                      <span className="whitespace-nowrap">
+                        {runtimeUpdate.installed}
+                      </span>
+                      ; this Studio expects{" "}
+                      <span className="whitespace-nowrap">
+                        {runtimeUpdate.expected}
+                      </span>
+                      . Some models may not work until you update. Stop Studio,{" "}
+                      run{" "}
+                      <code className="font-mono">unsloth studio update</code>,
+                      then start Studio again.
+                    </span>
+                  </p>
+                ) : null}
               </div>
 
               {mode === "speak" ? (
@@ -2010,6 +2036,7 @@ export function AudioPage({
                     onPickModel={pickRecommendedModel}
                     separate={separate}
                     onSendStem={handleSendStem}
+                    handleDeleteGroup={handleDeleteGroup}
                   />
                 ) : ttsWorkflow === "clone" ? (
                   <CloneOutput

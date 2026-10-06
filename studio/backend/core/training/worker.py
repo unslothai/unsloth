@@ -1180,6 +1180,20 @@ if sys.platform == "win32":
     del _add_rocm_dll_dirs_worker
 
 
+def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> bool:
+    # Clef ships joint_head_config.json next to its Qwen3.5 backbone; Laya never does.
+    marker = "joint_head_config.json"
+    try:
+        if (Path(model_load_target) / marker).is_file():
+            return True
+        from huggingface_hub import HfApi
+
+        siblings = HfApi(token = hf_token).model_info(model_load_target).siblings or ()
+        return any(getattr(s, "rfilename", None) == marker for s in siblings)
+    except Exception:
+        return False
+
+
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
     return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
@@ -2617,6 +2631,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    if config.get("is_decision"):
+        message = "Decision model training is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
     if config.get("training_type") == "Continued Pretraining":
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
@@ -3465,6 +3483,44 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
         return None, True
 
 
+def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
+    from core.systemone import laya_runtime
+    from core.systemone.catalog import Checkpoint
+    from utils.hf_xet_fallback import start_watchdog
+    from utils.paths import is_local_path
+
+    model_name = config["model_name"]
+    if is_local_path(model_name):
+        return
+    hf_token = _worker_hf_token(config)
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+    _send_status(event_queue, "Loading decision model...")
+    # Under the stall watchdog, so the parent can retry a stalled Xet download over HTTP.
+    event_queue.put({"type": "model_load_started", "ts": time.time()})
+    watchdog_stop = start_watchdog(
+        repo_ids = [model_name],
+        on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+    )
+    try:
+        laya_runtime._checkpoint_dir(
+            Checkpoint(
+                "base",
+                model_name,
+                config.get("model_subfolder") or None,
+                "",
+                layout = config.get("decision_layout") or "laya",
+            )
+        )
+    except Exception as exc:
+        # The trainer's own load reports it.
+        logger.info("Could not download %s ahead of the trainer: %s", model_name, exc)
+    finally:
+        watchdog_stop.set()
+        event_queue.put({"type": "model_load_completed", "ts": time.time()})
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
     progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
@@ -3554,7 +3610,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     mark_log_record_continuations()
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+    gpu_ids = config.get("resolved_gpu_ids")
+    if config.get("is_decision") and gpu_ids and len(gpu_ids) > 1:
+        gpu_ids = gpu_ids[:1]
+        event_queue.put(
+            {
+                "type": "warning",
+                "message": f"Decision models train on one GPU; using GPU {gpu_ids[0]}.",
+                "ts": time.time(),
+            }
+        )
+    apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
         return
@@ -3643,44 +3709,51 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
-    try:
-        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+    # Laya decision models are ModernBERT encoders: none of these apply.
+    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    if (
+        not config.get("is_decision")
+        or config.get("decision_layout") == "clef"
+        or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
+    ):
+        try:
+            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 
-        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
-            model_name,
-            model_load_target,
-            _worker_hf_token(config),
-        )
-        _ensure_causal_conv1d_fast_path(
-            event_queue,
-            model_name,
-            required = wants_causal_conv1d,
-        )
-        _install_fast_path_hooks(
-            event_queue,
-            model_name,
-            install_causal_conv1d = wants_causal_conv1d,
-        )
-        _ensure_mamba_ssm(event_queue, model_name)
-        _ensure_flash_attn_for_long_context(
-            event_queue,
-            int(config.get("max_seq_length", 2048)),
-        )
-    except Exception as exc:
-        event_queue.put(
-            {
-                "type": "error",
-                "error": (
-                    f"Please choose another model to train, since "
-                    f"a fast-path kernel library "
-                    f"(causal-conv1d / mamba-ssm) failed to install "
-                    f"with error: {exc}"
-                ),
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            }
-        )
-        return
+            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+                model_name,
+                model_load_target,
+                _worker_hf_token(config),
+            )
+            _ensure_causal_conv1d_fast_path(
+                event_queue,
+                model_name,
+                required = wants_causal_conv1d,
+            )
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
+            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_flash_attn_for_long_context(
+                event_queue,
+                int(config.get("max_seq_length", 2048)),
+            )
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": (
+                        f"Please choose another model to train, since "
+                        f"a fast-path kernel library "
+                        f"(causal-conv1d / mamba-ssm) failed to install "
+                        f"with error: {exc}"
+                    ),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+            return
 
     # No start-method override: Dataset.map() imports Pool from `multiprocess`, so forcing stdlib multiprocessing onto
     # "fork" never reached it; the guard now asks multiprocess.
@@ -4107,6 +4180,22 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 "ts": time.time(),
             }
         )
+        return
+
+    if config.get("is_decision", False):
+        try:
+            _download_decision_checkpoint(event_queue, config)
+            from core.training.decision_trainer import run_decision_training
+            run_decision_training(event_queue, stop_queue, config)
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
         return
 
     # Embedding models use a different pipeline (FastSentenceTransformer + SentenceTransformerTrainer +

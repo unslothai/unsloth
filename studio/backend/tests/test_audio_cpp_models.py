@@ -524,6 +524,15 @@ _CLONE_TABLE = {
     "firered_audio": ("tts", False, "optional"),
     "vevo2": ("tts", False, "unused"),
     "miotts": ("tts", False, "unused"),
+    "breeze_tts": ("tts", True, "required"),
+    "omnivoice": ("tts", True, "required"),
+    "voxcpm1": ("tts", True, "required"),
+    "dots_tts": ("tts", True, "optional"),
+    "higgs_audio_tts": ("tts", True, "optional"),
+    "moss_tts_local": ("tts", True, "unused"),
+    "moss_tts_nano": ("tts", True, "unused"),
+    "irodori_tts": ("tts", True, "unused"),
+    "pocket_tts": ("tts", True, "unused"),
 }
 
 
@@ -534,6 +543,7 @@ _CONVERT_TABLE = {
     "meanvc2": ("vc", {"speech": "vc"}, "audio", 16000),
     "chatterbox": ("clon", {"speech": "vc"}, "audio", 16000),
     "vevo2": ("tts", {"speech": "vc", "singing": "svc"}, "audio", 24000),
+    "tone_color_vc": ("vc", {"speech": "vc"}, "audio", 22050),
 }
 
 
@@ -613,10 +623,13 @@ def test_edit_families_bind_the_edit_workflow():
     edit_names = ["DotTTS-Edit-GGUF", "dots-tts-edit-q8_0.gguf"]
     dots_edit = acm.family_policy("dots_tts", names = edit_names)
     binding = dots_edit.workflows["edit"]
-    assert list(dots_edit.workflows) == ["speak", "edit"]
+    assert list(dots_edit.workflows) == ["speak", "clone", "edit"]
     assert (binding.server_task, binding.endpoint) == ("tts", "tasks")
     for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
-        assert list(acm.family_policy("dots_tts", names = names).workflows) == ["speak"], names
+        assert list(acm.family_policy("dots_tts", names = names).workflows) == [
+            "speak",
+            "clone",
+        ], names
     vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
     assert list(firered.workflows) == ["clone", "edit"]
     # Vevo2 also converts a voice.
@@ -1216,7 +1229,7 @@ def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
     assert not victim.exists()
 
 
-def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
+def test_v1_models_lists_speech_and_separation_models_with_their_workflows(hub, monkeypatch):
     from core.inference import audio_cpp_server
     from routes import inference as ri
 
@@ -1227,8 +1240,13 @@ def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
     ] == "sep"
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: "audiocpp_server")
     monkeypatch.setattr(audio_cpp_server, "model_runtime_problem", lambda model, binary = None: None)
-    listed = [o["id"] for o in ri._audio_cpp_speech_model_objects(0)]
-    assert listed == [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    listed = {o["id"]: o for o in ri._audio_cpp_speech_model_objects(0)}
+    kokoro = listed[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    assert kokoro["task"] == "text-to-speech" and "speak" in kokoro["audio_workflows"]
+    # /v1/audio/speech cannot serve it, so it is not text-to-speech; /v1/audio/run loads it by name.
+    demucs = listed[f"{AUDIO_CPP_REPO}/HTDemucs-GGUF"]
+    assert demucs["task"] == "audio-to-audio" and demucs["audio_workflows"] == ["separate"]
+    assert len(listed) == 2
 
 
 def test_downloaded_models_are_found_by_header(hub):

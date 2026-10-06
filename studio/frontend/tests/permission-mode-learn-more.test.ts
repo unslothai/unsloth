@@ -26,26 +26,62 @@ test("the question mark opens the Permissions section of Settings > Sandbox", ()
 });
 
 test("Settings explains only the selected level and drops the menu's sandbox controls", () => {
-  assert.match(SANDBOX_TAB, /label=\{t\(`settings\.general\.permissions\.names\.\$\{activePermission\.value\}`\)\}/);
-  assert.match(SANDBOX_TAB, /t\(`settings\.general\.permissions\.details\.\$\{activePermission\.value\}`\)/);
+  // The selected level's full explanation stays on the page, not behind a hover.
+  assert.match(SANDBOX_TAB, /label=\{t\("settings\.sandbox\.permissionLabel"\)\}/);
+  // Named, then explained: "Approve for me: Runs routine tool calls…".
+  assert.match(SANDBOX_TAB, /name=\{t\(`settings\.general\.permissions\.names\.\$\{activePermission\.value\}`\)\}\s*detail=\{t\(`settings\.general\.permissions\.details\.\$\{activePermission\.value\}`\)\}/);
+  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelHighDetail/);
+  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelLowDetail/);
+  assert.match(SANDBOX_TAB, /settings\.sandbox\.levelFullAccessNote/);
   assert.match(SANDBOX_TAB, /<PermissionModeDropdown sandboxControls=\{false\} \/>/);
   assert.doesNotMatch(SANDBOX_TAB, /permissions\.bypass(Label|Description)/);
 });
 
-test("the menu heading carries the Sandbox switch and a question mark in place of Learn more", () => {
+test("Settings picks the sandbox level with the Queue/Steer style Low | High toggle", () => {
+  const section = SANDBOX_TAB.slice(
+    SANDBOX_TAB.indexOf("function PermissionsSection"),
+    SANDBOX_TAB.indexOf("export function SandboxTab"),
+  );
+  assert.match(section, /hub-tab-toggle inline-flex/);
+  assert.match(section, /\(\["low", "high"\] as const\)/);
+  // Full access adds a Disabled option and locks the others.
+  assert.match(section, /\(\["off", "low", "high"\] as const\)/);
+  assert.match(section, /disabled=\{disabled && !selected\}/);
+  // Each description names the option it explains.
+  assert.match(section, /<SelectedOptionDescription/);
+  assert.match(section, /aria-pressed=\{selected\}/);
+  assert.doesNotMatch(section, /<Switch\b/);
+  assert.doesNotMatch(section, /hint=/);
+});
+
+test("the menu heading carries a Sandbox chip that opens the level picker, Learn more on top", () => {
   const label = MENU.slice(
     MENU.indexOf("export function PermissionMenuLabel"),
     MENU.indexOf("/** The option rows shared"),
   );
-  assert.doesNotMatch(label, /Learn more|Tool call permissions/);
+  assert.doesNotMatch(label, /Tool call permissions/);
   assert.match(label, /settings\.general\.permissions\.sectionTitle/);
-  assert.match(label, /<DropdownMenuPrimitive\.CheckboxItem/);
-  // The keyboard toggles it without closing the menu or picking a row.
-  assert.match(label, /event\.preventDefault\(\)/);
-  assert.match(label, /<Switch\b/);
+  // "Sandbox High ›": a submenu trigger, not a switch.
+  assert.match(label, /<DropdownMenuPrimitive\.SubTrigger/);
+  assert.match(label, /className="sandbox-level-chip\b/);
+  // Click to open: hover must not open the picker.
+  assert.match(label, /onPointerMove=\{\(event\) => event\.preventDefault\(\)\}/);
+  // Controlled: stays open until a click outside the picker, the chip, or ArrowLeft.
+  assert.match(label, /<DropdownMenuPrimitive\.Sub\s+open=\{open\}/);
+  assert.match(label, /addEventListener\("pointerdown", onPointerDown, true\)/);
+  assert.match(label, /if \(next\) setOpen\(true\);/);
+  // Offset for the side it lands on: left when only the left fits.
+  assert.match(label, /!fitsRight && fitsLeft\s*\?\s*chipBox\.left - menuBox\.left \+ SANDBOX_PICKER_GAP/);
+  assert.match(label, /icon=\{ChevronRightStandardIcon\}/);
+  assert.doesNotMatch(label, /<Switch\b|CheckboxItem/);
+  assert.match(label, /<DropdownMenuSubContent[\s\S]*?className="unsloth-plus-menu\b/);
   assert.match(label, /settings\.sandbox\.levelLowShort/);
-  assert.match(label, /icon=\{HelpCircleIcon\}/);
-  assert.match(label, /settings\.sandbox\.levelHelp/);
+  assert.match(label, /settings\.sandbox\.levelHighShort/);
+  // Learn more sits in the picker's heading row, not under the levels.
+  assert.match(label, /settings\.sandbox\.levelPickerTitle"\)\}<\/span>\s*<DropdownMenuPrimitive\.Item[\s\S]*?settings\.sandbox\.learnMore/);
+  assert.doesNotMatch(label, /DropdownMenuSeparator/);
+  // Measured offsets keep the picker clear of the menu.
+  assert.match(label, /sideOffset=\{offsets\.side\}/);
 });
 
 test("the rows carry no sandbox hint and no setup banner", () => {
@@ -81,7 +117,7 @@ const DICTATION = await readFile(
 );
 const EN = await readFile(new URL("../src/i18n/locales/en.ts", import.meta.url), "utf8");
 
-test("the dictation submenu has the heading and the Sandbox switch too", () => {
+test("the dictation submenu has the heading and the Sandbox picker too", () => {
   assert.match(DICTATION, /<PermissionMenuLabel sandboxControls \/>\s*<PermissionModeMenuItems/);
 });
 

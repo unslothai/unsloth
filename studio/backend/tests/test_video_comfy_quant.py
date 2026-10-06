@@ -466,8 +466,9 @@ def test_h3_single_file_validation_accepts_a_comfy_denoiser_and_refuses_the_rest
             model_kind = "single_file",
         )
     except (
-        ValueError
-    ) as exc:  # later probes may refuse for unrelated reasons; never the modular refusal
+        ValueError,
+        ImportError,
+    ) as exc:  # later probes may refuse or need diffusers; never the modular refusal
         assert "single .safetensors checkpoint" not in str(exc)
 
 

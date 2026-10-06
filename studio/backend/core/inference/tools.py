@@ -15797,8 +15797,12 @@ def _fetch_url_raw(
     raw_bytes_max: int | None = None,
     post_data: bytes | None = None,
     meta_out: dict | None = None,
+    host_headers = None,
 ) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``host_headers(host)`` adds headers for one hop, chosen by the host that hop goes to, so a
+    redirect to another site does not carry them.
 
     ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
     ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
@@ -15893,6 +15897,8 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
+            if host_headers is not None:
+                headers.update(host_headers(current_host))
             if pending_post is not None:
                 headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
             req = urllib.request.Request(request_url, headers = headers, data = pending_post)

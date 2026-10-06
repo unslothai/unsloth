@@ -569,6 +569,15 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     ),
     AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional")),
     AudioCppFamily("fish_audio", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("omnivoice", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("voxcpm1", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("dots_tts", "tts", clone = CloneSpec("optional")),
+    AudioCppFamily("higgs_audio_tts", "tts", clone = CloneSpec("optional")),
+    # MOSS ignores a transcript; Irodori refuses one ("unknown Irodori-TTS request option").
+    AudioCppFamily("moss_tts_local", "tts", clone = CloneSpec("unused")),
+    AudioCppFamily("moss_tts_nano", "tts", clone = CloneSpec("unused")),
+    AudioCppFamily("irodori_tts", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("echo_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily(
         "confucius4_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")
@@ -677,6 +686,13 @@ _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
         speaks = False,
         convert = ConvertSpec(source_rate = 16000, target_rate = 16000),
     ),
+    AudioCppFamily(
+        "tone_color_vc",
+        "tts",
+        server_task = "vc",
+        speaks = False,
+        convert = ConvertSpec(source_rate = 22050, target_rate = 22050),
+    ),
 )
 
 
@@ -695,7 +711,9 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("kitten_tts", "tts", needs_espeak = True),
     AudioCppFamily("piper_tts", "tts", needs_espeak = True),
     AudioCppFamily("inflect_v2", "tts", needs_espeak = True),
-    AudioCppFamily("pocket_tts", "tts", request_defaults = {"voice": "alba"}),
+    AudioCppFamily(
+        "pocket_tts", "tts", request_defaults = {"voice": "alba"}, clone = CloneSpec("unused")
+    ),
     AudioCppFamily("supertonic", "tts", request_defaults = {"voice": "F1"}),
     AudioCppFamily("qwen3_tts", "tts"),
     *_CLONE_FAMILIES,
@@ -703,20 +721,13 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     *(
         AudioCppFamily(name, "tts")
         for name in (
-            "moss_tts_nano",
-            "moss_tts_local",
             "moss_tts_v15",
             "moss_ttsd",
             "chatterbox_turbo",
-            "voxcpm1",
             "neutts",
             "magpie_tts",
-            "higgs_audio_tts",
-            "irodori_tts",
-            "breeze_tts",
-            "dots_tts",
+            # Its spec lists clone, but from a short reference clip it may not keep the voice.
             "dramabox",
-            "omnivoice",
             "vibevoice",
             "glm_tts",
             "outetts",

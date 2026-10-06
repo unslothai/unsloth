@@ -539,6 +539,14 @@
       "reason": "Reads back a .pt file this function just wrote with torch.save into the local offload folder; never a downloaded file."
     },
     {
+      "file": "unsloth/models/decision.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "3738585f7559a2ad",
+      "count": 1,
+      "reason": "Imports the laya copy vendored in this repository at a fixed path (studio/backend/vendor/laya/__init__.py); never a downloaded or user-supplied file."
+    },
+    {
       "file": "unsloth/models/loader.py",
       "rule": "dynamic-import",
       "sink": "import_module",

@@ -249,6 +249,16 @@ def test_fetch_arguments(monkeypatch):
         )
 
 
+def test_only_unsloth_hosts_get_the_studio_header(monkeypatch):
+    calls = _fetch(monkeypatch, (None, b"<html></html>", "text/html"))
+    _call()
+    headers = calls[0]["host_headers"]
+    for host in ("unsloth.ai", "www.unsloth.ai", "docs.UNSLOTH.ai", "unsloth.ai."):
+        assert headers(host) == {"X-Unsloth-Studio": "1"}, host
+    for host in ("example.com", "notunsloth.ai", "unsloth.ai.example.com", "unsloth.aix"):
+        assert headers(host) == {}, host
+
+
 @pytest.mark.parametrize(
     "result, detail",
     [
