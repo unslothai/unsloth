@@ -27,6 +27,7 @@ import {
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
   splitQuantSuffix,
+  useActiveModelConfig,
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
@@ -187,6 +188,21 @@ function useLoadAfterDownload(
   }, [pending, setPending, onStartError]);
 }
 
+function reloadTitle(
+  lastLoadLabel: string | null | undefined,
+  loaded: boolean,
+): string {
+  if (lastLoadLabel === undefined) {
+    return "Checking previously loaded model...";
+  }
+  if (!lastLoadLabel) {
+    return RELOAD_MISSING_HISTORY_MESSAGE;
+  }
+  return loaded
+    ? `Reload ${lastLoadLabel}`
+    : `Reload ${lastLoadLabel} (no model loaded)`;
+}
+
 function toModelOptions(
   models: {
     id: string;
@@ -217,6 +233,9 @@ export function ApiModelLoadControls({
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const { checkpoint: runtimeCheckpoint, config: runtimeConfig } =
+    useActiveModelConfig();
   const localModelInventory = useDeviceInventorySources(["localModels"]);
   const refreshLocalModels = localModelInventory.refresh;
 
@@ -370,17 +389,25 @@ export function ApiModelLoadControls({
     }
   }, [selectModel, onSettled, refreshLastLoadLabel]);
 
+  const handleEject = useCallback(
+    (modelId?: string) => {
+      setPendingDownload(null);
+      if (modelId) {
+        ejectModel(modelId).then(() => onSettled());
+      } else {
+        onUnloadActive();
+      }
+    },
+    [ejectModel, onSettled, onUnloadActive],
+  );
+
   const reloadDisabled = reloading || modelLoading || lastLoadLabel == null;
-  const reloadTitle =
-    lastLoadLabel === undefined
-      ? "Checking previously loaded model..."
-      : lastLoadLabel
-        ? `Reload ${lastLoadLabel}`
-        : RELOAD_MISSING_HISTORY_MESSAGE;
 
   const { id: effectiveModel, ggufVariant: activeGgufVariant } =
     monitorSelection(activeModel);
   const isLoaded = Boolean(activeModel);
+  // Chat's live settings describe the resident only when its checkpoint is the one the monitor reports.
+  const runtimeIsResident = isLoaded && runtimeCheckpoint === effectiveModel;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -390,22 +417,15 @@ export function ApiModelLoadControls({
         value={effectiveModel}
         loaded={isLoaded}
         activeGgufVariant={isLoaded ? activeGgufVariant : null}
+        activeModelConfig={runtimeIsResident ? runtimeConfig : null}
+        activeLoadedContextLength={
+          runtimeIsResident ? loadedContextLength : null
+        }
         onValueChange={(value, meta) => {
           handlePick(value, meta);
         }}
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
-        onEject={
-          modelLoading
-            ? undefined
-            : (modelId) => {
-                setPendingDownload(null);
-                if (modelId) {
-                  ejectModel(modelId).then(() => onSettled());
-                } else {
-                  onUnloadActive();
-                }
-              }
-        }
+        onEject={modelLoading ? undefined : handleEject}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -429,11 +449,7 @@ export function ApiModelLoadControls({
           handleReload();
         }}
         disabled={reloadDisabled}
-        title={
-          activeModel || !lastLoadLabel
-            ? reloadTitle
-            : `${reloadTitle} (no model loaded)`
-        }
+        title={reloadTitle(lastLoadLabel, Boolean(activeModel))}
         className="h-9 gap-1.5 rounded-full"
       >
         <HugeiconsIcon
