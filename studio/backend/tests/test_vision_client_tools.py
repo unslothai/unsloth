@@ -518,9 +518,9 @@ class _TemplateProcessor:
     [
         (_MARKS_EACH_IMAGE, "<|image_pad|>", "qwen2_5_vl", [2, 4]),
         (_MARKS_ONE_IMAGE, "<image>", "llava", [4]),
-        (_MARKS_EACH_IMAGE, "<|image_pad|>", "mllama", [4]),
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "mllama", [2, 4]),
     ],
-    ids = ["marks each image", "marks one image", "single-image model"],
+    ids = ["marks each image", "marks one image", "mlx-vlm single-image model"],
 )
 def test_a_transformers_vision_model_is_served_every_image_its_template_can_mark(
     chat_template, image_token, model_type, served

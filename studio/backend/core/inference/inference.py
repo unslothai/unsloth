@@ -67,7 +67,6 @@ from core.inference.native_tool_tokens import (
 from core.inference.mlx_inference import (
     _mlx_stop_cut,
     _mlx_stop_sequences,
-    _mlx_vlm_model_config,
     _scaling_image_marker,
 )
 from io import StringIO
@@ -77,19 +76,6 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 
 
 logger = get_logger(__name__)
-
-# mlx-vlm's SINGLE_IMAGE_ONLY_MODELS, which the MLX load already honours.
-_SINGLE_IMAGE_MODEL_TYPES = frozenset(
-    {
-        "llava_next",
-        "llava-qwen2",
-        "bunny-llama",
-        "paligemma",
-        "multi_modality",
-        "mllama",
-        "falcon_ocr",
-    }
-)
 
 
 def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
@@ -3335,11 +3321,10 @@ class InferenceBackend:
         except Exception:
             processes_images = processor is not None and hasattr(processor, "image_processor")
         chat_template_info["renders_image"] = bool(processes_images)
-        model = self.models[model_name].get("model")
-        chat_template_info["accepts_multiple_images"] = (
-            bool(processes_images)
-            and _mlx_vlm_model_config(model)[1] not in _SINGLE_IMAGE_MODEL_TYPES
-            and bool(_scaling_image_marker(tokenizer, processor, model))
+        # Not mlx-vlm's SINGLE_IMAGE_ONLY_MODELS: that list is its prompt builder's limit, while the
+        # transformers processors for llava_next and mllama take one image per marker.
+        chat_template_info["accepts_multiple_images"] = bool(processes_images) and bool(
+            _scaling_image_marker(tokenizer, processor, self.models[model_name].get("model"))
         )
         if processes_images:
             processor_template = getattr(processor, "chat_template", None)
