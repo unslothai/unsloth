@@ -262,6 +262,9 @@ def _offender(
                 return None
             return None if _names_encoding(call) else f"{func.attr}()"
         if func.attr == "open":
+            # PyAV's CodecContext.open() starts an encoder; it never takes a file.
+            if isinstance(func.value, ast.Attribute) and func.value.attr == "codec_context":
+                return None
             if receiver is not None and _origin_root(receiver, modules) in BUILTIN_OPEN_MODULES:
                 return (
                     None if not _is_text(call, 1) or _names_encoding(call) else f"{receiver}.open()"
@@ -422,6 +425,7 @@ def test_skips_unknown_modes():
 def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import fitz\nd = fitz.open(stream = b, filetype = 'pdf')\n")
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
+    assert not _offenders_in("stream.codec_context.open()\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
 
