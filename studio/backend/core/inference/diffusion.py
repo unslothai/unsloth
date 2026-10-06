@@ -6604,8 +6604,7 @@ class DiffusionBackend:
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
-                                # The companion config is the family base's (Qwen-Image-Edit-2511); a variant whose
-                                # own config differs (2509: no zero_cond_t) overrides those keys.
+                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
                                 **transformer_config_overrides_for(
                                     fam, gguf_filename, repo_id, base
                                 ),

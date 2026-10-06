@@ -2099,9 +2099,7 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
 def test_qwen_edit_gguf_builds_on_its_variant_config(
     fake_runtime, tmp_path, gguf_filename, expected
 ):
-    """The GGUF denoiser of every Qwen-Image-Edit variant is built on the 2511 companion config, so a
-    variant whose own config leaves zero_cond_t off (2509, the original Edit) overrides that key;
-    2511 and an unnamed file keep the companion config untouched."""
+    """2509 / original Edit override the 2511 companion's zero_cond_t; 2511 and unnamed files do not."""
     (tmp_path / gguf_filename).write_bytes(b"x")
     backend = DiffusionBackend()
     _load_into(
