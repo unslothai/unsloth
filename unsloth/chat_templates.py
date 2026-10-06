@@ -1097,14 +1097,24 @@ gemma4_empty_thought_template = gemma4_thinking_template.replace(
     1,
 )
 assert gemma4_empty_thought_template != gemma4_thinking_template
-# Ollama re-renders the whole history every request, so earlier assistant turns
-# need the empty channel (and the Gemma 4 "model" role) as well as the prompt.
-gemma4_empty_thought_ollama = gemma4_ollama.replace(
-    "<|turn>{{ .Role }}\n{{ .Content }}",
-    '<|turn>{{ if eq .Role "assistant" }}model\n<|channel>thought\n<channel|>{{ else }}{{ .Role }}\n{{ end }}{{ .Content }}',
-    1,
-).replace('<|turn>model\n"""', '<|turn>model\n<|channel>thought\n<channel|>"""', 1)
-assert gemma4_empty_thought_ollama.count("<|channel>thought") == 2
+# Ollama re-renders the whole history every request, so every assistant turn
+# (under Gemma 4's "model" role) and the generation prompt get the empty channel.
+gemma4_empty_thought_ollama = '''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "assistant" }}<|turn>model
+<|channel>thought
+<channel|>{{ .Content }}{{ if not $last }}<turn|>
+{{ end }}
+{{- else }}<|turn>{{ .Role }}
+{{ .Content }}<turn|>
+{{ if $last }}<|turn>model
+<|channel>thought
+<channel|>{{ end }}
+{{- end }}
+{{- end }}"""
+'''
 GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
 
 
