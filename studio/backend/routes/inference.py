@@ -45966,6 +45966,19 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
     return {"deleted": True}
 
 
+@studio_router.delete("/audio/gallery/group/{group_id}")
+async def delete_gallery_audio_group(
+    group_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """A run's clips in one call, so the page drops them together instead of stem by stem."""
+    from core.inference import audio_gallery
+
+    removed = await asyncio.to_thread(audio_gallery.delete_group, group_id)
+    if not removed:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return {"removed": removed}
+
+
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(
     workflow: Optional[Literal["speak", "clone", "edit", "convert", "music", "separate"]] = None,

@@ -397,6 +397,8 @@ function loadDownloads(
     downloadLibraryItems: (items: { name: string; sizeBytes: number | null }[]) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
     fflate,
+    "@/features/audio/audio-page-policy": {},
+    "@/features/audio/workflows": {},
     "@/features/auth": { getAuthSessionEpoch: () => session.epoch },
     "@/features/chat": {},
     "@/features/model-picker": {},

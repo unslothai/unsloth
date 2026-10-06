@@ -3,6 +3,11 @@
 
 import type { useNavigate } from "@tanstack/react-router";
 import { zipSync } from "fflate";
+import {
+  isTtsAudioType,
+  trainedTtsCheckpointIsLoadable,
+} from "@/features/audio/audio-page-policy";
+import { audioWorkflowForAudioType } from "@/features/audio/workflows";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { listLoras } from "@/features/chat";
 import {
@@ -199,6 +204,22 @@ export async function chatWithModel(
     .catch(() => undefined);
   if (getAuthSessionEpoch() !== epoch) return;
   if (scanned?.audio_type) {
+    const { audio_type: audioType, export_type: exportType } = scanned;
+    if (
+      isTtsAudioType(audioType, exportType === "gguf") &&
+      trainedTtsCheckpointIsLoadable(audioType, exportType)
+    ) {
+      // Loaded on its page the way the Audio page's picker loads an on-device model.
+      void navigate({
+        to: "/audio",
+        search: {
+          model: model.path,
+          loadId: model.path,
+          workflow: audioWorkflowForAudioType(audioType),
+        },
+      });
+      return;
+    }
     toast(translate("library.toast.speechModel", { name: item.name }), {
       description: translate("library.toast.speechModelDescription"),
     });

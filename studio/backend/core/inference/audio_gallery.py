@@ -517,7 +517,8 @@ def delete(audio_id: str) -> bool:
     if path is None:
         return False
     # only delete a pair we own; a foreign or orphan wav must not be destroyed by a guessed id
-    if _read_meta(_sidecar_path(audio_id)) is None:
+    meta = _read_meta(_sidecar_path(audio_id))
+    if meta is None:
         return False
     try:
         path.unlink()
@@ -530,7 +531,32 @@ def delete(audio_id: str) -> bool:
         pass
     _remove_source(audio_id)
     gallery_flags.forget(gallery_dir(), [audio_id])
+    # An Edit's hidden Original goes with the last clip that plays it.
+    original = str(meta.get("source_clip_id") or "")
+    if (
+        _ID_RE.match(original)
+        and (_read_meta(_sidecar_path(original)) or {}).get("role") == "source"
+        and original not in _sources_in_use(gallery_dir(), set())
+    ):
+        delete(original)
     return True
+
+
+def delete_group(group_id: str) -> int:
+    """Delete every owned clip of one run (a separation's stems, a music run's variations);
+    return the count removed."""
+    if not group_id:
+        return 0
+    try:
+        paths = _clip_wavs(gallery_dir())
+    except OSError:
+        return 0
+    members = [
+        path.stem
+        for path in paths
+        if (_read_meta(_sidecar_path(path.stem)) or {}).get("group_id") == group_id
+    ]
+    return sum(delete(audio_id) for audio_id in members)
 
 
 def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:

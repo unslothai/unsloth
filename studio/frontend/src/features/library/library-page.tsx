@@ -73,6 +73,8 @@ import {
   LibraryToolbar,
   type NewAction,
 } from "./components/library-toolbar";
+import { audioWorkflowOptions, runSiblings } from "./audio-items";
+import { stopLibraryAudio } from "./audio-playback";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
@@ -219,10 +221,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const view = useLibraryViewStore((s) => s.view);
   const setView = useLibraryViewStore((s) => s.setView);
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  // A card's clip stops with the view that played it.
+  useEffect(() => stopLibraryAudio, []);
 
   const [query, setQuery] = useState("");
   const [chosenFilters, setFilters] = useState<LibraryFilters>(() =>
-    search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
+    search.filter === "files" ? { ...EMPTY_FILTERS, types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
   );
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
@@ -320,6 +324,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   // Folders have no filter menu, so tab filters do not apply inside them.
   const filterMode = folderId || tab === "folders" ? "none" : kindFilter ? "source" : "all";
   const filters = filterMode === "none" ? EMPTY_FILTERS : chosenFilters;
+  const workflowOptions = useMemo(
+    () => (tab === "audio" && !folderId ? audioWorkflowOptions(items) : []),
+    [tab, folderId, items],
+  );
 
   const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
 
@@ -384,6 +392,15 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pushedPreview.current = id;
     go({ ...search, item: id });
   };
+  // Another clip of the same run, in place of this one: Back still closes the preview.
+  const switchPreview = (id: string) => {
+    if (pushedPreview.current === search.item) pushedPreview.current = id;
+    go({ ...search, item: id }, true);
+  };
+  const previewRun = useMemo(
+    () => (previewItem ? runSiblings(items, previewItem) : []),
+    [items, previewItem],
+  );
   const closePreview = () => {
     if (!search.item) return;
     setClosingPreview(search.item);
@@ -958,6 +975,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               filters={filters}
               onFiltersChange={setFilters}
               filterMode={filterMode}
+              workflows={workflowOptions}
               view={view}
               onViewChange={setView}
               sort={view === "grid" && (folderId || tab !== "favorites") ? gridSort : undefined}
@@ -1088,6 +1106,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         onToggleFavorite={actions.toggleFavorite}
         onDelete={(item) => actions.remove({ kind: "item", item })}
         onSaved={() => void refresh()}
+        run={previewRun}
+        onOpenItem={switchPreview}
+        onDownloadRun={(run) => void downloadLibraryItems(run)}
       />
     </LibraryActionsProvider>
   );
