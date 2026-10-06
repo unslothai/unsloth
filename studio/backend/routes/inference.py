@@ -45972,8 +45972,17 @@ async def delete_gallery_audio_group(
 ):
     """A run's clips in one call, so the page drops them together instead of stem by stem."""
     from core.inference import audio_gallery
+    from core.inference.gallery_flags import FlagsUnavailable
 
-    removed = await asyncio.to_thread(audio_gallery.delete_group, group_id)
+    try:
+        removed = await asyncio.to_thread(audio_gallery.delete_group, group_id)
+    except FlagsUnavailable as exc:
+        logger.warning("audio_gallery.delete_group_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's archive data, so deleting was stopped to "
+            "avoid deleting archived clips.",
+        )
     if not removed:
         raise HTTPException(status_code = 404, detail = "Audio not found.")
     return {"removed": removed}

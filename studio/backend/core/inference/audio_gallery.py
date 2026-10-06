@@ -543,18 +543,22 @@ def delete(audio_id: str) -> bool:
 
 
 def delete_group(group_id: str) -> int:
-    """Delete every owned clip of one run (a separation's stems, a music run's variations);
-    return the count removed."""
+    """Delete the active clips of one run (a separation's stems, a music run's variations);
+    return the count removed. Archived clips of the run are spared, as clear() spares them:
+    a stem restored from the archive leaves its siblings there."""
     if not group_id:
         return 0
     try:
         paths = _clip_wavs(gallery_dir())
     except OSError:
         return 0
+    # Trusted, as clear() reads it: an unreadable store must not pass for "nothing archived".
+    flags = gallery_flags.read_trusted(gallery_dir())
     members = [
         path.stem
         for path in paths
         if (_read_meta(_sidecar_path(path.stem)) or {}).get("group_id") == group_id
+        and not gallery_flags.is_archived(flags, path.stem)
     ]
     return sum(delete(audio_id) for audio_id in members)
 

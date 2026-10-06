@@ -74,7 +74,7 @@ import {
   type NewAction,
 } from "./components/library-toolbar";
 import { audioWorkflowOptions, runSiblings } from "./audio-items";
-import { stopLibraryAudio } from "./audio-playback";
+import { stopLibraryAudio, stopLibraryAudioUnlessShown } from "./audio-playback";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
@@ -351,6 +351,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     return [...pool].sort(compareBySort(sort));
   }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
+
+  // Only grid cards can pause a clip: stop it once its card is gone or the list view replaces them.
+  useEffect(() => {
+    if (view !== "grid") stopLibraryAudio();
+    else stopLibraryAudioUnlessShown(new Set(visibleItems.map((item) => item.id)));
+  }, [view, visibleItems]);
 
   const visibleFolders = useMemo(() => {
     const showsFolders = folderId || tab === "folders" || tab === "all";

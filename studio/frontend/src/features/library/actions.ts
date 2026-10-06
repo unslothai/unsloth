@@ -215,6 +215,8 @@ export async function chatWithModel(
         search: {
           model: model.path,
           loadId: model.path,
+          // Native checkpoints need it for their custom-code approval and runtime checks.
+          audioType,
           workflow: audioWorkflowForAudioType(audioType),
         },
       });

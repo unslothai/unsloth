@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 
@@ -13,6 +14,8 @@ const { audioDetail, audioSummary, audioWorkflow, audioWorkflowOptions, runSibli
 const { EMPTY_FILTERS, filtersActive, matchesFilters } = await import(
   "../src/features/library/filters.ts"
 );
+const policy = await import("../src/features/audio/audio-page-policy.ts");
+const workflows = await import("../src/features/audio/workflows.ts");
 
 type Item = Parameters<typeof audioDetail>[0];
 
@@ -112,12 +115,49 @@ test("View in Audio opens the clip's own workflow instead of passing through Spe
   assert.match(origin, /isAudioWorkflowId\(workflow\) \? \{ \.\.\.search, workflow \} : search/);
 });
 
-test("Chat with a speech fine-tune loads it on its Audio page", () => {
-  const actions = readSrc("features/library/actions.ts");
-  assert.match(
-    actions,
-    /model: model\.path,\s*loadId: model\.path,\s*workflow: audioWorkflowForAudioType\(audioType\)/,
-  );
+function chatWithModelFor(lora: { audio_type: string; export_type: string }) {
+  const navigations: unknown[] = [];
+  const toasts: unknown[] = [];
+  const { chatWithModel } = loadWithStubs<{
+    chatWithModel: (navigate: (to: unknown) => Promise<void>, item: unknown) => Promise<void>;
+  }>(new URL("../src/features/library/actions.ts", import.meta.url), {
+    fflate: {},
+    "@/features/audio/audio-page-policy": policy,
+    "@/features/audio/workflows": workflows,
+    "@/features/auth": { getAuthSessionEpoch: () => 0 },
+    "@/features/chat": {
+      listLoras: async () => ({ loras: [{ adapter_path: "/out/my-voice", ...lora }] }),
+    },
+    "@/features/model-picker": {},
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/audio-utils": {},
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/native-files": {},
+    "@/lib/toast": { toast: (title: unknown) => toasts.push(title) },
+    "@/lib/video-utils": {},
+    "./api": {},
+    "./file-kind": {},
+    "./file-name": {},
+    "./start-chat": {},
+  });
+  const item = { name: "my-voice", model: { path: "/out/my-voice", origin: "training", exportType: "merged" } };
+  return chatWithModel(async (to) => void navigations.push(to), item).then(() => ({ navigations, toasts }));
+}
+
+test("Chat with a speech fine-tune loads it on its Audio page with its audio type", async () => {
+  // A native checkpoint needs its audio type for the custom-code approval and runtime checks.
+  const native = await chatWithModelFor({ audio_type: "moss_tts_local", export_type: "merged" });
+  assert.deepEqual(native.navigations, [
+    {
+      to: "/audio",
+      search: { model: "/out/my-voice", loadId: "/out/my-voice", audioType: "moss_tts_local", workflow: "speak" },
+    },
+  ]);
+  assert.deepEqual(native.toasts, []);
+  // One the Audio page cannot load keeps the old pointer to its model menu.
+  const other = await chatWithModelFor({ audio_type: "whisper", export_type: "lora" });
+  assert.deepEqual(other.navigations, [{ to: "/audio" }]);
+  assert.deepEqual(other.toasts, ["library.toast.speechModel"]);
 });
 
 test("the preview plays clips with the Audio page's waveform and stops a card that is playing", () => {
@@ -134,4 +174,57 @@ test("a separation is deleted in one call", () => {
   const separate = readSrc("features/audio/pages/separate-page.tsx");
   assert.match(separate, /await handleDeleteGroup\(\s*groupId,/);
   assert.match(readSrc("features/audio/api.ts"), /\/api\/inference\/audio\/gallery\/group\//);
+});
+
+test("the card player stops a clip whose card is gone and reports a failed stream once", async () => {
+  const toasts: unknown[] = [];
+  const players: FakeAudio[] = [];
+  class FakeAudio {
+    src = "";
+    paused = true;
+    error: { message: string } | null = null;
+    onended: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    rejectPlay: ((reason: unknown) => void) | null = null;
+    constructor() {
+      players.push(this);
+    }
+    play() {
+      this.paused = false;
+      return new Promise<void>((_resolve, reject) => {
+        this.rejectPlay = reject;
+      });
+    }
+    pause() {
+      this.paused = true;
+    }
+  }
+  (globalThis as { Audio?: unknown }).Audio = FakeAudio;
+  const playback = loadWithStubs<{
+    toggleLibraryAudio: (item: unknown) => Promise<void>;
+    stopLibraryAudioUnlessShown: (shown: ReadonlySet<string>) => void;
+    useLibraryAudioPlaying: (id: string) => boolean;
+  }>(new URL("../src/features/library/audio-playback.ts", import.meta.url), {
+    "@/i18n": { translate: (key: string) => key },
+    "@/lib/toast": { toast: { error: (title: unknown) => toasts.push(title) } },
+    react: { useSyncExternalStore: (_subscribe: unknown, get: () => boolean) => get() },
+    "./api": { errorMessage: String, fetchLibraryStreamUrl: async () => "blob:clip" },
+  });
+  const playing = (id: string) => playback.useLibraryAudioPlaying(id);
+
+  await playback.toggleLibraryAudio({ id: "audio:a", name: "a.wav" });
+  assert.equal(playing("audio:a"), true);
+  playback.stopLibraryAudioUnlessShown(new Set(["audio:a", "audio:b"]));
+  assert.equal(playing("audio:a"), true);
+  playback.stopLibraryAudioUnlessShown(new Set(["audio:b"]));
+  assert.equal(playing("audio:a"), false);
+  assert.equal(players[0]!.paused, true);
+
+  await playback.toggleLibraryAudio({ id: "audio:b", name: "b.wav" });
+  players[0]!.error = { message: "network" };
+  players[0]!.onerror?.();
+  players[0]!.rejectPlay?.(new Error("aborted"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(playing("audio:b"), false);
+  assert.deepEqual(toasts, ["library.audio.playFailed"]);
 });

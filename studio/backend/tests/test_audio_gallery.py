@@ -1018,3 +1018,30 @@ def test_a_group_delete_takes_only_that_runs_clips():
     with pytest.raises(HTTPException) as missing:
         asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester"))
     assert missing.value.status_code == 404
+
+
+def test_a_group_delete_spares_the_runs_archived_clips():
+    # A stem restored from the archive leaves its siblings archived; deleting the run on the
+    # Separate page, which lists only active clips, must not take them.
+    stems = [
+        gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
+        for r in ("vocals", "drums", "bass")
+    ]
+    for stem in stems[1:]:
+        gallery.set_flags(stem["id"], archived = True)
+    assert gallery.delete_group("g1") == 1
+    assert gallery.audio_path(stems[0]["id"]) is None
+    assert {r["id"] for r in gallery.list_audio(archived = True)} == {s["id"] for s in stems[1:]}
+
+
+def test_the_group_route_refuses_with_an_unreadable_store():
+    from fastapi import HTTPException
+    from routes.inference import delete_gallery_audio_group
+
+    stem = gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = "vocals"))
+    gallery.set_flags(stem["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester"))
+    assert excinfo.value.status_code == 503
+    assert gallery.audio_path(stem["id"]) is not None

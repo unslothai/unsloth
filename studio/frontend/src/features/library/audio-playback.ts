@@ -24,8 +24,16 @@ export function stopLibraryAudio(): void {
   if (playingId !== null) setPlaying(null);
 }
 
+/** Stops the clip when its card is no longer shown (deleted, filtered out), since that card is
+ *  its only control. */
+export function stopLibraryAudioUnlessShown(shown: ReadonlySet<string>): void {
+  if (playingId !== null && !shown.has(playingId)) stopLibraryAudio();
+}
+
 function failed(item: LibraryItem, error: unknown, mine: number): void {
   if (mine !== generation) return;
+  // A failed stream can both reject play() and fire error: report it once.
+  generation += 1;
   setPlaying(null);
   toast.error(translate("library.audio.playFailed", { name: item.name }), {
     description: errorMessage(error),
@@ -49,6 +57,8 @@ export async function toggleLibraryAudio(item: LibraryItem): Promise<void> {
   if (mine !== generation) return;
   player ??= new Audio();
   player.onended = () => mine === generation && setPlaying(null);
+  // A stream that fails after play() resolved never rejects it.
+  player.onerror = () => failed(item, player?.error?.message ?? "", mine);
   player.src = url;
   player.play().catch((error: unknown) => failed(item, error, mine));
 }
