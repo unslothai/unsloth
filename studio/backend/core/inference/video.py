@@ -8649,6 +8649,24 @@ class VideoBackend:
                         if ordinal is not None
                         else torch.device(state.device)
                     )
+                    from . import video_stream_residency
+
+                    if video_stream_residency.applies(
+                        fam.name,
+                        is_moe = bool(getattr(fam, "is_moe", False)),
+                        offload_policy = state.offload_policy,
+                        device = state.device,
+                    ):
+                        # Resident groups are allocated, so the reserved term below still counts them as available.
+                        video_stream_residency.fit_for_request(
+                            state.pipe,
+                            device = device_obj,
+                            floor_mib = state.vram_floor_mib,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            logger = logger,
+                        )
                     free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
                     reserved_bytes = (
                         torch.cuda.memory_reserved(device_obj)
@@ -9053,6 +9071,11 @@ class VideoBackend:
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if len(video_frames) and not fam.modular_workflow:
+                    from . import video_stream_residency
+
+                    # after decode and export: this peak sizes the next request of its size
+                    video_stream_residency.record_request_peak(pipe, logger = logger)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
                 # Deregister under cancel_generate's own lock before the trim: it blocks for a few

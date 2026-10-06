@@ -95,6 +95,7 @@ def _generation_padding_side(config):
 from ..kernels import (
     post_patch_loss_function,
 )
+from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ._utils import (
     __version__,
     importlib_version,
@@ -4054,6 +4055,7 @@ class FastBaseModel:
                     f"Unsloth: could not check the dispatch hooks "
                     f"({type(_exc).__name__}: {_exc})."
                 )
+        _install_bnb_nf4_override()
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod

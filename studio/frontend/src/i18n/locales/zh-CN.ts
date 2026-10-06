@@ -1878,6 +1878,7 @@ export const zhCN = {
         cpu: "CPU",
         ram: "RAM",
         disk: "磁盘",
+        modelsDisk: "模型磁盘",
         vram: "VRAM",
         cpuCores: "{logical} 逻辑核心 / {physical} 物理核心",
         currentLoad: "当前负载",
@@ -1986,6 +1987,7 @@ export const zhCN = {
       storage: {
         title: "存储",
         systemDisk: "系统磁盘",
+        modelsDisk: "模型磁盘",
         diskUsage: "已用 {used} / {total}",
         diskFree: "{free} 可用",
         modelsFolder: "模型文件夹",

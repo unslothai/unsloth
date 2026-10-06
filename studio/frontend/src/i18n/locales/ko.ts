@@ -1901,6 +1901,7 @@ export const ko = {
         cpu: "CPU",
         ram: "RAM",
         disk: "디스크",
+        modelsDisk: "모델 디스크",
         vram: "VRAM",
         cpuCores: "논리 {logical}개 / 물리 {physical}개 코어",
         currentLoad: "현재 부하",
@@ -2011,6 +2012,7 @@ export const ko = {
       storage: {
         title: "저장소",
         systemDisk: "시스템 디스크",
+        modelsDisk: "모델 디스크",
         diskUsage: "{used} 사용 중 / {total}",
         diskFree: "{free} 여유",
         modelsFolder: "모델 폴더",

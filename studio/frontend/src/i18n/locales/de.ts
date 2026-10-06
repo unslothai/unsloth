@@ -1933,6 +1933,7 @@ export const de = {
         cpu: "CPU",
         ram: "RAM",
         disk: "Festplatte",
+        modelsDisk: "Modell-Datenträger",
         vram: "VRAM",
         cpuCores: "{logical} logische / {physical} physische Kerne",
         currentLoad: "Aktuelle Auslastung",
@@ -2044,6 +2045,7 @@ export const de = {
       storage: {
         title: "Speicher",
         systemDisk: "Systemfestplatte",
+        modelsDisk: "Modell-Datenträger",
         diskUsage: "{used} belegt / {total}",
         diskFree: "{free} frei",
         modelsFolder: "Modell-Ordner",
