@@ -26076,9 +26076,13 @@ class LlamaCppBackend:
                                     <= _budget_w
                                 ):
                                     # A NextN-only head is the main decode speedup: pay context.
-                                    if _arch_has_fast_mla_mtp(
-                                        getattr(self, "_architecture", None)
-                                    ) and _ctx_w >= min(_ctx_wo, _FAST_MTP_MIN_CTX):
+                                    if (
+                                        _engaged_is_mtp
+                                        and _arch_has_fast_mla_mtp(
+                                            getattr(self, "_architecture", None)
+                                        )
+                                        and _ctx_w >= min(_ctx_wo, _FAST_MTP_MIN_CTX)
+                                    ):
                                         _both_fit_somewhere = True
                                         logger.info(
                                             "Auto: keeping the embedded MTP head; context %d -> %d "

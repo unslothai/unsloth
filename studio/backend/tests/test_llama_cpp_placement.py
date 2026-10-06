@@ -1070,6 +1070,24 @@ def test_auto_still_drops_mla_mtp_past_the_floor_or_off_the_list(
     assert backend.spec_fallback_reason == "drafter_no_vram"
 
 
+def test_auto_still_drops_a_sidecar_drafter_on_a_fast_mla_target(tmp_path, monkeypatch):
+    """The context exception is for the embedded head, not a DSpark sidecar Auto picked."""
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = "glm5-next", floor = 4096
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    caps = backend.probe_server_capabilities()
+    backend.probe_server_capabilities = lambda _binary = None: {**caps, "supports_dspark": True}
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0, dspark_draft_path = str(sidecar))
+
+    cmd = result["cmd"]
+    assert "draft-dspark" not in cmd and "draft-mtp" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
 def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     """Model fits, drafter does not: Auto keeps the context and runs without it.
 
