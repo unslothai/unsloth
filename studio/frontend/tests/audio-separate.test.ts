@@ -281,32 +281,28 @@ test("a loaded separation model is a main-slot audio model", () => {
 
 test("host and page wiring for Separate", () => {
   const host = readSrc("features/audio/audio-page.tsx");
-  // Leaving Audio stops a Separate recording and releases the mic, as on Clone.
   assert.match(
     host,
     /ttsWorkflow === "separate" \? \(\s*<AudioActiveProvider value=\{active\}>\s*<SeparateRail/,
   );
   assert.match(host, /ttsWorkflow === "separate"\s*\? separate\.blocker/);
   assert.match(host, /reason: "The loaded model separates audio\."/);
-  // Trained speech checkpoints are not separation models: only Speak and Music offer them.
   assert.match(
     host,
     /ttsWorkflow !== "speak" && ttsWorkflow !== "music"\s*\? \[\]/,
   );
-  // A stem sent to Transcribe mid-run would be dropped when the run stops.
+  // switching to Transcribe mid-run would stop the run and drop the stem
   assert.match(
     host,
-    /target\.workflow === "transcribe"\) \{[\s\S]*?busyRef\.current !== null[\s\S]*?return;[\s\S]*?if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]*?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id/,
+    /const handleSendStem = useCallback\([\s\S]*?if \(runBusy\(\)\) return;[\s\S]*?target\.workflow === "transcribe"\) \{\s*if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]*?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id/,
   );
-  // A separation that a refresh missed falls back on the Separate page.
   const generation = readSrc("features/audio/hooks/use-separate-generation.ts");
   assert.match(generation, /showRunResult\(\{[^}]*workflow: "separate"/);
   const page = readSrc("features/audio/pages/separate-page.tsx");
   assert.match(page, /allowSavedVoice=\{false\}/);
   assert.match(page, /expiredMessage=\{SEPARATE_TRACK_EXPIRED_MESSAGE\}/);
   assert.match(page, /maxRecordSeconds=\{SEPARATE_MAX_SECONDS - 1\}/);
-  // The mixer's own sources pin the group; a failed fetch retries instead of loading forever,
-  // and a stem that cannot load is marked so the mixer plays the others.
+  // mixer sources pin the group; failed fetches retry, while unavailable stems are skipped
   assert.match(page, /useStemSources\(inputs, attempt\)/);
   assert.match(page, /sources\.failedIds\.length > 0/);
   assert.match(page, /setAttempt\(\(n\) => n \+ 1\)/);
