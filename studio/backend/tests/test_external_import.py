@@ -85,14 +85,16 @@ def _rollout(
     sid = "019a",
     source = "cli",
     body = None,
+    root = "sessions",
+    **meta,
 ):
-    path = home / "sessions" / "2026" / "09" / "22" / f"rollout-2026-09-22T12-00-00-{sid}.jsonl"
+    path = home / root / "2026" / "09" / "22" / f"rollout-2026-09-22T12-00-00-{sid}.jsonl"
     return _write(
         path,
         [
             x_line(
                 "session_meta",
-                {"id": sid, "cwd": cwd, "source": source, "originator": "codex_cli_rs"},
+                {"id": sid, "cwd": cwd, "source": source, "originator": "codex_cli_rs", **meta},
             ),
             x_line(
                 "response_item",
@@ -610,3 +612,16 @@ def test_codex_status_counts_rollouts_without_opening_them(codex_home, monkeypat
     _rollout(codex_home, sid = "b")
     monkeypatch.setattr(codex, "_meta", lambda path: pytest.fail("status must not parse rollouts"))
     assert codex.SOURCE.session_count() == 2
+
+
+def test_codex_reads_archived_rollouts_and_skips_revert_continuations(codex_home):
+    _rollout(codex_home, sid = "a")
+    _rollout(codex_home, sid = "b", root = "archived_sessions")
+    _rollout(codex_home, sid = "a", root = "archived_sessions")
+    _rollout(codex_home, sid = "a_rev", history_base = {"thread_id": "a", "end_ordinal_exclusive": 3})
+
+    sessions = sorted(s.name for p in codex.list_projects(codex_home) for s in p.sessions)
+    assert sessions == [
+        "rollout-2026-09-22T12-00-00-a.jsonl",
+        "rollout-2026-09-22T12-00-00-b.jsonl",
+    ]

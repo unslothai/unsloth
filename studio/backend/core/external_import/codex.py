@@ -25,6 +25,7 @@ from core.external_import import (
     first_user_text,
     iso_ms,
     read_jsonl,
+    session_id_of,
     stable_id,
     title_from,
     tool_call,
@@ -44,12 +45,14 @@ def _meta(path: Path) -> dict:
 
 
 def _rollouts(home: Path) -> list[Path]:
-    root = home / "sessions"
-    if not root.is_dir():
-        return []
-    return sorted(
-        p for p in root.rglob("rollout-*.jsonl*") if p.name.endswith((".jsonl", ".jsonl.zst"))
-    )
+    # archived_sessions holds threads archived in Codex; a rollout in both counts once.
+    found: dict[str, Path] = {}
+    for root in (home / "archived_sessions", home / "sessions"):
+        if root.is_dir():
+            for path in root.rglob("rollout-*.jsonl*"):
+                if path.name.endswith((".jsonl", ".jsonl.zst")):
+                    found[session_id_of(path)] = path
+    return sorted(found.values())
 
 
 def list_projects(home: Path) -> list[SourceProject]:
@@ -59,6 +62,10 @@ def list_projects(home: Path) -> list[SourceProject]:
         # Subagent threads repeat work their parent already shows.
         source = meta.get("source")
         if isinstance(source, dict) and "subagent" in source:
+            continue
+        # A revert or fork continuation holds only the tail past an inherited paginated prefix
+        # (``history_base``); importing it alone would give a truncated duplicate chat.
+        if meta.get("history_base"):
             continue
         # The raw cwd is the identity (hashed into the project id); "a-b" and "a/b" stay apart.
         by_cwd.setdefault(str(meta.get("cwd") or _UNKNOWN_FOLDER), []).append(path)
