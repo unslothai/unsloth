@@ -234,6 +234,42 @@ def test_windows_auto_picks_avx2():
     assert _resolve("Windows", "AMD64") == "sd-master-8caa3f9-bin-win-avx2-x64.zip"
 
 
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_windows_cpu_selection_with_unsloth_vulkan_asset(accelerator, reverse):
+    cpu = "sd-master-813-bfbef5b-u1d02858-bin-win-cpu-x64.zip"
+    vulkan = "sd-master-813-bfbef5b-u1d02858-bin-win-vulkan-x64.zip"
+    assets = [cpu, vulkan]
+    if reverse:
+        assets.reverse()
+    assert resolve_release_asset(
+        assets, system = "Windows", machine = "AMD64", accelerator = accelerator
+    ) == cpu
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+@pytest.mark.parametrize("gpu", ["cuda12", "vulkan", "rocm", "sycl", "musa"])
+def test_windows_cpu_selection_never_uses_accelerator_build(accelerator, gpu):
+    # Even an AVX2-labelled GPU build must not enter the CPU preference list.
+    assets = [f"sd-master-test-bin-win-{gpu}-avx2-x64.zip"]
+    assert resolve_release_asset(
+        assets, system = "Windows", machine = "AMD64", accelerator = accelerator
+    ) is None
+    cpu = "sd-master-test-bin-win-cpu-x64.zip"
+    assert resolve_release_asset(
+        [*assets, cpu], system = "Windows", machine = "AMD64", accelerator = accelerator
+    ) == cpu
+
+
+@pytest.mark.parametrize("accelerator", ["auto", "cpu"])
+def test_windows_cpu_selection_keeps_upstream_avx2_preference(accelerator):
+    avx2 = "sd-master-test-bin-win-avx2-x64.zip"
+    assets = ["sd-master-test-bin-win-cpu-x64.zip", avx2]
+    assert resolve_release_asset(
+        assets, system = "Windows", machine = "AMD64", accelerator = accelerator
+    ) == avx2
+
+
 def test_windows_cuda_picks_cuda12():
     assert _resolve("Windows", "AMD64", "cuda") == "sd-master-8caa3f9-bin-win-cuda12-x64.zip"
 
