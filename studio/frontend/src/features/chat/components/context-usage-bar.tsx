@@ -57,6 +57,49 @@ const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
   </svg>
 );
 
+const DOT_TRIM_CH = 0.15;
+
+// Visible gap each side of the slash, less each glyph's side bearing (JetBrains Mono, in ch).
+const SLASH_GAP_CH = 0.55;
+function slashMargins(before: string, after: string): [number, number] {
+  const beforeBearing = before === "k" ? 0.03 : before === "—" ? 0 : 0.11;
+  const afterBearing = after === "1" ? 0.17 : 0.11;
+  return [SLASH_GAP_CH - beforeBearing - 0.08, SLASH_GAP_CH - 0.12 - afterBearing];
+}
+
+// " / " becomes a slash with slashMargins either side, and each "." is pulled in by DOT_TRIM_CH.
+function faceWidthCh(face: string): number {
+  const dots = face.split(".").length - 1;
+  const at = face.indexOf(" / ");
+  const [left, right] = at >= 0 ? slashMargins(face[at - 1] ?? "", face[at + 3] ?? "") : [1, 1];
+  return face.length + left + right - 2 - dots * 2 * DOT_TRIM_CH;
+}
+
+const TokenCount: FC<{ text: string }> = ({ text }) => (
+  <>
+    {text.split(".").map((part, i) => (
+      <span key={i}>
+        {/* 0.85em dot, margins in its own ch so it still takes 1 - 2 * DOT_TRIM_CH of the parent's. */}
+        {i > 0 ? <span className="-mx-[0.088ch] text-[0.85em]">.</span> : null}
+        {part}
+      </span>
+    ))}
+  </>
+);
+
+const Face: FC<{ face: string }> = ({ face }) => {
+  const slash = face.indexOf(" / ");
+  if (slash < 0) return <span><TokenCount text={face} /></span>;
+  const [left, right] = slashMargins(face[slash - 1] ?? "", face[slash + 3] ?? "");
+  return (
+    <span>
+      <TokenCount text={face.slice(0, slash)} />
+      <span style={{ marginLeft: `${left}ch`, marginRight: `${right}ch` }}>/</span>
+      <TokenCount text={face.slice(slash + 3)} />
+    </span>
+  );
+};
+
 export const ContextUsageBar: FC<
   ContextUsageBarInput & { className?: string }
 > = ({ className, ...input }) => {
@@ -68,16 +111,14 @@ export const ContextUsageBar: FC<
     : input;
   const { percent, advice, face, compactFace } = state;
   const severity = getSeverityColor(percent ?? 0);
-  // Half a ch either side of the slash, 1ch narrower than " / ".
-  const slash = face.indexOf(" / ");
-  const faceWidth = slash >= 0 ? face.length - 1 : face.length;
+  // The ring shows whenever there is a window to fill, even before anything is counted.
+  const showRing = compactFace === null;
   // Mono text, so widths are exact in ch. Full: padding, face, and the gap and ring. Compact: an icon button.
-  const fullWidth =
-    percent !== null
-      ? `calc(${faceWidth}ch + var(--icon-size) + 7 * var(--spacing))`
-      : `calc(${faceWidth}ch + 5 * var(--spacing))`;
+  const fullWidth = showRing
+    ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + 7 * var(--spacing))`
+    : `calc(${faceWidthCh(face)}ch + 5 * var(--spacing))`;
   const compactWidth =
-    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${compactFace.length}ch + 5 * var(--spacing))`;
+    compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${faceWidthCh(compactFace)}ch + 5 * var(--spacing))`;
   const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
 
   return (
@@ -119,7 +160,7 @@ export const ContextUsageBar: FC<
                   <UsageRing percent={percent} stroke={severity.stroke} />
                 </span>
               ) : (
-                <span className={cn("flex h-full shrink-0 items-center px-2.5", hover)}>{compactFace}</span>
+                <span className={cn("flex h-full shrink-0 items-center px-2.5", hover)}><Face face={compactFace} /></span>
               )}
             </span>
             <span
@@ -127,18 +168,8 @@ export const ContextUsageBar: FC<
               style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
             >
               <span className={cn("flex h-full w-(--full) items-center gap-2 px-2.5", hover)}>
-                <span>
-                  {slash >= 0 ? (
-                    <>
-                      {face.slice(0, slash)}
-                      <span className="mx-[0.25ch]">/</span>
-                      {face.slice(slash + 3)}
-                    </>
-                  ) : (
-                    face
-                  )}
-                </span>
-                {percent !== null ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+                <Face face={face} />
+                {showRing ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
               </span>
             </span>
           </button>

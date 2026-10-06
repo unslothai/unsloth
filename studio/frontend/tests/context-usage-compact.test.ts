@@ -33,6 +33,8 @@ test("the header shrinks the context bar before the model name", () => {
 test("both faces draw the ring, not the line", () => {
   const bar = readSrc("features/chat/components/context-usage-bar.tsx");
   assert.match(bar, /\{compactFace === null \? \(\s*<span[^>]*>\s*<UsageRing /);
-  assert.match(bar, /\{percent !== null \? <UsageRing percent=\{percent\} stroke=\{severity\.stroke\} \/> : null\}/);
+  // Empty before anything is counted, but still drawn.
+  assert.match(bar, /const showRing = compactFace === null;/);
+  assert.match(bar, /\{showRing \? <UsageRing percent=\{percent\} stroke=\{severity\.stroke\} \/> : null\}/);
   assert.doesNotMatch(bar, /style=\{\{ width: `\$\{percent\}%` \}\}/);
 });
