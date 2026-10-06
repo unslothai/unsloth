@@ -692,9 +692,7 @@ def test_patch_mamba2_varlen_syncs_stale_compiled_kernel_globals(monkeypatch):
 
 
 def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
-    # Unsloth compiles mixer.forward into unsloth_compiled_cache with a module-global
-    # fused kernel import. Wrapping only transformers.modeling_* leaves that alias
-    # on the original and the handshake aborts on a real Nemotron-H train.
+    # unsloth_compiled_cache holds its own fused-kernel alias; it must be rebound too.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import sys
     import types
@@ -736,12 +734,7 @@ def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
 
 
 def _make_hub_mamba2_namespace(module_name):
-    """A modeling module shaped like transformers' dynamic module loading.
-
-    The module is registered in ``sys.modules`` and its functions are exec'd
-    into the module dict, so ``cuda_kernels_forward.__globals__`` *is* that
-    dict - which is what its LOAD_GLOBAL of the fused kernel resolves through.
-    """
+    # Functions exec'd into a registered module dict, so their LOAD_GLOBALs resolve through it.
     import sys
     import types
 
@@ -762,8 +755,7 @@ def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=
 
 
 def test_patch_mamba2_varlen_rewrites_cuda_kernels_forward_global(monkeypatch):
-    # transformers 5.5 Nemotron-H LOAD_GLOBALs mamba_split_conv1d_scan_combined
-    # from cuda_kernels_forward and hardcodes seq_idx=None. That is the H200 abort.
+    # transformers <= 5.15 cuda_kernels_forward LOAD_GLOBALs the kernel with seq_idx=None.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import sys
     import types
@@ -804,9 +796,7 @@ def test_patch_mamba2_varlen_rewrites_cuda_kernels_forward_global(monkeypatch):
 
 
 def test_patch_mamba2_varlen_unreachable_kernel_namespace_aborts(monkeypatch):
-    # The install reaches module globals by name; it deliberately does not hunt
-    # references through gc or closures. A kernel reachable only from an
-    # unregistered namespace must fail closed, never train unpacked.
+    # A kernel reachable only from an unregistered namespace must fail closed.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import types
 
@@ -846,9 +836,6 @@ def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=
 
 
 def test_patch_mamba2_varlen_reaches_compiled_module_global(monkeypatch):
-    # Unsloth compiles mixer methods into unsloth_compiled_cache as free
-    # functions that LOAD_GLOBAL the fused kernel from the compiled module's own
-    # globals. Reassigning the name there is what the call resolves through.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import sys
     import types
@@ -904,8 +891,7 @@ def NemotronHMamba2Mixer_cuda_kernels_forward(self, hidden_states, cache_params=
 
 
 def test_patch_mamba2_varlen_overwrites_stale_compiled_import(monkeypatch):
-    # Compiler imports mamba_split_conv1d_scan_combined into unsloth_compiled_cache
-    # before mixer __init__ stores the real kernel on the modeling module.
+    # The compiled cache imported the kernel before mixer __init__ loaded the real one.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import sys
     import types
@@ -966,9 +952,7 @@ def test_patch_mamba2_varlen_overwrites_stale_compiled_import(monkeypatch):
 
 
 def test_patch_mamba2_varlen_clears_padded_mask_for_fused_path(monkeypatch):
-    # transformers 5.5 only calls mamba_split_conv1d_scan_combined when
-    # attention_mask is all-ones. Packed batches still have pad zeros, so the
-    # mixer takes mamba_chunk_scan_combined and the fused wrapper never runs.
+    # The fused kernel needs an all-ones mask; packed batches carry pad zeros.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
     def mamba_chunk_scan_combined(
@@ -1025,8 +1009,6 @@ def test_patch_mamba2_varlen_clears_padded_mask_for_fused_path(monkeypatch):
 
 
 def test_patch_mamba2_varlen_clears_mask_on_compiled_mixer_forward(monkeypatch):
-    # H200: compiled NemotronHMamba2Mixer_forward passes the padded mask through
-    # to cuda_kernels_forward, which then skips the fused kernel.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import sys
     import types
@@ -1096,8 +1078,7 @@ def NemotronHMamba2Mixer_forward(self, hidden_states, cache_params=None, attenti
             use_cache = None,
             **kwargs,
         ):
-            # Nemotron-H builds an empty Cache inside the model and passes it
-            # to mixers; it is not a trainer-batch kwarg.
+            # Nemotron-H hands mixers an empty Cache, which also blocks the fused kernel.
             return self.mixer(
                 input_ids.float(),
                 cache_params = _EmptyCache(),
@@ -1125,9 +1106,7 @@ def NemotronHMamba2Mixer_forward(self, hidden_states, cache_params=None, attenti
 
 
 def test_patch_mamba2_varlen_wraps_shared_kernel_once_per_model(monkeypatch):
-    # Nemotron-H has one mixer per layer sharing a single fused kernel name.
-    # Re-wrapping per mixer nested ~one frame per layer and hit the recursion
-    # limit on the first packed forward.
+    # Shared kernel name across layers: re-wrapping per mixer hit RecursionError.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
     fused = _make_fake_mamba2_fused()
@@ -1162,9 +1141,6 @@ def test_patch_mamba2_varlen_wraps_shared_kernel_once_per_model(monkeypatch):
 
 
 def test_patch_mamba2_varlen_skips_stale_seq_idx_after_training(monkeypatch):
-    # generate() reaches the decoder without the wrapped model.forward, so the
-    # mixers still held the training step's seq_idx and the kernel rejected it
-    # with "seq_idx must have shape (batch_size, seqlen)".
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
     class _GeneratingModel(_FakeMamba2Model):
