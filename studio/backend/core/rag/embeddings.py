@@ -106,16 +106,19 @@ def _load_device() -> str:
     )
 
 
-def _load_dtype(device: str) -> str:
-    """bf16 on an accelerator with native bf16, float32 everywhere else. Never float16.
+# Matched as a substring of the lowercased model name. EmbeddingGemma's activations overflow float16 and every
+# vector comes back NaN; its model card says to use float32 or bfloat16.
+_FLOAT16_UNSAFE_MODELS = ("embeddinggemma",)
 
-    EmbeddingGemma's activations overflow float16: every vector comes back NaN, which vec0 stores
-    and then answers with a NULL distance. Its model card says to use float32 or bfloat16. Any Hub
-    model can be selected here, so the choice cannot be a per-model allowlist. Float32 on CPU also
-    avoids fp16 BERT raising "not implemented for Half", which encode() answers by swapping the
-    whole process to llama-server."""
+
+def _load_dtype(device: str, name: str) -> str:
+    """float32 on CPU, where fp16 BERT raises "not implemented for Half" and encode() answers by swapping the
+    whole process to llama-server. float16 on an accelerator, except for models that cannot run in it: those
+    get bf16 where the device has it natively, else float32."""
     if device == "cpu":
         return "float32"
+    if not any(m in name.lower() for m in _FLOAT16_UNSAFE_MODELS):
+        return "float16"
     from core.training.diffusion_train_common import (
         native_bf16_supported,
         native_bf16_supported_xpu,
@@ -526,7 +529,8 @@ def _gate_st_custom_modules() -> None:
 
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
-    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
+    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU; see ``_load_dtype``
+    for the models that cannot run in fp16."""
     account_path(model_name, reference = True)
     global _model, _name
     name = model_name or config.effective_embedding_model()
@@ -553,7 +557,7 @@ def _get(model_name: str | None = None):
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                model_kwargs = dtype_kwargs(_load_dtype(device)),
+                model_kwargs = dtype_kwargs(_load_dtype(device, name)),
             )
             if managed_account():
                 st_kwargs["token"] = False
