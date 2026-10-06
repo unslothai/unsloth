@@ -19,6 +19,7 @@ function permissionUi(
   permissionMode: string,
   loginMode = "multi",
   capability: Capability = null,
+  sandboxLevel = "high",
 ) {
   const accountSession = loadWithStubs<{
     useFullAccessAllowed: () => boolean;
@@ -46,6 +47,8 @@ function permissionUi(
   };
   const state = {
     permissionMode,
+    sandboxLevel,
+    setSandboxLevel: () => {},
     setPermissionMode: (value: string) => {
       changes.push(value);
     },
@@ -54,6 +57,7 @@ function permissionUi(
     PermissionModeMenuItems: (props: {
       onRequestFullAccess: () => void;
       onRequestSandboxSetup: () => void;
+      sandboxBanner?: boolean;
     }) => StubElement;
     PERMISSION_MODE_OPTIONS: readonly { value: string; label: string }[];
     permissionModeOption: (mode: string) => { value: string; label: string };
@@ -71,14 +75,22 @@ function permissionUi(
       "react/jsx-runtime": stubJsxRuntime(),
       react: {
         useEffect: (effect: () => void) => effect(),
-        useState: () => [false, () => {}],
+        // The capability hook starts at null; the menu sees the stubbed answer.
+        useState: (initial: unknown) => [initial === null ? capability : initial, () => {}],
+        useId: () => "id",
+        useRef: (current: unknown) => ({ current }),
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
         Hand: "Hand",
         ShieldCheck: "ShieldCheck",
       },
-      "radix-ui": { DropdownMenu: { Item: "DropdownMenuPrimitive.Item" } },
+      "radix-ui": {
+        DropdownMenu: {
+          Item: "DropdownMenuPrimitive.Item",
+          CheckboxItem: "DropdownMenuPrimitive.CheckboxItem",
+        },
+      },
       "@/features/settings": {
         useSettingsDialogStore: (selector: (state: unknown) => unknown) =>
           selector({ openDialog: () => {} }),
@@ -96,6 +108,11 @@ function permissionUi(
       },
       "@/components/ui/alert-dialog": { AlertDialog: "AlertDialog" },
       "@/components/ui/button": { Button: "Button" },
+      "@/components/ui/switch": { Switch: "Switch" },
+      "./sandbox-level": loadWithStubs(
+        new URL("../src/features/chat/sandbox-level.ts", import.meta.url),
+        {},
+      ),
       "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },
       "@/lib/chevron-icons": {},
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
@@ -123,7 +140,7 @@ for (const loginMode of ["single", "multi"]) {
         onRequestFullAccess() {},
         onRequestSandboxSetup() {},
       });
-      const rows = menu.props.children as StubElement[];
+      const [rows] = menu.props.children as [StubElement[], unknown];
       assert.equal(rows.length, owner ? 4 : 3);
       assert.deepEqual(ui.changes, owner ? [] : ["auto"]);
       const dialog = ui.component.FullAccessConfirmDialog({
@@ -200,5 +217,46 @@ for (const [name, capability, expected] of [
       assert.deepEqual(applied, []);
       assert.equal(setupRequested, 1);
     }
+  });
+}
+
+test("picking Run automatically under Low applies it without the OS sandbox setup", async () => {
+  const ui = permissionUi(true, "auto", "single", {
+    pythonOsIsolated: false,
+    terminalOsIsolated: false,
+  }, "low");
+  const applied: string[] = [];
+  let setupRequested = 0;
+  await ui.component.pickSandboxedMode(
+    (mode) => applied.push(mode),
+    () => {
+      setupRequested += 1;
+    },
+  );
+  assert.deepEqual(applied, ["off"]);
+  assert.equal(setupRequested, 0);
+});
+
+const NOT_ISOLATED = {
+  pythonOsIsolated: true,
+  terminalOsIsolated: false,
+  backend: "none",
+};
+
+for (const [name, mode, level, banner, shown] of [
+  ["High without OS isolation", "auto", "high", true, true],
+  ["Low", "auto", "low", true, false],
+  ["Full access", "full", "high", true, false],
+  ["a menu that turns it off", "auto", "high", false, false],
+] as const) {
+  test(`the sandbox setup banner under the rows: ${name}`, () => {
+    const ui = permissionUi(true, mode, "single", NOT_ISOLATED, level);
+    const menu = ui.component.PermissionModeMenuItems({
+      onRequestFullAccess() {},
+      onRequestSandboxSetup() {},
+      sandboxBanner: banner,
+    });
+    const [, after] = menu.props.children as [StubElement[], StubElement | null];
+    assert.equal(after !== null && after !== false, shown);
   });
 }

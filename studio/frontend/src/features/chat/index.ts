@@ -91,6 +91,7 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown, useActivePermissionMode } from "./permission-mode-select";
+export { sandboxSwitchState } from "./sandbox-level";
 export {
   type SandboxSetupAction,
   type SandboxSetupJob,

@@ -295,6 +295,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   // The Windows rows render only on Windows, so only the rows every platform shows are indexed.
   sandbox: [
+    "settings.general.permissions.sectionTitle",
+    "settings.sandbox.levelLabel",
     "settings.sandbox.toolsSection",
     "settings.sandbox.python",
     "settings.sandbox.terminal",
@@ -355,14 +357,24 @@ const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
   "settings.general.hub.datasetsServer",
 ]);
 
+// Rows of a tab every account sees that render only for the owner (the OS sandbox sections).
+const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.sandbox.toolsSection",
+  "settings.sandbox.python",
+  "settings.sandbox.terminal",
+]);
+
 export function renderedSearchEntries(
   index: Record<SettingsTab, TranslationKey[]>,
   tab: SettingsTab,
   hubSource: HubSource,
+  isOwner = true,
 ): TranslationKey[] {
-  return hubSource === "modelscope"
-    ? index[tab].filter((key) => !HUGGING_FACE_ONLY_ENTRIES.has(key))
-    : index[tab];
+  return index[tab].filter(
+    (key) =>
+      !(hubSource === "modelscope" && HUGGING_FACE_ONLY_ENTRIES.has(key)) &&
+      (isOwner || !OWNER_ONLY_ENTRIES.has(key)),
+  );
 }
 
 /**
