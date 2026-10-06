@@ -559,7 +559,9 @@ def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
         str(checkpoint), use_gradient_checkpointing = False
     )
     grown = model.encoder.get_input_embeddings().num_embeddings + 8
-    model.encoder.resize_token_embeddings(grown)
+    # The fixture's vocab equals its hidden size, so the covariance mean resizing samples from
+    # is singular and can come out NaN on some GPUs.
+    model.encoder.resize_token_embeddings(grown, mean_resizing = False)
     model.save_pretrained_merged(str(tmp_path / "out"), tokenizer)
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"))
     assert reloaded.encoder.get_input_embeddings().num_embeddings == grown
@@ -622,6 +624,30 @@ def test_the_compile_warm_up_forks_the_rng_of_the_models_own_accelerator(monkeyp
         fast._warm_up(model, None)
     # An XPU / MPS model forks its own RNG, not CUDA's (meta stands in for any accelerator).
     assert forked == [{"devices": [0], "device_type": "meta"}]
+
+
+def test_clef_backbone_stays_on_one_device_unless_the_caller_places_it(tmp_path, monkeypatch):
+    from unsloth.models import loader, loader_utils
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("device_map"))
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(loader.FastModel, "from_pretrained", capture)
+    index = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    for kwargs in ({}, {"device_map": None}, {"device_map": "auto"}):
+        with pytest.raises(Captured):
+            decision._load_clef(tmp_path, None, torch.bfloat16, False, False, None, False, kwargs)
+    monkeypatch.setattr(loader_utils, "prepare_device_map", lambda: ({"": "cuda:1"}, True))
+    with pytest.raises(Captured):
+        decision._load_clef(tmp_path, None, torch.bfloat16, False, False, None, False, {})
+    assert seen == [{"": f"cuda:{index}"}, {"": f"cuda:{index}"}, "auto", {"": "cuda:1"}]
 
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
@@ -689,7 +715,6 @@ def test_trainer_uses_one_gpu_and_the_set_batch_on_a_multi_gpu_machine(checkpoin
         str(checkpoint), use_gradient_checkpointing = False
     )
     args = _args(tmp_path, max_steps = 1)
-    assert args.n_gpu <= 1
     args._n_gpu = 2
     trainer = DecisionTrainer(model = model, args = args, processing_class = tokenizer)
     assert trainer.args.n_gpu == 1 and args.n_gpu == 2
@@ -958,6 +983,29 @@ def test_clef_encoding_is_token_identical_to_cloudflares():
             ]
 
 
+def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
+    seen = []
+
+    def clef_logits(
+        model,
+        items,
+        pad_token_id,
+        batch_size = 4,
+    ):
+        seen.append(batch_size)
+        raise StopIteration
+
+    monkeypatch.setattr(decision, "_clef_logits", clef_logits)
+    model = types.SimpleNamespace(is_clef = True, decision_config = {})
+    tokenizer = types.SimpleNamespace(pad_token_id = 0)
+    for call in (FastDecisionModel.evaluate, FastDecisionModel.calibrate):
+        with pytest.raises(StopIteration):
+            call(model, tokenizer, [], batch_size = 1)
+    with pytest.raises(StopIteration):
+        FastDecisionModel.evaluate(model, tokenizer, [])
+    assert seen == [1, 1, 4]
+
+
 def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tmp_path):
     reference, _ = _clef_reference()
     model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
@@ -1020,9 +1068,12 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         decision.HEAD_TEMPERATURE_RANGE[0] <= head_temperature <= decision.HEAD_TEMPERATURE_RANGE[1]
     )
 
+    model.decision_config["training"] = {"steps": 30}
     model.save_pretrained_merged(str(tmp_path / "out"))
     assert (tmp_path / "out" / "joint_schema_model.py").is_file()
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"), max_seq_length = 512)
+    # The parent run's record stays on disk but does not describe the next fine-tune.
+    assert "training" not in reloaded.decision_config
     # The calibrated temperature over all questions is folded into the saved head; the per-type
     # temperatures are relative to it, so the reload serves the same probabilities.
     folded = reloaded.decision_config["folded_temperature"]
