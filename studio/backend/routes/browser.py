@@ -96,7 +96,17 @@ _INERT_START_RE = re.compile(
 )
 _CLOSING_TAG_RES = {
     name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
-    for name in ("script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript")
+    for name in (
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "noscript",
+    )
 }
 # The JavaScript MIME types a module script may be served as (WHATWG MIME Sniffing).
 _JS_TYPES = frozenset(
@@ -1322,7 +1332,9 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
             spans.append((match.start(), end))
         else:
             name = match.group(1).lower()
-            close = None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
+            close = (
+                None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
+            )
             # Unclosed (or plaintext): text to the end of the page.
             end = close.end() if close else len(page)
             spans.append((match.end(), close.start() if close else len(page)))
