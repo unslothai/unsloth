@@ -1225,6 +1225,14 @@ def fingerprint(item_id: str) -> Optional[str]:
 _replace_lock = threading.Lock()
 
 
+@contextlib.contextmanager
+def overlay_write():
+    """Held across a fingerprint check and the overlay write it guards, so an edit_file swap cannot
+    land between them and leave the write keyed to the file it replaced."""
+    with _replace_lock:
+        yield
+
+
 def replace_file(tmp: str, path: str) -> None:
     """``os.replace(tmp, path)``, carrying the overlay row of the file it replaces over to the new
     inode, which the listing would otherwise drop as a different file."""
@@ -2204,7 +2212,7 @@ _overlay_lock = threading.Lock()
 def mark_opened(item_id: str) -> bool:
     """Record that the item was just opened, kept for the file it is now. False when it is not
     there, or is a path whose file is gone."""
-    with _overlay_lock:
+    with _overlay_lock, overlay_write():
         found = fingerprint(item_id)
         if found is None and (path_derived(item_id) or not item_exists(item_id)):
             return False

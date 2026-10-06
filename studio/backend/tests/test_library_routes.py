@@ -468,6 +468,41 @@ def test_a_listing_during_an_edit_does_not_drop_the_files_name_star_and_folder(
     assert (item["name"], item["favorite"]) == ("Q3 report", True)
 
 
+def test_a_folder_move_during_an_edit_keeps_the_files_name_and_star(client, signed_in, monkeypatch):
+    import threading
+
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    folder = _folder(client, "Reports", None)
+    carry = library_db.carry_fingerprint
+    moves = []
+
+    def move_then_carry(*args):
+        # A folder move landing after the swap exposed the new inode, before the carry.
+        move = threading.Thread(
+            target = _patch, args = (client,), kwargs = {"id": _SANDBOX_ID, "folderId": folder}
+        )
+        move.start()
+        move.join(timeout = 1)
+        moves.append(move)
+        carry(*args)
+
+    monkeypatch.setattr(library_db, "carry_fingerprint", move_then_carry)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    for move in moves:
+        move.join(timeout = 10)
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Q3 report", True, folder)
+
+
 def test_a_legacy_row_keeps_its_name_and_star_through_an_edit_a_cached_listing_saw(
     client, signed_in, monkeypatch
 ):
