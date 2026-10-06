@@ -77,6 +77,17 @@ def test_randomized_svd_adversarial_finite_and_near_optimal(name, rank):
     assert (S.double().cpu() - S0[:rank]).abs().max() <= 1e-4 * S0[0] + 1e-30
 
 
+@pytest.mark.parametrize("true_rank", [0, 1, 8])
+def test_randomized_svd_rank_deficient_wide_sketch(true_rank):
+    # q = 128 takes the eigh path, which cuSOLVER refuses on the NaNs a CholeskyQR breakdown leaves.
+    g = torch.Generator().manual_seed(2)
+    W = torch.randn(512, true_rank, generator = g) @ torch.randn(true_rank, 384, generator = g)
+    U, S, Vh = lora_init.randomized_svd(W.to(DEVICE), 64)
+    assert torch.isfinite(U).all() and torch.isfinite(S).all() and torch.isfinite(Vh).all()
+    err = (W.double() - (U.double().cpu() * S.double().cpu()) @ Vh.double().cpu()).norm()
+    assert err <= 1e-5 * W.norm() + 1e-30
+
+
 @pytest.mark.parametrize("name", ["column_scales", "row_scales", "one_huge_entry"])
 @pytest.mark.parametrize("rank", [4, 16])
 def test_randomized_svd_survives_unscaled_solver_norms(monkeypatch, name, rank):

@@ -108,26 +108,25 @@ def randomized_svd(
     # From q = 128, eigh of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma) beats cuSOLVER's fp32 SVD on speed
     # and accuracy (~60x); below it the SVD has less launch latency.
     Q2, R2 = torch.linalg.qr(Z)
-    if q < 128:
-        try:
+    try:
+        if q < 128:
             Ur, S, Vrh = torch.linalg.svd(R2)
-        except torch.linalg.LinAlgError:
-            if _safe:
-                raise
-            return randomized_svd(
-                W, rank, n_oversamples, n_iter, final_passes, generator, _safe = True
-            )
-        Ur, S, Vr = Ur[:, :rank], S[:rank], Vrh[:rank].mT
-    else:
-        J = R2.new_zeros(2 * q, 2 * q)
-        J[:q, q:] = R2
-        J[q:, :q] = R2.mT
-        L, X = torch.linalg.eigh(J)
-        X = X[:, -rank:].flip(1)
-        S = L[-rank:].flip(0).clamp_min_(0)
-        tiny = torch.finfo(torch.float32).tiny
-        Ur = X[:q].div_(torch.linalg.vector_norm(X[:q], dim = 0).clamp_min_(tiny))
-        Vr = X[q:].div_(torch.linalg.vector_norm(X[q:], dim = 0).clamp_min_(tiny))
+            Ur, S, Vr = Ur[:, :rank], S[:rank], Vrh[:rank].mT
+        else:
+            J = R2.new_zeros(2 * q, 2 * q)
+            J[:q, q:] = R2
+            J[q:, :q] = R2.mT
+            L, X = torch.linalg.eigh(J)
+            X = X[:, -rank:].flip(1)
+            S = L[-rank:].flip(0).clamp_min_(0)
+            tiny = torch.finfo(torch.float32).tiny
+            Ur = X[:q].div_(torch.linalg.vector_norm(X[:q], dim = 0).clamp_min_(tiny))
+            Vr = X[q:].div_(torch.linalg.vector_norm(X[q:], dim = 0).clamp_min_(tiny))
+    except torch.linalg.LinAlgError:
+        # Non-finite R2 from a CholeskyQR breakdown (rank-deficient W).
+        if _safe:
+            raise
+        return randomized_svd(W, rank, n_oversamples, n_iter, final_passes, generator, _safe = True)
     # A^T ~= Z Y^T = Q2 Ur S Vr^T Y^T, so A ~= (Y Vr) S (Q2 Ur)^T.
     V = Q2 @ Ur
     U = Y @ Vr
