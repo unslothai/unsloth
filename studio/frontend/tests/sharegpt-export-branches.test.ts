@@ -83,6 +83,7 @@ function loadExporters(
       onRead();
       return stored;
     },
+    getStoredChatThread: async () => undefined,
     ...liveThreadHead,
     orderByParentChain,
     exportFormatIncludesSiblings,

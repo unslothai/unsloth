@@ -76,7 +76,7 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { toolResultModelText } from "../api/chat-adapter";
+import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
@@ -231,24 +231,53 @@ async function loadConversationMessages(
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
+    includeInstructions?: boolean;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
+    includeInstructions = true,
   } = options;
   // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
   const liveBranch = liveThreadBranch(threadId);
-  const raw = await listStoredChatMessages(threadId);
+  const [raw, instructions] = await Promise.all([
+    listStoredChatMessages(threadId),
+    includeInstructions ? chatInstructionsTurn(threadId) : [],
+  ]);
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return raw;
+  if (!hasParentIds) return [...instructions, ...raw];
   const headId = liveBranchHeadId(liveBranch, raw);
-  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+  return [
+    ...instructions,
+    ...orderByParentChain(raw, { includeSiblings, headId }),
+  ] as typeof raw;
+}
+
+async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  const thread = await getStoredChatThread(threadId);
+  if (!thread) return [];
+  const text = await resolveChatInstructions(
+    threadId,
+    thread.settings?.systemPrompt,
+    thread.settings?.systemVariables,
+    async () => thread,
+  );
+  if (!text) return [];
+  return [
+    {
+      id: `${threadId}-instructions`,
+      threadId,
+      role: "system",
+      content: [{ type: "text", text }],
+      createdAt: thread.createdAt,
+    },
+  ];
 }
 
 // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
@@ -498,7 +527,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 // One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string } = {},
+  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
@@ -526,6 +555,7 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeInstructions: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
@@ -963,7 +993,10 @@ export async function buildFineTuneJsonl(
   let skipped = 0;
   for (const id of ids) {
     const liveBranch = liveThreadBranch(id);
-    const raw = await listStoredChatMessages(id);
+    const [raw, instructions] = await Promise.all([
+      listStoredChatMessages(id),
+      chatInstructionsTurn(id),
+    ]);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
@@ -974,7 +1007,7 @@ export async function buildFineTuneJsonl(
           headId: liveBranchHeadId(liveBranch, raw),
         }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns(ordered);
+    const turns = messagesToFineTuneTurns([...instructions, ...ordered]);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
     if (converted.length === 0) {
       skipped += 1;
