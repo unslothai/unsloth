@@ -444,6 +444,25 @@ def _decode_rows(name: str, tagged: Any, sources: list) -> list:
     return segments
 
 
+# Denoiser classes diffusers has no single-file converter for, mapped to the module describing their original
+# (ComfyUI) layout through ``comfy_layout(path) -> {"key_map", "prepare_model", "keep_dtype"}``. Imported on demand, so
+# every caller of ``load_comfy_quant_transformer`` (single file or a hosted ComfyUI-format twin) gets them.
+_ORIGINAL_LAYOUTS = {
+    "HunyuanVideo15Transformer3DModel": "video_hv15_comfy",
+    "MiniMaxH3Transformer3DModel": "video_minimax_h3_comfy",
+}
+
+
+def original_layout(transformer_cls: Any, path: str) -> Optional[dict]:
+    """The key map / prepare / dtype hooks for a class with no diffusers converter, or None."""
+    module = _ORIGINAL_LAYOUTS.get(getattr(transformer_cls, "__name__", ""))
+    if module is None:
+        return None
+    import importlib
+
+    return importlib.import_module(f"{__package__}.{module}").comfy_layout(path)
+
+
 def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
     """``state`` (file keys) renamed and row-split by ``key_map``; kept layers become ``(codes, scale, group)``.
 
@@ -579,6 +598,12 @@ def load_comfy_quant_transformer(
     problem = comfy_quant_error(scan, os.path.basename(path))
     if problem:
         raise ValueError(problem)
+    if key_map is None:
+        layout = original_layout(transformer_cls, path)
+        if layout:
+            key_map = layout.get("key_map")
+            prepare_model = prepare_model or layout.get("prepare_model")
+            keep_dtype = keep_dtype or layout.get("keep_dtype")
     kwargs = dict(sf_kwargs)
     dtype = kwargs.pop("torch_dtype", None) or kwargs.pop("dtype", None) or torch.bfloat16
     if keep_key is None:

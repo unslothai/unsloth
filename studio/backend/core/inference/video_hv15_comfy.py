@@ -135,3 +135,8 @@ def hv15_comfy_key_map(key: str, shape: Any) -> list:
             return [(f"{_FIXED[name]}.{leaf}", [(half, half), (0, half)])]
         return [(f"{_FIXED[name]}.{leaf}", None)]
     raise ValueError(f"{key}: not a HunyuanVideo-1.5 transformer tensor")
+
+
+def comfy_layout(_path: str) -> dict:
+    """``diffusion_comfy_quant.original_layout`` hooks for HunyuanVideo-1.5."""
+    return {"key_map": hv15_comfy_key_map}

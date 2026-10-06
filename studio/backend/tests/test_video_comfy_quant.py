@@ -485,3 +485,35 @@ def test_hv15_key_map_renames_splits_and_swaps_rows_only():
 def test_hv15_is_the_family_with_a_key_map():
     assert vid._video_comfy_key_map(types.SimpleNamespace(transformer_class = "HunyuanVideo15Transformer3DModel")) is not None
     assert vid._video_comfy_key_map(types.SimpleNamespace(transformer_class = "WanTransformer3DModel")) is None
+
+
+def test_original_layouts_are_found_by_class_name(tmp_path):
+    hv = type("HunyuanVideo15Transformer3DModel", (), {})
+    from core.inference.video_hv15_comfy import hv15_comfy_key_map
+
+    assert cq.original_layout(hv, "x.safetensors")["key_map"] is hv15_comfy_key_map
+    path = _save(tmp_path / "h3.safetensors", {"adaln_t_table": torch.zeros(1025, 8)})
+    h3 = cq.original_layout(type("MiniMaxH3Transformer3DModel", (), {}), path)
+    assert h3["key_map"] is h3c.h3_comfy_key_map and h3["keep_dtype"] is h3c.h3_comfy_keep_dtype
+    assert callable(h3["prepare_model"])
+    assert cq.original_layout(type("WanTransformer3DModel", (), {}), path) is None
+
+
+def test_a_class_without_a_converter_uses_its_registered_layout(h3like_file, monkeypatch):
+    """Any caller (a hosted ComfyUI-format twin included) gets the layout without passing a key map."""
+    path, dense, _ = h3like_file
+    monkeypatch.setattr(
+        cq,
+        "original_layout",
+        lambda cls, p: {"key_map": _h3like_map, "keep_dtype": None, "prepare_model": None}
+        if cls is _H3Like
+        else None,
+    )
+    model = cq.load_comfy_quant_transformer(
+        _H3Like,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.float32, "config": "base/repo"},
+        int8_backend = None,
+    )
+    assert _cos(model.ff.proj.weight, dense.ff.proj.weight) > 0.9999

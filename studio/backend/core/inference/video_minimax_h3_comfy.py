@@ -139,6 +139,21 @@ def h3_comfy_curve_metadata(path: str) -> Optional[dict]:
     }
 
 
+def comfy_layout(path: str) -> dict:
+    """``diffusion_comfy_quant.original_layout`` hooks for MiniMax-H3: key map, float32 tensors and, for a pruned
+    file, the curve adaLN installed on the freshly built model."""
+    from .video_minimax_h3_adaln import apply_h3_adaln_curve
+
+    metadata = h3_comfy_curve_metadata(path)
+    return {
+        "key_map": h3_comfy_key_map,
+        "keep_dtype": h3_comfy_keep_dtype,
+        "prepare_model": (lambda model: apply_h3_adaln_curve(model, metadata))
+        if metadata is not None
+        else None,
+    }
+
+
 def load_h3_comfy_transformer(
     transformer_cls: Any,
     path: str,
