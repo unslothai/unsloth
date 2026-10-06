@@ -193,8 +193,10 @@ if _backend_dir not in sys.path:
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
@@ -271,7 +273,6 @@ _no_sentencepiece()
 del _no_sentencepiece
 
 import hashlib
-import ipaddress
 import mimetypes
 import re as _re
 import shutil
@@ -367,6 +368,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
@@ -783,6 +785,13 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    # Warm the OS sandbox probe so the "off" gate has an answer.
+    try:
+        from core.inference.os_sandbox import start_tool_isolation_warmup
+        start_tool_isolation_warmup()
+    except Exception:  # noqa: BLE001 -- the first tool call probes instead
+        _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
 
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
@@ -1743,6 +1752,7 @@ app.include_router(providers_router, prefix = "/api/providers", tags = ["provide
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
@@ -2956,54 +2966,12 @@ def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
     return _canonical_origin(parsed.scheme, parsed.netloc)
 
 
-def _is_loopback_ip(host: Optional[str]) -> bool:
-    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
-    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except (TypeError, ValueError):
-        return False
-    mapped = getattr(ip, "ipv4_mapped", None)
-    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
-
-
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
-_PROXIED_CLIENT_HEADERS = (
-    "cf-connecting-ip",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
+# Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
+from utils.client_ip import (  # noqa: E402
+    _PROXIED_CLIENT_HEADERS,
+    _is_loopback_ip,
+    is_direct_local_request as _is_local_bootstrap_request,
 )
-
-
-def _host_header_is_loopback(host_header: Optional[str]) -> bool:
-    """Loopback/localhost check on the raw Host header, read directly so a malformed or absent Host
-    cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
-    if not host_header:
-        return False
-    host = host_header.strip()
-    if host.startswith("["):  # [IPv6] or [IPv6]:port
-        end = host.find("]")
-        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
-        host = host[1:end]
-    elif host.count(":") == 1:  # host:port
-        host = host.split(":", 1)[0]
-    host = host.lower().rstrip(".")
-    return host == "localhost" or _is_loopback_ip(host)
-
-
-def _is_local_bootstrap_request(request: Request) -> bool:
-    """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
 
 
 def _is_same_origin_request(request: Request) -> bool:

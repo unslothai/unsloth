@@ -36319,7 +36319,6 @@ class LlamaCppBackend:
             build_rag_autoinject,
             execute_tool,
             has_text_only_provisional_card,
-            is_always_safe_tool,
             is_high_risk_tool_call,
             mcp_image_share,
             never_needs_approval,
@@ -36330,7 +36329,13 @@ class LlamaCppBackend:
         # "auto"; unknown falls back to the stricter "ask". An explicit
         # confirm_tool_calls=True with no mode is already resolved to "ask" at the
         # request layer, so it never arrives here as an ambiguous unset.
-        from state.tool_policy import account_tool_stream, normalize_tool_permissions
+        from state.tool_policy import (
+            account_tool_stream,
+            needs_tool_confirmation,
+            normalize_tool_permissions,
+            requires_os_isolation,
+            tool_call_may_prompt,
+        )
 
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
@@ -36603,6 +36608,8 @@ class LlamaCppBackend:
         tool_controller = ToolLoopController(
             tools = controller_tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            session_id = session_id,
+            thread_id = thread_id,
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
@@ -37437,11 +37444,11 @@ class LlamaCppBackend:
                                         # prompts, so it must stream its early card too; mirror
                                         # that here instead of gating on the raw confirm flag.
                                         _confirm_gated = (
-                                            confirm_tool_calls
-                                            and not bypass_permissions
-                                            and not (
-                                                permission_mode == "auto"
-                                                and is_always_safe_tool(current_name)
+                                            tool_call_may_prompt(
+                                                confirm_tool_calls = bool(confirm_tool_calls),
+                                                bypass_permissions = bypass_permissions,
+                                                permission_mode = permission_mode,
+                                                name = current_name,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -37584,6 +37591,15 @@ class LlamaCppBackend:
                                                     _sniffed
                                                     and not (
                                                         _confirm_gated_iteration
+                                                        and (
+                                                            permission_mode != "off"
+                                                            or tool_call_may_prompt(
+                                                                confirm_tool_calls = True,
+                                                                bypass_permissions = False,
+                                                                permission_mode = "off",
+                                                                name = _sniffed,
+                                                            )
+                                                        )
                                                         and not has_text_only_provisional_card(
                                                             _sniffed
                                                         )
@@ -38570,21 +38586,29 @@ class LlamaCppBackend:
                         )
 
                     # Bypass wins here too, so a direct internal caller with both
-                    # flags never prompts. "auto" pauses only high-risk calls;
-                    # "off" never prompts (sandbox stays on).
-                    needs_confirm = (
-                        bool(confirm_tool_calls)
-                        and not bypass_permissions
-                        and permission_mode != "off"
-                        and not never_needs_approval(decision.tool_name)
+                    # flags never prompts. "auto" pauses only high-risk calls; "off"
+                    # pauses only a high-risk python/terminal call without OS isolation.
+                    needs_confirm = needs_tool_confirmation(
+                        confirm_tool_calls = bool(confirm_tool_calls),
+                        bypass_permissions = bypass_permissions,
+                        permission_mode = permission_mode,
+                        name = decision.tool_name,
+                        arguments = decision.arguments,
+                        is_high_risk = is_high_risk_tool_call,
+                        never_needs = never_needs_approval,
                     )
-                    if needs_confirm and permission_mode == "auto":
-                        needs_confirm = is_high_risk_tool_call(
-                            decision.tool_name, decision.arguments
-                        )
                     # Sending the user's image always asks, whatever the permission mode.
                     image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
                     needs_confirm = needs_confirm or image_share is not None
+                    strict_isolation = requires_os_isolation(
+                        confirm_tool_calls = bool(confirm_tool_calls),
+                        bypass_permissions = bypass_permissions,
+                        permission_mode = permission_mode,
+                        name = decision.tool_name,
+                        arguments = decision.arguments,
+                        prompted = needs_confirm,
+                        is_high_risk = is_high_risk_tool_call,
+                    )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -38938,6 +38962,7 @@ class LlamaCppBackend:
                             _output_callback,
                             _decision = decision,
                             _approved = _host_access_approved,
+                            _strict = strict_isolation,
                         ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
@@ -38949,6 +38974,9 @@ class LlamaCppBackend:
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )
+                            # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                            if _strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                                kwargs["tool_execution_mode"] = "required"
                             # Same branch the forced recall is filtered against, so a
                             # model-initiated search cannot reach a sibling response the
                             # forced recall correctly refused.

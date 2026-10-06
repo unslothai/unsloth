@@ -235,12 +235,6 @@ export function ChatTab() {
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );
-  const showInlineReadAloud = useChatPreferencesStore(
-    (state) => state.showInlineReadAloud,
-  );
-  const setShowInlineReadAloud = useChatPreferencesStore(
-    (state) => state.setShowInlineReadAloud,
-  );
   const showInlineEditResponse = useChatPreferencesStore(
     (state) => state.showInlineEditResponse,
   );
@@ -619,16 +613,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.inlineReadAloud")}
-          description={t("settings.chat.inlineReadAloudDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.inlineReadAloud")}
-            checked={showInlineReadAloud}
-            onCheckedChange={setShowInlineReadAloud}
           />
         </SettingsRow>
         <SettingsRow

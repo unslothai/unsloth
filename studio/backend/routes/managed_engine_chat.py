@@ -227,7 +227,8 @@ async def managed_tool_chat(
                         else 25,
                         timeout = payload.tool_call_timeout or 300,
                         permission_mode = payload.permission_mode or "auto",
-                        confirm_calls = api._permission_mode_confirm(payload),
+                        confirm_calls = api._permission_mode_confirm(payload)
+                        or api._off_mode_sandbox_gate(payload, ui_events),
                         bypass_permissions = bool(payload.bypass_permissions),
                         rag_scope = payload.rag_scope,
                         auto_heal = payload.auto_heal_tool_calls,

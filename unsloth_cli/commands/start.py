@@ -133,6 +133,17 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
+_VIBE_PROVIDER = "unsloth-studio"
+_VIBE_MODEL_ALIAS = "unsloth"
+_VIBE_ENV_KEY = "UNSLOTH_API_KEY"
+# Both installers put binaries in ~/.local/bin; Vibe's exits 1 and uv's leaves the shell PATH stale when it is missing.
+_VIBE_POSIX_INSTALL_HINT = (
+    'curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash'
+)
+_VIBE_WINDOWS_INSTALL_HINT = (
+    "irm https://astral.sh/uv/install.ps1 | iex; "
+    '$env:Path = "$HOME\\.local\\bin;$env:Path"; uv tool install mistral-vibe'
+)
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -413,6 +424,7 @@ _YOLO_COMMAND_FLAGS = {
     "hermes": ["--yolo"],
     # Pi never prompts per tool call; its only approval gate is project trust, so -a (trust project resources) is the closest "do not ask me" equivalent.
     "pi": ["--approve"],
+    "vibe": ["--auto-approve"],
 }
 
 
@@ -544,6 +556,10 @@ def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
 
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _vibe_install_hint() -> str:
+    return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
 def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
@@ -5054,6 +5070,43 @@ def write_hermes_config(
         typer.echo(f"Updated {path}")
 
 
+def _vibe_env(
+    base: str,
+    model: dict,
+    request_body: Optional[dict] = None,
+) -> dict:
+    """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
+    nothing is written to the user's Vibe config."""
+    entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
+    # Vibe sends its own temperature (0.2 by default) with every request.
+    temperature = (request_body or {}).get("temperature")
+    if temperature is not None:
+        entry["temperature"] = float(temperature)
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        # Vibe compacts at 200k tokens by default, past most local windows.
+        entry["auto_compact_threshold"] = max(1, int(int(window) * 0.9))
+    provider = {
+        "name": _VIBE_PROVIDER,
+        "api_base": f"{base}/v1",
+        "api_key_env_var": _VIBE_ENV_KEY,
+        "api_style": "openai",
+        "backend": "generic",
+    }
+    return {
+        "VIBE_PROVIDERS": json.dumps([provider]),
+        "VIBE_MODELS": json.dumps([entry]),
+        "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+        # Only this model: an inherited allowlist or a resumed cloud session would otherwise
+        # select a hosted model. An escaped `re:` pattern matches the id exactly.
+        "VIBE_ALLOWED_MODELS": json.dumps(["re:" + re.escape(model["id"])]),
+        "VIBE_ENABLE_TELEMETRY": "false",
+        "VIBE_ENABLE_UPDATE_CHECKS": "false",
+        "VIBE_ENABLE_AUTO_UPDATE": "false",
+        "VIBE_ENABLE_NOTIFICATIONS": "false",
+    }
+
+
 def write_pi_config(
     base: str,
     key: str,
@@ -6861,3 +6914,77 @@ def dsh(
             ),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+@start_app.command("vibe", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vibe(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point Mistral Vibe at the running Unsloth server and start it."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("vibe", ctx.args)
+    install_hint = _vibe_install_hint()
+    _require_agent_for_launch("vibe", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = frozenset({"temperature"}),
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
+    # Like claude, Vibe keeps its own home (~/.vibe: instructions, hooks, trust, agents,
+    # sessions); the env layer pins the Unsloth provider and model above its config files.
+    request_body = server_options.request_body()
+    if "temperature" not in request_body:
+        # Vibe always sends a temperature, which the server honours over the model's
+        # recommended one, so pass the recommendation along explicitly.
+        status = _inference_status(base, key)
+        recommended = (status.get("inference") or {}).get("temperature")
+        if recommended is not None and any(
+            _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            request_body = {**request_body, "temperature": recommended}
+    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
+    _run(base, entry, env, command, launch = launch, install_hint = install_hint)

@@ -993,6 +993,11 @@ try:
     activate_native_tls()
 except Exception:
     pass
+try:
+    from utils.happy_eyeballs import activate_happy_eyeballs
+    activate_happy_eyeballs()
+except Exception:
+    pass
 
 try:
     from transformers import AutoConfig

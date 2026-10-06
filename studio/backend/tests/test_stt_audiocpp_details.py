@@ -201,7 +201,9 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         return real_resolve(model, companion, hf_token, network = False)
 
     monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
-    download = staticmethod(lambda model, token: downloads.append(model.id) or True)
+    download = staticmethod(
+        lambda model, token, cancel_event = None: downloads.append(model.id) or True
+    )
     monkeypatch.setattr(audio_cpp_backend.AudioCppBackend, "_download_missing", download)
 
     def run(**kwargs):
@@ -234,6 +236,199 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
     run()
     side.transcribe(wav_bytes(), QWEN3, None)
     assert len(fake.starts) == 2 and all("options" not in b for b in fake.bodies[-2:])
+
+
+def test_stop_during_the_aligner_download_cancels_it(fake, side, source, hub, monkeypatch):
+    """Stop while "Downloading the timing aligner" only cancelled the transcription that never
+    started; the download itself read no cancel event and kept streaming."""
+    import threading
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    import inspect
+
+    assert "cancel_event.is_set()" in inspect.getsource(backend_cls._download_missing)
+    real_resolve = audio_cpp_backend._resolve_companion
+
+    def resolve(
+        model,
+        companion,
+        hf_token = None,
+        *,
+        network = True,
+    ):
+        if network:
+            _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
+        return real_resolve(model, companion, hf_token, network = False)
+
+    monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
+    seen = []
+
+    def download(
+        model,
+        token,
+        cancel_event = None,
+    ):
+        seen.append(cancel_event)
+        cancel_event.set()
+        raise AudioCppRequestCancelledError("Request cancelled.")
+
+    monkeypatch.setattr(backend_cls, "_download_missing", staticmethod(download))
+    cancel = threading.Event()
+    with pytest.raises(stt.SttTranscriptionCancelledError):
+        side.transcribe_path(source, QWEN3, None, timestamps = True, cancel_event = cancel)
+    assert seen == [cancel]
+
+
+def test_the_aligner_preflight_carries_the_request_cancel(fake, side, source, hub, monkeypatch):
+    """The route's preflight (``ensure_aligner``) is the call that does the first 1.1 GB download;
+    without the event it ran uncancellable and the forwarding in ``load`` came too late."""
+    import threading
+
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    real_resolve = audio_cpp_backend._resolve_companion
+
+    def resolve(
+        model,
+        companion,
+        hf_token = None,
+        *,
+        network = True,
+    ):
+        if network:
+            _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
+        return real_resolve(model, companion, hf_token, network = False)
+
+    monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
+    seen = []
+    monkeypatch.setattr(
+        backend_cls,
+        "_download_missing",
+        staticmethod(lambda model, token, cancel_event = None: seen.append(cancel_event)),
+    )
+    cancel = threading.Event()
+    side.ensure_aligner(QWEN3, None, cancel)
+    assert seen == [cancel]
+
+
+def test_stop_mid_file_returns_before_the_download_finishes(monkeypatch):
+    """The aligner is one 1.1 GB file, so a check between files never fires while it streams. The
+    download runs on its own thread and the caller returns on Stop while the file is still coming."""
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    entered, release = threading.Event(), threading.Event()
+
+    def streaming(*_args, **_kwargs):
+        entered.set()
+        release.wait(10)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", streaming)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(SimpleNamespace(repo_id = "org/aligner"), None, cancel)
+    assert entered.is_set() and not release.is_set()
+    release.set()
+
+
+def test_a_retry_joins_the_download_that_stop_left_running(monkeypatch):
+    """Stop then retry: the file is still missing, so without sharing the retry would start a second
+    transfer of the same 1.1 GB and each cycle would leave another thread behind."""
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    release, calls = threading.Event(), []
+
+    def streaming(*_args, **_kwargs):
+        calls.append(1)
+        release.wait(10)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", streaming)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    model = SimpleNamespace(repo_id = "org/aligner")
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(model, None, stopped)
+    outcome = []
+    retry = threading.Thread(
+        target = lambda: outcome.append(backend_cls._download_missing(model, None, threading.Event()))
+    )
+    retry.start()
+    threading.Timer(0.3, release.set).start()
+    retry.join(10)
+    assert outcome == [True]
+    assert calls == [1]
+    assert audio_cpp_backend._inflight == {}
+
+
+def test_a_retry_into_a_relocated_cache_starts_its_own_download(monkeypatch):
+    """Joining is keyed by cache root too: after Stop, a retry with the Hub cache moved in Settings
+    would otherwise wait on a transfer writing into the old cache and report the new one filled."""
+    import threading
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+    from utils import hf_cache_settings
+
+    release, cache_dirs = threading.Event(), []
+
+    def streaming(*_args, cache_dir, **_kwargs):
+        cache_dirs.append(cache_dir)
+        release.wait(10)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", streaming)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: Path("/cache/old"))
+    model = SimpleNamespace(repo_id = "org/aligner")
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(model, None, stopped)
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: Path("/cache/new"))
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(model, None, stopped)
+    assert [Path(c).name for c in cache_dirs] == ["old", "new"]
+    release.set()
+
+
+def test_a_download_error_still_reaches_the_caller_with_a_cancel_event(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    def failing(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", failing)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    with pytest.raises(OSError, match = "disk full"):
+        backend_cls._download_missing(
+            SimpleNamespace(repo_id = "org/aligner"), None, threading.Event()
+        )
 
 
 def test_an_aligner_download_failure_says_how_to_go_on(fake, side, source, monkeypatch):

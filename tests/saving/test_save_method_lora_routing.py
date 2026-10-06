@@ -423,6 +423,7 @@ def _adapter_save_environment(monkeypatch):
             cuda = types.SimpleNamespace(empty_cache = lambda: None),
         ),
         fast_save_pickle = lambda *args, **kwargs: None,
+        clean_gpu_cache = lambda: None,
     ), uploads
 
 

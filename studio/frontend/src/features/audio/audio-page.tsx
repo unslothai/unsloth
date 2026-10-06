@@ -33,6 +33,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import {
   type AudioGalleryClip,
+  audioInputAlive,
   fetchAudioBlob,
   uploadAudioInput,
 } from "./api";
@@ -134,37 +135,56 @@ const HUB_TASKS_BY_MODE = {
   transcribe: ["automatic-speech-recognition"],
 } as const;
 
+let reuseSeq = 0;
+const EXPIRED_AT = new Date(0).toISOString();
+
 const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
 function reuseConvertInputs(clip: AudioGalleryClip) {
   const store = useAudioConvertStore.getState();
   const sourceId = clip.source_clip_id ?? clip.source_input_id ?? null;
   const name = clip.source_name ?? "Recording";
-  if (sourceId) {
-    store.setSource({
-      kind: clip.source_clip_id ? "clip" : "input",
-      id: sourceId,
-      name,
-      durationS: null,
-    });
-  }
+  const kept = sourceId
+    ? {
+        kind: clip.source_clip_id ? ("clip" as const) : ("input" as const),
+        id: sourceId,
+        name,
+        durationS: null,
+      }
+    : null;
   // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  if (!clip.source_clip_id && clip.source_saved) {
+  // Empty until the live id lands (the old id let Generate race the upload); expired on failure.
+  reuseSeq += 1;
+  if (!clip.source_clip_id && clip.source_saved && sourceId) {
+    const seq = reuseSeq;
+    const untouched = () => seq === reuseSeq && useAudioConvertStore.getState().source === null;
+    store.setSource(null);
     void fetchAudioBlob(
       `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`,
     )
       .then((blob) => uploadAudioInput(blob, name))
-      .then((record) => {
-        if (useAudioConvertStore.getState().source?.id !== sourceId) return;
-        store.setSource({
-          kind: "input",
-          id: record.id,
-          name,
-          durationS: record.duration_s,
-          expiresAt: record.expires_at,
-        });
-      })
-      .catch(() => undefined);
+      .then(
+        (record) => {
+          if (!untouched()) return;
+          store.setSource({
+            kind: "input",
+            id: record.id,
+            name,
+            durationS: record.duration_s,
+            expiresAt: record.expires_at,
+          });
+        },
+        () => {
+          // The re-upload can fail for a transient reason: the kept id is expired only on a 404.
+          if (!untouched() || !kept) return;
+          void audioInputAlive(kept.id).then((alive) => {
+            if (untouched())
+              store.setSource(alive ? kept : { ...kept, expiresAt: EXPIRED_AT });
+          });
+        },
+      );
+  } else if (kept) {
+    store.setSource(kept);
   }
   const target = clip.voice_id
     ? { kind: "voice" as const, id: clip.voice_id }
@@ -173,7 +193,16 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
       : clip.target_input_id
         ? { kind: "input" as const, id: clip.target_input_id }
         : null;
-  if (target) {
+  if (target?.kind === "input") {
+    // No kept copy to re-upload: check it still exists, else it reads as ready until a 404.
+    const seq = reuseSeq;
+    const named = { ...target, name: clip.reference_name ?? "Target voice", durationS: null };
+    store.setTarget(null);
+    void audioInputAlive(target.id).then((alive) => {
+      if (seq !== reuseSeq || useAudioConvertStore.getState().target !== null) return;
+      store.setTarget(alive ? named : { ...named, expiresAt: EXPIRED_AT });
+    });
+  } else if (target) {
     store.setTarget({
       ...target,
       name: clip.reference_name ?? "Target voice",

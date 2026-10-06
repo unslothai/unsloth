@@ -238,7 +238,7 @@ if not _windows_studio_mutation_entry:
     app.add_typer(
         start_app,
         name = "start",
-        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh) "
+        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
         "against Unsloth.",
     )
     # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
@@ -267,7 +267,7 @@ if not _windows_studio_mutation_entry:
         "ignore_unknown_options": True,
         "help_option_names": [],
     },
-    help = "Install prebuilt xformers / causal_conv1d / mamba_ssm wheels matching the installed torch.",
+    help = "Install prebuilt xformers / flash-attn / causal_conv1d / mamba_ssm wheels matching the installed torch (all by default).",
 )
 def install_kernels(ctx: typer.Context):
     # Listed for `unsloth --help`; the console script dispatches before typer is imported.

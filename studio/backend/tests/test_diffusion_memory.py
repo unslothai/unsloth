@@ -1168,6 +1168,28 @@ def test_reclaimable_snapshot_credits_cached_blocks_without_flushing(monkeypatch
     assert snap.free_mib == 2_000 + 4 * 1024
 
 
+def test_reclaimable_snapshot_does_not_credit_a_live_cuda_graph_pool(monkeypatch):
+    # A captured graph's pool is reserved but not allocated, and nothing else can allocate into it while the
+    # graph lives (under block offload it also holds the prefetch window): the guard must see it as used.
+    from core.inference import diffusion_cuda_graph as cg
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302
+        ),
+    )
+    _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 3 * 1024**3)
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000 + 1024
+    monkeypatch.setattr(
+        cg, "live_pool_free_bytes", lambda: 5 * 1024**3
+    )  # the pool is all of the cached bytes
+    assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000
+
+
 def test_reclaimable_snapshot_never_claims_more_than_the_card(monkeypatch):
     # The credit is arithmetic, so a bogus allocator reading must not invent memory the card
     # does not have and talk the guard out of a real refusal.

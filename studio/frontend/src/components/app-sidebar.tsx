@@ -148,7 +148,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
   type NavigateOptions,
@@ -4590,7 +4591,7 @@ export function AppSidebar() {
               title="Copy this chat into a new one, from its last message"
               onSelect={() => void forkChatFromRow(item)}
             >
-              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
               <span>Fork</span>
             </P.Item>
             {/* Projects and sections in one place: both are where the chat is kept. */}

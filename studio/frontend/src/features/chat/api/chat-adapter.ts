@@ -2500,6 +2500,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxKvQuantRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
+  "mlxInt8Prefill",
+  "loadedMlxInt8PrefillRequested",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -3546,6 +3548,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
+      mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       reasoning_budget:
@@ -5353,6 +5356,10 @@ export function createOpenAIStreamAdapter(
         activeNativePathToken: runtime.activeNativePathToken,
         checkpoint: params.checkpoint,
       });
+      // The backend's own report, for the same reason. An external id leaves it describing
+      // the local model still resident.
+      const isMlxForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6446,7 +6453,7 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
-                    ...(permissionMode === "auto"
+                    ...(permissionMode === "auto" || permissionMode === "off"
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
                     bypass_permissions: bypassPermissions,
@@ -6585,6 +6592,7 @@ export function createOpenAIStreamAdapter(
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
+              isMlx: isMlxForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
             }),
             temperature: params.temperature,
@@ -6624,9 +6632,10 @@ export function createOpenAIStreamAdapter(
               : {}),
             // Sent for every local chat, since `unsloth run --enable-tools` can open the tool loop with
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
-            // defeat the safe-only exception); "ask" sends true, off/full send false.
+            // defeat the safe-only exception); "off" omits it too, since an explicit false opts out of
+            // its risky-call prompt without an OS sandbox; "ask" sends true, full sends false.
             permission_mode: permissionMode,
-            ...(permissionMode === "auto"
+            ...(permissionMode === "auto" || permissionMode === "off"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,

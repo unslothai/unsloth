@@ -31,6 +31,7 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import threading
@@ -1952,6 +1953,15 @@ def _set_hunyuan_null_mask(module: Any, enabled: bool) -> None:
             setattr(attn, _NULL_ATTN_FLAG, enabled)
 
 
+def _hunyuan_null_mask_state(module: Any) -> bool:
+    """The null-mask flag this call's pre-hook set (read by the graph layer as part of its key)."""
+    for blk in getattr(module, "transformer_blocks", []):
+        attn = getattr(blk, "attn", None)
+        if attn is not None:
+            return bool(getattr(attn, _NULL_ATTN_FLAG, False))
+    return False
+
+
 def _null_mask_processor_cls():
     """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` runs
     attn_mask=None when the DiT is flagged (padding already removed by the pre-hook); otherwise it
@@ -2074,6 +2084,61 @@ def _trim_stream(states, mask):
     return states, mask, all_valid
 
 
+_TRIM_MEMO_ATTR = "_unsloth_trim_memo"
+
+
+def _trim_plan(module: Any, kwargs: dict) -> dict:
+    """The trim decisions for this call's image / mask tensors: the host reads (``_trim_stream``'s) made once per
+    set of inputs. A pipeline hands the SAME prompt tensors to every step, so a step after the first reuses the plan
+    and makes no host wait (a CUDA-graph replay of the step then runs without one). Keyed on the tensors themselves,
+    held here, and their version counters, so new or edited inputs plan afresh."""
+    import torch
+
+    names = ("image_embeds", "encoder_attention_mask", "encoder_attention_mask_2")
+    srcs = tuple(kwargs.get(n) for n in names)
+    # An inference tensor (renders run under torch.inference_mode) has no version counter and reading one raises;
+    # it is keyed on identity alone. It cannot be written outside inference mode, and the pipeline hands every step
+    # the encoder's own outputs, which nothing edits in place.
+    versions = tuple(
+        ("inference" if t.is_inference() else t._version) if torch.is_tensor(t) else None
+        for t in srcs
+    )
+    memo = module.__dict__.setdefault(_TRIM_MEMO_ATTR, [])
+    for held, held_versions, plan in memo:
+        if held_versions == versions and all(a is b for a, b in zip(held, srcs)):
+            return plan
+    image = srcs[0]
+    plan = {
+        "t2v": bool(image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()))
+    }
+    for name, mask in zip(names[1:], srcs[1:]):
+        if mask is None or not torch.is_tensor(mask) or mask.dim() != 2:
+            plan[name] = (None, True)
+            continue
+        mb = mask.bool()
+        keep = mb.any(dim = 0)  # column valid for at least one batch element
+        index = None
+        if not bool(keep.all()):
+            index = keep.nonzero().squeeze(1)
+            mb = mb.index_select(1, index)
+        # vacuously True for a 0-length stream, fine for an unused secondary stream (byt5 in t2v)
+        plan[name] = (index, bool(mb.all().item()))
+    memo.insert(0, (srcs, versions, plan))
+    del memo[4:]  # the CFG branches of one render
+    return plan
+
+
+def _apply_trim(states: Any, mask: Any, decided: tuple) -> tuple:
+    """``_trim_stream`` with its decisions already made: the same columns, gathered on the device."""
+    if states is None or mask is None or mask.dim() != 2:
+        return states, mask, True
+    index, all_valid = decided
+    if index is not None:
+        states = states.index_select(1, index)
+        mask = mask.index_select(1, index)
+    return states, mask, all_valid
+
+
 def _hunyuan_trim_pre_hook(module, args, kwargs):
     """Eager forward pre-hook: strip padded text tokens so the joint attention runs fused.
 
@@ -2103,8 +2168,9 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
     try:
         null_ok = True
 
+        plan = _trim_plan(module, kwargs)
         image = kwargs.get("image_embeds")
-        if image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()):
+        if plan["t2v"]:
             # All-zero image == "no image" (t2v). Emptying the token axis removes the 729 padded image tokens; is_t2v
             # stays True in forward (all() of empty is vacuously True).
             kwargs["image_embeds"] = image[:, :0]
@@ -2119,7 +2185,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
             if skey not in kwargs:
                 null_ok = null_ok and not required
                 continue
-            states, mask, all_valid = _trim_stream(kwargs.get(skey), kwargs.get(mkey))
+            states, mask, all_valid = _apply_trim(kwargs.get(skey), kwargs.get(mkey), plan[mkey])
             kwargs[skey] = states
             kwargs[mkey] = mask
             null_ok = null_ok and all_valid
@@ -2210,6 +2276,8 @@ def install_hunyuan_attention_trim(
             continue
         # installation and every idle period start in the conservative state
         _set_hunyuan_null_mask(dit, False)
+        # The flag picks the attention branch inside the forward, so a CUDA graph keys on it (diffusion_cuda_graph).
+        dit._unsloth_graph_key_extra = functools.partial(_hunyuan_null_mask_state, dit)
         if getattr(dit, "_unsloth_trim_hook", None) is None:
             pre_handle = None
             try:

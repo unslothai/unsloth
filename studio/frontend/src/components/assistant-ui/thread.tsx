@@ -320,6 +320,14 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import {
+  BranchNextIcon,
+  BranchPrevIcon,
+  ContinueArrowIcon,
+  EditResponseIcon,
+  ReadAloudIcon,
+} from "@/lib/action-bar-icons";
+import { ForkIcon } from "@/lib/fork-icon";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -350,24 +358,20 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  PlayIcon,
   Scroll01Icon,
   Telescope02Icon,
   VolumeMute02Icon,
+  WorkflowCircle05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Volume02Icon } from "@/lib/volume-icons";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
-  GitBranchIcon,
   HeadphonesIcon,
   Loader2Icon,
   MoreHorizontalIcon,
@@ -1854,7 +1858,7 @@ const ForkContinuationRule: FC = () => {
   if (anchor === undefined || anchor !== messageId) return null;
   const label = (
     <>
-      <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
+      <HugeiconsIcon icon={WorkflowCircle05Icon} strokeWidth={1.75} className="size-3.5" />
       Continued from chat
     </>
   );
@@ -1896,7 +1900,8 @@ const ForkContinuationRule: FC = () => {
           }}
           className={cn(
             labelClass,
-            "cursor-pointer rounded-sm underline decoration-transparent underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+            // An answer link's colour, underlined on hover only.
+            "cursor-pointer rounded-sm text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
           {label}
@@ -8130,7 +8135,7 @@ const ForkCountBadge: FC = () => {
       className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
       title={`${count} fork${count === 1 ? "" : "s"} from this message`}
     >
-      <GitBranchIcon strokeWidth={1.75} className="size-3" />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-3" />
       {count}
     </span>
   );
@@ -8235,11 +8240,11 @@ const ForkMessageButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip="Fork from here"
+      tooltip="Fork in new chat"
       disabled={forkDisabled}
       onClick={forkMessage}
     >
-      <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };
@@ -8304,7 +8309,8 @@ const useThreadResearchActive = (): boolean => {
   });
 };
 
-const DeleteMessageButton: FC = () => {
+/** Deletes this message (a prompt with its replies); `hidden` for research messages. */
+function useDeleteMessage() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -8354,23 +8360,69 @@ const DeleteMessageButton: FC = () => {
     }
   };
 
-  if (researchRunId || ownsResearchMessage) {
+  return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
+}
+
+// The More menu's Delete, last and in red.
+const DeleteMessageMenuItem: FC = () => {
+  const { handleDelete, isRunning, hidden } = useDeleteMessage();
+  if (hidden) {
     return null;
   }
-
   return (
-    <TooltipIconButton
-      tooltip="Delete message"
+    <ActionBarMorePrimitive.Item
       disabled={isRunning}
-      onClick={handleDelete}
-      className="text-chat-icon-fg hover:text-destructive"
+      onSelect={() => void handleDelete()}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon
-        icon={Delete02Icon}
-        strokeWidth={1.75}
-        className="size-icon"
-      />
-    </TooltipIconButton>
+      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      Delete
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+const MORE_MENU_CONTENT_CLASS =
+  "aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]";
+
+const ForkMessageMenuItem: FC = () => {
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={forkDisabled}
+      onSelect={() => void forkMessage()}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
+      Fork in new chat
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+// A prompt's More menu: Fork, then Delete.
+const UserMoreMenu: FC = () => {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const collisionPadding = useWindowChromeCollisionPadding(undefined);
+  return (
+    <ActionBarMorePrimitive.Root modal={false}>
+      <ActionBarMorePrimitive.Trigger asChild={true}>
+        <TooltipIconButton ref={triggerRef} tooltip="More" className="data-[state=open]:bg-accent">
+          <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+        </TooltipIconButton>
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        side="bottom"
+        align="end"
+        collisionPadding={collisionPadding}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        className={MORE_MENU_CONTENT_CLASS}
+      >
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <MenuDismissGuard triggerRef={triggerRef} />
+          <ForkMessageMenuItem />
+          <DeleteMessageMenuItem />
+        </div>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
   );
 };
 
@@ -8426,7 +8478,7 @@ const EditAssistantMessageButton: FC = () => {
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
-        icon={Edit03Icon}
+        icon={EditResponseIcon}
         strokeWidth={1.75}
         className="size-icon"
       />
@@ -8434,16 +8486,17 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
-/** Continue the newest finished reply; incomplete replies use the Resume bar. */
-const ContinueResponseButton: FC = () => {
+/** The More menu's Continue response, for the newest finished reply; incomplete replies use the
+ *  Resume bar. */
+const ContinueResponseMenuItem: FC = () => {
   const isLast = useAuiState(({ message }) => message.isLast);
   if (!isLast) {
     return null;
   }
-  return <ContinueResponseButtonForLastMessage />;
+  return <ContinueResponseMenuItemForLastMessage />;
 };
 
-const ContinueResponseButtonForLastMessage: FC = () => {
+const ContinueResponseMenuItemForLastMessage: FC = () => {
   const { messageId, reason, completed, canResume, startContinuation } =
     useContinuation();
   const editing = useChatRuntimeStore((s) => s.editingMessageId === messageId);
@@ -8455,14 +8508,15 @@ const ContinueResponseButtonForLastMessage: FC = () => {
     return null;
   }
   return (
-    <TooltipIconButton
-      tooltip="Continue response"
-      onClick={() => {
+    <ActionBarMorePrimitive.Item
+      onSelect={() => {
         startContinuation();
       }}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-icon" />
-    </TooltipIconButton>
+      <HugeiconsIcon icon={ContinueArrowIcon} strokeWidth={1.75} className="size-icon" />
+      Continue response
+    </ActionBarMorePrimitive.Item>
   );
 };
 
@@ -8482,7 +8536,7 @@ const EditAssistantMessageMenuItem: FC = () => {
       onSelect={() => setEditingId(messageId)}
       className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={EditResponseIcon} strokeWidth={1.75} className="size-icon" />
       Edit response
     </ActionBarMorePrimitive.Item>
   );
@@ -8510,14 +8564,12 @@ const AssistantActionBar: FC = () => {
   const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
   // Not built on DropdownMenuContent, so clear the titlebar and cap the height here.
   const moreMenuCollisionPadding = useWindowChromeCollisionPadding(undefined);
-  const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
-  // Off by default: Read aloud and Edit response live in the More menu.
-  const inlineReadAloud = useChatPreferencesStore((s) => s.showInlineReadAloud);
+  // Off by default: Edit response lives in the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
@@ -8546,21 +8598,13 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
-        <ContinueResponseButton />
-        {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
-            <TooltipIconButton tooltip="Refresh">
-              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
-        )}
         <ForkCountBadge />
-        <DeleteMessageButton />
-        {inlineReadAloud && ttsEnabled && (
+        <ForkMessageButton />
+        {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
-                <HugeiconsIcon icon={Volume02Icon} strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={ReadAloudIcon} strokeWidth={1.75} className="size-icon" />
               </TooltipIconButton>
             </ActionBarPrimitive.Speak>
           </MessagePrimitive.If>
@@ -8578,6 +8622,13 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
             document. On a long thread that recalc is the bulk of the open+close cost. */}
@@ -8596,37 +8647,16 @@ const AssistantActionBar: FC = () => {
             align="start"
             collisionPadding={moreMenuCollisionPadding}
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className={MORE_MENU_CONTENT_CLASS}
           >
             {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
                 The surface padding insets it clear of the curve. */}
             <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-              {/* Prevent an outside dismissal from triggering Delete. */}
+              {/* Keep the click that dismisses the menu off the bar's buttons. */}
               <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
               <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
-              {!inlineReadAloud && ttsEnabled && (
-                <MessagePrimitive.If speaking={false}>
-                  <ActionBarPrimitive.Speak asChild={true}>
-                    <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                      <HugeiconsIcon
-                        icon={Volume02Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                      Read aloud
-                    </ActionBarMorePrimitive.Item>
-                  </ActionBarPrimitive.Speak>
-                </MessagePrimitive.If>
-              )}
+              <ContinueResponseMenuItem />
               {!inlineEdit && <EditAssistantMessageMenuItem />}
-              <ActionBarMorePrimitive.Item
-                disabled={forkDisabled}
-                onSelect={() => void forkMessage()}
-                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-              >
-                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
-                Fork in new chat
-              </ActionBarMorePrimitive.Item>
               <ActionBarPrimitive.ExportMarkdown
                 asChild={true}
                 onExport={exportMessageMarkdown}
@@ -8693,6 +8723,7 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
+              <DeleteMessageMenuItem />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -8725,6 +8756,10 @@ const UserMessageAudio: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  // Attachments alone (annotations, images) get no empty bubble under them.
+  const hasContent = useAuiState(({ message }) =>
+    message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
+  );
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
@@ -8736,12 +8771,14 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
-          <MessagePrimitive.Parts />
-        </div>
+        {hasContent ? (
+          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+            <MessagePrimitive.Parts />
+          </div>
+        ) : null}
         <UserMessageFooter>
           <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-0.5 shrink-0" />
+          <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
         </UserMessageFooter>
       </div>
       {/* The other half of the pair: last is a user message while a reply is
@@ -8750,7 +8787,7 @@ const UserMessage: FC = () => {
         <ForkChatShortcut />
       </MessagePrimitive.If>
       {/* Reverse traversal reaches a trailing stop before the root. Focusing it
-          mounts the autohidden controls, so the next Shift+Tab enters Delete
+          mounts the autohidden controls, so the next Shift+Tab enters More
           instead of skipping the action bar and leaving the message. */}
       <span
         className="aui-user-reveal-sentinel"
@@ -8779,8 +8816,7 @@ const UserActionBar: FC = () => {
         </ActionBarPrimitive.Edit>
       )}
       <ForkCountBadge />
-      <ForkMessageButton />
-      <DeleteMessageButton />
+      <UserMoreMenu />
     </UserMessageActionBar>
   );
 };
@@ -8873,10 +8909,10 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Previous"
           className="aui-branch-chevron-btn"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
+          <HugeiconsIcon icon={BranchPrevIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
+      <span className="aui-branch-picker-state text-ui-13 leading-none tabular-nums">
         <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
@@ -8885,7 +8921,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Next"
           className="aui-branch-chevron-btn"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
+          <HugeiconsIcon icon={BranchNextIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>

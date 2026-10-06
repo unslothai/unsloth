@@ -73,7 +73,6 @@ def test_the_shell_guards():
         'post({ type: "upload" }); return;',
         'event.effectiveDirective !== "frame-src"',
         "if (raw.length > 1) followHash(raw);",
-        'const value = node.type === "password" ? "" : node.value;',
         "if (result === false) cancelled = true;",
     ):
         assert guard in shell, guard
@@ -86,6 +85,21 @@ def test_the_shell_guards():
     # Links and forms go through the proxy only when the page's own handlers leave them alone.
     assert shell.count("unlessCancelled(event, ") == 2
     assert "requestSubmit = " not in shell
+
+
+def test_annotate_code_is_sent_only_when_annotating():
+    shell, code = browser_mod._FRAME_HTML, browser_mod._ANNOTATE_JS
+    # Not in the shell (so not in every page), installed once and only from the shell's own message.
+    assert "const BLOCK =" in code and "const BLOCK =" not in shell
+    assert 'const value = node.type === "password" ? "" : node.value;' in code
+    assert code.rstrip().endswith("return { start, stop, forget, number };")
+    assert 'if (data.command === "annotateInstall") install(data.code);' in shell
+    assert 'if (annotation || typeof code !== "string"' in shell
+    assert shell.index("const compile = Function;") < shell.index("const install = ")
+    response = asyncio.run(browser_mod.browser_annotate_script())
+    assert response.body.decode() == code
+    assert response.media_type.startswith("text/javascript")
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_prepare_page_strips_what_would_escape_the_sandbox():

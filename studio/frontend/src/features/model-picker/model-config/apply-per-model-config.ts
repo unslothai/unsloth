@@ -67,6 +67,7 @@ export function applyPerModelConfigToRuntime(
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
+    mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -135,6 +136,7 @@ export function currentRuntimePerModelConfig(
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
+    mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -185,6 +187,7 @@ export function perModelConfigsEqual(
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
+    Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&

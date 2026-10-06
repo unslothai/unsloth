@@ -135,6 +135,7 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    arm_graphs_after_placement,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -4903,8 +4904,13 @@ class VideoBackend:
                 base = base,
             )
             te_files = self._te_prequant_hub_files(te_sources, api)
+            from .diffusion_te_prequant import te_prequant_unmirrored
+
             for component, files in te_files.items():
-                total += add(te_sources[component].location, files)
+                location = te_sources[component].location
+                files = te_prequant_unmirrored(location, files)
+                if files:
+                    total += add(location, files)
             # The denoiser's replacement artifact, for the same reason: the base entry below drops the dense DiT shards
             # only when this resolves, so it is staged in their place.
             dq_repo, dq_files = self._denoiser_prequant_hub_files(
@@ -5227,7 +5233,13 @@ class VideoBackend:
                 readable = te_candidate_is_readable,
             )
             got = False
+            from .diffusion_te_prequant import te_prequant_mirror_path
+
             for name in names:
+                # The loader reads a mirrored file in place (_resolve_checkpoint_path), as the plan assumes.
+                if te_prequant_mirror_path(source.location, name) is not None:
+                    got = True
+                    break
                 try:
                     hf_hub_download_with_xet_fallback(
                         source.location,
@@ -6630,6 +6642,14 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # LTX-2's stock tiles (16 latents, a 2-latent blend) leave seam lines: tiles sized to free VRAM, wide overlaps.
+            if vae_tiling:
+                try:
+                    from .video_ltx2_vae_tiles import install as install_ltx2_vae_tiles
+                    if install_ltx2_vae_tiles(getattr(pipe, "vae", None), logger):
+                        speed_optims += ("vae_wide_tiles",)
+                except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
+                    logger.warning("video.vae_wide_tiles: not installed: %s", exc)
             # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
             if (
                 offload_policy == "none"
@@ -6641,6 +6661,14 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
+            graph_applied = arm_graphs_after_placement(
+                pipe, {"cuda_graph": "cuda_graph" in speed_optims}, logger
+            )
+            if graph_applied.get("cuda_graph") and "cuda_graph" not in speed_optims:
+                speed_optims += ("cuda_graph",)
+            elif not graph_applied.get("cuda_graph"):
+                speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
             # Last, so the bf16 entry wraps whatever decode path the steps above installed. Not on SPEED_OFF.
             if getattr(fam, "vae_force_fp32", False) and effective_speed != SPEED_OFF:
                 vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)
@@ -6670,6 +6698,14 @@ class VideoBackend:
                         cache_engaged or "off",
                         cache_reason,
                         RESOLVED_UNSUPPORTED if static_decline else None,
+                    ),
+                    "cuda_graph": (
+                        None,
+                        "on" if "cuda_graph" in speed_optims else "off",
+                        str(
+                            getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                            or "speed tier does not capture"
+                        ),
                     ),
                     "transformer_quant": (
                         transformer_quant_requested,
@@ -7639,6 +7675,23 @@ class VideoBackend:
                 )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
+        # H3 declines graphs (cuda_graph_decline), so this only acts when a family override forces them: the graph was
+        # deferred to the placement above, so arm it against the hooks that landed, or record why it stays eager,
+        # rather than leaving the pending note in the status.
+        graph_applied = arm_graphs_after_placement(
+            speed_view, {"cuda_graph": "cuda_graph" in speed_optims}, logger
+        )
+        if graph_applied.get("cuda_graph") and "cuda_graph" not in speed_optims:
+            speed_optims += ("cuda_graph",)
+        elif not graph_applied.get("cuda_graph"):
+            speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
+        if speed_view is not pipe:
+            for attr in ("_unsloth_cuda_graph_reason", "_unsloth_cuda_graphs"):
+                if hasattr(speed_view, attr):
+                    try:
+                        setattr(pipe, attr, getattr(speed_view, attr))
+                    except Exception:  # noqa: BLE001
+                        pass
         # nothing here compiles, so it follows the REQUESTED tier, not the denoiser's eager downgrade above
         try:
             from .video_minimax_h3_vae import apply_h3_vae_speedups
@@ -8596,6 +8649,24 @@ class VideoBackend:
                         if ordinal is not None
                         else torch.device(state.device)
                     )
+                    from . import video_stream_residency
+
+                    if video_stream_residency.applies(
+                        fam.name,
+                        is_moe = bool(getattr(fam, "is_moe", False)),
+                        offload_policy = state.offload_policy,
+                        device = state.device,
+                    ):
+                        # Resident groups are allocated, so the reserved term below still counts them as available.
+                        video_stream_residency.fit_for_request(
+                            state.pipe,
+                            device = device_obj,
+                            floor_mib = state.vram_floor_mib,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            logger = logger,
+                        )
                     free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
                     reserved_bytes = (
                         torch.cuda.memory_reserved(device_obj)
@@ -9000,6 +9071,11 @@ class VideoBackend:
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if len(video_frames) and not fam.modular_workflow:
+                    from . import video_stream_residency
+
+                    # after decode and export: this peak sizes the next request of its size
+                    video_stream_residency.record_request_peak(pipe, logger = logger)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
                 # Deregister under cancel_generate's own lock before the trim: it blocks for a few

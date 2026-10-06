@@ -67,6 +67,38 @@ def _raise_if_cancelled(cancel_event) -> None:
         raise AudioGenerationCancelledError("Audio generation cancelled")
 
 
+_inflight_lock = threading.Lock()
+_inflight: dict[tuple[str, str, str], tuple[threading.Event, list]] = {}
+
+
+def _download_or_cancel(key, download, cancel_event) -> None:
+    """hf_hub_download has no cancel hook: it runs on its own thread and the caller stops waiting on
+    cancel. The thread still finishes into the Hub cache; a retry meanwhile joins it."""
+    with _inflight_lock:
+        flight = _inflight.get(key)
+        if flight is None:
+            flight = _inflight[key] = (threading.Event(), [])
+            done, failure = flight
+
+            def run():
+                try:
+                    download()
+                except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                    failure.append(exc)
+                finally:
+                    with _inflight_lock:
+                        _inflight.pop(key, None)
+                    done.set()
+
+            threading.Thread(target = run, name = "audio-cpp-download", daemon = True).start()
+    done, failure = flight
+    while not done.wait(0.2):
+        if cancel_event.is_set():
+            raise AudioCppRequestCancelledError("Request cancelled.")
+    if failure:
+        raise failure[0]
+
+
 def _wav_seconds(path: str) -> float:
     with wave.open(str(path)) as w:
         rate = w.getframerate()
@@ -352,7 +384,11 @@ class AudioCppBackend:
                 forget(companion.id)
 
     @staticmethod
-    def _download_missing(model: AudioCppModel, hf_token: Optional[str]) -> bool:
+    def _download_missing(
+        model: AudioCppModel,
+        hf_token: Optional[str],
+        cancel_event = None,
+    ) -> bool:
         missing = audio_cpp_files.missing_files(model)
         if not missing:
             return False
@@ -362,13 +398,23 @@ class AudioCppBackend:
 
         cache_dir = str(active_hf_hub_cache())
         for path, _size in missing:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AudioCppRequestCancelledError("Request cancelled.")
             logger.info("audio.cpp: downloading %s from %s", path, model.repo_id)
-            hf_hub_download(
-                model.repo_id,
-                path,
-                token = hf_token or None,
-                cache_dir = cache_dir,
-            )
+
+            def fetch(path = path):
+                hf_hub_download(
+                    model.repo_id,
+                    path,
+                    token = hf_token or None,
+                    cache_dir = cache_dir,
+                )
+
+            if cancel_event is None:
+                fetch()
+            else:
+                # Cache root in the key: a retry after the cache moved must not join the old transfer.
+                _download_or_cancel((cache_dir, model.repo_id, path), fetch, cancel_event)
         return True
 
     def _start_server(
