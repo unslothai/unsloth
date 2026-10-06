@@ -1,25 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam guard: every VAE Studio can tile decodes in tiles wide enough, and overlapping enough, not to leave lines.
+"""Seam guard: every VAE Studio tiles decodes in tiles wide and overlapping enough not to leave lines.
 
-A VAE decoder sees several latents past a tile edge, so a tile decodes its border differently from its neighbour.
-When the tiles are small, the overlap short, or the last tile a sliver with almost no context, the blend cannot
-hide that and the image shows thin lines one tile long (Qwen-Image-2.1 with the Wan pixel geometry on a 16x VAE,
-LTX-2.3 with 2-latent overlaps).
-
-For every family in the image and video registries this builds the family's VAE from its real ``vae/config.json``
-on the meta device (no weights), applies what a Studio load applies (``enable_tiling()`` plus every tile override
-module Studio ships) and runs the real ``decode`` over every canvas side Studio offers, with the decoder replaced
-by a shape-only stand-in. The tile grid is read from the latent slices the decode actually takes, so it covers
-diffusers' defaults, a diffusers upgrade that changes them and Studio's own overrides alike. Off CUDA the overrides
-size tiles for zero free VRAM, which is the tightest low-VRAM tier.
-
-Thresholds, in latents, on every tiled axis: tile >= 32, neighbour overlap >= 16 (ComfyUI's decode overlap), and
-no tile (the edge tile included) shorter than the overlap threshold. Where temporal tiling is on, neighbouring
-temporal tiles share at least one latent frame. ``SMALLER_GEOMETRY_OK`` lists the VAEs measured seam-free at a
-smaller geometry, each with its own floor and the evidence; ``KNOWN_SEAMS`` lists measured, still-open seam bugs
-(strict xfail: the fix landing turns it into a failure until the entry goes).
+Each family's VAE is built on the meta device from its real ``vae/config.json``, set up as a Studio load sets it
+up (``enable_tiling()`` plus every tile override module), and its real ``decode`` runs over every canvas side
+Studio offers with a shape-only decoder; the tile grid is read from the latent slices the decode takes. Off CUDA
+the overrides size tiles for zero free VRAM, the tightest tier.
 """
 
 from __future__ import annotations
@@ -45,11 +32,10 @@ BACKEND = Path(__file__).resolve().parents[1]
 INFERENCE = BACKEND / "core" / "inference"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "vae_tile_configs.json"
 
-# The floor, when the tree has no image tile module to read it from (diffusion_vae_tiling: TILE_LATENTS,
-# OVERLAP_LATENTS; its rule also wants every tile, the edge one included, at least TILE_LATENTS long).
+# Fallback floor when diffusion_vae_tiling is absent.
 MIN_TILE = 32
 MIN_OVERLAP = 16
-# Studio's smallest canvas side; the probe holds the other axis here so that only the swept axis tiles.
+# The probe holds the other axis at Studio's smallest side so only the swept axis tiles.
 MIN_SIDE = 256
 LTX23 = "ltx-2.3"
 
@@ -70,8 +56,7 @@ def _module(name: str):
 
 
 def default_floor() -> Floor:
-    """The image tile module's own rule (tile >= TILE_LATENTS, overlap >= OVERLAP_LATENTS, no tile shorter than
-    TILE_LATENTS), so the guard and the fix cannot drift apart; 32 / 16 / 32 when the tree has no such module."""
+    """Read from diffusion_vae_tiling so the guard and the fix cannot drift apart."""
     mod = _module("diffusion_vae_tiling")
     tile = int(getattr(mod, "TILE_LATENTS", MIN_TILE))
     overlap = int(getattr(mod, "OVERLAP_LATENTS", MIN_OVERLAP))
@@ -80,7 +65,6 @@ def default_floor() -> Floor:
 
 
 def ltx_floor() -> Floor:
-    """LTX-2's floor from its tile module (MIN_TILE_LATENTS, OVERLAP_LATENTS), 16 / 8 when the tree has none."""
     mod = _module("video_ltx2_vae_tiles")
     tile = int(getattr(mod, "MIN_TILE_LATENTS", 16))
     overlap = int(getattr(mod, "OVERLAP_LATENTS", 8))
@@ -90,35 +74,23 @@ def ltx_floor() -> Floor:
 
 
 def keep_stock() -> dict[str, str]:
-    """VAE classes the image tile module deliberately leaves on diffusers' tiles, with its measured reason."""
     return dict(getattr(_module("diffusion_vae_tiling"), "KEEP_STOCK", {}) or {})
 
 
-# "VAE class@ratio" -> the smaller geometry it is proven seam-free at. Only with a measurement: a tiled decode of a real
-# latent against the untiled decode, at that geometry, without lines.
+# "VAE class@ratio" -> a smaller geometry measured seam-free (real latent, tiled vs untiled decode). Measurement required.
 SMALLER_GEOMETRY_OK: dict[str, Floor] = {
-    # 32x VAE: 16 latents are 512 px, the stock tile and what the tightest tier can afford. PR #12698's tiles (16
-    # latents, >= 8-latent overlaps, 3-latent margin, 2-latent ramp), seam bench at the tightest tier, every preset:
-    # worst 64 px window 1.88 levels (LTX-2) / 1.09 (LTX-2.3), PSNR >= 53 dB; the stock 2-latent overlaps: 2.3-7.7.
-    # (read from video_ltx2_vae_tiles when present: ltx_floor)
+    # #12698 seam bench: worst 64 px window <= 1.88 levels, PSNR >= 53 dB (stock 2-latent overlaps: 2.3-7.7).
     "AutoencoderKLLTX2Video@32x": Floor(
         16, 8, 8, "PR #12698's 16-latent tiles, 8-latent overlaps: seam bench clean"
     ),
-    # Wan2.1 VAE (Wan2.2-T2V-A14B), stock 32-latent tiles with 8-latent overlaps and 8-latent edge tiles: the seam
-    # bench (two photos, every preset, tightest tier, 9-frame pan) stays within 1.93 levels of the untiled decode in
-    # the worst 64 px window, PSNR >= 49.9 dB, no boundary step above 1.38x its surroundings.
     "AutoencoderKLWan@8x": Floor(
         32, 8, 8, "seam bench: worst 64 px window 1.93 levels, PSNR >= 49.9 dB"
     ),
-    # MiniMax-H3: a transformer decoder that works at its 256 px tile. Its untiled decode is not a reference (PSNR
-    # 20 dB against the input photo, the tiled decode 30 dB), Studio always decodes it tiled, and diffusers spreads
-    # the 16-latent tiles evenly with >= 4-latent overlaps and no sliver. A smaller tile or a sliver still fails.
+    # Untiled is worse here (20 dB vs the input photo, tiled 30 dB): Studio always decodes it tiled.
     "AutoencoderKLMiniMaxH3@16x": Floor(
         16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"
     ),
-    # 16x video VAEs at their stock 16-latent tiles / 4-latent overlaps / 4-latent edge tiles. Video seam audit (real
-    # 33-frame clip, every preset, stock tiles vs untiled): HunyuanVideo-1.5 PSNR 50.6-52.5 dB, Wan2.2-TI2V-5B 49.3 dB,
-    # the boundary score on |tiled - untiled| 1.7-2.4 (no line); seam bench worst 64 px window 2.9-3.6 levels.
+    # 16x video VAEs at stock tiles, real 33-frame clip vs untiled.
     "AutoencoderKLHunyuanVideo15@16x": Floor(
         16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"
     ),
@@ -127,18 +99,14 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     ),
 }
 
-# family -> a geometry below the floor that is a measured seam bug, or not yet proven seam-free. Strict xfail: the
-# fix (wide tiles) or an allow-list entry backed by a measurement turns it into a failure until the entry goes.
-# Empty: every image family's tiled decode meets the floor since the seam-free wide tiles (#12736).
+# family -> open seam bug below the floor. Strict xfail, so the fix landing forces the entry out.
 KNOWN_SEAMS: dict[str, str] = {}
 
-# Modules that rebind a VAE's tiled_decode without changing its tile grid (same attributes, batched).
 GEOMETRY_PRESERVING = {
     "diffusion_vae_fused": "batched stock tiled_decode: the stock attributes' tiles, decoded as one batch",
 }
 
 
-# ---------------------------------------------------------------------------------------------------- probing
 class _TileRecorder(TorchFunctionMode):
     """Every (start, stop) slice taken of the last two dims of a tensor shaped like the latent."""
 
@@ -179,10 +147,8 @@ _ACTIVE: list = []
 
 
 class _ShapeOnly(torch.nn.Module):
-    """Stands in for a VAE submodule: returns zeros of the shape the real module would return (the input itself
-    when the shape is unchanged, e.g. post_quant_conv). The real module runs on the meta device for the first two
-    spatial sizes of each call signature; after that the output's spatial dims are the input's times the measured
-    upsampling (checked equal on both runs), so sweeping canvas sides costs no further decoder passes."""
+    """Zeros of the real module's output shape. The real module runs on meta for the first two spatial sizes per
+    call signature; later sizes extrapolate the measured upsampling, so the sweep costs no further decoder passes."""
 
     def __init__(self, inner):
         super().__init__()
@@ -285,7 +251,6 @@ def _family_configs() -> dict[str, tuple[str, dict]]:
 
 
 def _sides(family: str) -> list[int]:
-    """Every canvas side, in pixels, Studio offers the family."""
     fam = next((f for f in DF._FAMILIES if f.name == family), None)
     if fam is not None:
         step = max(8, int(fam.dimension_multiple))
@@ -295,8 +260,6 @@ def _sides(family: str) -> list[int]:
 
 
 def build_vae(config: dict, overrides: bool = True):
-    """The VAE on the meta device, set up as a Studio load sets it up (``overrides=False``: diffusers' stock tiling
-    only), decoder replaced by a shape-only stand-in."""
     cfg = {k: v for k, v in config.items() if not k.startswith("_")}
     cls = _vae_class(config["_class_name"])
     if cls is None:
@@ -325,7 +288,6 @@ def _latent_channels(config: dict) -> int:
 
 
 def probe_axis(vae, config: dict, length: int, other: int, video: bool) -> list[tuple[int, int]]:
-    """Tiles (start, stop) along a ``length``-latent axis, the other axis ``other`` latents."""
     c = _latent_channels(config)
     for frames in (1, 2, 4, 8) if video else (None,):
         shape = (1, c, length, other) if frames is None else (1, c, frames, length, other)
@@ -362,7 +324,6 @@ def _is_5d(vae) -> bool:
 
 
 def check_axis(tiles: list[tuple[int, int]], floor: Floor) -> list[str]:
-    """Threshold violations of one axis's tiles."""
     if len(tiles) < 2:
         return []
     problems = []
@@ -382,7 +343,6 @@ _PROBED: dict = {}
 
 
 def _tile_key(vae, applied, video: bool) -> tuple:
-    """What decides the tile grid: the class, its tile attributes and the overrides installed on it."""
     attrs = sorted(
         (k, repr(v)) for k, v in vars(vae).items() if k.startswith(("tile_", "use_framewise"))
     )
@@ -397,7 +357,6 @@ def geometry(family: str):
     ratio = _ratio(vae)
     video = _is_5d(vae)
     other = max(1, MIN_SIDE // ratio)
-    # families sharing a VAE geometry (FLUX.1 / Z-Image / HiDream / SDXL ...) share one probe per latent length
     cache = _PROBED.setdefault(_tile_key(vae, applied, video), {})
     grid = {}
     for side in _sides(family):
@@ -420,7 +379,6 @@ def _all_families() -> list[str]:
     return [f.name for f in DF._FAMILIES] + [f.name for f in VF._FAMILIES] + [LTX23]
 
 
-# ---------------------------------------------------------------------------------------------------- tests
 def test_every_family_has_a_vae_config():
     missing = [f.name for f in (*DF._FAMILIES, *VF._FAMILIES) if f.name not in _fixture()]
     assert not missing, (
@@ -478,14 +436,14 @@ def test_check_axis_flags_each_threshold():
     ok = Floor(32, 16, 16, "test")
     assert check_axis([(0, 64)], ok) == []
     assert check_axis([(0, 32), (16, 48), (32, 64)], ok) == []
-    # Qwen-Image-2.1 on main at 1024 px: 16-latent tiles, 4-latent overlaps, a 4-latent sliver
+    # Qwen-Image-2.1 before #12696, 1024 px
     stock = [(0, 16), (12, 28), (24, 40), (36, 52), (48, 64), (60, 64)]
     assert check_axis(stock, ok) == [
         "16-latent tiles < 32",
         "4-latent overlap < 16",
         "a 4-latent edge tile < 16",
     ]
-    # an 8x AutoencoderKL at 1600 px: 128-latent tiles, the last an 8-latent sliver inside its neighbour
+    # 8x AutoencoderKL at 1600 px: an 8-latent sliver
     assert check_axis([(0, 128), (96, 200), (192, 200)], ok) == [
         "8-latent overlap < 16",
         "a 8-latent edge tile < 16",
@@ -493,7 +451,6 @@ def test_check_axis_flags_each_threshold():
 
 
 def test_probe_reads_the_stock_grid():
-    """The probe reports diffusers' own grid for a VAE with no override (Wan's 256 px / 192 px pixel geometry)."""
     vae, applied = build_vae({"_class_name": "AutoencoderKLWan", "z_dim": 16}, overrides = False)
     assert applied == []
     tiles = probe_axis(vae, {"z_dim": 16}, 64, 8, True)

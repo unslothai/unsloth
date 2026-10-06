@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# VAE tile seam guard: studio/backend/tests/test_vae_tile_geometry.py checks the tile grid every
-# image / video family's VAE decodes with on Studio's low-VRAM tiers (tile >= 32 latents, overlap
-# >= 16, no sliver edge tile). It needs the pinned diffusers, which Backend CI does not install
-# (there the test would skip), so it runs here, CPU only, no weights: the VAEs are built on the
-# meta device from their vae/config.json.
-#
-# Triggers: any inference source change (a new family, a tile override), the diffusers pins (an
-# upgrade that changes diffusers' tile defaults) and the test itself.
+# Runs test_vae_tile_geometry.py on CPU with the pinned diffusers, which Backend CI does not install
+# (there the guard would only skip).
 
 name: Studio VAE seam guard
 
@@ -59,8 +53,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11'
           pip install -r studio/backend/requirements/studio.txt
-          # The diffusers Studio installs (the release pin, then the pinned main commit on top, which
-          # carries Qwen-Image-2.1); the guard reads diffusers' own tile defaults from it.
+          # As Studio installs it: the release pin, then the main commit (Qwen-Image-2.1) on top.
           pip install -r studio/backend/requirements/diffusers-pin.txt
           pip install -r studio/backend/requirements/diffusers-main.txt
           pip install pytest pytest-timeout
