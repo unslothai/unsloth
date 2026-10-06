@@ -2254,6 +2254,14 @@
       "evidence_hash": "fdde4e280accf7805c189b49c656234f6495462314df0b1cb0d8dba3444e84a1"
     },
     {
+      "package": "datasets",
+      "file": "datasets/utils/file_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L437:     while True: sha256:5f117c2a4fa2395bc22ae29d203ca6266526b07635a6f2a5946a82bee3b98e81",
+      "evidence_hash": "2bbd5fcd14147ab648a7b6301fe7de70a5d0459940d7215d0d3588f38dfafd42"
+    },
+    {
       "package": "transformers",
       "file": "transformers/testing_utils.py",
       "check": "C2 polling/beaconing loop detected",
