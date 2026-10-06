@@ -159,6 +159,7 @@ export const zhCN = {
     importBookmarksDoneOne: "已导入 {count} 个书签。",
     importBookmarksDoneMany: "已导入 {count} 个书签。",
     importBookmarksNone: "该文件中没有新书签。",
+    importBookmarksPartial: "已导入 {count} 个，但还有 {leftOut} 个放不下：Studio 最多保存 {max} 个书签。",
     importBookmarksFailed: "无法读取该文件。请选择从浏览器导出的书签 HTML 文件。",
     downloadsTitle: "下载",
     askWhereToSaveSetting: "每次询问文件保存位置",

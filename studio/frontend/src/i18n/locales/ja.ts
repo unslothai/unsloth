@@ -160,6 +160,7 @@ export const ja = {
     importBookmarksDoneOne: "{count} 件のブックマークをインポートしました。",
     importBookmarksDoneMany: "{count} 件のブックマークをインポートしました。",
     importBookmarksNone: "このファイルに新しいブックマークはありません。",
+    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Studio に保存できるブックマークは最大 {max} 件です。",
     importBookmarksFailed: "ファイルを読み込めませんでした。ブラウザからエクスポートしたブックマークの HTML ファイルを選択してください。",
     downloadsTitle: "ダウンロード",
     askWhereToSaveSetting: "ファイルごとに保存先を確認する",

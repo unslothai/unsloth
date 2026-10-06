@@ -80,7 +80,7 @@ test("an import adds new addresses in one write and skips ones already saved", (
     { url: "https://example.net/", title: "Net", folder: "other" },
     { url: "https://example.net/", title: "Net again", folder: "other" },
   ]);
-  assert.equal(added, 2);
+  assert.deepEqual(added, { added: 2, leftOut: 0 });
   assert.equal(writes, 1);
   const bookmarks = useBrowserBookmarksStore.getState().bookmarks;
   assert.deepEqual(
@@ -92,7 +92,10 @@ test("an import adds new addresses in one write and skips ones already saved", (
     ],
   );
   assert.equal(bookmarks[1]?.addedAt, 1000);
-  assert.equal(store.importBookmarks([{ url: "https://example.org/", title: "Org", folder: "other" }]), 0);
+  assert.deepEqual(store.importBookmarks([{ url: "https://example.org/", title: "Org", folder: "other" }]), {
+    added: 0,
+    leftOut: 0,
+  });
 });
 
 test("reloading the latest page still drops visits past the kept period", () => {
@@ -168,4 +171,21 @@ test("a page opened from a new tab uses the current default zoom", async () => {
   useBrowserStore.getState().navigate(tabId, { url: "https://example.org/" });
   assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom, 2, "a zoomed page keeps it");
   useBrowserPrefsStore.getState().setDefaultZoom(1);
+});
+
+test("an import past the bookmark limit says how many it left out", async () => {
+  const { MAX_BOOKMARKS } = await import("../src/features/browser/bookmarks-store.ts");
+  useBrowserBookmarksStore.setState({ bookmarks: [] });
+  const items = Array.from({ length: MAX_BOOKMARKS + 3 }, (_, index) => ({
+    url: `https://example.com/${index}`,
+    title: `Page ${index}`,
+    folder: "other" as const,
+  }));
+  // A repeat of one left out isn't counted twice.
+  items.push({ url: `https://example.com/${MAX_BOOKMARKS + 1}`, title: "Again", folder: "other" });
+  assert.deepEqual(useBrowserBookmarksStore.getState().importBookmarks(items), {
+    added: MAX_BOOKMARKS,
+    leftOut: 3,
+  });
+  useBrowserBookmarksStore.setState({ bookmarks: [] });
 });

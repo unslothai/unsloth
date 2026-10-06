@@ -494,9 +494,20 @@ function sendDocumentAnnotations(
   // Text or files the user staged are their next message: the annotations join it unsent.
   const before = drafted();
   const hasDraft = before.text || before.attachments > 0;
-  // Extra files first, after the draft check, so they don't count as a draft.
+  // Extra files first, after the draft check, so they don't count as a draft. They're optional:
+  // one the model can't take (a screenshot on a text-only model) is skipped.
+  let extras = 0;
   return files
-    .reduce((staged, file) => staged.then(() => composer.addAttachment(file)), Promise.resolve())
+    .reduce(
+      (staged, file) =>
+        staged.then(() =>
+          composer.addAttachment(file).then(
+            () => void extras++,
+            () => undefined,
+          ),
+        ),
+      Promise.resolve(),
+    )
     .then(() => composer.addAttachment(createAnnotationsFile(annotations)))
     .then(() => {
       const form = [
@@ -516,7 +527,7 @@ function sendDocumentAnnotations(
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const now = drafted();
-          if (now.text || now.attachments > 1 + files.length) return;
+          if (now.text || now.attachments > 1 + extras) return;
           form.requestSubmit();
         }),
       );

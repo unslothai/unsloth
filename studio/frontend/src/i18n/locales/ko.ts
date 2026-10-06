@@ -159,6 +159,7 @@ export const ko = {
     importBookmarksDoneOne: "북마크 {count}개를 가져왔습니다.",
     importBookmarksDoneMany: "북마크 {count}개를 가져왔습니다.",
     importBookmarksNone: "이 파일에 새 북마크가 없습니다.",
+    importBookmarksPartial: "{count}개를 가져왔지만 {leftOut}개는 더 넣을 수 없었습니다. Studio는 북마크를 최대 {max}개까지 보관합니다.",
     importBookmarksFailed: "파일을 읽을 수 없습니다. 브라우저에서 내보낸 북마크 HTML 파일을 선택하세요.",
     downloadsTitle: "다운로드",
     askWhereToSaveSetting: "파일마다 저장 위치 묻기",

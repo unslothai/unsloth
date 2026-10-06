@@ -159,6 +159,7 @@ export const hi = {
     importBookmarksDoneOne: "{count} बुकमार्क इंपोर्ट किया गया।",
     importBookmarksDoneMany: "{count} बुकमार्क इंपोर्ट किए गए।",
     importBookmarksNone: "उस फ़ाइल में कोई नया बुकमार्क नहीं है।",
+    importBookmarksPartial: "{count} इंपोर्ट किए गए, लेकिन {leftOut} और नहीं समा सके: Studio अधिकतम {max} बुकमार्क रखता है।",
     importBookmarksFailed: "वह फ़ाइल पढ़ी नहीं जा सकी। किसी ब्राउज़र से एक्सपोर्ट की गई बुकमार्क HTML फ़ाइल चुनें।",
     downloadsTitle: "डाउनलोड",
     askWhereToSaveSetting: "हर फ़ाइल के लिए पूछें कि कहाँ सहेजना है",

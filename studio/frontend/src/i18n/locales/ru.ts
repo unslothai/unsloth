@@ -159,6 +159,7 @@ export const ru = {
     importBookmarksDoneOne: "Импортировано закладок: {count}.",
     importBookmarksDoneMany: "Импортировано закладок: {count}.",
     importBookmarksNone: "В этом файле нет новых закладок.",
+    importBookmarksPartial: "Импортировано: {count}, ещё {leftOut} не поместились: Studio хранит до {max} закладок.",
     importBookmarksFailed: "Не удалось прочитать файл. Выберите HTML-файл закладок, экспортированный из браузера.",
     downloadsTitle: "Загрузки",
     askWhereToSaveSetting: "Спрашивать, куда сохранять каждый файл",

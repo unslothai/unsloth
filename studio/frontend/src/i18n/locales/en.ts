@@ -156,6 +156,7 @@ export const en = {
     importBookmarksDoneOne: "Imported {count} bookmark.",
     importBookmarksDoneMany: "Imported {count} bookmarks.",
     importBookmarksNone: "No new bookmarks in that file.",
+    importBookmarksPartial: "Imported {count}, but {leftOut} more didn't fit: Studio keeps up to {max} bookmarks.",
     importBookmarksFailed: "Couldn't read that file. Choose a bookmarks HTML file exported from a browser.",
     downloadsTitle: "Downloads",
     askWhereToSaveSetting: "Ask where to save each file",

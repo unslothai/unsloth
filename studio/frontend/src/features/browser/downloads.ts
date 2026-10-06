@@ -5,7 +5,7 @@ import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { fileNameFromUrl, withBaseUrl } from "./address";
-import { fetchBrowserPage } from "./api";
+import { type BrowserPage, fetchBrowserPage } from "./api";
 import { useBrowserHistoryStore } from "./history-store";
 import { saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -28,11 +28,15 @@ export function canAskWhereToSave(): boolean {
   return !isTauri && saveFilePicker() !== null;
 }
 
+function asksWhereToSave(): boolean {
+  return !isTauri && saveFilePicker() !== null && useBrowserPrefsStore.getState().askWhereToSave;
+}
+
 /** The browser's save dialog when Settings asks for it; null when off or it can't open
  *  (e.g. no recent click). Throws DownloadCancelledError if the reader cancels. */
 async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   const picker = saveFilePicker();
-  if (isTauri || !picker || !useBrowserPrefsStore.getState().askWhereToSave) return null;
+  if (!picker || !asksWhereToSave()) return null;
   try {
     return await picker({ suggestedName: name });
   } catch (error) {
@@ -77,32 +81,41 @@ export async function saveBrowserDownload(
   });
 }
 
-/** Save what a link points at, fetched through the panel's proxy so any site works. */
-export async function saveLinkAs(url: string): Promise<void> {
-  // Ask before fetching: the dialog needs the menu click, which a slow fetch outlasts.
-  let target: SaveHandle | null;
-  try {
-    target = await pickSaveTarget(fileNameFromUrl(url));
-  } catch (error) {
-    if (isDownloadCancelled(error)) return;
-    throw error;
-  }
-  const page = await fetchBrowserPage({ url }, new AbortController().signal);
+// Well inside the ~5 s a click lets a page open the save dialog.
+const RESOLVE_BEFORE_ASK_MS = 1000;
+
+/** A fetched link as a file: the server's name, or the page as .html. */
+function linkDownload(page: BrowserPage, url: string): BrowserDownload {
   if (page.kind === "raw") {
-    await saveBrowserDownload(
-      { blob: page.blob, name: page.fileName ?? fileNameFromUrl(page.url), contentType: page.contentType, url },
-      target,
-    );
-    return;
+    return { blob: page.blob, name: page.fileName ?? fileNameFromUrl(page.url), contentType: page.contentType, url };
   }
   const name = fileNameFromUrl(page.url);
-  await saveBrowserDownload(
-    {
-      blob: new Blob([withBaseUrl(page.html, page.base)], { type: "text/html" }),
-      name: /\.html?$/i.test(name) ? name : `${name}.html`,
-      contentType: "text/html",
-      url,
-    },
-    target,
-  );
+  return {
+    blob: new Blob([withBaseUrl(page.html, page.base)], { type: "text/html" }),
+    name: /\.html?$/i.test(name) ? name : `${name}.html`,
+    contentType: "text/html",
+    url,
+  };
+}
+
+/** Save what a link points at, fetched through the panel's proxy so any site works. */
+export async function saveLinkAs(url: string): Promise<void> {
+  const pending = fetchBrowserPage({ url }, new AbortController().signal).then((page) => linkDownload(page, url));
+  // The dialog needs the menu click, which a slow fetch outlasts: ask with the resolved name
+  // when the fetch is quick, else with the URL's.
+  let target: SaveHandle | null | undefined;
+  if (asksWhereToSave()) {
+    const quick = await Promise.race([
+      pending.catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), RESOLVE_BEFORE_ASK_MS)),
+    ]);
+    try {
+      target = await pickSaveTarget(quick?.name ?? fileNameFromUrl(url));
+    } catch (error) {
+      pending.catch(() => undefined);
+      if (isDownloadCancelled(error)) return;
+      throw error;
+    }
+  }
+  await saveBrowserDownload(await pending, target);
 }

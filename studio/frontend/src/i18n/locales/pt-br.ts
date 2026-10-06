@@ -159,6 +159,7 @@ export const ptBR = {
     importBookmarksDoneOne: "{count} favorito importado.",
     importBookmarksDoneMany: "{count} favoritos importados.",
     importBookmarksNone: "Nenhum favorito novo nesse arquivo.",
+    importBookmarksPartial: "{count} importados, mas outros {leftOut} não couberam: o Studio guarda até {max} favoritos.",
     importBookmarksFailed: "Não foi possível ler esse arquivo. Escolha um arquivo HTML de favoritos exportado de um navegador.",
     downloadsTitle: "Downloads",
     askWhereToSaveSetting: "Perguntar onde salvar cada arquivo",

@@ -159,6 +159,7 @@ export const ar = {
     importBookmarksDoneOne: "تم استيراد {count} إشارة مرجعية.",
     importBookmarksDoneMany: "تم استيراد {count} إشارة مرجعية.",
     importBookmarksNone: "لا توجد إشارات مرجعية جديدة في هذا الملف.",
+    importBookmarksPartial: "تم استيراد {count}، لكن لم يتسع لـ {leftOut} أخرى: يحتفظ Studio بما يصل إلى {max} إشارة مرجعية.",
     importBookmarksFailed: "تعذّرت قراءة الملف. اختر ملف HTML للإشارات المرجعية مُصدَّرًا من متصفح.",
     downloadsTitle: "التنزيلات",
     askWhereToSaveSetting: "السؤال عن مكان حفظ كل ملف",

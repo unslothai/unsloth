@@ -158,6 +158,7 @@ export const it = {
     importBookmarksDoneOne: "{count} segnalibro importato.",
     importBookmarksDoneMany: "{count} segnalibri importati.",
     importBookmarksNone: "Nessun nuovo segnalibro in quel file.",
+    importBookmarksPartial: "Importati {count}, ma altri {leftOut} non ci stavano: Studio conserva fino a {max} segnalibri.",
     importBookmarksFailed: "Impossibile leggere il file. Scegli un file HTML di segnalibri esportato da un browser.",
     downloadsTitle: "Download",
     askWhereToSaveSetting: "Chiedi dove salvare ogni file",

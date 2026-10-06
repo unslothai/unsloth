@@ -159,6 +159,7 @@ export const de = {
     importBookmarksDoneOne: "{count} Lesezeichen importiert.",
     importBookmarksDoneMany: "{count} Lesezeichen importiert.",
     importBookmarksNone: "Keine neuen Lesezeichen in dieser Datei.",
+    importBookmarksPartial: "{count} importiert, aber {leftOut} weitere passten nicht: Studio speichert bis zu {max} Lesezeichen.",
     importBookmarksFailed: "Die Datei konnte nicht gelesen werden. Wähle eine aus einem Browser exportierte Lesezeichen-HTML-Datei.",
     downloadsTitle: "Downloads",
     askWhereToSaveSetting: "Für jede Datei fragen, wo sie gespeichert werden soll",

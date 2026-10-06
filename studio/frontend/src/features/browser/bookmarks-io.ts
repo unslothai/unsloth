@@ -54,8 +54,8 @@ export function parseBookmarksHtml(html: string): { url: string; title: string; 
   });
 }
 
-/** Adds a bookmarks file's links; returns how many were new. */
-export async function importBookmarksFile(file: File): Promise<number> {
+/** Adds a bookmarks file's links; how many were added, and how many didn't fit. */
+export async function importBookmarksFile(file: File): Promise<{ added: number; leftOut: number }> {
   if (file.size > MAX_FILE_BYTES) throw new BookmarksFileError("file too large");
   const items = parseBookmarksHtml(await file.text());
   return useBrowserBookmarksStore.getState().importBookmarks(items);

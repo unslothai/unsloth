@@ -17,7 +17,7 @@ export type Bookmark = {
   icon?: string;
 };
 
-const MAX_BOOKMARKS = 2000;
+export const MAX_BOOKMARKS = 2000;
 // A 32px PNG is a few KB; anything far bigger isn't one, and would eat into Studio's storage.
 const MAX_ICON_CHARS = 24 * 1024;
 
@@ -33,8 +33,11 @@ interface BrowserBookmarksState {
   removeBookmark: (id: string) => void;
   setBookmarkIcon: (id: string, icon: string) => void;
   restoreBookmark: (bookmark: Bookmark, index: number) => void;
-  /** Saves many at once (an import), skipping saved addresses; returns how many it added. */
-  importBookmarks: (items: { url: string; title: string; folder: BookmarkFolder; addedAt?: number }[]) => number;
+  /** Saves many at once (an import), skipping saved addresses; how many it added, and how many
+   *  new ones it left out at the bookmark limit. */
+  importBookmarks: (
+    items: { url: string; title: string; folder: BookmarkFolder; addedAt?: number }[],
+  ) => { added: number; leftOut: number };
 }
 
 export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
@@ -80,10 +83,14 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
       importBookmarks: (items) => {
         const saved = new Set(get().bookmarks.map((bookmark) => bookmark.url));
         const added: Bookmark[] = [];
+        let leftOut = 0;
         for (const item of items) {
-          if (get().bookmarks.length + added.length >= MAX_BOOKMARKS) break;
           if (item.url.length > MAX_URL_CHARS || saved.has(item.url)) continue;
           saved.add(item.url);
+          if (get().bookmarks.length + added.length >= MAX_BOOKMARKS) {
+            leftOut++;
+            continue;
+          }
           added.push({
             id: newId(),
             url: item.url,
@@ -94,7 +101,7 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
         }
         // One write instead of one per bookmark.
         if (added.length > 0) set((state) => ({ bookmarks: [...state.bookmarks, ...added] }));
-        return added.length;
+        return { added: added.length, leftOut };
       },
       restoreBookmark: (bookmark, index) =>
         set((state) => {

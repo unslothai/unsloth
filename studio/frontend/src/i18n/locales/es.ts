@@ -159,6 +159,7 @@ export const es = {
     importBookmarksDoneOne: "Se importó {count} marcador.",
     importBookmarksDoneMany: "Se importaron {count} marcadores.",
     importBookmarksNone: "No hay marcadores nuevos en ese archivo.",
+    importBookmarksPartial: "Se importaron {count}, pero {leftOut} más no cupieron: Studio guarda hasta {max} marcadores.",
     importBookmarksFailed: "No se pudo leer ese archivo. Elige un archivo HTML de marcadores exportado desde un navegador.",
     downloadsTitle: "Descargas",
     askWhereToSaveSetting: "Preguntar dónde guardar cada archivo",

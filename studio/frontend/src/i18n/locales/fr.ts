@@ -159,6 +159,7 @@ export const fr = {
     importBookmarksDoneOne: "{count} favori importé.",
     importBookmarksDoneMany: "{count} favoris importés.",
     importBookmarksNone: "Aucun nouveau favori dans ce fichier.",
+    importBookmarksPartial: "{count} importés, mais {leftOut} autres n'ont pas pu être ajoutés : Studio conserve jusqu'à {max} favoris.",
     importBookmarksFailed: "Impossible de lire ce fichier. Choisissez un fichier HTML de favoris exporté depuis un navigateur.",
     downloadsTitle: "Téléchargements",
     askWhereToSaveSetting: "Demander où enregistrer chaque fichier",

@@ -16,6 +16,7 @@ import {
   ClearBrowsingDataDialog,
   DEFAULT_ZOOM_STEPS,
   HISTORY_RETENTION_DAYS,
+  MAX_BOOKMARKS,
   SEARCH_ENGINES,
   type SearchEngineId,
   browserPanelAvailable,
@@ -94,8 +95,9 @@ export function BrowserTab() {
 
   const importBookmarks = async (file: File) => {
     try {
-      const count = await importBookmarksFile(file);
-      if (count === 0) toast.info(t("browser.importBookmarksNone"));
+      const { added: count, leftOut } = await importBookmarksFile(file);
+      if (leftOut > 0) toast.warning(t("browser.importBookmarksPartial", { count, leftOut, max: MAX_BOOKMARKS }));
+      else if (count === 0) toast.info(t("browser.importBookmarksNone"));
       else toast.success(t(count === 1 ? "browser.importBookmarksDoneOne" : "browser.importBookmarksDoneMany", { count }));
     } catch {
       toast.error(t("browser.importBookmarksFailed"));
