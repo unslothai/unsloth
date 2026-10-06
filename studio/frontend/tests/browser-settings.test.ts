@@ -382,3 +382,35 @@ test("a download whose click has expired waits for Save rather than skip the sav
   prefs.setAskBeforeDownloading(true);
   delete (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker;
 });
+
+test("a file a page sends the tab to is asked about for that page, not the file's site", async () => {
+  const { useBrowserStore, currentEntry } = await import("../src/features/browser/store.ts");
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/page", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId!;
+  store.navigate(tabId, { url: "https://b.example/setup.zip", from: "https://a.example/page" });
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!;
+  const entry = currentEntry(tab);
+  assert.ok(entry.kind === "web");
+  assert.equal(entry.from, "https://a.example/page");
+  // Typed or bookmarked: no page sent it.
+  store.navigate(tabId, { url: "https://b.example/other.zip" });
+  const typed = currentEntry(useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!);
+  assert.ok(typed.kind === "web" && typed.from === undefined);
+
+  // b.example is trusted, but a.example sent the tab there: still asked, for a.example.
+  useDownloadSitesStore.getState().setSite("https://b.example", "allow");
+  const blob = new Blob(["x"]);
+  const saving = saveBrowserDownload({ blob, name: "setup.zip", contentType: "application/zip", url: "https://b.example/setup.zip", site: entry.from });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const queue = useApprovalStore.getState().queue;
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].origin, "https://a.example");
+  answerDownload(queue[0], false, false);
+  await saving;
+  useDownloadSitesStore.getState().setSite("https://b.example", null);
+  store.closeTab(tabId);
+});

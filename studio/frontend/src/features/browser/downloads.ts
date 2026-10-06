@@ -12,7 +12,8 @@ import { useBrowserHistoryStore } from "./history-store";
 import { saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
-export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null };
+/** `site`: the page a download is asked about for, when not the file's own address. */
+export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null; site?: string };
 
 type SaveHandle = {
   name: string;
@@ -54,9 +55,10 @@ async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   }
 }
 
-/** Whether a file from `url` may be saved; files from websites wait for the user's approval. */
-function approved(url: string | null, name: string): Promise<boolean> {
-  return url && isWebUrl(url) ? approveDownload(url, name) : Promise.resolve(true);
+/** Whether a file from `url` may be saved; files from websites wait for the user's approval,
+ *  remembered for `site` (the file's own address unless given). */
+function approved(url: string | null, name: string, site?: string): Promise<boolean> {
+  return url && isWebUrl(url) ? approveDownload(url, name, site ?? url) : Promise.resolve(true);
 }
 
 /** Save a file from the panel and add it to the download history. A file from a website
@@ -64,7 +66,7 @@ function approved(url: string | null, name: string): Promise<boolean> {
  *  or null for none; left out, the dialog opens here when Settings asks. */
 export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
   if (target === undefined) {
-    if (!(await approved(download.url, download.name))) return;
+    if (!(await approved(download.url, download.name, download.site))) return;
     // The save dialog opens only right after a click, and one that finished later (a slow file,
     // or one nobody was asked about) would save without it: wait for a click on Save instead.
     if (saveNeedsClick()) {

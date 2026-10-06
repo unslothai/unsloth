@@ -65,24 +65,34 @@ function safeFavicon(url: string | null): string | null {
   }
 }
 
+/** The address the tab's page is at (moves in its own history included), if it is a web page. */
+function pageAddress(tab: BrowserTab | undefined): string | undefined {
+  const entry = tab ? currentEntry(tab) : null;
+  return tab && entry?.kind === "web" ? (tab.displayUrl ?? entry.url) : undefined;
+}
+
 function useFrameMessages(tabId: string, origin: string | null) {
   const t = useT();
   return useCallback(
     (message: FrameMessage) => {
       const store = useBrowserStore.getState();
       switch (message.type) {
-        case "navigate":
+        case "navigate": {
+          // The page asking: a file at the address is downloaded on its behalf, not the file's site's.
+          const from = pageAddress(store.tabs.find((candidate) => candidate.id === tabId));
           if (message.newTab) {
             store.openUrl(message.url, {
               newTab: true,
               background: message.background && !useBrowserPrefsStore.getState().switchToNewTabs,
               method: message.method,
               body: message.body,
+              from,
             });
           } else {
-            store.navigate(tabId, message, { replace: message.replace });
+            store.navigate(tabId, { url: message.url, method: message.method, body: message.body, from }, { replace: message.replace });
           }
           break;
+        }
         case "external":
           openExternalLink(message.url);
           break;
@@ -276,7 +286,9 @@ function WebPage({
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
-            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url });
+            // Asked for the page that sent the tab here, else the address asked for (not where it
+            // redirected): another site's remembered "allow" must not cover it.
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
           }
         }
       })

@@ -11,7 +11,15 @@ import { defaultZoom } from "./prefs-store";
 export type BrowserEntry =
   | { kind: "newtab" }
   | { kind: "internal"; page: InternalPage }
-  | { kind: "web"; url: string; method?: "GET" | "POST"; body?: string }
+  | {
+      kind: "web";
+      url: string;
+      method?: "GET" | "POST";
+      body?: string;
+      /** The page that sent the tab here, when a page did (a link, form, script or refresh): a
+       *  file the address turns out to be is downloaded on its behalf. */
+      from?: string;
+    }
   | {
       kind: "file";
       fileId: string;
@@ -196,8 +204,10 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string): BrowserEntry {
-  return method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
+  const entry: BrowserEntry =
+    method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+  return from ? { ...entry, from } : entry;
 }
 
 // Pending file refreshes per tab, run in order, and the blobs they will compare.
@@ -277,12 +287,12 @@ type BrowserState = {
   closeTabsToRight: (tabId: string) => void;
   openUrl: (
     url: string,
-    options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string },
+    options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
   ) => void;
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
-    request: { url: string; method?: "GET" | "POST"; body?: string },
+    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
     options?: { replace?: boolean },
   ) => void;
   goBack: (tabId: string) => void;
@@ -466,19 +476,19 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
       if (options?.method === "POST") {
-        openTab(createTab(webEntry(url, "POST", options.body ?? "")), options.background);
+        openTab(createTab(webEntry(url, "POST", options.body ?? "", options.from)), options.background);
         return;
       }
       const target = unwrapRedirect(url);
       const openKey = `url:${target}`;
       const { activeTabId } = get();
       if (options?.newTab === false && activeTabId) {
-        get().navigate(activeTabId, { url: target });
+        get().navigate(activeTabId, { url: target, from: options.from });
         set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
         return;
       }
       if (options?.newTab === undefined && focusExisting(openKey)) return;
-      openTab(createTab(webEntry(target), openKey), options?.background);
+      openTab(createTab(webEntry(target, undefined, undefined, options?.from), openKey), options?.background);
     },
     openFile: ({ blob, name, contentType, plainText, key }) => {
       const openKey = key ? `file:${key}` : null;
@@ -530,7 +540,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         tabs: patchTab(state.tabs, tabId, (tab) =>
           pushEntry(
             tab,
-            webEntry(request.url, request.method, request.body),
+            webEntry(request.url, request.method, request.body, request.from),
             options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web"),
           ),
         ),
