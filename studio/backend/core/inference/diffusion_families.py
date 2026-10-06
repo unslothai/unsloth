@@ -234,15 +234,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.1-schnell",
         # ComfyUI ModelSamplingFlux fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base).
         # Keys name the model, not bare "dev" / "schnell": local paths are substring-matched too.
-        comfy_flow_shift_variants = (
-            ("flux.1-schnell", None),
-            ("flux1-schnell", None),
-            ("flux-schnell", None),
-            ("flux.1-krea-dev", flux_mu_shift(1.15)),
-            ("flux1-krea-dev", flux_mu_shift(1.15)),
-            ("flux.1-dev", flux_mu_shift(1.15)),
-            ("flux1-dev", flux_mu_shift(1.15)),
-            ("flux-dev", flux_mu_shift(1.15)),
+        comfy_flow_shift_variants = tuple(
+            (f"{prefix}-{model}", shift)
+            for model, shift in (
+                ("schnell", None),
+                ("krea-dev", flux_mu_shift(1.15)),
+                ("dev", flux_mu_shift(1.15)),
+            )
+            for prefix in ("flux.1", "flux1", "flux-1", "flux")
         ),
         prequant_repos = (
             ("int8", "unsloth/FLUX.1-schnell-FP8"),

@@ -152,6 +152,9 @@ def test_qwen_image_21_gguf_and_prequant_ids_resolve_the_same_shift():
             "unsloth/FLUX.1-Krea-dev-GGUF",
             "black-forest-labs/FLUX.1-schnell",
         ),
+        # The family's flux-1 alias, also as flux_1 (normalised to -).
+        ("flux_1_dev-Q4_K_M.gguf", "someone/flux-1-models", "black-forest-labs/FLUX.1-schnell"),
+        ("flux-1-krea-dev-Q8_0.gguf", "someone/flux-1-models", "black-forest-labs/FLUX.1-schnell"),
     ],
 )
 def test_flux1_dev_variants_use_comfy_fixed_mu(ids, monkeypatch):
