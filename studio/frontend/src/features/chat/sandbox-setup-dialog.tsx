@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
+import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
@@ -41,29 +42,38 @@ export const useSandboxSetupDialogStore = create<{
 
 const NOTE_CLASS = "text-xs leading-relaxed";
 
-/** Picking the mode never starts a setup; only the install button does. */
+/** Switching the sandbox to High without an OS sandbox. Opening it never starts a setup; only the
+ *  install button does, and a setup that works turns High on. */
 export function SandboxSetupDialog({
   open,
   onOpenChange,
+  onLearnMore,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Defaults to opening Settings > Sandbox at Permissions. */
+  onLearnMore?: () => void;
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       {/* Mounted per opening, so every opening starts from a fresh check. */}
-      {open ? <SandboxSetupContent onOpenChange={onOpenChange} /> : null}
+      {open ? (
+        <SandboxSetupContent onOpenChange={onOpenChange} onLearnMore={onLearnMore} />
+      ) : null}
     </AlertDialog>
   );
 }
 
 function SandboxSetupContent({
   onOpenChange,
+  onLearnMore,
 }: {
   onOpenChange: (open: boolean) => void;
+  onLearnMore?: () => void;
 }) {
   const t = useT();
-  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   const [capability, setCapability] = useState<SandboxCapability | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [job, setJob] = useState<SandboxSetupJob | null>(null);
@@ -73,8 +83,8 @@ function SandboxSetupContent({
   const mounted = useRef(true);
   // Only the newest check applies (a retry can overtake a slow first read).
   const checks = useRef(0);
-  // A level picked while the setup ran wins over turning Run automatically on at the end.
-  const modeAtOpen = useRef(useChatRuntimeStore.getState().permissionMode);
+  // A level picked while the setup ran wins over turning High on at the end.
+  const levelAtOpen = useRef(useChatRuntimeStore.getState().sandboxLevel);
 
   useEffect(() => {
     mounted.current = true;
@@ -119,8 +129,8 @@ function SandboxSetupContent({
         if (!mounted.current) return;
         if (next) setCapability(next);
         if (next && sandboxReady(next)) {
-          if (useChatRuntimeStore.getState().permissionMode === modeAtOpen.current) {
-            setPermissionMode("off");
+          if (useChatRuntimeStore.getState().sandboxLevel === levelAtOpen.current) {
+            setSandboxLevel("high");
           }
           toast.success(t("sandboxSetup.succeeded"));
           onOpenChange(false);
@@ -129,7 +139,7 @@ function SandboxSetupContent({
         }
       });
     },
-    [onOpenChange, setPermissionMode, t],
+    [onOpenChange, setSandboxLevel, t],
   );
 
   useEffect(() => {
@@ -191,9 +201,9 @@ function SandboxSetupContent({
   return (
     <AlertDialogContent>
       <AlertDialogHeader>
-        <AlertDialogTitle>{t("sandboxSetup.title")}</AlertDialogTitle>
+        <AlertDialogTitle>{t("sandboxSetup.levelTitle")}</AlertDialogTitle>
         <AlertDialogDescription>
-          {t("sandboxSetup.description")}
+          {t("sandboxSetup.levelDescription")}
         </AlertDialogDescription>
       </AlertDialogHeader>
 
@@ -317,17 +327,31 @@ function SandboxSetupContent({
         <Button
           size="sm"
           variant="outline"
-          disabled={view.checking}
           onClick={() => {
-            setPermissionMode("off");
+            // Closing does not stop a running setup; its result shows in Settings > Sandbox.
+            onOpenChange(false);
+            if (onLearnMore) {
+              onLearnMore();
+            } else {
+              // Deferred past the dialog's focus restore.
+              setTimeout(
+                () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
+                0,
+              );
+            }
+          }}
+        >
+          {t("settings.sandbox.learnMore")}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setSandboxLevel("low");
             onOpenChange(false);
           }}
         >
-          {t("sandboxSetup.useAnyway")}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>
-          {/* Closing does not stop a running setup; its result shows in Settings > Sandbox. */}
-          {view.running ? t("sandboxSetup.close") : t("sandboxSetup.cancel")}
+          {t("sandboxSetup.useLow")}
         </Button>
       </AlertDialogFooter>
     </AlertDialogContent>

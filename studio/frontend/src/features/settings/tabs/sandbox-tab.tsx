@@ -8,14 +8,17 @@ import { Switch } from "@/components/ui/switch";
 import { useIsAccountOwner } from "@/features/auth";
 import {
   PermissionModeDropdown,
+  SandboxSetupDialog,
   type SandboxSetupJob,
   type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
+  pickSandboxLevel,
   sandboxSwitchState,
   startSandboxSetup,
   useActivePermissionMode,
   useChatRuntimeStore,
+  useSandboxCapability,
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -110,7 +113,13 @@ function PermissionsSection() {
   const activePermission = useActivePermissionMode();
   const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
   const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
-  const { checked, disabled } = sandboxSwitchState(sandboxLevel, activePermission.value);
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(
+    sandboxLevel,
+    activePermission.value,
+    capability,
+  );
+  const [setupOpen, setSetupOpen] = useState(false);
   const levelDescriptionId = useId();
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
@@ -156,10 +165,22 @@ function PermissionsSection() {
             disabled={disabled}
             aria-label={t("settings.sandbox.levelLabel")}
             aria-describedby={levelDescriptionId}
-            onCheckedChange={(next) => setSandboxLevel(next ? "high" : "low")}
+            onCheckedChange={(next) =>
+              void pickSandboxLevel(next ? "high" : "low", setSandboxLevel, () =>
+                setSetupOpen(true),
+              )
+            }
           />
         </span>
       </SettingsRow>
+      {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
+      <SandboxSetupDialog
+        open={setupOpen}
+        onOpenChange={setSetupOpen}
+        onLearnMore={() =>
+          permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })
+        }
+      />
     </SettingsSection>
   );
 }

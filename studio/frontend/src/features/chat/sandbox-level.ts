@@ -5,27 +5,25 @@
 import type { SandboxCapability } from "./api/sandbox-capability";
 import type { PermissionMode, SandboxLevel } from "./stores/chat-runtime-store";
 
-/** The permission menu's "OS sandbox is not set up" banner: only when High is asked for, Full
- *  access is not overriding it, and a settled capability answer says Python or Terminal runs
- *  without OS isolation. Unknown (no answer, an old server) or still probing shows nothing. */
-export function sandboxBannerVisible(
-  level: SandboxLevel,
-  permissionMode: PermissionMode,
-  capability: SandboxCapability | null,
-): boolean {
-  if (level !== "high" || permissionMode === "full" || capability === null) {
-    return false;
-  }
+/** A settled answer says Python or Terminal runs without OS isolation. Unknown (no answer, an old
+ *  server) or still probing is not "missing". */
+export function osSandboxMissing(capability: SandboxCapability | null): boolean {
+  if (capability === null) return false;
   if (capability.pythonOsIsolated && capability.terminalOsIsolated) return false;
   // Same as capabilityPending: the startup probe has not answered yet.
   return capability.backend !== "unknown";
 }
 
-/** Switch on = High. Full access drops the sandbox, so the switch is disabled there and keeps
- *  showing the saved level. */
+/** Switch on = High (OS sandboxing). Without an OS sandbox the calls run on software sandboxing,
+ *  so the switch shows Low whatever was saved. Full access drops the sandbox, so the switch is
+ *  disabled there and keeps showing the level. */
 export function sandboxSwitchState(
   level: SandboxLevel,
   permissionMode: PermissionMode,
+  capability: SandboxCapability | null = null,
 ): { checked: boolean; disabled: boolean } {
-  return { checked: level === "high", disabled: permissionMode === "full" };
+  return {
+    checked: level === "high" && !osSandboxMissing(capability),
+    disabled: permissionMode === "full",
+  };
 }

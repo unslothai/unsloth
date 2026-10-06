@@ -18,7 +18,7 @@ const OLD_GENERAL = await readFile(
   "utf8",
 );
 
-test("the banner's Learn more opens the Permissions section of Settings > Sandbox", () => {
+test("the question mark opens the Permissions section of Settings > Sandbox", () => {
   assert.match(MENU, /openSettings\("sandbox", \{ scrollTarget: "sandbox-permissions" \}\)/);
   assert.match(SANDBOX_TAB, /if \(scrollTarget !== "sandbox-permissions"\) return;/);
   assert.match(SANDBOX_TAB, /ref=\{permissionsRef\}/);
@@ -32,17 +32,26 @@ test("Settings explains only the selected level and drops the menu's sandbox con
   assert.doesNotMatch(SANDBOX_TAB, /permissions\.bypass(Label|Description)/);
 });
 
-test("the menu heading carries the Sandbox switch in place of Learn more", () => {
+test("the menu heading carries the Sandbox switch and a question mark in place of Learn more", () => {
   const label = MENU.slice(
     MENU.indexOf("export function PermissionMenuLabel"),
-    MENU.indexOf("/** Under the rows"),
+    MENU.indexOf("/** The option rows shared"),
   );
-  assert.doesNotMatch(label, /Learn more/);
+  assert.doesNotMatch(label, /Learn more|Tool call permissions/);
+  assert.match(label, /settings\.general\.permissions\.sectionTitle/);
   assert.match(label, /<DropdownMenuPrimitive\.CheckboxItem/);
   // The keyboard toggles it without closing the menu or picking a row.
-  assert.match(label, /onSelect=\{\(event\) => event\.preventDefault\(\)\}/);
+  assert.match(label, /event\.preventDefault\(\)/);
   assert.match(label, /<Switch\b/);
   assert.match(label, /settings\.sandbox\.levelLowShort/);
+  assert.match(label, /icon=\{HelpCircleIcon\}/);
+  assert.match(label, /settings\.sandbox\.levelHelp/);
+});
+
+test("the rows carry no sandbox hint and no setup banner", () => {
+  const rows = MENU.slice(MENU.indexOf("export function PermissionModeMenuItems"));
+  assert.doesNotMatch(rows, /sandboxSetup\.unavailable|levelLowRowHint|notSetUp|SandboxSetupBanner/);
+  assert.doesNotMatch(MENU, /SandboxSetupBanner|sandboxBanner/);
 });
 
 test("menu descriptions stay to one short line", () => {

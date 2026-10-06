@@ -9,7 +9,7 @@ import test from "node:test";
 import type { SandboxCapability } from "../src/features/chat/api/sandbox-capability.ts";
 import type { PersistedChatSettings } from "../src/features/chat/api/chat-settings-api.ts";
 import {
-  sandboxBannerVisible,
+  osSandboxMissing,
   sandboxSwitchState,
 } from "../src/features/chat/sandbox-level.ts";
 import { assignSanitizedMirroredSettings } from "../src/features/chat/utils/mirrored-chat-settings.ts";
@@ -106,30 +106,23 @@ function capability(overrides: Partial<SandboxCapability>): SandboxCapability {
   };
 }
 
-test("the setup banner shows only for High with Python or Terminal not OS-isolated", () => {
-  const noTerminal = capability({ terminalOsIsolated: false, backend: "none" });
-  const noPython = capability({ pythonOsIsolated: false, backend: "none" });
-  const neither = capability({
-    pythonOsIsolated: false,
-    terminalOsIsolated: false,
-    backend: "none",
-  });
-  for (const mode of ["ask", "auto", "off"] as const) {
-    for (const value of [noTerminal, noPython, neither]) {
-      assert.equal(sandboxBannerVisible("high", mode, value), true, mode);
-      // Low asks for software safeguards only, so there is nothing to install.
-      assert.equal(sandboxBannerVisible("low", mode, value), false, mode);
-    }
-    assert.equal(sandboxBannerVisible("high", mode, capability({})), false);
-    // No answer yet, or an old server that cannot say.
-    assert.equal(sandboxBannerVisible("high", mode, null), false);
-    assert.equal(
-      sandboxBannerVisible("high", mode, { ...neither, backend: "unknown" }),
-      false,
-    );
-  }
-  // Full access drops the sandbox whatever the level.
-  assert.equal(sandboxBannerVisible("high", "full", neither), false);
+test("the OS sandbox counts as missing only on a settled answer without Python or Terminal isolation", () => {
+  const neither = capability({ pythonOsIsolated: false, terminalOsIsolated: false, backend: "none" });
+  assert.equal(osSandboxMissing(capability({ terminalOsIsolated: false, backend: "none" })), true);
+  assert.equal(osSandboxMissing(capability({ pythonOsIsolated: false, backend: "none" })), true);
+  assert.equal(osSandboxMissing(neither), true);
+  assert.equal(osSandboxMissing(capability({})), false);
+  // No answer yet, or an old server that cannot say.
+  assert.equal(osSandboxMissing(null), false);
+  assert.equal(osSandboxMissing({ ...neither, backend: "unknown" }), false);
+});
+
+test("without an OS sandbox the switch reads Low even with High saved", () => {
+  const neither = capability({ pythonOsIsolated: false, terminalOsIsolated: false, backend: "none" });
+  assert.deepEqual(sandboxSwitchState("high", "auto", neither), { checked: false, disabled: false });
+  assert.deepEqual(sandboxSwitchState("high", "auto", capability({})), { checked: true, disabled: false });
+  assert.deepEqual(sandboxSwitchState("high", "auto", null), { checked: true, disabled: false });
+  assert.deepEqual(sandboxSwitchState("high", "full", neither), { checked: false, disabled: true });
 });
 
 test("the switch is on for High and disabled with the saved value under Full access", () => {
@@ -214,4 +207,15 @@ test("every token count body carries sandbox_level, also when no tool is selecte
   const bodies = [...countExtras.matchAll(/return \{\n([\s\S]*?)\n\s*\};/g)].map((m) => m[1]);
   assert.equal(bodies.length, 3);
   for (const body of bodies) assert.match(body, /sandbox_level: sandboxLevel,/);
+});
+
+const MENU = readFileSync(
+  new URL("../src/features/chat/permission-mode-select.tsx", import.meta.url),
+  "utf8",
+);
+
+test("Low reads no OS sandbox capability, in the menu and in Settings", () => {
+  assert.match(MENU, /useSandboxCapability\(sandboxLevel === "high"\)/);
+  assert.match(MENU, /if \(!enabled\) return;/);
+  assert.match(SANDBOX_TAB, /useSandboxCapability\(sandboxLevel === "high"\)/);
 });
