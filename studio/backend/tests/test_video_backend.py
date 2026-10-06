@@ -2528,14 +2528,20 @@ def test_wan_validate_trusted_repos(fake_runtime):
         )
 
 
-def test_wan_a14b_refuses_single_file_loads(fake_runtime):
-    # A single checkpoint carries only one of the A14B experts and the other would load dense outside the memory plan, so validate refuses it.
+def test_wan_a14b_refuses_unpaired_single_file_loads(fake_runtime):
+    # A checkpoint whose name pairs no partner expert covers one of the two A14B experts, so validate refuses it; a
+    # high/low noise expert name loads the pair (test_video_moe_pair.py).
     backend = VideoBackend()
     with pytest.raises(ValueError, match = "dual-expert"):
         backend.validate_load_request(
             "QuantStack/Wan2.2-T2V-A14B-GGUF",
-            gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+            gguf_filename = "Wan2.2-T2V-A14B-Q4_K_M.gguf",
         )
+    fam = backend.validate_load_request(
+        "QuantStack/Wan2.2-T2V-A14B-GGUF",
+        gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+    )
+    assert fam.name == "wan2.2-t2v-a14b"
     # The single-DiT 5B family still accepts GGUF.
     fam = backend.validate_load_request(
         "unsloth/Wan2.2-TI2V-5B-GGUF",
