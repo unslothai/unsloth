@@ -23,10 +23,11 @@ fn probe_command(shell: &str) -> String {
     if NON_POSIX_SHELLS.contains(&name) {
         return env_command();
     }
-    // zsh RCS off also covers a readonly HISTFILE; eval + `|| :` survive ERR_EXIT / `set -e`.
+    // zsh RCS off also covers a readonly HISTFILE. Unset is tried in a subshell first:
+    // dash exits on unsetting a readonly variable, even under eval / `|| :`.
     format!(
         "if [ -n \"${{ZSH_VERSION-}}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; \
-         eval 'unset HISTFILE' 2>/dev/null || :; \
+         (unset HISTFILE) 2>/dev/null && unset HISTFILE; \
          exec /bin/sh -c 'printf \"%s\" \"{DELIMITER}\"; env; printf \"%s\" \"{DELIMITER}\"'"
     )
 }
@@ -98,7 +99,8 @@ mod tests {
             "/opt/bash-5.2/bin/bash-5.2",
         ] {
             assert!(
-                probe_command(shell).contains("eval 'unset HISTFILE' 2>/dev/null || :; exec "),
+                probe_command(shell)
+                    .contains("(unset HISTFILE) 2>/dev/null && unset HISTFILE; exec "),
                 "{shell}"
             );
         }

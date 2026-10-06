@@ -149,7 +149,7 @@ def test_reading_the_login_shell_leaves_its_history_alone(tmp_path, monkeypatch,
 )
 def test_posix_shells_unset_histfile_first(shell):
     command = dse.probe_command(shell, "env -0 > x")
-    assert command.endswith("eval 'unset HISTFILE' 2>/dev/null || :; exec env -0 > x")
+    assert command.endswith("(unset HISTFILE) 2>/dev/null && unset HISTFILE; exec env -0 > x")
     assert "unsetopt RCS" in command
 
 
@@ -158,3 +158,21 @@ def test_posix_shells_unset_histfile_first(shell):
 )
 def test_other_shells_keep_the_command(shell):
     assert dse.probe_command(shell, "env -0 > x") == "env -0 > x"
+
+
+@pytest.mark.parametrize("shell", ["dash", "bash", "zsh"])
+def test_readonly_histfile_still_reads_the_environment(tmp_path, monkeypatch, shell):
+    # dash exits on `unset` of a readonly variable, even inside eval with `|| :`.
+    path = shutil.which(shell)
+    if path is None:
+        pytest.skip(
+            reason = f"{shell} is not installed; this case needs the real shell (unsloth#12678)"
+        )
+    rc = f"export {SENTINEL}=1\nHISTFILE=$HOME/.h\nreadonly HISTFILE\nset -e\n"
+    for name in (".profile", ".bash_profile", ".zshrc"):
+        (tmp_path / name).write_text(rc, encoding = "utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ZDOTDIR", str(tmp_path))
+    for var in ("HISTFILE", "ENV", "BASH_ENV"):
+        monkeypatch.delenv(var, raising = False)
+    assert dse.read_login_shell_env(shell = path).get(SENTINEL) == "1"

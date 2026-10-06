@@ -72,13 +72,14 @@ _NON_POSIX_SHELLS = frozenset(
 def probe_command(shell: str, command: str) -> str:
     """``command`` for ``shell -ilc`` without the exit-time history save (unsloth#12678).
 
-    zsh ``RCS`` off covers a readonly HISTFILE; ``eval`` + ``|| :`` survive ERR_EXIT / ``set -e``.
+    zsh ``RCS`` off covers a readonly HISTFILE; the subshell probe keeps dash, which exits
+    on unsetting a readonly variable even under ``eval`` / ``|| :``, alive.
     """
     if os.path.basename(shell) in _NON_POSIX_SHELLS:
         return command
     return (
         "if [ -n \"${ZSH_VERSION-}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; "
-        f"eval 'unset HISTFILE' 2>/dev/null || :; exec {command}"
+        f"(unset HISTFILE) 2>/dev/null && unset HISTFILE; exec {command}"
     )
 
 
