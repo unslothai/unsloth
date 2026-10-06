@@ -444,7 +444,6 @@ def test_a_listing_during_an_edit_does_not_drop_the_files_name_star_and_folder(
     listings = []
 
     def list_then_carry(*args):
-        # A Library refresh landing after the swap exposed the new inode, before the carry.
         library.invalidate_listing()
         listing = threading.Thread(
             target = contextvars.copy_context().run, args = (library.list_items,)
@@ -481,7 +480,6 @@ def test_a_folder_move_during_an_edit_keeps_the_files_name_and_star(client, sign
     moves = []
 
     def move_then_carry(*args):
-        # A folder move landing after the swap exposed the new inode, before the carry.
         move = threading.Thread(
             target = _patch, args = (client,), kwargs = {"id": _SANDBOX_ID, "folderId": folder}
         )
