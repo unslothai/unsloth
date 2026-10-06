@@ -624,6 +624,73 @@ def test_patch_mamba2_varlen_kwargs_only_stub_fail_closed(monkeypatch):
     assert patch_hybrid_linear_attention_varlen(model) is False
 
 
+def _fake_mamba2_model_with_modeling(name, **kernel_globals):
+    # The mixer's __init__ globals stand in for the modeling module the kernels load into.
+    import sys
+    import types
+
+    modeling = types.ModuleType(name)
+    modeling.__dict__.update(kernel_globals)
+    modeling._Base = _FakeNemotronHMamba2Mixer
+    exec(
+        "class NemotronHMamba2Mixer(_Base):\n"
+        "    def __init__(self):\n"
+        "        super().__init__()\n",
+        modeling.__dict__,
+    )
+    modeling.NemotronHMamba2Mixer.__module__ = name
+    sys.modules[name] = modeling
+    model = _FakeMamba2Model()
+    model.mixer = modeling.NemotronHMamba2Mixer()
+    return model, modeling
+
+
+def test_patch_mamba2_varlen_rejects_unavailable_fast_path(monkeypatch):
+    # Kernels missing at mixer __init__: transformers routes to torch_forward, so decline up front.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    name = "fake_modeling_nemotron_h_nofast"
+    try:
+        model, modeling = _fake_mamba2_model_with_modeling(
+            name, is_fast_path_available = False, causal_conv1d_update = None
+        )
+        assert patch_hybrid_linear_attention_varlen(model) is False
+        assert modeling.is_fast_path_available is False
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_patch_mamba2_varlen_syncs_stale_compiled_kernel_globals(monkeypatch):
+    # The compiled copy gets the real kernel globals, never a forced fast path.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+    import types
+
+    def conv_update(*args, **kwargs):
+        return None
+
+    name = "fake_modeling_nemotron_h_fast"
+    compiled = types.ModuleType("unsloth_compiled_cache.fake_nemotron_h_sync")
+    compiled.is_fast_path_available = False
+    compiled.causal_conv1d_update = None
+    other = types.ModuleType("fake_nemotron_h_other")
+    other.is_fast_path_available = False
+    sys.modules[compiled.__name__] = compiled
+    sys.modules[other.__name__] = other
+    try:
+        model, modeling = _fake_mamba2_model_with_modeling(
+            name, is_fast_path_available = True, causal_conv1d_update = conv_update
+        )
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        assert compiled.is_fast_path_available is True
+        assert compiled.causal_conv1d_update is conv_update
+        assert other.is_fast_path_available is False
+    finally:
+        for key in (name, compiled.__name__, other.__name__):
+            sys.modules.pop(key, None)
+
+
 def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
     # Unsloth compiles mixer.forward into unsloth_compiled_cache with a module-global
     # fused kernel import. Wrapping only transformers.modeling_* leaves that alias
@@ -2301,3 +2368,21 @@ def test_guard_is_idempotent_and_actually_masks():
     assert torch.equal(twice, once)
     # idempotence alone is trivial for an identity helper, so pin the values
     assert once.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
+
+
+def test_call_as_packed_mamba2_prefill_propagates_inner_type_error():
+    calls = []
+
+    def cuda_kernels_forward(
+        hidden_states,
+        cache_params = None,
+        attention_mask = None,
+    ):
+        calls.append((cache_params, attention_mask))
+        raise TypeError("'NoneType' object is not callable")
+
+    with pytest.raises(TypeError, match = "NoneType"):
+        packing_module._call_as_packed_mamba2_prefill(
+            cuda_kernels_forward, (torch.zeros(1), object(), torch.ones(1, 2)), {}
+        )
+    assert calls == [(None, None)]

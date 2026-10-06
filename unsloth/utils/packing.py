@@ -382,21 +382,39 @@ _MAMBA2_NAMESPACE_SUBSTR = (
 )
 
 
-def _force_install_mamba2_fused(namespace, wrapped) -> None:
-    """Overwrite fused names in a module/function dict, including stale compile-time imports.
+_MAMBA2_KERNEL_GLOBALS = (
+    "is_fast_path_available",
+    "causal_conv1d_fn",
+    "causal_conv1d_update",
+    "selective_state_update",
+    "mamba_chunk_scan_combined",
+)
 
-    Unsloth's compiler does ``from modeling import mamba_split_conv1d_scan_combined``
-    when it writes ``unsloth_compiled_cache``. That binding is whatever the
-    modeling module had *at compile import*, often ``None`` or a hub stub, while
-    mixer ``__init__`` later stores the real kernel only on the modeling module.
-    Compiled ``cuda_kernels_forward`` still LOAD_GLOBALs the stale copy.
+
+def _force_install_mamba2_fused(
+    namespace,
+    wrapped,
+    source = None,
+) -> None:
+    """Point fused names in ``namespace`` at ``wrapped``.
+
+    ``unsloth_compiled_cache`` imports the kernel globals before the mixer's
+    ``__init__`` loads them, so its copies are stale (``None`` / ``False``); sync
+    them from ``source`` (the ``__init__`` globals) rather than forcing the fast
+    path on, which would call a missing decode kernel.
     """
     if wrapped is None or not isinstance(namespace, dict):
         return
     for name in _MAMBA2_FUSED_NAMES:
         namespace[name] = wrapped
-    if "is_fast_path_available" in namespace:
-        namespace["is_fast_path_available"] = True
+    if (
+        isinstance(source, dict)
+        and namespace is not source
+        and "unsloth_compiled" in str(namespace.get("__name__", ""))
+    ):
+        for name in _MAMBA2_KERNEL_GLOBALS:
+            if name in namespace and name in source:
+                namespace[name] = source[name]
     for value in list(namespace.values()):
         inner = getattr(value, "__dict__", None)
         if not isinstance(inner, dict):
@@ -454,23 +472,20 @@ def _call_as_packed_mamba2_prefill(fn, args, kwargs):
     carry pad zeros, and Nemotron-H layers pass an empty ``Cache`` into the
     mixer, so the fused wrapper never runs.
     """
-    kwargs = dict(kwargs)
+    # Only binding sits in the try: a TypeError from inside fn must propagate, not re-run fn.
     try:
         sig = inspect.signature(fn)
-        names = sig.parameters
-        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in names.values())
-        if not has_var_kw and "attention_mask" not in names and "cache_params" not in names:
-            return fn(*args, **kwargs)
         bound = sig.bind_partial(*args, **kwargs)
-        if "attention_mask" in names or has_var_kw:
-            bound.arguments["attention_mask"] = None
-        if "cache_params" in names or has_var_kw:
-            bound.arguments["cache_params"] = None
-        return fn(*bound.args, **bound.kwargs)
     except (TypeError, ValueError):
-        kwargs["attention_mask"] = None
-        kwargs["cache_params"] = None
-        return fn(*args, **kwargs)
+        return fn(*args, **{**kwargs, "attention_mask": None, "cache_params": None})
+    for name in ("attention_mask", "cache_params"):
+        if name in sig.parameters:
+            bound.arguments[name] = None
+    call_kwargs = bound.kwargs
+    for name in ("attention_mask", "cache_params"):
+        if name in call_kwargs:
+            call_kwargs[name] = None
+    return fn(*bound.args, **call_kwargs)
 
 
 _MAMBA2_MASK_CLEAR_NAMES = ("cuda_kernels_forward",)
@@ -620,7 +635,15 @@ def _mamba2_varlen_kernels_available(mamba2_modules) -> Optional[str]:
         reason = _callable_accepts_named_seq_idx(fn)
         if reason is not None:
             return reason
+        if _mamba2_kernel_globals(module).get("is_fast_path_available", True) is False:
+            return "mamba2 fast path unavailable (install mamba_ssm and causal_conv1d)"
     return None
+
+
+def _mamba2_kernel_globals(module) -> dict:
+    # The mixer's __init__ assigns the lazily loaded kernels into its own module globals.
+    globs = getattr(type(module).__init__, "__globals__", None)
+    return globs if isinstance(globs, dict) else {}
 
 
 def _hybrid_varlen_dispatched(module) -> bool:
@@ -703,32 +726,6 @@ def _wrap_mamba2_seq_idx_call(
 
     wrapped._unsloth_varlen_seq_idx_wrapped = True
     return wrapped
-
-
-def _wrap_mamba2_fused_call(
-    orig,
-    mixers,
-    *,
-    on_module = None,
-    attr_name = None,
-    varlen_slot = None,
-):
-    """Inject packed ``seq_idx`` into the fused conv1d+scan kernel.
-
-    ``mixers`` is the list of Mamba2 modules sharing this kernel. On a packed
-    forward they all stash the same boundary metadata. ``varlen_slot`` is a
-    1-element list set by the outer model.forward wrapper so injection still
-    works if PEFT/compile replaced mixer instances after patch time.
-    """
-    fused_fn = _wrap_mamba2_seq_idx_call(
-        orig,
-        mixers,
-        varlen_slot = varlen_slot,
-        hit_attr = "_unsloth_varlen_fused_hit",
-    )
-    if on_module is not None and attr_name is not None:
-        setattr(on_module, attr_name, fused_fn)
-    return fused_fn
 
 
 def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
@@ -972,52 +969,45 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             return fn
         wrapped = wrapped_fused.get(id(fn))
         if wrapped is None:
-            wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules, varlen_slot = varlen_slot)
+            wrapped = _wrap_mamba2_seq_idx_call(fn, mamba2_modules, varlen_slot = varlen_slot)
             wrapped_fused[id(fn)] = wrapped
             _rebind_mamba2_fused_aliases(fn, wrapped)
         return wrapped
 
+    wrapped_real = None
     for module in mamba2_modules:
         if getattr(module, "_unsloth_varlen_wrapped", False):
             continue
         fn, loc = _resolve_mamba2_fused(module)
         wrapped = _ensure_mamba2_fused_wrapped(fn)
+        wrapped_real = wrapped_real or wrapped
         kind = loc[0] if loc is not None else None
         if kind == "instance" and wrapped is not None:
-            name = loc[2]
             module._unsloth_varlen_orig_fused = fn
-            if name is not None:
-                setattr(module, name, wrapped)
-            else:
-                module.mamba2_split_conv1d_scan_combined = wrapped
+            setattr(module, loc[2] or _MAMBA2_FUSED_NAMES[0], wrapped)
         elif kind == "modeling" and wrapped is not None:
-            modeling, name = loc[1], loc[2]
-            setattr(modeling, name, wrapped)
-            modeling._unsloth_mamba2_fused_wrapped = True
+            setattr(loc[1], loc[2], wrapped)
         elif kind == "ssm":
             module._unsloth_varlen_orig_fused = fn
-        elif kind == "globals" and wrapped is not None:
-            globs, name = loc[1], loc[2]
-            globs[name] = wrapped
         _wrap_mamba2_mixer_forward(module, varlen_getter = lambda: varlen_slot[0])
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
     if mamba2_modules:
-        try:
-            from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
-                mamba_split_conv1d_scan_combined as _ssm_fused,
-            )
-        except Exception:
-            _ssm_fused = None
-        wrapped_real = _ensure_mamba2_fused_wrapped(_ssm_fused)
         if wrapped_real is None:
-            wrapped_real = wrapped
+            try:
+                from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
+                    mamba_split_conv1d_scan_combined as _ssm_fused,
+                )
+            except Exception:
+                _ssm_fused = None
+            wrapped_real = _ensure_mamba2_fused_wrapped(_ssm_fused)
+        source = _mamba2_kernel_globals(mamba2_modules[0])
 
         def packed():
             return varlen_slot[0]
 
         for ns in _iter_mamba2_install_namespaces(mamba2_modules):
-            _force_install_mamba2_fused(ns, wrapped_real)
+            _force_install_mamba2_fused(ns, wrapped_real, source)
             _install_mamba2_mask_clear(ns, packed)
             _install_mamba2_seq_idx_fallbacks(ns, mamba2_modules, varlen_slot)
 
