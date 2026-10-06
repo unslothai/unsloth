@@ -1070,6 +1070,47 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
+# gemma-4-26B-A4B-it and gemma-4-31B-it open every non-thinking model turn with an empty thought channel,
+# but their own template only emits it in the generation prompt. Training text without it is
+# off-distribution (26B assistant loss 5.5 vs 1.3), so render it on model turns that carry no thinking.
+# Picked in get_chat_template only when the model's own template primes the empty channel.
+_gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
+gemma4_empty_thought_template = gemma4_thinking_template.replace(
+    _gemma4_model_turn,
+    _gemma4_model_turn + \
+"""    {%- if role == "model" and not thinking -%}
+        {%- set ns_text = namespace(text=message['content'] if message['content'] is string else '') -%}
+        {%- if message['content'] is not string and message['content'] is iterable -%}
+            {%- for item in message['content'] -%}
+                {%- if item['type'] == 'text' -%}
+                    {%- set ns_text.text = ns_text.text + item['text'] -%}
+                {%- endif -%}
+            {%- endfor -%}
+        {%- endif -%}
+        {%- if not (message.get('reasoning') or message.get('reasoning_content') or '<|channel>' in ns_text.text) -%}
+            {{ '<|channel>thought\n<channel|>' }}
+        {%- endif -%}
+    {%- endif -%}
+""",
+    1,
+)
+assert gemma4_empty_thought_template != gemma4_thinking_template
+GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+
+
+def _gemma4_wants_empty_thought(*holders):
+    # Content based, so it also covers future sizes: the model's own template primes the
+    # non-thinking generation prompt with an empty thought channel (E2B / E4B do not).
+    for holder in holders:
+        template = getattr(holder, "chat_template", None)
+        if isinstance(template, dict): template = template.get("default")
+        if not isinstance(template, str): continue
+        # Our own gemma-4-thinking template primes the generation prompt for every size
+        if template.endswith(gemma4_thinking_template): continue
+        if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
+            return True
+    return False
+
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
 # =========================================== GPT-OSS
 gptoss_template = \
@@ -1954,6 +1995,14 @@ def get_chat_template(
         type_chat_template = chat_template.lower()
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
+
+        if type_chat_template in GEMMA4_TEMPLATE_NAMES and \
+            _gemma4_wants_empty_thought(_processor, old_tokenizer):
+            logger.warning_once(
+                "Unsloth: This Gemma-4 model expects an empty thought channel on non-thinking turns. "\
+                "Adding <|channel>thought\\n<channel|> to assistant turns without thinking content."
+            )
+            chat_template = gemma4_empty_thought_template
 
         # The template can veto the eos mapping, but it must not force it back on: map_eos_token = False is
         # an explicit choice by the caller.
