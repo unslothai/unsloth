@@ -3235,8 +3235,7 @@ class InferenceOrchestrator:
                 request_branch = _request_branch,
                 live_branch = live_branch,
             )
-            # The saved boundary describes the original transcript, so it applies once: in the
-            # first fit that runs, which a resumed reply's or a failed one is not.
+            # The saved boundary applies once, in the first fit that runs (not resumed or failed).
             if result.get("boundary_applied"):
                 _sticky_boundary_applied = True
             if result.get("recalled"):

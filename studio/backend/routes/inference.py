@@ -32223,8 +32223,7 @@ async def produce_openai_chat_completions(
     _sf_mcp_allowed = (
         payload.tool_choice != "none" and bool(payload.mcp_enabled) and _sf_cli_policy is not False
     )
-    # Can a turn run search_conversation? A stream without control frames cannot approve the call.
-    # tool_choice is asked directly: _tool_loop_unusable weighs it against the GGUF backend's tools.
+    # tool_choice asked directly: _tool_loop_unusable weighs it against GGUF's tools.
     _sf_recall_loop_usable = (
         payload.tool_choice != "none"
         and not _tool_loop_unusable
@@ -32232,10 +32231,7 @@ async def produce_openai_chat_completions(
         and not _response_format_constrains_decoding(payload)
         and (_ui_events or not _confirm_gate_would_prompt(payload, ("search_conversation",)))
     )
-    # A compacted thread opens the tool loop even with the user's tools off, as the GGUF
-    # branch does: after a reset search_conversation is the only way back to what was
-    # dropped, and _select_request_tools admits it alone. Client tools and guided decoding
-    # keep their own path, which on GGUF is the passthrough taken before this question.
+    # GGUF parity: a checkpointed thread reopens the loop with search_conversation alone.
     _sf_recall_reopens_loop = (
         _sf_fit_overflow is not None
         and not (_sf_tools_on or _sf_mcp_allowed)
@@ -33296,8 +33292,7 @@ async def produce_openai_chat_completions(
                 **kw,
             )
 
-    # As on GGUF, a reset on the plain path relies on the loop reopening for the next turn.
-    # That turn classifies the tool branch, which a named template may render differently.
+    # A plain reset needs the next turn to reopen the loop, which renders the tool branch.
     _sf_recall_reachable = (
         _sf_fit_overflow is not None
         and _sf_recall_loop_usable
