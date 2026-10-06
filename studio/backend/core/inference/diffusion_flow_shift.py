@@ -10,8 +10,7 @@ import math
 import os
 from typing import Any, Optional
 
-# "0" keeps every shipped diffusers scheduler (resolution-dependent mu, terminal stretch) instead
-# of ComfyUI's static schedule.
+# "0" keeps every shipped diffusers scheduler instead of ComfyUI's static schedule.
 COMFY_SIGMAS_ENV = "UNSLOTH_DIFFUSION_COMFY_SIGMAS"
 
 

@@ -118,11 +118,12 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
-    # ComfyUI's static sigma shift (same at every resolution); None = keep the shipped scheduler.
+    # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
-    # (lowercased id substring, shift) for checkpoints whose template differs; first match wins, and a
-    # None shift keeps the shipped scheduler.
-    comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(default_factory = tuple)
+    # (lowercased id substring, shift or None = shipped) for checkpoints whose template differs; first match wins.
+    comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
+        default_factory = tuple
+    )
     # (lowercased id substring, ((key, value), ...)) overriding ``base_repo``'s transformer config; first match wins.
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
@@ -231,9 +232,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
-        # ComfyUI samples dev / Krea-dev at ModelSamplingFlux's fixed mu 1.15 at every resolution
-        # (diffusers: mu from the token count, equal only at 1024x1024). schnell first: it is static
-        # 1.0 in both, and a dev GGUF may still resolve to the schnell base repo.
+        # ComfyUI ModelSamplingFlux fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base).
         comfy_flow_shift_variants = (
             ("schnell", None),
             ("krea", flux_mu_shift(1.15)),
@@ -348,7 +347,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # detect_family prefers this over "flux.1".
         name = "flux.1-kontext",
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
-        comfy_flow_shift = flux_mu_shift(1.15),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
+        comfy_flow_shift = flux_mu_shift(
+            1.15
+        ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
         pipeline_class = "FluxKontextPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
@@ -496,9 +497,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
         # rules, none of which fit.
         name = "qwen-image-2.1",
-        # ComfyUI's QwenImage21 model sampling: ModelSamplingFlux at a fixed mu 0.69 at every
-        # resolution, no terminal stretch (templates add no ModelSampling node). The shipped
-        # scheduler instead derives mu from the token count (1.31 at 2048) and stretches to 0.02.
+        # ComfyUI QwenImage21: ModelSamplingFlux fixed mu 0.69, no terminal stretch.
         comfy_flow_shift = flux_mu_shift(0.69),
         pipeline_class = "QwenImage21Pipeline",
         transformer_class = "QwenImage21Transformer2DModel",
