@@ -270,3 +270,54 @@ test("ordinary code is still rendered per block", () => {
     );
   }
 });
+
+test("a shortcut or collapsed reference is never split from its definition", () => {
+  const failures: string[] = [];
+  for (const definition of DEFINITION_CONTEXTS) {
+    for (const neutral of NEUTRAL_BLOCKS) {
+      for (const reference of ["[g]", "[g][]", "![g]", "[G]", "[ g ]"]) {
+        for (const reply of [
+          `See ${reference}.\n\n${neutral}\n\n${definition}\n`,
+          `${definition}\n\n${neutral}\n\nSee ${reference}.\n`,
+        ]) {
+          if (asOneDocument(reply) <= asBlocks(reply)) {
+            continue;
+          }
+          if (markdownRenderScope(reply) !== "document") {
+            failures.push(JSON.stringify(reply));
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(failures, [], failures.join("\n"));
+});
+
+test("a shortcut reference matches its definition the way CommonMark matches labels", () => {
+  for (const [reference, definition] of [
+    ["Paris is the capital [1].", "[1]: https://en.wikipedia.org/wiki/Paris"],
+    ["Read [Unsloth docs] first.", "[unsloth  DOCS]: https://docs.unsloth.ai"],
+    ["Read [Unsloth\ndocs] first.", "[unsloth docs]: https://docs.unsloth.ai"],
+    ["Read [unsloth docs] first.", "[Unsloth\tDocs]: https://docs.unsloth.ai"],
+    ["Read [a\\]b] first.", "[a\\]b]: https://x.test/ab"],
+  ]) {
+    const reply = `${reference}\n\n${definition}\n`;
+    assert.ok(asOneDocument(reply) > asBlocks(reply), JSON.stringify(reply));
+    assert.equal(markdownRenderScope(reply), "document", JSON.stringify(reply));
+  }
+});
+
+test("a bracketed label that is not a shortcut reference keeps block rendering", () => {
+  for (const reply of [
+    "Use `[1]` here.\n\n[1]: https://x.test\n",
+    "Use ``a [1] b`` here.\n\n[1]: https://x.test\n",
+    "Not a link \\[1] here.\n\n[1]: https://x.test\n",
+    "Note [^1].\n\n[^1]: a footnote\n",
+    "Cites [2].\n\n[1]: https://x.test/1\n",
+    "No uses.\n\n[1]: https://x.test/a\n[1]: https://x.test/b\n",
+    "```py\nx = a[1]\n```\n\n[1]: https://x.test\n",
+  ]) {
+    assert.equal(asOneDocument(reply), asBlocks(reply), JSON.stringify(reply));
+    assert.equal(markdownRenderScope(reply), "blocks", JSON.stringify(reply));
+  }
+});
