@@ -2726,6 +2726,8 @@ export const ko = {
         modelMultilingual: "다국어",
         modelEnglish: "영어",
         modelTypedDecisions: "유형별 판단",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "추천",
         device: "실행 위치",
         deviceDescription: "GPU가 더 빠르지만 다시 시작할 때까지 메모리를 계속 차지합니다.",
@@ -2735,11 +2737,13 @@ export const ko = {
         notDownloaded: "다운로드 안 됨 · {size}",
         downloading: "다운로드 중…",
         downloaded: "다운로드됨 · 첫 요청 때 로드",
+        ready: "준비됨 · 첫 요청 때 로드",
         installing: "설치 중…",
         loading: "로드 중…",
         loadedOn: "{device}에 로드됨",
         download: "다운로드",
         downloadConfirmTitle: "Laya {model}을(를) 다운로드할까요?",
+        downloadConfirmTitleModel: "{model}을(를) 다운로드할까요?",
         downloadConfirmBody:
           "Decision API가 요청에 응답하려면 이 모델이 필요합니다. 약 {size}이며 Hugging Face 캐시에 한 번만 다운로드됩니다.",
         unload: "언로드",
@@ -2866,6 +2870,9 @@ export const ko = {
       datasetLabel: "데이터셋",
       modelTooltip: "파인튜닝할 기본 모델입니다.",
       methodTooltip: "모델 학습 방식입니다. LoRA와 QLoRA는 전체 가중치 대신 작은 어댑터를 업데이트합니다.",
+      checkpointLabel: "체크포인트",
+      checkpointTooltip:
+        "파인튜닝할 Laya 체크포인트입니다. 대부분의 데이터셋에는 다국어가 적합합니다.",
       datasetTooltip: "모델을 파인튜닝하는 데 사용하는 학습 데이터입니다.",
       hfTokenDescription:
         "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",
@@ -3347,6 +3354,10 @@ export const ko = {
         learningRatePositive: "0보다 큰 학습률을 입력하세요.",
         embeddingLearningRateRange:
           "0보다 크고 1보다 작은 임베딩 학습률을 입력하세요.",
+        decisionColumnsMissing:
+          "판단 모델에는 state, questions, gold(또는 answers) 열이 필요합니다. 누락된 열: {columns}",
+        decisionOwnerOnly:
+          "판단 모델은 Studio 소유자만 파인튜닝할 수 있습니다.",
         hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
         hfDatasetSplitRequired: "먼저 학습 분할을 선택하거나 입력하세요.",
         localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
@@ -3480,6 +3491,9 @@ export const ko = {
       title: "학습 진행률",
       liveMetrics: "실시간 학습 지표",
       exportGguf: "GGUF로 내보내기",
+      useInDecisionApi: "판단 API에서 사용",
+      decisionApiEnabled: "이제 판단 API가 {name}을(를) 사용합니다.",
+      decisionApiFailed: "판단 API를 이 모델로 전환하지 못했습니다.",
       openConfig: "학습 구성 열기",
       configLabel: "학습 구성",
       hyperparams: "하이퍼파라미터",

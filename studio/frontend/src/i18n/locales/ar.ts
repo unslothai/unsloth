@@ -2736,6 +2736,8 @@ export const ar = {
         modelMultilingual: "متعدد اللغات",
         modelEnglish: "إنجليزي",
         modelTypedDecisions: "قرارات مُصنَّفة",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "موصى به",
         device: "التشغيل على",
         deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة التشغيل.",
@@ -2745,11 +2747,13 @@ export const ar = {
         notDownloaded: "غير مُنزَّل · {size}",
         downloading: "جارٍ التنزيل…",
         downloaded: "مُنزَّل · يُحمَّل عند أول طلب",
+        ready: "جاهز · يُحمَّل عند أول طلب",
         installing: "جارٍ التثبيت…",
         loading: "جارٍ التحميل…",
         loadedOn: "مُحمَّل على {device}",
         download: "تنزيل",
         downloadConfirmTitle: "هل تريد تنزيل Laya {model}؟",
+        downloadConfirmTitleModel: "هل تريد تنزيل {model}؟",
         downloadConfirmBody:
           "تحتاج واجهة API للقرارات إلى هذا النموذج للرد على الطلبات. حجمه نحو {size}، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
         unload: "إلغاء التحميل",
@@ -2875,6 +2879,9 @@ export const ar = {
       datasetLabel: "مجموعة البيانات",
       modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
       methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
+      checkpointLabel: "نقطة التحقق",
+      checkpointTooltip:
+        "نقطة تحقق Laya التي سيتم ضبطها. يناسب الإصدار متعدد اللغات معظم مجموعات البيانات.",
       datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
       hfTokenDescription:
         "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
@@ -3345,6 +3352,9 @@ export const ar = {
         learningRatePositive: "أدخل معدل تعلم أكبر من صفر.",
         embeddingLearningRateRange:
           "أدخل معدل تعلم تضمين أكبر من 0 وأقل من 1.",
+        decisionColumnsMissing:
+          "تحتاج نماذج القرارات إلى الأعمدة state وquestions وgold (أو answers). الأعمدة الناقصة: {columns}.",
+        decisionOwnerOnly: "يمكن لمالك Studio فقط ضبط نماذج القرارات.",
         hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
         hfDatasetSplitRequired: "اختر قسم التدريب أو أدخله أولًا.",
         localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
@@ -3489,6 +3499,9 @@ export const ar = {
       title: "تقدم التدريب",
       liveMetrics: "مقاييس التدريب المباشرة",
       exportGguf: "التصدير إلى GGUF",
+      useInDecisionApi: "استخدام في واجهة القرارات البرمجية",
+      decisionApiEnabled: "تستخدم واجهة القرارات البرمجية الآن {name}.",
+      decisionApiFailed: "تعذّر تبديل واجهة القرارات البرمجية إلى هذا النموذج.",
       openConfig: "فتح تكوين التدريب",
       configLabel: "تكوين التدريب",
       hyperparams: "المعلمات الفائقة",

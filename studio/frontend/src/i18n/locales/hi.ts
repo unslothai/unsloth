@@ -2742,6 +2742,8 @@ export const hi = {
         modelMultilingual: "बहुभाषी",
         modelEnglish: "अंग्रेज़ी",
         modelTypedDecisions: "टाइप्ड निर्णय",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "सुझाया गया",
         device: "यहाँ चलाएँ",
         deviceDescription: "GPU तेज़ जवाब देता है, लेकिन रीस्टार्ट होने तक अपनी मेमोरी आरक्षित रखता है।",
@@ -2751,11 +2753,13 @@ export const hi = {
         notDownloaded: "डाउनलोड नहीं हुआ · {size}",
         downloading: "डाउनलोड हो रहा है…",
         downloaded: "डाउनलोड हो गया · पहले अनुरोध पर लोड होगा",
+        ready: "तैयार · पहले अनुरोध पर लोड होगा",
         installing: "इंस्टॉल हो रहा है…",
         loading: "लोड हो रहा है…",
         loadedOn: "{device} पर लोड हुआ",
         download: "डाउनलोड करें",
         downloadConfirmTitle: "Laya {model} डाउनलोड करें?",
+        downloadConfirmTitleModel: "{model} डाउनलोड करें?",
         downloadConfirmBody:
           "Decision API को अनुरोधों का जवाब देने के लिए इस मॉडल की ज़रूरत है। लगभग {size}, आपके Hugging Face कैश में एक बार डाउनलोड होता है।",
         unload: "अनलोड करें",
@@ -2883,6 +2887,9 @@ export const hi = {
       datasetLabel: "डेटासेट",
       modelTooltip: "वह बेस मॉडल जिसे आप फ़ाइन-ट्यून करना चाहते हैं।",
       methodTooltip: "मॉडल को कैसे ट्रेन किया जाता है। LoRA और QLoRA सभी वेट्स के बजाय छोटे अडैप्टर अपडेट करते हैं।",
+      checkpointLabel: "चेकपॉइंट",
+      checkpointTooltip:
+        "वह Laya चेकपॉइंट जिसे फ़ाइन-ट्यून करना है। ज़्यादातर डेटासेट के लिए बहुभाषी ठीक रहता है।",
       datasetTooltip: "मॉडल को फ़ाइन-ट्यून करने के लिए उपयोग किया जाने वाला ट्रेनिंग डेटा।",
       hfTokenDescription:
         "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",
@@ -3352,6 +3359,10 @@ export const hi = {
         learningRatePositive: "शून्य से अधिक लर्निंग रेट दर्ज करें।",
         embeddingLearningRateRange:
           "0 से अधिक और 1 से कम एम्बेडिंग लर्निंग रेट दर्ज करें।",
+        decisionColumnsMissing:
+          "निर्णय मॉडल को state, questions और gold (या answers) कॉलम चाहिए। गायब कॉलम: {columns}।",
+        decisionOwnerOnly:
+          "केवल Studio स्वामी ही निर्णय मॉडल को फ़ाइन-ट्यून कर सकते हैं।",
         hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
         hfDatasetSplitRequired: "पहले ट्रेनिंग स्प्लिट चुनें या दर्ज करें।",
         localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
@@ -3496,6 +3507,9 @@ export const hi = {
       title: "ट्रेनिंग प्रगति",
       liveMetrics: "लाइव ट्रेनिंग मेट्रिक्स",
       exportGguf: "GGUF में एक्सपोर्ट करें",
+      useInDecisionApi: "निर्णय API में इस्तेमाल करें",
+      decisionApiEnabled: "निर्णय API अब {name} इस्तेमाल करता है।",
+      decisionApiFailed: "निर्णय API को इस मॉडल पर नहीं बदला जा सका।",
       openConfig: "ट्रेनिंग कॉन्फ़िग खोलें",
       configLabel: "ट्रेनिंग कॉन्फ़िग",
       hyperparams: "हाइपरपैराम्स",

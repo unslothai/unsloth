@@ -2738,6 +2738,8 @@ export const it = {
         modelMultilingual: "Multilingue",
         modelEnglish: "Inglese",
         modelTypedDecisions: "Decisioni tipizzate",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Consigliato",
         device: "Esegui su",
         deviceDescription: "La GPU risponde più velocemente, ma tiene la memoria riservata fino al riavvio.",
@@ -2747,11 +2749,13 @@ export const it = {
         notDownloaded: "Non scaricato · {size}",
         downloading: "Download in corso…",
         downloaded: "Scaricato · si carica alla prima richiesta",
+        ready: "Pronto · si carica alla prima richiesta",
         installing: "Installazione…",
         loading: "Caricamento…",
         loadedOn: "Caricato su {device}",
         download: "Scarica",
         downloadConfirmTitle: "Scaricare Laya {model}?",
+        downloadConfirmTitleModel: "Scaricare {model}?",
         downloadConfirmBody:
           "L'API decisionale ha bisogno di questo modello per rispondere alle richieste. Circa {size}, scaricato una sola volta nella cache di Hugging Face.",
         unload: "Rimuovi dalla memoria",
@@ -2923,6 +2927,9 @@ export const it = {
       methodLabel: "Metodo",
       methodTooltip:
         "Il modo in cui viene addestrato il modello. LoRA e QLoRA aggiornano piccoli adattatori anziché tutti i pesi.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "Il checkpoint Laya da sottoporre a fine-tuning. Multilingue va bene per la maggior parte dei dataset.",
       datasetLabel: "Dataset",
       datasetTooltip:
         "I dati di addestramento usati per il fine-tuning del modello.",
@@ -3387,6 +3394,10 @@ export const it = {
           "Inserisci un tasso di apprendimento maggiore di zero.",
         embeddingLearningRateRange:
           "Inserisci un tasso di apprendimento degli embedding maggiore di 0 e minore di 1.",
+        decisionColumnsMissing:
+          "I modelli decisionali richiedono le colonne state, questions e gold (o answers). Mancano: {columns}.",
+        decisionOwnerOnly:
+          "Solo il proprietario di Studio può eseguire il fine-tuning dei modelli decisionali.",
         hfDatasetRequired: "Seleziona prima un dataset Hugging Face.",
         hfDatasetSplitRequired:
           "Seleziona o inserisci prima uno split di addestramento.",
@@ -3558,6 +3569,10 @@ export const it = {
       title: "Avanzamento dell'addestramento",
       liveMetrics: "Metriche di addestramento in tempo reale",
       exportGguf: "Esporta in GGUF",
+      useInDecisionApi: "Usa nell'API decisionale",
+      decisionApiEnabled: "L'API decisionale ora usa {name}.",
+      decisionApiFailed:
+        "Impossibile passare l'API decisionale a questo modello.",
       openConfig: "Apri la configurazione di addestramento",
       configLabel: "Configurazione di addestramento",
       hyperparams: "Iperparametri",

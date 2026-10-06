@@ -2752,6 +2752,8 @@ export const ptBR = {
         modelMultilingual: "Multilíngue",
         modelEnglish: "Inglês",
         modelTypedDecisions: "Decisões tipadas",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Recomendado",
         device: "Executar em",
         deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até reiniciar.",
@@ -2761,11 +2763,13 @@ export const ptBR = {
         notDownloaded: "Não baixado · {size}",
         downloading: "Baixando…",
         downloaded: "Baixado · carrega na primeira solicitação",
+        ready: "Pronto · carrega na primeira solicitação",
         installing: "Instalando…",
         loading: "Carregando…",
         loadedOn: "Carregado em {device}",
         download: "Baixar",
         downloadConfirmTitle: "Baixar Laya {model}?",
+        downloadConfirmTitleModel: "Baixar {model}?",
         downloadConfirmBody:
           "A API de decisão precisa deste modelo para responder às solicitações. Cerca de {size}, baixado uma única vez no seu cache do Hugging Face.",
         unload: "Descarregar",
@@ -2896,6 +2900,9 @@ export const ptBR = {
       datasetLabel: "Dataset",
       modelTooltip: "O modelo base que você quer ajustar.",
       methodTooltip: "Como o modelo é treinado. LoRA e QLoRA atualizam adaptadores pequenos em vez de todos os pesos.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "O checkpoint do Laya que será ajustado. Multilíngue serve para a maioria dos conjuntos de dados.",
       datasetTooltip: "Os dados de treinamento usados para ajustar o modelo.",
       hfTokenDescription:
         "Necessário para modelos e conjuntos de dados restritos ou privados.",
@@ -3370,6 +3377,10 @@ export const ptBR = {
         learningRatePositive: "Insira uma taxa de aprendizado maior que zero.",
         embeddingLearningRateRange:
           "Insira uma taxa de aprendizado do embedding maior que 0 e menor que 1.",
+        decisionColumnsMissing:
+          "Modelos de decisão precisam das colunas state, questions e gold (ou answers). Faltando: {columns}.",
+        decisionOwnerOnly:
+          "Só o proprietário do Studio pode ajustar modelos de decisão.",
         hfDatasetRequired: "Selecione primeiro um dataset do Hugging Face.",
         hfDatasetSplitRequired:
           "Selecione ou insira primeiro uma divisão de treino.",
@@ -3517,6 +3528,10 @@ export const ptBR = {
       title: "Progresso do Treinamento",
       liveMetrics: "Métricas de treino em tempo real",
       exportGguf: "Exportar para GGUF",
+      useInDecisionApi: "Usar na API de decisões",
+      decisionApiEnabled: "A API de decisões agora usa {name}.",
+      decisionApiFailed:
+        "Não foi possível trocar a API de decisões para este modelo.",
       openConfig: "Abrir configuração de treino",
       configLabel: "Configuração de Treino",
       hyperparams: "Hiperparâmetros",

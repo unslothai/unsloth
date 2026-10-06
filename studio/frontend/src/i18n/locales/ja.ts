@@ -2707,6 +2707,8 @@ export const ja = {
         modelMultilingual: "多言語",
         modelEnglish: "英語",
         modelTypedDecisions: "型付き判定",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "推奨",
         device: "実行先",
         deviceDescription: "GPU の方が高速ですが、再起動するまでメモリを確保し続けます。",
@@ -2716,11 +2718,13 @@ export const ja = {
         notDownloaded: "未ダウンロード · {size}",
         downloading: "ダウンロード中…",
         downloaded: "ダウンロード済み · 最初のリクエストで読み込み",
+        ready: "準備完了 · 最初のリクエストで読み込み",
         installing: "インストール中…",
         loading: "読み込み中…",
         loadedOn: "{device} に読み込み済み",
         download: "ダウンロード",
         downloadConfirmTitle: "Laya {model} をダウンロードしますか？",
+        downloadConfirmTitleModel: "{model} をダウンロードしますか？",
         downloadConfirmBody:
           "Decision API がリクエストに応答するにはこのモデルが必要です。約 {size}、Hugging Face キャッシュに一度だけダウンロードされます。",
         unload: "アンロード",
@@ -2843,6 +2847,9 @@ export const ja = {
       datasetLabel: "データセット",
       modelTooltip: "ファインチューニングするベースモデルです。",
       methodTooltip: "モデルの学習方法です。LoRA と QLoRA はすべての重みではなく小さなアダプターを更新します。",
+      checkpointLabel: "チェックポイント",
+      checkpointTooltip:
+        "ファインチューニングする Laya のチェックポイントです。多くのデータセットには多言語が適しています。",
       datasetTooltip: "モデルのファインチューニングに使う学習データです。",
       hfTokenDescription:
         "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",
@@ -3309,6 +3316,10 @@ export const ja = {
         learningRatePositive: "0 より大きい学習率を入力してください。",
         embeddingLearningRateRange:
           "0 より大きく 1 より小さい埋め込み学習率を入力してください。",
+        decisionColumnsMissing:
+          "判定モデルには state、questions、gold（または answers）列が必要です。不足している列: {columns}",
+        decisionOwnerOnly:
+          "判定モデルをファインチューニングできるのは Studio の所有者だけです。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
         hfDatasetSplitRequired:
@@ -3438,6 +3449,9 @@ export const ja = {
       title: "トレーニング進捗",
       liveMetrics: "リアルタイムトレーニングメトリクス",
       exportGguf: "GGUF へエクスポート",
+      useInDecisionApi: "判定 API で使う",
+      decisionApiEnabled: "判定 API で {name} を使うようになりました。",
+      decisionApiFailed: "判定 API をこのモデルに切り替えられませんでした。",
       openConfig: "トレーニング構成を開く",
       configLabel: "トレーニング構成",
       hyperparams: "ハイパーパラメーター",

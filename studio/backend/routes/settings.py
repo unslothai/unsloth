@@ -37,7 +37,13 @@ from auth.authentication import (
 )
 from auth.storage import rotate_preview_link_secret
 from auth import policy
-from utils.account_context import OWNER, bind_account, current_account, reset_account
+from utils.account_context import (
+    OWNER,
+    bind_account,
+    current_account,
+    is_owner_context,
+    reset_account,
+)
 from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
 
 from routes.provider_credentials import current_credential_write, require_ui_session
@@ -646,6 +652,10 @@ class SystemOneModelOption(BaseModel):
     name: str
     description: str
     download_bytes: int
+    kind: Literal["catalog", "fine_tune"] = "catalog"
+    label: Optional[str] = None
+    available: bool = True
+    unavailable_reason: Optional[str] = None
 
 
 class SystemOneConnectionOption(BaseModel):
@@ -1455,13 +1465,32 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
+    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+        return {}
+    return {"available": False, "unavailable_reason": reason}
+
+
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from pathlib import Path
+
     from core.systemone import catalog, laya_runtime
     from routes.systemone import MCP_PATH
 
+    clef_reason = catalog.clef_unsupported_reason(wait = False)
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
-    model = catalog.default_checkpoint().name
+    configured = catalog.default_checkpoint()
+    model = configured.name
+    if is_owner_context():
+        fine_tunes = catalog.fine_tunes()
+    else:
+        # Other accounts see only the configured model, never the owner's other output folders.
+        fine_tunes = [configured] if catalog.is_fine_tune_name(configured.name) else []
+        if runtime["loaded_model"] != model:
+            runtime["loaded_model"] = runtime["device"] = None
+        if runtime["loading_model"] != model:
+            runtime["loading_model"] = None
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
@@ -1476,9 +1505,23 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         gpu_available = systemone_settings.gpu_available(),
         models = [
             SystemOneModelOption(
-                name = c.name, description = c.description, download_bytes = c.download_bytes
+                name = c.name,
+                description = c.description,
+                download_bytes = c.download_bytes,
+                **_clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()
+        ]
+        + [
+            SystemOneModelOption(
+                name = c.name,
+                description = c.description,
+                download_bytes = 0,
+                kind = "fine_tune",
+                label = Path(c.source).name,
+                **_clef_availability(c, clef_reason),
+            )
+            for c in fine_tunes
         ],
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
@@ -1520,7 +1563,8 @@ def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
         raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
 
 
-@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+# Not the shared router, which reads as the owner for everyone: this answer depends on who asks.
+@_account_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:

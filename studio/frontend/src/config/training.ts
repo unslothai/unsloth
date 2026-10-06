@@ -139,6 +139,7 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;
+export const LR_DEFAULT_DECISION_FULL = 2.5e-5;
 
 // Also the advanced-settings summary's "unchanged" reference while CPT is selected.
 export const CPT_LORA_HYPERPARAMS = {
@@ -205,6 +206,7 @@ export const MODEL_TYPE_TO_HF_TASKS: Record<
     "text-to-audio",
   ],
   embeddings: ["feature-extraction"],
+  decision: ["text-classification"],
 };
 
 export const PRIORITY_TRAINING_MODELS: readonly string[] = [
@@ -219,6 +221,7 @@ export const PRIORITY_TRAINING_MODELS: readonly string[] = [
   "unsloth/Qwen3-0.6B",
   "unsloth/gemma-3-4b-it",
   "unsloth/embeddinggemma-300m",
+  "convaiinnovations/laya",
   "unsloth/orpheus-3b-0.1-ft",
   "unsloth/Llama-3.1-8B-Instruct",
   "unsloth/Llama-3.2-3B-Instruct",

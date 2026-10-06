@@ -2771,6 +2771,8 @@ export const en = {
         modelMultilingual: "Multilingual",
         modelEnglish: "English",
         modelTypedDecisions: "Typed decisions",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Recommended",
         device: "Run on",
         deviceDescription: "GPU answers faster, but keeps its memory reserved until restart.",
@@ -2780,11 +2782,13 @@ export const en = {
         notDownloaded: "Not downloaded · {size}",
         downloading: "Downloading…",
         downloaded: "Downloaded · loads on first request",
+        ready: "Ready · loads on first request",
         installing: "Installing…",
         loading: "Loading…",
         loadedOn: "Loaded on {device}",
         download: "Download",
         downloadConfirmTitle: "Download Laya {model}?",
+        downloadConfirmTitleModel: "Download {model}?",
         downloadConfirmBody:
           "The Decision API needs this model to answer requests. About {size}, fetched once into your Hugging Face cache.",
         unload: "Unload",
@@ -2908,6 +2912,9 @@ export const en = {
       methodLabel: "Method",
       methodTooltip:
         "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "The Laya checkpoint to fine-tune. Multilingual suits most datasets.",
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
       hfTokenDescription: "Required for gated or private models and datasets.",
@@ -3354,6 +3361,10 @@ export const en = {
         learningRatePositive: "Enter a learning rate greater than zero.",
         embeddingLearningRateRange:
           "Enter an embedding learning rate greater than 0 and less than 1.",
+        decisionColumnsMissing:
+          "Decision models need state, questions and gold (or answers) columns. Missing: {columns}.",
+        decisionOwnerOnly:
+          "Only the Studio owner can fine-tune decision models.",
         hfDatasetRequired: "Select a Hugging Face dataset first.",
         hfDatasetSplitRequired: "Select or enter a train split first.",
         localDatasetRequired: "Select a local dataset first.",
@@ -3513,6 +3524,9 @@ export const en = {
       title: "Training Progress",
       liveMetrics: "Live training metrics",
       exportGguf: "Export to GGUF",
+      useInDecisionApi: "Use in Decision API",
+      decisionApiEnabled: "The Decision API now serves {name}.",
+      decisionApiFailed: "Couldn't switch the Decision API to this model.",
       openConfig: "Open training config",
       configLabel: "Training Config",
       hyperparams: "Hyperparams",
