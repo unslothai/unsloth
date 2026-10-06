@@ -190,6 +190,13 @@ def test_local_path_containing_dev_keeps_the_shipped_schedule():
         ), path
 
 
+def test_local_path_containing_schnell_still_resolves_its_dev_base():
+    fam = detect_family("black-forest-labs/FLUX.1-dev")
+    path = "/models/schnell/flux.1-local"
+    shift = comfy_flow_shift_for(fam, None, path, path, "black-forest-labs/FLUX.1-dev")
+    assert shift == pytest.approx(math.exp(1.15))
+
+
 @pytest.mark.parametrize(
     "ids",
     [
@@ -271,6 +278,7 @@ def test_kill_switch_default_and_on_apply(value, monkeypatch):
 
 
 def test_real_scheduler_matches_comfy_when_diffusers_is_installed(monkeypatch):
+    pytest.importorskip("torch")  # no-torch installs ship diffusers' dummy scheduler
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.delenv(COMFY_SIGMAS_ENV, raising = False)
     for shipped, mu, steps in ((_Q21, 0.69, 25), (_FLUX1_DEV, 1.15, 20)):
