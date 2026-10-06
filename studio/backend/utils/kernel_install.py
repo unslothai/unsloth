@@ -4,12 +4,8 @@
 """Kernel install pieces shared by Studio setup, the training worker, the SSM runtime and
 `unsloth install-kernels [names]`.
 
-Callers keep their own policy (probe, verify, fallback). Only stdlib, wheel_utils and child_stdio
-are imported, so setup and torch-less hosts can import it.
-
-The CLI is wheel-only by design: no wheel for this torch / CUDA / Python means nothing is installed
-and the model keeps its torch fallback, never a source build. Installs use --no-deps so torch is
-never touched.
+Imports only stdlib, wheel_utils and child_stdio so setup and torch-less hosts can import it.
+The CLI is wheel-only (never a source build) and uses --no-deps so torch is never touched.
 """
 
 from __future__ import annotations
@@ -114,9 +110,8 @@ def hipcc_gcc_install_dir() -> str | None:
 
 
 def source_build_command(spec: str, *, use_uv: bool, is_hip: bool, reinstall: bool) -> list[str]:
-    """`--no-build-isolation --no-deps` install of *spec* against the resident torch. `reinstall`
-    replaces a broken install instead of no-opping as "already satisfied"; the cache is skipped
-    on HIP (uv) or always (pip) so stale partial build artifacts are never reused."""
+    """`--no-build-isolation --no-deps` install of *spec* against the resident torch; the cache is
+    skipped on HIP (uv) or always (pip) so stale partial build artifacts are never reused."""
     if use_uv:
         cmd = [
             "uv",
