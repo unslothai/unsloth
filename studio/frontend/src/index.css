@@ -3147,7 +3147,7 @@ html[data-chat-font] .aui-root {
 		--accent: color-mix(in srgb, var(--browser-menu-surface), white 10%);
 		--accent-foreground: #fff;
 		background-color: var(--browser-menu-surface) !important;
-		box-shadow: 0 0 14px 0 var(--background) !important;
+		box-shadow: 0 0 12px 0 var(--background) !important;
 	}
 	.dark .browser-menu [data-slot$="-separator"] {
 		background-color: color-mix(in srgb, var(--card), white 16%);
