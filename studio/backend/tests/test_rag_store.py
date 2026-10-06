@@ -75,6 +75,15 @@ def test_dense_ranks_by_cosine(rag_conn):
     assert ranked[0][0] == "d1:0" and ranked[0][1] > 0.99
 
 
+def test_dense_skips_nan_vectors_instead_of_raising(rag_conn):
+    # A float16 embedder wrote NaN vectors, which vec0 answers with a NULL distance.
+    _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha alpha"])
+    store.create_document(rag_conn, scope = "kb_a", filename = "g", sha256 = "h2", document_id = "d2")
+    store.add_chunks(rag_conn, "kb_a", "d2", [_chunk("alpha")], [[math.nan] * len(VOCAB)])
+    ranked = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10)
+    assert [cid for cid, _ in ranked] == ["d1:0"]
+
+
 def test_dense_knn_binds_k_rather_than_limit(rag_conn):
     """vec0's KNN bound must arrive as ``k = ?``, not a bare ``LIMIT ?``, which SQLite forwards
     to a virtual table's planner only from 3.41 on. CI's SQLite accepts both and returns the

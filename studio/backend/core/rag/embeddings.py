@@ -106,6 +106,25 @@ def _load_device() -> str:
     )
 
 
+def _load_dtype(device: str) -> str:
+    """bf16 on an accelerator with native bf16, float32 everywhere else. Never float16.
+
+    EmbeddingGemma's activations overflow float16: every vector comes back NaN, which vec0 stores
+    and then answers with a NULL distance. Its model card says to use float32 or bfloat16. Any Hub
+    model can be selected here, so the choice cannot be a per-model allowlist. Float32 on CPU also
+    avoids fp16 BERT raising "not implemented for Half", which encode() answers by swapping the
+    whole process to llama-server."""
+    if device == "cpu":
+        return "float32"
+    from core.training.diffusion_train_common import (
+        native_bf16_supported,
+        native_bf16_supported_xpu,
+    )
+
+    native = native_bf16_supported_xpu() if device == "xpu" else native_bf16_supported()
+    return "bfloat16" if native else "float32"
+
+
 _torchao_stub_done = False
 # Its own lock, not _lock: that one is held across a whole model construction, so borrowing it made
 # a preflight probe wait out someone else's download.
@@ -534,9 +553,7 @@ def _get(model_name: str | None = None):
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                # Keyed on the device we load on: fp16 BERT on CPU raises "not implemented for Half", which encode()
-                # answers by swapping the whole process to llama-server.
-                model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
+                model_kwargs = dtype_kwargs(_load_dtype(device)),
             )
             if managed_account():
                 st_kwargs["token"] = False

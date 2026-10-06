@@ -522,13 +522,27 @@ def test_cpu_never_loads_float16(monkeypatch, tmp_path):
     embeddings._name = None
 
 
-def test_opted_in_accelerator_loads_float16(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "device, native, expected",
+    [
+        ("cuda", True, "bfloat16"),
+        ("cuda", False, "float32"),
+        ("xpu", True, "bfloat16"),
+        ("xpu", False, "float32"),
+    ],
+)
+def test_opted_in_accelerator_never_loads_float16(monkeypatch, tmp_path, device, native, expected):
+    # EmbeddingGemma returns NaN for every vector in float16; without native bf16 the fallback is float32.
+    import core.training.diffusion_train_common as dtc
+
     observed = _shared_setup_1(monkeypatch)
-    monkeypatch.setattr(embeddings, "_load_device", lambda: "cuda")
+    monkeypatch.setattr(embeddings, "_load_device", lambda: device)
+    monkeypatch.setattr(dtc, "native_bf16_supported", lambda: native)
+    monkeypatch.setattr(dtc, "native_bf16_supported_xpu", lambda: native)
     _shared_setup_2(monkeypatch, tmp_path)
 
-    assert observed["device"] == "cuda"
-    assert list(observed["model_kwargs"].values()) == ["float16"]
+    assert observed["device"] == device
+    assert list(observed["model_kwargs"].values()) == [expected]
 
 
 def test_accelerator_fallback_loads_float32_on_cpu(monkeypatch, tmp_path):
