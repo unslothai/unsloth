@@ -8,7 +8,6 @@ import type { InterpolationValues, MessageKey, MessageTree } from "./types";
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English" },
   "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文" },
-  he: { label: "Hebrew", nativeLabel: "עברית" },
   ja: { label: "Japanese", nativeLabel: "日本語" },
   ko: { label: "Korean", nativeLabel: "한국어" },
   es: { label: "Spanish", nativeLabel: "Español" },
@@ -19,6 +18,7 @@ export const LOCALES = {
   ru: { label: "Russian", nativeLabel: "Русский" },
   hi: { label: "Hindi", nativeLabel: "हिन्दी" },
   ar: { label: "Arabic", nativeLabel: "العربية" },
+  he: { label: "Hebrew", nativeLabel: "עברית" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;
@@ -35,7 +35,6 @@ type LazyLocale = Exclude<Locale, "en">;
 
 const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   "zh-CN": () => import("./locales/zh-CN"),
-  he: () => import("./locales/he"),
   ja: () => import("./locales/ja"),
   ko: () => import("./locales/ko"),
   es: () => import("./locales/es"),
@@ -46,6 +45,7 @@ const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   ru: () => import("./locales/ru"),
   hi: () => import("./locales/hi"),
   ar: () => import("./locales/ar"),
+  he: () => import("./locales/he"),
 };
 
 /** A catalog exports its own tag with the separator dropped: zh-CN -> zhCN. */
