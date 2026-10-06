@@ -1098,13 +1098,9 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert folded == pytest.approx(model.decision_config["head_temperature"])
     assert "head_temperature" not in reloaded.decision_config
     assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
-    released, _ = reference.load_release_model(
-        str(tmp_path / "out"), device = device, dtype = torch.float32
-    )
     with torch.no_grad():
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
-        theirs = released(batch)[0]
     # Saved in bf16, so the reload rounds the trained weights.
     # Compared as served probabilities: the folded head is trained / folded, and a small folded
     # temperature would magnify bf16 rounding if the logits were compared directly.
@@ -1112,6 +1108,20 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
     reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
     assert torch.allclose(served, reloaded_served, atol = 0.02)
+    try:
+        from triton.runtime.errors import OutOfResources
+    except ImportError:
+        OutOfResources = ()
+    try:
+        released, _ = reference.load_release_model(
+            str(tmp_path / "out"), device = device, dtype = torch.float32
+        )
+        with torch.no_grad():
+            theirs = released(batch)[0]
+    except OutOfResources as exc:
+        # Cloudflare's reference in float32 runs the gated-delta kernel with more shared memory than
+        # RDNA2's 64 KB. Everything above passed on such a card (RX 6500 XT).
+        pytest.skip(f"the float32 reference needs more shared memory than this GPU has: {exc}")
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax())
 
