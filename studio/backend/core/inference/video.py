@@ -422,8 +422,7 @@ def _video_comfy_resident_mib(
             }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
-        # Resident pricing only for a runtime that runs resident: an offload-only int8 twin cannot keep the codes
-        # of a DiT the plan then keeps resident (the plan is re-priced if it offloads).
+        # Only a resident runtime keeps codes in a resident plan; an offloaded plan is re-priced.
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
     return comfy_resident_mib(
@@ -7322,7 +7321,6 @@ class VideoBackend:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
 
             # torchao only: H3's pin / stream / residency path is built on torchao weights, like the hosted ones.
-            # Precision Off asks for the bf16 denoiser, so the file dequantizes.
             dense_pin = _h3_precision_pinned_dense(transformer_quant_requested)
             h3_int8 = h3_fp8 = None
             if not dense_pin:
@@ -7341,7 +7339,6 @@ class VideoBackend:
                 and not dense_pin
                 and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
             ):
-                # Refused before the load: dequantized, the denoiser would be the 40 GB bfloat16 model.
                 raise RuntimeError(
                     f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "

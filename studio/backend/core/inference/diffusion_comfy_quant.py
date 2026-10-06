@@ -1061,8 +1061,7 @@ def load_comfy_quant_transformer(
         model.load_state_dict(converted, strict = False, assign = True)
     loaded = set(converted)
     del converted
-    # from_single_file ends with model.to(torch_dtype): buffers built in __init__ (Wan's float64 rope) follow it;
-    # checkpoint buffers keep the dtype they were loaded with (keep_dtype's float32 H3 curve table)
+    # __init__ buffers (Wan's float64 rope) follow the compute dtype; checkpoint buffers keep theirs (H3 curve table)
     for module_name, module in model.named_modules():
         for buffer_name, buffer in list(module._buffers.items()):
             if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
