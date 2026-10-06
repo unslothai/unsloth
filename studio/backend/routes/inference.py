@@ -24185,9 +24185,15 @@ def _audio_cpp_runtime_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
-    # Only the tree setup manages: a binary the user pointed Studio at is theirs to update.
+    # Only the tree setup manages: a binary the user pointed Studio at is theirs to update, and
+    # setup.sh / setup.ps1 skip the managed install under any of these, wherever it resolves.
+    setup_skips = (
+        os.environ.get("AUDIOCPP_SERVER_PATH")
+        or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
+        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
+    )
     try:
-        managed = (
+        managed = not setup_skips and (
             Path(binary)
             .resolve()
             .is_relative_to(audio_cpp_server.managed_audio_cpp_dir().resolve())

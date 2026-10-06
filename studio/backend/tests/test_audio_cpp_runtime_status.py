@@ -6,6 +6,8 @@
 import asyncio
 import json
 
+import pytest
+
 from core.inference import audio_cpp_server
 from routes import inference
 
@@ -84,6 +86,8 @@ def test_malformed_record_fields_are_dropped(monkeypatch):
 
 
 _LADDER = [("unslothai/audio.cpp", "v0.9.0-unsloth.1"), ("0xShug0/audio.cpp", "v0.9.0")]
+# setup.sh / setup.ps1 leave the managed tree alone when any of these is set.
+_SETUP_SKIPS = ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH", "UNSLOTH_SKIP_AUDIO_CPP_INSTALL")
 
 
 def _managed(
@@ -93,6 +97,8 @@ def _managed(
     ladder = _LADDER,
 ):
     """A Studio-managed install of ``record`` and the releases setup would install."""
+    for name in _SETUP_SKIPS:
+        monkeypatch.delenv(name, raising = False)
     _patch(monkeypatch, binary = str(tmp_path / "audiocpp_server"), record = record, espeak = True)
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: tmp_path)
     monkeypatch.setattr(inference, "_audio_cpp_release_ladder", lambda: ladder)
@@ -168,6 +174,28 @@ def test_user_configured_binary_is_never_outdated(monkeypatch, tmp_path):
     assert status["available"] is True
     assert status["expected_tag"] is None and status["outdated"] is False
 
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        # A stale path makes discovery fall back to the managed tree.
+        ("AUDIOCPP_SERVER_PATH", "/gone/audiocpp_server"),
+        ("UNSLOTH_AUDIO_CPP_PATH", "<managed>"),
+        ("UNSLOTH_SKIP_AUDIO_CPP_INSTALL", "1"),
+    ],
+)
+def test_managed_binary_is_not_outdated_when_setup_skips_it(monkeypatch, tmp_path, name, value):
+    # An update would not touch the tree, so its notice could never clear.
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": "unslothai/audio.cpp", "release_tag": "v0.8.0-unsloth.1"},
+    )
+    monkeypatch.setenv(name, str(tmp_path) if value == "<managed>" else value)
+    status = inference._audio_cpp_runtime_status()
+    assert status["available"] is True
+    assert status["expected_tag"] is None and status["outdated"] is False
 
 def test_release_lookup_error_is_not_outdated(monkeypatch, tmp_path):
     _managed(
