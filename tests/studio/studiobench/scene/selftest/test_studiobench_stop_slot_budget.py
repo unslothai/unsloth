@@ -145,6 +145,7 @@ class _Page:
         stop_ms: float = STOP_MS,
         cleanup_ms: float = CLEANUP_MS,
         accepts_send: bool = True,
+        menu_never_opens: bool = False,
     ) -> None:
         self._clock = clock
         self._entered = clock.t
@@ -154,6 +155,9 @@ class _Page:
         self._stop_ms = stop_ms
         self._cleanup_ms = cleanup_ms
         self.accepts_send = accepts_send
+        # The cleanup reaches Delete through the More menu (#12735); a menu that never mounts costs
+        # the whole wait the action allowed it.
+        self.menu_never_opens = menu_never_opens
         self.running = True
         self.filled: list[str] = []
         self.composer = ""
@@ -193,6 +197,14 @@ class _Page:
     ):
         self.charge()
         if arg is not None:  # STOP_CLEANUP_JS, which is the only call that takes one
+            if self.menu_never_opens:
+                self.charge(arg["menuWaitMs"])
+                return {
+                    "removed": False,
+                    "before": self.messages,
+                    "after": self.messages,
+                    "reason": "no Delete control on the throwaway turn",
+                }
             self.charge(self._cleanup_ms)
             before = self.messages
             if self.messages:
@@ -332,6 +344,27 @@ def test_no_moment_the_reply_can_drain_lets_the_action_spend_the_next_slot(monke
             f"stop_generation spending {page.elapsed_ms:.0f}ms of a {stop.budget_ms}ms slot with "
             f"only {slack_ms}ms before {nxt.action} opens"
             + (f"; it ran the throwaway turn anyway: {result.expect}" if result.ran else "")
+        )
+
+
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+def test_a_cleanup_menu_that_never_opens_still_ends_inside_the_slot(monkeypatch, scene):
+    """The cleanup now opens the reply's More menu before it can select Delete, and that wait was not
+    priced into `OWN_TURN_RESERVE_MS`. It is bounded by what is left of the slot instead, so the
+    worst case, a menu that never mounts, is swept over every drain time like the case above."""
+
+    stop, nxt, slack_ms = _stop_slot(scene)
+    for drained_at in range(0, stop.budget_ms, 50):
+        result, page = _run(
+            monkeypatch,
+            budget_ms = stop.budget_ms,
+            drain_after_ms = drained_at,
+            menu_never_opens = True,
+        )
+        assert page.elapsed_ms <= stop.budget_ms + slack_ms, (
+            f"{scene.name}: a reply draining {drained_at}ms into the slot, then a cleanup menu "
+            f"that never opened, left stop_generation spending {page.elapsed_ms:.0f}ms of a "
+            f"{stop.budget_ms}ms slot with only {slack_ms}ms before {nxt.action} opens"
         )
 
 

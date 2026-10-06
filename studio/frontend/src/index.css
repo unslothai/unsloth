@@ -136,6 +136,23 @@
 			transparent
 		);
 	}
+	/* Model picker list: reaches into the panel padding for an overlay scrollbar so rows keep their
+	   18px inset; rows give way only for what is left. --list-room is already clear of row actions. */
+	.model-list-scroll {
+		--list-reach: min(var(--overlay-scrollbar-gutter, 0px), var(--spacing));
+		--list-room: calc(var(--spacing) * 2 + var(--list-reach));
+		margin-right: calc(var(--spacing) - var(--list-reach));
+		padding-right: calc(var(--spacing) * 1.5 + var(--list-reach));
+	}
+	[data-external] .model-list-scroll {
+		--list-reach: min(var(--overlay-scrollbar-gutter, 0px), var(--spacing) * 2);
+		--list-room: calc(var(--spacing) + var(--list-reach));
+		margin-right: calc(0px - var(--list-reach));
+		padding-right: calc(var(--spacing) * 0.5 + var(--list-reach));
+	}
+	.model-list-gutter {
+		padding-right: max(0px, var(--overlay-scrollbar-gutter, 0px) - var(--list-room));
+	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
 	.rag-docs-bottom-fade {
@@ -212,6 +229,9 @@
 	/* Easing curves (Emil Kowalski) */
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
+
+	/* Composer shadow, shared by toasts; palettes may override it. */
+	--composer-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
@@ -426,6 +446,8 @@
 	--background: #181818;
 	--foreground-base: #dfdfdf;
 	--card-base: #272727;
+	/* Page-coloured: sets the composer off the messages behind it. */
+	--composer-shadow: 0 4px 20px 4px var(--background);
 	--card-foreground-base: #dfdfdf;
 	--popover-base: #272727;
 	--popover-foreground-base: #dfdfdf;
@@ -750,10 +772,9 @@
 	--sidebar-surface: var(--background);
 }
 
-/* Neon Cyberpunk light: yellow edge glow on the composer. */
-:root[data-palette="neon-cyberpunk"]:not(.dark)
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
-	box-shadow:
+/* Neon Cyberpunk light: yellow edge glow on the composer and toasts. */
+:root[data-palette="neon-cyberpunk"]:not(.dark) {
+	--composer-shadow:
 		0 0 0 1px rgb(230 210 0 / 0.7),
 		0 0 26px -6px rgb(252 238 10 / 0.8),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
@@ -765,10 +786,9 @@
 		0 0 32px -4px rgb(252 238 10 / 0.9),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
-/* Neon Cyberpunk: cyan edge glow on the dark composer. */
-:root[data-palette="neon-cyberpunk"].dark
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
-	box-shadow:
+/* Neon Cyberpunk: cyan edge glow on the dark composer and toasts. */
+:root[data-palette="neon-cyberpunk"].dark {
+	--composer-shadow:
 		0 0 0 1px rgb(0 240 255 / 0.35),
 		0 0 28px -8px rgb(0 240 255 / 0.45),
 		0 4px 20px 4px var(--background);
@@ -2393,8 +2413,43 @@ html[data-chat-font] .aui-root {
 	.aui-user-branch-picker {
 		margin-right: calc(3.4px * var(--ui-space-scale, 1));
 	}
+	.aui-branch-chevron-btn,
+	.aui-branch-chevron-btn + * {
+		--aui-chevron-slot: calc(20px * var(--ui-space-scale, 1));
+		--aui-chevron-hit: max(calc(24px * var(--ui-interface-scale, 1)), var(--aui-chevron-slot));
+		--aui-chevron-extra: calc(var(--aui-chevron-hit) - var(--aui-chevron-slot));
+	}
+	/* The count between the chevrons is at least as wide as both extensions, so they cannot meet over it even
+	   in a narrow custom chat font. Wider counts, the usual case, are untouched. */
+	.aui-branch-chevron-btn + :not(.aui-branch-chevron-btn) {
+		/* 1px of slack: two targets that only touch can still trade a sub-pixel once snapped to device pixels. */
+		min-inline-size: calc(var(--aui-chevron-extra) * 2 + 1px);
+		text-align: center;
+	}
 	.aui-branch-chevron-btn {
+		/* The visible button stays the 20px slot, scaled, that the layout was tuned to, so the glyph and its focus
+		   ring sit where they always did. The hit target is at least 24px (what #12173 guarantees every footer
+		   control): an invisible ::before extends it toward the count between the chevrons, never toward the action
+		   button on the outer side, which at small font sizes sits closer than the extra. The floor follows the
+		   browser's Interface Scale, as browser zoom would, but not the UI font size. */
+		position: relative;
+		/* Room above and below for the part of the target past the box. In one row with the action buttons this
+		   sits inside the row's height and moves nothing; when the picker wraps onto its own row, the row grows
+		   to hold it instead of the target reaching across the row gap into the actions above. */
+		margin-block: calc(var(--aui-chevron-extra) / 2);
 		@apply inline-flex size-[calc(20px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
+	}
+	.aui-branch-chevron-btn::before {
+		content: "";
+		position: absolute;
+		inset-block: calc(var(--aui-chevron-extra) / -2);
+		inset-inline: 0;
+	}
+	.aui-branch-chevron-btn:first-child::before {
+		inset-inline-end: calc(var(--aui-chevron-extra) * -1);
+	}
+	.aui-branch-chevron-btn:last-child::before {
+		inset-inline-start: calc(var(--aui-chevron-extra) * -1);
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -3112,15 +3167,12 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
-		/* Gemini-style composer shadow. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: var(--composer-shadow);
 		transition: box-shadow 0.1s;
 	}
 
 	.dark .chat-composer-surface {
 		background-color: var(--card);
-		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
-		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	.composer-pill-btn {
@@ -3264,19 +3316,12 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
-		/* Gemini-style composer shadow. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: var(--composer-shadow);
 		transition: box-shadow 0.1s;
-	}
-
-	.unsloth-composer-surface:focus-within {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	.dark .unsloth-composer-surface {
 		background-color: var(--card);
-		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
-		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
@@ -4280,10 +4325,16 @@ html[data-chat-font] .aui-root {
 		width: 0 !important;
 	}
 
-	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	/* Chat code is 12px at any width (CODE_FONT_SIZE_RANGE.default); the header steps up when wide. */
 	.aui-thread-root [data-streamdown="code-block"] {
-		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
+	}
+
+	/* The body's text-sm would otherwise override the size above. */
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		font-size: inherit;
+		line-height: inherit;
 	}
 
 	.aui-thread-root [data-streamdown="code-block-header"] {
@@ -4291,10 +4342,6 @@ html[data-chat-font] .aui-root {
 	}
 
 	@container (min-width: 36rem) {
-		.aui-thread-root [data-streamdown="code-block"] {
-			font-size: calc(0.875rem * var(--ui-font-scale, 1));
-		}
-
 		.aui-thread-root [data-streamdown="code-block-header"] {
 			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}
@@ -4595,15 +4642,13 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; a soft layered shadow lifts the toast off the page.
+/* No border line; the composer's shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	box-shadow:
-		0 1px 2px rgba(0, 0, 0, 0.04),
-		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
+	box-shadow: var(--composer-shadow) !important;
 }
 
 /* Icon starts at the first line's cap height, never above the text. */
@@ -4702,11 +4747,9 @@ html[data-chat-font] .aui-root {
 	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Dark toasts share the chatbox surface color (.chat-composer-surface
-   uses var(--card) in dark); the composer shadow lifts them off the page. */
+/* Dark toasts share the composer's surface colour. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 4px 20px 4px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */

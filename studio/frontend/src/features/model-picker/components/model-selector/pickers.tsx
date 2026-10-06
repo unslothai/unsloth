@@ -490,7 +490,7 @@ function ListLabel({
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
                 <ChevronRightIcon className="size-3" />
@@ -984,18 +984,16 @@ function artifactBudget(gpu: {
 }
 
 const META_COLUMN = {
-  // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
-  quant: "min-[560px]:w-[7.2em]",
+  // Hugs its chip, capped at "UD-Q4_K_XL" (longer quants clip). Leftmost, so its slack goes to the name.
+  quant: "min-[560px]:max-w-[7.2em]",
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
   // slot and shift every column after it. This slot holds capability glyphs and the vision badge
   // (both 26px pills) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
   badge: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
   // One glyph plus the disk mark (26 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
-  // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
-  // both grow past the slot and carry its quant chip 18px left of every other row.
-  badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
+  // On Device: the vision badge only (26px). Its partial mark sits with the name, as Loaded does.
+  badgeDevice: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
   // Hub draws the disk mark and no vision badge (26+4+14). A second glyph grows it via min-w-min.
   badgeWide: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
@@ -1011,6 +1009,9 @@ const META_COLUMN = {
   // The format dot that leads the row; the name lives in its tooltip.
   format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
+
+// On Device spacing between the name, quant, modality and parameter marks: never under 6px.
+const DEVICE_META_GAP = "gap-[max(6px,calc(6px*var(--ui-space-scale,1)))]";
 
 const downloadedRowButtonClassName =
   "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
@@ -1347,11 +1348,11 @@ function ModelRow({
         className,
       )}
     >
-      {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
-          first meta mark, on the rhythm the meta columns keep. */}
+      {/* Separates the name group from the meta cluster. */}
       <span
         className={cn(
-          "flex w-full items-center gap-1",
+          "flex w-full items-center",
+          alignMeta === "device" ? DEVICE_META_GAP : "gap-1",
           // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
           exceeds &&
             !selected &&
@@ -1391,6 +1392,11 @@ function ModelRow({
           </span>
           {/* Here it eats name width instead of moving the meta columns. self-center: on the
               baseline the empty dot sat the tag low. */}
+          {alignMeta === "device" && partial ? (
+            <span className="ml-[max(6px,calc(6px*var(--ui-space-scale,1)))] flex shrink-0 items-center self-center">
+              <PartialBadge resumable={partialResumable} />
+            </span>
+          ) : null}
           {aligned && loaded && (
             <DotTag
               tone="success"
@@ -1415,7 +1421,7 @@ function ModelRow({
         <span
           className={cn(
             "ml-auto flex shrink-0 items-center",
-            aligned ? "gap-1" : "gap-1.5",
+            alignMeta === "device" ? DEVICE_META_GAP : aligned ? "gap-1" : "gap-1.5",
           )}
         >
           {/* The quant chip sits in the meta cluster, not at the end of the name, so one
@@ -1423,17 +1429,15 @@ function ModelRow({
               the row's buttons. Inside the name group it was centred against THAT box instead --
               a baseline box sized by the name's own line height -- so it only agreed with the rest
               of the row for as long as the two boxes happened to share a centre. */}
-          {alignMeta === "device" ? (
+          {alignMeta === "device" && quantChip ? (
             <span
               className={cn(
-                // justify-end: the slot is sized for the longest quant, so left-aligning ended a
-                // "Q8_0" and a "UD-Q4_K_XL" at different x even once the slot itself stopped
-                // moving. Flush right is what makes the chips read as one column.
+                // Ends against the fixed badge column, so chips align whatever their length.
                 "flex shrink-0 items-center justify-end text-ui-9",
                 META_COLUMN.quant,
               )}
             >
-              {quantChip ? <QuantChip label={quantChip} /> : null}
+              <QuantChip label={quantChip} />
             </span>
           ) : null}
           {/* Capabilities, vision and the Hub lists' "on disk" mark share one
@@ -1441,14 +1445,18 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                // Right, not centre: slack belongs to the name, not split either side of a glyph.
-                "flex shrink-0 items-center justify-end gap-1 text-ui-10",
+                // Right, not centre: slack belongs to the name. On Device it leads, so the eye sits
+                // the cluster gap from the quant chip.
+                "flex shrink-0 items-center gap-1 text-ui-10",
+                alignMeta === "device" ? "justify-start" : "justify-end",
                 badgeColumn,
               )}
             >
               {showCaps && <CapabilityIcons caps={caps} />}
               {showVision && <VisionBadge />}
-              {partial ? <PartialBadge resumable={partialResumable} /> : null}
+              {partial && alignMeta !== "device" ? (
+                <PartialBadge resumable={partialResumable} />
+              ) : null}
               {downloaded && !partial && !loaded ? <DownloadedBadge /> : null}
             </span>
           ) : (
@@ -1482,10 +1490,8 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                // Device leads the chip, Hub trails it. Both columns are fixed, so the choice is only where the
-                // slack falls: trailing put it in FRONT of the chip, where it read as part of the gap to the
-                // modality mark and grew with the label (6.9px after "217B", 19px after "1B"). Leading leaves that
-                // gap as the cluster's own gap-1.
+                // Device leads the chip so every chip starts at one x, the cluster gap after the modality
+                // slot. Hub trails it.
                 "flex shrink-0 items-center text-ui-10",
                 alignMeta === "hub"
                   ? cn("justify-end", META_COLUMN.paramWide)
@@ -2679,8 +2685,14 @@ function mediaPageForTask(
 // task itself must stay, since FLUX.2-klein carries it too.
 const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
 // Editing families the backend now SUPPORTS: not hidden despite the edit keyword. Mirrors the
-// backend's qwen-image-edit family.
-const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
+// backend's qwen-image-edit, flux.1-kontext and qwen-image-layered families.
+const SUPPORTED_EDIT_KEYWORDS = [
+  "qwen-image-edit",
+  "kontext",
+  "qwen-image-layered",
+  "qwen_image_layered",
+  "qwenimagelayered",
+] as const;
 // Match a keyword as a whole path/name segment, not a raw substring, so "edit" does not hide
 // ".../edited/...". Keywords are [a-z-] literals, so no escaping. Mirrors _token_in_needle.
 function idHasSegment(id: string, keyword: string): boolean {
@@ -7030,9 +7042,9 @@ export function HubModelPicker({
             // The list sits within the menu padding so gaps match; scroll-py and the side padding keep
             // the focus ring off the overflow clip edges during keyboard nav. The panel is padded 16px
             // on the left but 8px on the right (16px with external providers), so the scroller can run
-            // near the edge for its scrollbar; the right inset makes up the difference, and a row's
-            // hover pill sits 18px from both edges.
-            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5 pr-1.5 mr-1 in-data-[external=true]:pr-0.5 in-data-[external=true]:mr-0",
+            // near the edge for its scrollbar; its right inset (index.css) makes up the difference, and
+            // a row's hover pill sits 18px from both edges.
+            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
           )}
@@ -7041,7 +7053,7 @@ export function HubModelPicker({
           <div
             className={cn(
               // Keep row actions clear of overlay scrollbars, overflowing or not.
-              "overlay-scrollbar-gutter",
+              "model-list-gutter",
               // On Device pulls the heading block tight to the controls; Recommended keeps more top room
               // above its first row.
               showDownloaded ? "pt-0" : "pt-[calc(4px*var(--ui-space-scale,1))]",
@@ -7362,7 +7374,7 @@ export function HubModelPicker({
                           }
                           title={fineTunedCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setFineTunedCollapsed((v) => !v)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -7459,7 +7471,7 @@ export function HubModelPicker({
                           }
                           title={customFoldersCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -7693,6 +7705,8 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
+                                  // The downloaded rows' inset, so columns line up across sections.
+                                  className="pr-1"
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7834,6 +7848,8 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
+                                  // The downloaded rows' inset, so columns line up across sections.
+                                  className="pr-1"
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7962,6 +7978,8 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
+                                  // The downloaded rows' inset, so columns line up across sections.
+                                  className="pr-1"
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>

@@ -117,6 +117,7 @@ from unsloth.models._attn_mask_compat import (
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
+from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .vision import (
@@ -3614,6 +3615,7 @@ class FastLlamaModel:
                     f"Unsloth: could not check the dispatch hooks "
                     f"({type(_exc).__name__}: {_exc})."
                 )
+        _install_bnb_nf4_override()
         return model, tokenizer
 
     @staticmethod

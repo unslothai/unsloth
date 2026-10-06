@@ -8244,7 +8244,7 @@ const ForkMessageButton: FC = () => {
       disabled={forkDisabled}
       onClick={forkMessage}
     >
-      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.97)]" />
     </TooltipIconButton>
   );
 };
@@ -8756,6 +8756,10 @@ const UserMessageAudio: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  // Attachments alone (annotations, images) get no empty bubble under them.
+  const hasContent = useAuiState(({ message }) =>
+    message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
+  );
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
@@ -8767,9 +8771,11 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
-          <MessagePrimitive.Parts />
-        </div>
+        {hasContent ? (
+          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+            <MessagePrimitive.Parts />
+          </div>
+        ) : null}
         <UserMessageFooter>
           <UserActionBar />
           <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
