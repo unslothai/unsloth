@@ -13,5 +13,11 @@ const DANGEROUS = new Set<string>(policy.extensions);
 export function isDangerousDownload(name: string): boolean {
   const base = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1).replace(/[. ]+$/, "");
   const dot = base.lastIndexOf(".");
-  return dot > 0 && DANGEROUS.has(base.slice(dot + 1).toLowerCase());
+  // A bare `.exe` still runs as one.
+  return dot >= 0 && DANGEROUS.has(base.slice(dot + 1).toLowerCase());
+}
+
+/** Bidi controls out, so `x\u202efdp.exe` can't read as `xexe.pdf` where it is shown or saved. */
+export function safeDownloadName(name: string): string {
+  return name.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "_");
 }

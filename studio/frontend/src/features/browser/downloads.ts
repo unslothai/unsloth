@@ -12,11 +12,12 @@ export type BrowserDownload = { blob: Blob; name: string; contentType: string; u
 
 /** Save a file from the panel and add it to the download history; a file that runs code asks first. */
 export async function saveBrowserDownload(download: BrowserDownload): Promise<void> {
-  const { isDangerousDownload } = await import("./download-safety");
-  if (isDangerousDownload(download.name) && !(await confirmDangerous(download.name))) return;
-  const { blob, name, contentType, url } = download;
+  const { isDangerousDownload, safeDownloadName } = await import("./download-safety");
+  const { blob, contentType, url } = download;
+  const name = safeDownloadName(download.name);
+  if (isDangerousDownload(name) && !(await confirmDangerous(name))) return;
   try {
-    await downloadFile(blob, name, contentType || undefined);
+    await downloadFile(blob, name, contentType || undefined, url);
   } catch (error) {
     if (!isDownloadCancelled(error)) toast.error(error instanceof Error ? error.message : String(error));
     return;
