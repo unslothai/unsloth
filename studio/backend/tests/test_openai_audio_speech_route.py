@@ -1632,3 +1632,83 @@ def test_a_cancel_landing_at_the_spawn_never_leaves_a_child_running():
     after = helper[popen : popen + 2500]
     recheck = after.index("if self._spawn_is_stale() or _load_cancelled():")
     assert "self._kill_process()" in after[recheck : recheck + 400]
+
+
+def test_a_forced_swap_cancels_a_streaming_clip(monkeypatch):
+    """The stream route registered its generation with an event nothing read, so a forced
+    model swap's cancel_all left the clip reading from llama-server until it finished."""
+    from state import active_generations
+
+    seen = []
+
+    def _stream(**kwargs):
+        cancel = kwargs["cancel_event"]
+        active_generations.cancel_all()
+        seen.append(cancel.is_set())
+        yield b"\x00\x00"
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _audio_type = "snac",
+        context_length = None,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", lambda _b: "voice")
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello"), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run())
+    assert seen == [True]
+
+
+def test_the_streaming_backend_stops_reading_once_cancelled(monkeypatch):
+    import contextlib
+    import threading
+
+    import core.inference.llama_cpp as llama_cpp
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    cancel = threading.Event()
+    read = []
+
+    class _Response:
+        status_code = 200
+
+        def iter_lines(self):
+            for i in range(5):
+                read.append(i)
+                if i == 1:
+                    cancel.set()
+                yield 'data: {"content": ""}'
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        @contextlib.contextmanager
+        def stream(self, *a, **k):
+            yield _Response()
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _Client)
+    codec = SimpleNamespace(has_codec = lambda _t: True)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", codec)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
+
+    out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
+    assert out == []
+    assert read == [0, 1]

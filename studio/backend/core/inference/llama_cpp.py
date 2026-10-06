@@ -41598,6 +41598,7 @@ class LlamaCppBackend:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
         seed: int = 42,
+        cancel_event: Optional[threading.Event] = None,
     ):
         """Stream TTS audio for `text` as it generates: yields raw 16-bit PCM (mono,
         24 kHz) so playback can start on the first fraction of a second instead of
@@ -41685,6 +41686,9 @@ class LlamaCppBackend:
                 if resp.status_code != 200:
                     raise RuntimeError(f"llama-server returned {resp.status_code}")
                 for line in resp.iter_lines():
+                    # A forced swap cancels live generations; leaving the block closes the stream.
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
                     if not line or not line.startswith("data:"):
                         continue
                     try:

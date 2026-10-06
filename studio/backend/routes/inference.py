@@ -22921,9 +22921,11 @@ async def openai_audio_speech_stream(
     # rather than a flag to keep in sync.
     # Registered for the body's lifetime, like the blocking route: unregistered, the clip
     # counted as no generation, so /voice/unload and /unload passed their foreign-generation
-    # gates and a forced swap stopped the server mid-stream. No cancel keys: nothing addresses it.
+    # gates and a forced swap stopped the server mid-stream. No cancel keys: nothing addresses it,
+    # but a forced swap's cancel_all sets the event and the stream stops at the next token.
     def gen():
-        with _TrackedCancel(threading.Event(), model = _llama_public_model_id(backend), kind = "audio"):
+        cancel = threading.Event()
+        with _TrackedCancel(cancel, model = _llama_public_model_id(backend), kind = "audio"):
             try:
                 yield from backend.generate_audio_response_stream(
                     text = text,
@@ -22931,6 +22933,7 @@ async def openai_audio_speech_stream(
                     voice = voice_name,
                     max_new_tokens = max_new_tokens,
                     seed = body.seed if body.seed is not None else 42,
+                    cancel_event = cancel,
                 )
             except GeneratorExit:
                 # The client went away mid-clip (a barge-in, a closed tab). Not a failure,
