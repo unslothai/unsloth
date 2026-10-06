@@ -173,7 +173,6 @@ def system_available_mib() -> Optional[int]:
     """Host-wide available RAM in MiB (psutil, then /proc/meminfo), NOT cgroup-capped, or None."""
     try:
         import psutil
-
         return int(psutil.virtual_memory().available // _MIB)
     except Exception:  # noqa: BLE001 - fall back to the kernel file
         pass
@@ -184,7 +183,6 @@ def system_total_mib() -> Optional[int]:
     """Host-wide total RAM in MiB (psutil, then /proc/meminfo), NOT cgroup-capped, or None."""
     try:
         import psutil
-
         return int(psutil.virtual_memory().total // _MIB)
     except Exception:  # noqa: BLE001 - fall back to the kernel file
         pass
@@ -210,20 +208,3 @@ def usable_host_ram_mib() -> Optional[int]:
 def host_ram_capacity_mib() -> Optional[int]:
     """Host RAM this process may ever charge, in MiB: min(system total, cgroup limit)."""
     return usable_mib(system_total_mib(), cgroup_limit_mib())
-
-
-def host_ram_snapshot() -> dict[str, Optional[int]]:
-    """One consistent read of every figure above (the cgroup tree is walked once), in MiB."""
-    budgets = cgroup_memory_budgets()
-    headroom = cgroup_headroom_mib(budgets)
-    limit = cgroup_limit_mib(budgets)
-    available = system_available_mib()
-    total = system_total_mib()
-    return {
-        "system_available_mib": available,
-        "system_total_mib": total,
-        "cgroup_headroom_mib": headroom,
-        "cgroup_limit_mib": limit,
-        "usable_mib": usable_mib(available, headroom),
-        "capacity_mib": usable_mib(total, limit),
-    }
