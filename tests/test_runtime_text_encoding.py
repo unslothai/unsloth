@@ -67,17 +67,17 @@ REVIEWED_NON_FILE_OPEN = (
     "stream.codec_context.open()",
 )
 GUARDED_METHODS = {"read_text", "write_text"}
-# Path classes, so an unbound `Path.open(p)` shifts every argument one right.
+# path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
-# Values that re-select the platform default when passed as the encoding.
+# values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
-# Calls that return the platform default, so naming one pins nothing.
+# calls that return the platform default, so naming one pins nothing.
 PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
-# Modules whose `open` IS the builtin: same signature, same platform default.
+# modules whose `open` is the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
-# Take an encoding in "t" mode but default to "rb".
+# take an encoding in "t" mode but default to "rb".
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
-# Distinct from None so that "no mode argument at all" still means text.
+# distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
 
 
@@ -332,12 +332,7 @@ def _offenders_in(src: str, label: str = "<snippet>"):
 
 
 def _tracked_sources():
-    """Shipping *.py that git is actually tracking.
-
-    A walk also picks up whatever is lying in the checkout (a built `build/lib` copy,
-    a nested worktree, a vendored dep). None of those are ours to police, and a stale
-    artifact would fail this for everybody who has one.
-    """
+    """scan tracked *.py files so untracked builds, worktrees, and dependencies cannot fail it."""
     listed = subprocess.run(
         ["git", "-C", str(REPO), "ls-files", "-z", "--", "*.py"],
         capture_output = True,
