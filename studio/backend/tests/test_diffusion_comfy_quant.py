@@ -492,3 +492,24 @@ def test_only_torchao_comfy_loads_ask_for_compile(comfy_file):
     model._unsloth_comfy_quant = {"backend": "torchao", "int8": 8}
     assert cq.comfy_torchao_quantized(model)
     assert not cq.comfy_torchao_quantized(nn.Linear(2, 2))
+
+
+def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
+    # Wan's rope tables are float64 non-persistent buffers; from_single_file casts them with model.to(dtype)
+    path, _, _ = comfy_file
+
+    class _Rope(_Tiny):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.register_buffer("freqs", torch.ones(4, dtype = torch.float64), persistent = False)
+
+    model = cq.load_comfy_quant_transformer(
+        _Rope,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo", "subfolder": "transformer"},
+        int8_backend = "native",
+        family = "z-image",
+    )
+    assert model.freqs.dtype == torch.bfloat16
+    assert model.blocks[0].to_q.weight_q.dtype == torch.int8

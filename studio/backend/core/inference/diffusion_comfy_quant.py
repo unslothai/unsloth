@@ -607,6 +607,13 @@ def load_comfy_quant_transformer(
         _install_native(model)
         model.load_state_dict(converted, strict = False, assign = True)
     del converted
+    # from_single_file ends with model.to(torch_dtype): buffers built in __init__ (Wan's float64 rope) follow it
+    for module_name, module in model.named_modules():
+        for buffer_name, buffer in list(module._buffers.items()):
+            if buffer is not None and buffer.is_floating_point():
+                want = _dtype_for(f"{module_name}.{buffer_name}")
+                if buffer.dtype != want:
+                    module._buffers[buffer_name] = buffer.to(want)
     if unexpected and logger is not None:
         logger.warning(
             "diffusion.comfy_quant: %d checkpoint key(s) unused by %s (e.g. %s)",
