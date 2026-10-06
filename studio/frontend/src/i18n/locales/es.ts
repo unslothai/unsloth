@@ -2611,6 +2611,11 @@ export const es = {
       exportFailed: "No se pudieron exportar los chats",
       description:
         "Gestiona el historial de chats y los archivos subidos que se guardan en este dispositivo.",
+      manageFiles: {
+        label: "Gestionar archivos",
+        description: "Busca, ordena y organiza imágenes, vídeos, audio y archivos.",
+        action: "Abrir biblioteca",
+      },
       archivedChats: "Chats archivados",
       archivedChatsDescription:
         "Consulta y gestiona los chats que has archivado.",

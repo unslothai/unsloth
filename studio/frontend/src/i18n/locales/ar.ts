@@ -2579,6 +2579,11 @@ export const ar = {
       exportFailed: "تعذّر تصدير المحادثات",
       description:
         "أدر سجل المحادثات والملفات المرفوعة المخزّنة على هذا الجهاز.",
+      manageFiles: {
+        label: "إدارة الملفات",
+        description: "ابحث في الصور ومقاطع الفيديو والصوت والملفات ورتّبها ونظّمها.",
+        action: "فتح المكتبة",
+      },
       archivedChats: "المحادثات المؤرشفة",
       archivedChatsDescription: "اعرض المحادثات التي أرشفتها وأدرها.",
       archivedImages: "الصور المؤرشفة",

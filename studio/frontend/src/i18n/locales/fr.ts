@@ -2617,6 +2617,11 @@ export const fr = {
       exportFailed: "Impossible d’exporter les chats",
       description:
         "Gérez l'historique des discussions et les fichiers importés conservés sur cet appareil.",
+      manageFiles: {
+        label: "Gérer les fichiers",
+        description: "Recherchez, triez et organisez images, vidéos, audio et fichiers.",
+        action: "Ouvrir la bibliothèque",
+      },
       archivedChats: "Discussions archivées",
       archivedChatsDescription:
         "Consultez et gérez les discussions que vous avez archivées.",

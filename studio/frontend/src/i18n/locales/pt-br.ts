@@ -2594,6 +2594,11 @@ export const ptBR = {
       exportFailed: "Não foi possível exportar os chats",
       description:
         "Gerencie o histórico de chats e os arquivos enviados que ficam armazenados neste dispositivo.",
+      manageFiles: {
+        label: "Gerenciar arquivos",
+        description: "Pesquise, ordene e organize imagens, vídeos, áudios e arquivos.",
+        action: "Abrir biblioteca",
+      },
       archivedChats: "Chats arquivados",
       archivedChatsDescription: "Veja e gerencie os chats que você arquivou.",
       archivedImages: "Imagens arquivadas",
