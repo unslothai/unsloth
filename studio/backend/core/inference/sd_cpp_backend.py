@@ -2307,10 +2307,6 @@ def _map_guidance(
     if fam.name == "z-image":
         # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
         return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
-    if fam.name == "flux.1-kontext":
-        # Guidance-distilled like FLUX.1-dev: one pass at cfg 1.0 with the value as the embedded guidance (the
-        # reference Kontext workflow runs cfg 1 / guidance 2.5). Sent explicitly, because sd.cpp's own default is 7.0.
-        return 1.0, (float(guidance) if guidance is not None else None)
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
 
