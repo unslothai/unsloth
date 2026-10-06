@@ -13,7 +13,7 @@ import {
   VoiceIdIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
-import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
+import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog.ts";
 
 export type AudioWorkflowId =
   | "speak"

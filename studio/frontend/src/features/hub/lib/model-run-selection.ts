@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AUDIO_CPP_REPO } from "@/features/audio/audio-cpp-catalog";
+import { audioWorkflowForPick } from "@/features/audio/route-search";
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
+import { audioPickIsRoutable } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import {
+  AUDIO_CATALOG,
+  artifactForRepoId,
+} from "@/features/model-picker/components/model-selector/model-catalog";
 import type { SelectedModelView } from "../types";
 import { EMBEDDING_TAGS } from "./hf-model-meta.ts";
 import { routableToMediaPage } from "./local-path.ts";
@@ -105,6 +112,31 @@ function createHandoffMeta(
     meta.expectedBytes = selection.expectedBytes;
   }
   return meta;
+}
+
+/** Whether Run opens this model on the Audio page rather than in chat, which refuses audio models.
+ *  Judged on the gate the chat picker routes by, so both surfaces send the same models there. */
+export function hubModelRunsOnAudioPage(
+  model: SelectedModelView,
+  task: string | null,
+): boolean {
+  // A filesystem row has no Hub id for the Audio handoff, so it keeps its chat Run.
+  const id = model.hubRepoId;
+  if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
+  // The shared GGUF audio repo holds many models; the Audio page lists them one by one.
+  if (id.toLowerCase() === AUDIO_CPP_REPO.toLowerCase()) return false;
+  if (audioWorkflowForPick({ id, task }) === null) return false;
+  return audioPickIsRoutable({
+    id,
+    task,
+    isGguf: model.isGguf,
+    isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+    // An on-device GGUF is tagged text-to-audio only by the audio runtime's header classifier.
+    taskFromGgufArch: model.isGguf && model.task === "text-to-audio",
+    baseModel: model.baseModel,
+    tags: model.tags,
+    libraryName: model.libraryName,
+  });
 }
 
 export function isHubModelRunEligible({

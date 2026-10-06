@@ -7,10 +7,16 @@
 // come from each feature's own module because the indexes re-export their pages.
 
 import {
+  AUDIO_CPP_AUDIO_TYPES,
   audioCppDictationModelFor,
   audioCppDisplayName,
   isAudioCppFolderId,
 } from "../audio/audio-cpp-catalog.ts";
+import {
+  type AudioWorkflowId,
+  audioWorkflowForAudioType,
+  isAudioWorkflowId,
+} from "../audio/workflows.ts";
 import type { InferenceStatusResponse } from "@/features/chat/types/api";
 import type { DiffusionStatus } from "@/features/images/api";
 import type { VideoStatus } from "@/features/video/api";
@@ -33,6 +39,8 @@ export type LoadedModelEntry = {
   name: string;
   /** One short line: quantisation, family, device. */
   detail: string;
+  /** Only on a `tts` row: the Audio page workflow that runs the model. */
+  workflow?: AudioWorkflowId;
   /** Only on `source: "stt"`: its unload takes an engine, not a model id. */
   sttEngine?: SttEngine;
   /** Cached by the chat runtime but not active, so no status flags describe it. */
@@ -70,14 +78,31 @@ const STT_ENGINE_LABELS: Record<SttEngine, string> = {
  * runtime holding the weights rather than the kind: a Whisper checkpoint in the
  * chat slot belongs to Chat, while the dictation sidecars belong to Voice.
  *
- * Dictation has no page of its own yet, so it opens the settings tab that
- * drives it. Point it at the Audio page once that lands.
+ * An audio model in the chat slot opens the Audio page on its workflow, since
+ * Chat refuses it. The dictation sidecars are shared with chat dictation, so
+ * they open the settings tab that drives them.
  */
 export type LoadedModelTarget =
-  | { open: "route"; to: "/chat" | "/images" | "/video"; label: string }
+  | {
+      open: "route";
+      to: "/chat" | "/images" | "/video" | "/audio";
+      search?: { workflow: AudioWorkflowId };
+      label: string;
+    }
   | { open: "settings"; tab: "voice"; label: string };
 
-export function loadedModelTarget(source: LoadedModelSource): LoadedModelTarget {
+export function loadedModelTarget(
+  source: LoadedModelSource,
+  workflow?: AudioWorkflowId,
+): LoadedModelTarget {
+  if (source === "chat" && workflow) {
+    return {
+      open: "route",
+      to: "/audio",
+      search: { workflow },
+      label: "Audio",
+    };
+  }
   switch (source) {
     case "image":
       return { open: "route", to: "/images", label: "Images" };
@@ -97,6 +122,22 @@ export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   video: "Video",
   stt: "Dictation",
 };
+
+// What a speech-slot row does, when it is not speech.
+const AUDIO_WORKFLOW_KIND_LABELS: Partial<Record<AudioWorkflowId, string>> = {
+  music: "Music",
+  separate: "Separation",
+  convert: "Voice conversion",
+};
+
+export function loadedModelKindLabel(
+  entry: Pick<LoadedModelEntry, "kind" | "workflow">,
+): string {
+  return (
+    (entry.workflow && AUDIO_WORKFLOW_KIND_LABELS[entry.workflow]) ??
+    LOADED_MODEL_KIND_LABELS[entry.kind]
+  );
+}
 
 /**
  * Join the known parts, so no row shows a stray separator, and drop repeats:
@@ -147,15 +188,25 @@ export function describeInferenceStatus(
       audioType !== "whisper" &&
       audioType !== "audio_vlm";
     const isStt = Boolean(status.is_audio) && audioType === "whisper";
-    const runtime = status.is_gguf
-      ? "GGUF"
-      : status.is_mlx
-        ? "MLX"
-        : "Transformers";
+    // The GGUF audio runtime reports is_gguf false, but it serves GGUFs too.
+    const runtime =
+      status.is_gguf || AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "")
+        ? "GGUF"
+        : status.is_mlx
+          ? "MLX"
+          : "Transformers";
     entries.push({
       id: `chat:${active}`,
       kind: isTts ? "tts" : isStt ? "stt" : "text",
       source: "chat",
+      // An older backend sends no workflows: the audio type still tells Music from Speak.
+      ...(isTts
+        ? {
+            workflow:
+              status.audio_workflows?.find(isAudioWorkflowId) ??
+              audioWorkflowForAudioType(audioType),
+          }
+        : {}),
       name: active,
       detail: joinDetail(
         runtime,

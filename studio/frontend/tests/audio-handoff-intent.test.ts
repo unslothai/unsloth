@@ -7,8 +7,12 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { audioRouteIntent, audioWorkflowForPick, validateAudioSearch } =
-  await import("../src/features/audio/route-search.ts");
+const {
+  audioPickSearch,
+  audioRouteIntent,
+  audioWorkflowForPick,
+  validateAudioSearch,
+} = await import("../src/features/audio/route-search.ts");
 
 test("every task Audio runs survives validation, including text-to-audio", () => {
   for (const task of [
@@ -122,17 +126,50 @@ test("the route validates through the shared helper", () => {
   assert.match(route, /validateSearch: validateAudioSearch,/);
 });
 
-test("the chat picker forwards the workflow and still routes no text-to-audio rows", () => {
+test("the chat picker routes music and separation rows to Audio with their workflow", () => {
   const pickers = readSrc(
     "features/model-picker/components/model-selector/pickers.tsx",
   );
-  assert.match(
-    pickers,
-    /workflow:\s*audioWorkflowForPick\(\{\s*id,\s*task: pickedTask,\s*audioType: meta\.audioType,\s*\}\) \?\? undefined,/,
-  );
+  assert.match(pickers, /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/);
   const tasks = pickers.match(/export const AUDIO_GEN_TASKS = \[([^\]]*)\]/);
   assert.ok(tasks);
-  assert.doesNotMatch(tasks[1], /text-to-audio/);
+  assert.match(tasks[1], /"text-to-audio"/);
+  assert.match(tasks[1], /"audio-to-audio"/);
+});
+
+test("a pick's Audio search names its file, quant label, load and workflow", () => {
+  assert.deepEqual(
+    audioPickSearch("audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF", {
+      ggufFilename: "ace-step-q8_0.gguf",
+      ggufVariant: "Q8_0",
+      task: "text-to-audio",
+      loadId: "/cache/snap",
+    }),
+    {
+      model: "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF",
+      quant: "ace-step-q8_0.gguf",
+      ggufQuant: undefined,
+      task: "text-to-audio",
+      audioType: undefined,
+      loadId: "/cache/snap",
+      workflow: "music",
+    },
+  );
+  // Without a filename the quant label rides ggufQuant, never `quant`.
+  const labelOnly = audioPickSearch("x/Kokoro-82M-GGUF", {
+    ggufVariant: "Q4_K_M",
+    task: "text-to-speech",
+  });
+  assert.equal(labelOnly.quant, undefined);
+  assert.equal(labelOnly.ggufQuant, "Q4_K_M");
+  assert.equal(labelOnly.workflow, "speak");
+});
+
+test("a routed audio-to-audio pick opens Separate", () => {
+  assert.equal(
+    audioWorkflowForPick({ id: "someone/BSRoformer-GGUF", task: "audio-to-audio" }),
+    "separate",
+  );
 });
 
 test("a chat picker handoff opens its page before the load, not only after it succeeds", () => {

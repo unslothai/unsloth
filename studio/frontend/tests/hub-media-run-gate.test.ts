@@ -10,7 +10,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { isHubModelRunEligible } = await import(
+const { hubModelRunsOnAudioPage, isHubModelRunEligible } = await import(
   "../src/features/hub/lib/model-run-selection.ts"
 );
 const { taskForMediaPick } = await import(
@@ -96,6 +96,93 @@ test("chat tasks are not eligible through the media route", () => {
   assert.equal(mediaRunEligible(mediaModel(undefined, "discover")), false);
   assert.equal(
     mediaRunEligible(mediaModel("text-generation", "local", "hf_cache")),
+    false,
+  );
+});
+
+test("an audio model the Audio page runs opens there, the rest keep their chat Run", () => {
+  const audio = (overrides: Partial<SelectedModelView>): SelectedModelView => ({
+    ...mediaModel(undefined, "cache"),
+    runtimeCanChat: true,
+    ...overrides,
+  });
+  const opensAudio = (model: SelectedModelView) =>
+    hubModelRunsOnAudioPage(
+      model,
+      taskForMediaPick(model.pipelineTag, model.task),
+    );
+  // A cached audio runtime GGUF carries its header task and no Hub tag.
+  assert.equal(
+    opensAudio(
+      audio({
+        id: "x/ACE-GGUF",
+        hubRepoId: "x/ACE-GGUF",
+        isGguf: true,
+        task: "text-to-audio",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    opensAudio(
+      audio({
+        hubRepoId: "unsloth/orpheus-3b-0.1-ft",
+        pipelineTag: "text-to-speech",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    opensAudio(
+      audio({
+        hubRepoId: "openai/whisper-small",
+        pipelineTag: "automatic-speech-recognition",
+      }),
+    ),
+    true,
+  );
+  // Tagged audio, but nothing here decodes it: Run stays where it was.
+  assert.equal(
+    opensAudio(
+      audio({
+        hubRepoId: "facebook/musicgen-small",
+        pipelineTag: "text-to-audio",
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    opensAudio(
+      audio({ hubRepoId: "suno/bark", pipelineTag: "text-to-speech" }),
+    ),
+    false,
+  );
+  assert.equal(
+    opensAudio(
+      audio({ hubRepoId: "unsloth/Qwen3-8B", pipelineTag: "text-generation" }),
+    ),
+    false,
+  );
+  // The shared GGUF audio repo is many models, not one Run target.
+  assert.equal(
+    opensAudio(
+      audio({
+        id: "audio-cpp/audio.cpp-gguf",
+        hubRepoId: "audio-cpp/audio.cpp-gguf",
+        isGguf: true,
+        pipelineTag: "text-to-speech",
+        task: "audio-to-audio",
+        tags: ["gguf", "audio.cpp"],
+      }),
+    ),
+    false,
+  );
+  // A filesystem row has no Hub id to hand Audio, so it keeps its chat Run.
+  assert.equal(
+    opensAudio({
+      ...mediaModel("text-to-speech", "local", "models_dir"),
+      hubRepoId: "unsloth/orpheus-3b-0.1-ft",
+    }),
     false,
   );
 });

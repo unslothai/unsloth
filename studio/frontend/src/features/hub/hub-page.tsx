@@ -13,6 +13,7 @@ import {
   resolveInferenceCheckpointId,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { audioPickSearch } from "@/features/audio/route-search";
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import {
@@ -23,6 +24,7 @@ import {
   loadScopedGpu,
   requestModelConfigHandoff,
 } from "@/features/model-picker";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import { type NpuModel, type NpuPickerSource, useNpuStatus } from "@/features/npu";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -1510,7 +1512,7 @@ export function ModelsPage() {
   const handleRun = useCallback(
     async (
       selection: HubModelRunSelection,
-      mediaPage: ReturnType<typeof studioPageForTask>,
+      mediaPage: ReturnType<typeof studioPageForTask> | "audio",
     ) => {
       if (!selectedModel) return;
       if (mediaPage) {
@@ -1524,7 +1526,17 @@ export function ModelsPage() {
         }
         void navigate({
           to: `/${mediaPage}`,
-          search: diffusionRouteSearch(selectedModel.hubRepoId, selection),
+          search:
+            mediaPage === "audio"
+              ? audioPickSearch(selectedModel.hubRepoId, {
+                  ...selection,
+                  task: taskForMediaPick(
+                    selectedModel.pipelineTag,
+                    selectedModel.task,
+                  ),
+                  loadId: selectedModel.loadId,
+                })
+              : diffusionRouteSearch(selectedModel.hubRepoId, selection),
         });
         return;
       }

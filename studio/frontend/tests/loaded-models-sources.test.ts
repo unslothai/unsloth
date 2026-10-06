@@ -13,6 +13,7 @@ import {
   describeInferenceStatus,
   describeSttStatus,
   describeVideoStatus,
+  loadedModelKindLabel,
   loadedModelTarget,
   mergeLoadedModels,
   withPendingLoads,
@@ -615,4 +616,61 @@ test("a video row without a quant backend is unchanged", () => {
     device: "cuda",
   } as never);
   assert.equal(row.detail, "wan2.2-t2v-a14b · FP8 · cuda");
+});
+
+// Chat refuses a speech-only model, so its row opens the Audio page on the workflow that runs it.
+test("an audio model in the chat slot opens its Audio workflow, named for what it does", () => {
+  const row = (overrides: Record<string, unknown>) => {
+    const [entry] = describeInferenceStatus(
+      inferenceStatus({ active_model: "m/x", is_audio: true, ...overrides }),
+    );
+    return {
+      target: loadedModelTarget(entry.source, entry.workflow),
+      label: loadedModelKindLabel(entry),
+    };
+  };
+  const audio = (workflow: string) => ({
+    open: "route",
+    to: "/audio",
+    search: { workflow },
+    label: "Audio",
+  });
+  assert.deepEqual(row({ audio_type: "snac", audio_workflows: ["speak"] }), {
+    target: audio("speak"),
+    label: "Speech",
+  });
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_music", audio_workflows: ["music"] }),
+    { target: audio("music"), label: "Music" },
+  );
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_sep", audio_workflows: ["separate"] }),
+    {
+      target: audio("separate"),
+      label: "Separation",
+    },
+  );
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_tts", audio_workflows: ["convert"] }),
+    { target: audio("convert"), label: "Voice conversion" },
+  );
+  // An older backend sends no workflows; the audio type still tells Music from Speak.
+  assert.deepEqual(
+    row({ audio_type: "minimax_music3" }).target,
+    audio("music"),
+  );
+  assert.deepEqual(row({ audio_type: "csm" }).target, audio("speak"));
+  // The GGUF audio runtime reports is_gguf false; its rows still read GGUF.
+  const [sep] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "audio-cpp/audio.cpp-gguf/HTDemucs-GGUF",
+      is_audio: true,
+      is_gguf: false,
+      audio_type: "audiocpp_sep",
+      gguf_variant: "Q8_0",
+    }),
+  );
+  assert.equal(sep.detail, "GGUF · Q8_0");
+  // Whisper in the chat slot is still Chat's.
+  assert.equal(row({ audio_type: "whisper" }).target.label, "Chat");
 });

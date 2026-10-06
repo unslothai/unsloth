@@ -34,9 +34,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
 import {
-  LOADED_MODEL_KIND_LABELS,
   type LoadedModelEntry,
   type LoadedModelKind,
+  loadedModelKindLabel,
   loadedModelTarget,
   shortModelLabel,
 } from "./loaded-models-sources";
@@ -72,7 +72,7 @@ function canShowIndicator(pathname: string): boolean {
 }
 
 function rowSubtitle(entry: LoadedModelEntry): string {
-  const kind = LOADED_MODEL_KIND_LABELS[entry.kind];
+  const kind = loadedModelKindLabel(entry);
   return entry.detail ? `${kind} · ${entry.detail}` : kind;
 }
 
@@ -88,7 +88,7 @@ function LoadedModelRow({
   onOpen: () => void;
 }) {
   const label = shortModelLabel(entry.name);
-  const target = loadedModelTarget(entry.source);
+  const target = loadedModelTarget(entry.source, entry.workflow);
   return (
     <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
@@ -184,7 +184,7 @@ export function LoadedModelsIndicator({
   const navigate = useNavigate();
   const openEntry = useCallback(
     (entry: LoadedModelEntry) => {
-      const target = loadedModelTarget(entry.source);
+      const target = loadedModelTarget(entry.source, entry.workflow);
       if (target.open === "settings") {
         // Read on click, not at render: the settings barrel reaches back here
         // through the General tab, so the binding is only safe once both
@@ -193,9 +193,9 @@ export function LoadedModelsIndicator({
         useSettingsDialogStore.getState().openDialog(target.tab);
         return;
       }
-      // No search params: this only takes the user to the page, it does not
-      // start a new thread or reload anything.
-      void navigate({ to: target.to });
+      // Only the Audio workflow rides along: this takes the user to the page,
+      // it does not start a new thread or reload anything.
+      void navigate({ to: target.to, search: target.search });
     },
     [navigate],
   );
