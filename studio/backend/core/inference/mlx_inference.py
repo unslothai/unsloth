@@ -4627,7 +4627,7 @@ class MLXInferenceBackend:
         else:
             tokenizer = tokenizer_or_processor
             if is_lora:
-                tokenizer = load_mlx_adapter_tokenizer(tokenizer, model_name)
+                tokenizer = load_mlx_adapter_tokenizer(tokenizer, model_name, hf_token)
             self._model = model
             self._tokenizer = tokenizer
             self._processor = None

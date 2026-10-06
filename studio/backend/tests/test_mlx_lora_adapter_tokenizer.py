@@ -103,6 +103,25 @@ def test_mlx_chat_uses_the_tokenizer_a_base_model_lora_was_trained_with(
     _assert_trained_tokenizer(backend._tokenizer)
 
 
+def test_mlx_chat_fetches_the_tokenizer_of_a_lora_loaded_from_the_hub(
+    monkeypatch, adapter_dir, base_tokenizer
+):
+    calls = []
+
+    def snapshot_download(repo_id, **kwargs):
+        calls.append((repo_id, kwargs["token"]))
+        return str(adapter_dir)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", snapshot_download)
+
+    tokenizer = model_config.load_mlx_adapter_tokenizer(
+        base_tokenizer, "someone/qwen3-base-lora", "hf_secret"
+    )
+
+    assert calls == [("someone/qwen3-base-lora", "hf_secret")]
+    _assert_trained_tokenizer(tokenizer)
+
+
 def _export_backend(monkeypatch, base_tokenizer):
     monkeypatch.setitem(sys.modules, "utils.models.model_config", model_config)
     mod = _load_module(
