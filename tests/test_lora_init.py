@@ -167,8 +167,37 @@ def test_fast_pissa_preserves_output(init):
 def test_kill_switch(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FAST_LORA_INIT", "0")
     original = LoraLayer.pissa_init
-    with lora_init.fast_lora_init():
+    # An earlier fast run must not make a kill-switched one report the fast path.
+    monkeypatch.setitem(lora_init._STATE, "pissa", True)
+    with lora_init.fast_lora_init() as fast:
         assert LoraLayer.pissa_init is original
+    assert not fast["pissa"]
+
+
+def test_fast_pissa_marker_lookup_fails_closed_only_when_online(monkeypatch):
+    import huggingface_hub
+    from huggingface_hub import constants
+    from huggingface_hub.utils import EntryNotFoundError, LocalEntryNotFoundError
+
+    def raising(error):
+        def download(*args, **kwargs):
+            raise error
+
+        return download
+
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "cached")
+    assert lora_init.adapter_used_fast_pissa("user/adapter")
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", raising(EntryNotFoundError("404")))
+    assert not lora_init.adapter_used_fast_pissa("user/adapter")
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", raising(LocalEntryNotFoundError("down"))
+    )
+    with pytest.raises(LocalEntryNotFoundError):
+        lora_init.adapter_used_fast_pissa("user/adapter")
+    assert not lora_init.adapter_used_fast_pissa("user/adapter", local_files_only = True)
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    assert not lora_init.adapter_used_fast_pissa("user/adapter")
 
 
 def test_calibration_patch_does_not_trigger_lazy_module_getattr(monkeypatch):

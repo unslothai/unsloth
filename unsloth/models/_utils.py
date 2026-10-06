@@ -2681,6 +2681,7 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
 _ADAPTER_PREFETCH_PATTERNS = (
     "adapter_config.json",
     "adapter_model*",
+    "unsloth_lora_init.json",  # lora_init.SIDECAR: which PiSSA algorithm rebuilds the residual base
 )
 
 

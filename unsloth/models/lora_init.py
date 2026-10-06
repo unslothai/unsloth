@@ -294,9 +294,12 @@ def fast_lora_init(force = False):
     keeps PEFT's own SVD unless `force` (reloading an adapter that recorded the fast path).
     """
     with _LOCK:
-        if _ORIGINAL or (not force and os.environ.get("UNSLOTH_FAST_LORA_INIT", "1") == "0"):
+        if _ORIGINAL:
             # Nested use keeps the outer swap.
             yield _STATE
+            return
+        if not force and os.environ.get("UNSLOTH_FAST_LORA_INIT", "1") == "0":
+            yield {"pissa": False}
             return
         from peft.tuners.lora.layer import LoraLayer
 
@@ -349,11 +352,19 @@ def record_fast_pissa(model):
 def adapter_used_fast_pissa(path, **hub_kwargs):
     if os.path.isdir(path):
         return os.path.isfile(os.path.join(path, SIDECAR))
+    from huggingface_hub import constants, hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError, HFValidationError, LocalEntryNotFoundError
+
     try:
-        from huggingface_hub import hf_hub_download
         hf_hub_download(path, SIDECAR, **{k: v for k, v in hub_kwargs.items() if v is not None})
         return True
-    except Exception:
+    except LocalEntryNotFoundError:
+        # Offline, an uncached marker means the adapter has none (the prefetch fetches it). Online, the
+        # Hub could not be reached: guessing would silently rebuild the wrong residual base.
+        if hub_kwargs.get("local_files_only") or constants.HF_HUB_OFFLINE:
+            return False
+        raise
+    except (EntryNotFoundError, HFValidationError):
         return False
 
 
