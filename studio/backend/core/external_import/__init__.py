@@ -10,11 +10,13 @@ project placement, archived flags, edited or deleted messages, deleted chats.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -116,16 +118,36 @@ def file_times_ms(path: Path) -> tuple[int, int]:
     return int(created * 1000), int(max(info.st_mtime, created) * 1000)
 
 
+def _zstd_reader(raw):
+    try:
+        from compression import zstd  # Python 3.14+
+        return zstd.ZstdFile(raw)
+    except ImportError:
+        import zstandard  # ImportError here means the caller skips the file
+        return zstandard.ZstdDecompressor().stream_reader(raw)
+
+
 def read_jsonl(path: Path) -> Iterator[dict]:
-    """Records of a JSONL file; a half-written last line is normal for a live session."""
-    with path.open(encoding = "utf-8", errors = "replace") as handle:
-        for line in handle:
+    """Records of a JSONL(.zst) file; a half-written last line is normal for a live session."""
+    with path.open("rb") as raw:
+        stream = _zstd_reader(raw) if path.suffix == ".zst" else raw
+        for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if isinstance(record, dict):
                 yield record
+
+
+def iso_ms(value) -> Optional[int]:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo = timezone.utc)
+    return int(parsed.timestamp() * 1000)
 
 
 def clean_text(text: str) -> str:
@@ -222,12 +244,16 @@ def _late_tool_results(transcript: Transcript) -> list[dict]:
 
 
 def _import_session(source: Source, path: Path, project_id: str, summary: ImportSummary) -> bool:
-    session_id = path.stem
+    # Not path.stem: Codex compresses old x.jsonl to x.jsonl.zst, same session.
+    session_id = path.name.split(".", 1)[0]
     thread_id = thread_id_for(source, session_id)
     try:
         transcript = source.read_transcript(path, thread_id, session_id)
     except OSError as exc:
         summary.warnings.append(f"{path.name}: could not be read ({exc.strerror or exc}).")
+        return False
+    except ImportError:
+        summary.warnings.append(f"{path.name}: compressed; install zstandard to import it.")
         return False
     if not transcript.messages:
         summary.skipped += 1
@@ -298,5 +324,5 @@ def run_import(source: Source, *, home: Optional[Path] = None) -> ImportSummary:
 
 
 def sources() -> dict[str, Source]:
-    from core.external_import import claude, cursor
-    return {"cursor": cursor.SOURCE, "claude": claude.SOURCE}
+    from core.external_import import claude, codex, cursor
+    return {"cursor": cursor.SOURCE, "claude": claude.SOURCE, "codex": codex.SOURCE}

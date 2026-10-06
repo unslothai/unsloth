@@ -6,9 +6,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from core.external_import import (
     Source,
@@ -18,6 +17,7 @@ from core.external_import import (
     display_name,
     file_times_ms,
     first_user_text,
+    iso_ms,
     read_jsonl,
     stable_id,
     title_from,
@@ -41,16 +41,6 @@ def list_projects(home: Path) -> list[SourceProject]:
         if sessions:
             projects.append(SourceProject(entry.name, display_name(entry.name), sessions))
     return projects
-
-
-def _timestamp_ms(record: dict) -> Optional[int]:
-    try:
-        parsed = datetime.fromisoformat(str(record.get("timestamp")).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo = timezone.utc)
-    return int(parsed.timestamp() * 1000)
 
 
 def _user_text(text: str) -> str:
@@ -125,7 +115,7 @@ def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
         while parent and parent not in imported and parent not in seen:
             seen.add(parent)
             parent = by_uuid.get(parent, {}).get("parentUuid")
-        timestamp = _timestamp_ms(record)
+        timestamp = iso_ms(record.get("timestamp"))
         messages.append(
             {
                 "id": message_id,

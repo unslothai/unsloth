@@ -4,11 +4,14 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-export type ExternalImportSource = "cursor" | "claude";
+export const EXTERNAL_IMPORT_SOURCES = ["cursor", "claude", "codex"] as const;
+
+export type ExternalImportSource = (typeof EXTERNAL_IMPORT_SOURCES)[number];
 
 export const EXTERNAL_IMPORT_LABELS: Record<ExternalImportSource, string> = {
   cursor: "Cursor",
   claude: "Claude Code",
+  codex: "Codex",
 };
 
 export type ExternalImportStatus = {

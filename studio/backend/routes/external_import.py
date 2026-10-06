@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Import Cursor / Claude Code conversations from this machine's disk into Studio."""
+"""Import Cursor / Claude Code / Codex conversations from this machine's disk into Studio."""
 
 from typing import Literal
 
@@ -19,7 +19,7 @@ router = APIRouter()
 
 logger = get_logger(__name__)
 
-SourceKey = Literal["cursor", "claude"]
+SourceKey = Literal["cursor", "claude", "codex"]
 
 
 class ExternalImportStatus(BaseModel):

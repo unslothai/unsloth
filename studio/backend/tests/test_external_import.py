@@ -12,6 +12,7 @@ import storage.studio_db as studio_db
 from auth.authentication import get_current_subject
 from core.external_import import (
     claude,
+    codex,
     cursor,
     display_name,
     project_id_for,
@@ -68,6 +69,124 @@ def c_asst(
 
 def k_turn(role, text):
     return {"role": role, "message": {"content": [{"type": "text", "text": text}]}}
+
+
+def x_line(
+    kind,
+    payload,
+    ts = "2026-09-22T12:00:00Z",
+):
+    return {"timestamp": ts, "type": kind, "payload": payload}
+
+
+def _rollout(
+    home,
+    cwd = "/Users/me/app",
+    sid = "019a",
+    source = "cli",
+    body = None,
+):
+    path = home / "sessions" / "2026" / "09" / "22" / f"rollout-2026-09-22T12-00-00-{sid}.jsonl"
+    return _write(
+        path,
+        [
+            x_line(
+                "session_meta",
+                {"id": sid, "cwd": cwd, "source": source, "originator": "codex_cli_rs"},
+            ),
+            x_line(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "<permissions instructions>"}],
+                },
+            ),
+            x_line(
+                "response_item",
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "<environment_context>cwd</environment_context>",
+                        }
+                    ],
+                },
+            ),
+            *(
+                body
+                if body is not None
+                else [
+                    x_line("event_msg", {"type": "user_message", "message": "List the files"}),
+                    x_line(
+                        "response_item",
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "List the files"}],
+                        },
+                    ),
+                    x_line(
+                        "response_item",
+                        {"type": "reasoning", "summary": [], "encrypted_content": "x"},
+                    ),
+                    x_line(
+                        "response_item",
+                        {
+                            "type": "function_call",
+                            "name": "shell",
+                            "arguments": '{"command": ["ls"]}',
+                            "call_id": "c1",
+                        },
+                    ),
+                    x_line(
+                        "response_item",
+                        {"type": "function_call_output", "call_id": "c1", "output": "a.py"},
+                        ts = "2026-09-22T12:00:02Z",
+                    ),
+                    x_line(
+                        "response_item",
+                        {
+                            "type": "custom_tool_call",
+                            "name": "apply_patch",
+                            "input": "*** Begin Patch",
+                            "call_id": "c2",
+                        },
+                    ),
+                    x_line(
+                        "response_item",
+                        {
+                            "type": "custom_tool_call_output",
+                            "call_id": "c2",
+                            "output": [{"type": "input_text", "text": "Done!"}],
+                        },
+                    ),
+                    x_line(
+                        "event_msg",
+                        {"type": "agent_message", "message": "One file: a.py"},
+                        ts = "2026-09-22T12:00:03Z",
+                    ),
+                    x_line(
+                        "response_item",
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "One file: a.py"}],
+                        },
+                    ),
+                ]
+            ),
+        ],
+    )
+
+
+@pytest.fixture
+def codex_home(tmp_path, monkeypatch):
+    home = tmp_path / "codex"
+    monkeypatch.setenv(codex.SOURCE.home_env, str(home))
+    return home
 
 
 @pytest.fixture
@@ -189,6 +308,70 @@ def test_cursor_reads_the_query_and_strips_injected_context(cursor_home):
     assert t.messages[1]["content"][0] == {"type": "text", "text": "Source maps."}
     assert t.messages[1]["content"][1]["toolName"] == "Read"
     assert t.messages[1]["parentId"] == t.messages[0]["id"]
+
+
+def test_codex_replays_events_not_the_injected_context(codex_home):
+    t = codex.read_transcript(_rollout(codex_home), "t", "s1")
+
+    assert [m["role"] for m in t.messages] == ["user", "assistant", "assistant", "assistant"]
+    assert t.messages[0]["content"] == [{"type": "text", "text": "List the files"}]
+    assert t.messages[1]["content"] == [
+        {
+            "type": "tool-call",
+            "toolCallId": "c1",
+            "toolName": "shell",
+            "args": {"command": ["ls"]},
+            "result": "a.py",
+        }
+    ]
+    assert t.messages[2]["content"][0]["args"] == {"input": "*** Begin Patch"}
+    assert t.messages[2]["content"][0]["result"] == "Done!"
+    assert t.messages[3]["content"] == [{"type": "text", "text": "One file: a.py"}]
+    assert t.title == "List the files"
+
+
+def test_codex_groups_by_cwd_and_skips_subagents(codex_home, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: Path("/Users/me")))
+    _rollout(codex_home, sid = "a")
+    _rollout(codex_home, sid = "b")
+    _rollout(codex_home, cwd = "/srv/api", sid = "c")
+    _rollout(codex_home, sid = "d", source = {"subagent": "review"})
+
+    projects = {p.name: sorted(s.name for s in p.sessions) for p in codex.list_projects(codex_home)}
+    assert projects == {
+        "app": ["rollout-2026-09-22T12-00-00-a.jsonl", "rollout-2026-09-22T12-00-00-b.jsonl"],
+        "srv-api": ["rollout-2026-09-22T12-00-00-c.jsonl"],
+    }
+
+
+def test_codex_compressing_a_rollout_keeps_its_chat(codex_home):
+    zstandard = pytest.importorskip("zstandard")
+    path = _rollout(codex_home)
+    assert run_import(codex.SOURCE).new_chats == 1
+    zst = path.with_name(path.name + ".zst")
+    zst.write_bytes(zstandard.ZstdCompressor().compress(path.read_bytes()))
+    path.unlink()
+
+    again = run_import(codex.SOURCE)
+    assert (again.new_chats, again.messages, again.warnings) == (0, 0, [])
+
+
+def test_codex_without_a_zstd_decoder_warns_instead_of_failing(codex_home, monkeypatch):
+    import builtins
+
+    path = _rollout(codex_home)
+    path.rename(path.with_name(path.name + ".zst"))
+    real_import = builtins.__import__
+
+    def no_zstd(name, *args, **kwargs):
+        if name in ("zstandard", "compression"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_zstd)
+    summary = run_import(codex.SOURCE)
+    assert summary.new_chats == 0
+    assert summary.warnings and "zstandard" in summary.warnings[0]
 
 
 # Discovery
@@ -323,7 +506,7 @@ def client():
     return TestClient(app)
 
 
-def test_routes_report_status_and_import(client, claude_home, cursor_home):
+def test_routes_report_status_and_import(client, claude_home, cursor_home, codex_home):
     _session(claude_home)
     assert client.get("/api/import/claude/status").json() == {
         "available": True,
@@ -331,6 +514,7 @@ def test_routes_report_status_and_import(client, claude_home, cursor_home):
         "chats": 1,
     }
     assert client.get("/api/import/cursor/status").json()["available"] is False
+    assert client.get("/api/import/codex/status").json()["available"] is False
     body = client.post("/api/import/claude").json()
     assert (body["new_chats"], body["messages"], body["warnings"]) == (1, 2, [])
     assert client.post("/api/import/vscode").status_code == 422
@@ -342,8 +526,10 @@ def test_routes_need_a_signed_in_user(claude_home):
     assert TestClient(app).post("/api/import/claude").status_code in (401, 403)
 
 
-@pytest.mark.parametrize("source", ["claude", "cursor"])
-def test_a_managed_account_cannot_reach_the_owners_histories(claude_home, cursor_home, source):
+@pytest.mark.parametrize("source", ["claude", "cursor", "codex"])
+def test_a_managed_account_cannot_reach_the_owners_histories(
+    claude_home, cursor_home, codex_home, source
+):
     from utils.account_context import AccountContext, bind_account, reset_account
 
     _session(claude_home)
