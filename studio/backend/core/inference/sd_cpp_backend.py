@@ -326,23 +326,18 @@ def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
     return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
 
 
-# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does
-# nothing without --max-vram.
-_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
+def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
+    """Advertised graph-cut options, from one help probe.
 
-
-def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
-    """True only when ``binary``'s ``--help`` advertises the graph-cut executor. The opposite
-    default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe: that gate
-    refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and sd-cli exits
-    non-zero on an option it does not know. Guessing yes from an unreadable ``--help`` would
-    break every generation on an older build instead of merely leaving it as slow as it is today."""
+    New builds stream automatically and have removed --stream-layers. An unreadable
+    help response adds no options, since sd-cli rejects unknown flags.
+    """
     if not binary:
-        return False
+        return frozenset()
     text = _sd_cpp_probe_output(binary, "--help")
-    if text is None:
-        return False
-    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+    if text is None or "--max-vram" not in text:
+        return frozenset()
+    return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
