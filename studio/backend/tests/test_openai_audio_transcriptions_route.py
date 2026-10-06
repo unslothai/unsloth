@@ -1008,7 +1008,6 @@ def test_audio_cpp_diarized_json_names_speakers(monkeypatch, tmp_path):
             "speaker": "Speaker 2",
         },
     ]
-    # Plain segments need no aligner.
     assert calls[0]["timestamps"] is False
 
 

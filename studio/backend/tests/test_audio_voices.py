@@ -135,7 +135,6 @@ def test_a_script_uploads_saves_a_voice_and_fetches_it_under_v1(client):
     )
     assert upload.status_code == 201, upload.text
     source = {"input_id": upload.json()["id"]}
-    # Every URL a /v1 call returns is served under /v1, so a script needs only that base URL.
     assert client.get(upload.json()["url"]).content[:4] == b"RIFF"
     created = client.post("/v1/audio/voices", json = {"source": source, "name": "Me"})
     assert created.status_code == 201, created.text
@@ -147,7 +146,6 @@ def test_a_script_uploads_saves_a_voice_and_fetches_it_under_v1(client):
     assert client.get(voice["url"]).content[:4] == b"RIFF"
     assert client.get(VOICES).json()["voices"][0]["url"].startswith(VOICES)
     assert client.delete(f"/v1/audio/inputs/{source['input_id']}").json() == {"removed": True}
-    # /v1 answers in OpenAI's error envelope.
     missing = client.patch("/v1/audio/voices/" + "a" * 32, json = {"name": "x"})
     assert missing.status_code == 404
     assert missing.json()["error"]["message"] == "Voice not found."

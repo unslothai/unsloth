@@ -479,8 +479,7 @@ def sweep(
             age = now - _mtime(path)
             if name.startswith(".") and name.endswith(".tmp") and age > _STALE_TMP_SECONDS:
                 path.unlink(missing_ok = True)
-            # A "." copy is a timed transcription's prepared upload that a crash left behind; it
-            # gets the full TTL, since a live one can wait an hour on the aligner download.
+            # "." = a crashed timed transcription's upload; full TTL (aligner downloads take an hour).
             elif name.startswith(("c-", "v-", ".")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
         # Music run folders a crash left behind.
