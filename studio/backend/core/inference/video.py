@@ -1092,6 +1092,8 @@ class _VideoLoadState:
     # resolves a bare device. Mirrors the image backend.
     placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
+    # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
+    variant_id: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
     h3_task: Optional[str] = None
     offload_policy: str = "none"
@@ -5774,11 +5776,20 @@ class VideoBackend:
         comfy_keep = (
             transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
         )
+        # The LTX-2.3 variant its weights carry ("ltx-2.3-22b-distilled" / "-dev"), ahead of every name in the recipe
+        # lookups: a distilled file named without "distilled" must not get the dev recipe. None: the name decides.
+        variant_id: Optional[str] = None
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
             )
             size_mib = file_size_mib(str(checkpoint_path))
+            if fam.name == "ltx-2":
+                from .video_ltx2 import ltx23_variant_identifier
+
+                variant_id = ltx23_variant_identifier(checkpoint_path)
+                if variant_id is not None:
+                    logger.info("video.ltx23_variant: %s (from the checkpoint's weights)", variant_id)
             if kind == "single_file":
                 comfy_scan = refuse_comfy_quant(str(checkpoint_path))
                 if comfy_scan is None and _video_comfy_key_map(fam) is not None:
@@ -6604,7 +6615,11 @@ class VideoBackend:
         static_plan: Optional[dict] = None
         if cache_auto:
             default_cache_steps, _ = default_video_generation_params(
-                gguf_filename, repo_id, base, fallback = (fam.default_steps, fam.default_guidance)
+                variant_id,
+                gguf_filename,
+                repo_id,
+                base,
+                fallback = (fam.default_steps, fam.default_guidance),
             )
             static_plan = auto_static_skip_plan(
                 (repo_id, base), skip_tier(speed_mode, effective_speed), default_cache_steps
@@ -6997,6 +7012,7 @@ class VideoBackend:
                     dtype = str(dtype).replace("torch.", ""),
                     kind = kind,
                     gguf_filename = gguf_filename,
+                    variant_id = variant_id,
                     offload_policy = offload_policy,
                     vae_tiling = vae_tiling,
                     memory_mode = plan.requested_mode,
@@ -8767,6 +8783,7 @@ class VideoBackend:
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
                 )
                 default_steps, default_guidance = default_video_generation_params(
+                    state.variant_id,
                     state.gguf_filename,
                     state.repo_id,
                     state.base_repo,
@@ -9010,7 +9027,7 @@ class VideoBackend:
                         ltx23_verbatim_sigmas,
                     )
                     if steps == len(LTX23_DISTILLED_SIGMAS) and ltx2_distilled_ids(
-                        state.gguf_filename, state.repo_id, state.base_repo
+                        state.variant_id, state.gguf_filename, state.repo_id, state.base_repo
                     ):
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
@@ -9022,7 +9039,9 @@ class VideoBackend:
                     )
 
                     # Distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
-                    if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
+                    if ltx2_distilled_ids(
+                        state.variant_id, state.gguf_filename, state.repo_id, state.base_repo
+                    ):
                         kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
                     # The render thread copies this thread's context, so raise the recompile limit here.
                     ensure_recompile_limit()
@@ -10169,6 +10188,7 @@ class VideoBackend:
         )
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
+            state.variant_id,
             state.gguf_filename,
             state.display_repo_id,
             state.repo_id,
