@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Registered after browser-store-resolver.mjs: native-view.ts with the Tauri bridge swapped for
-// globalThis.nativeViewCall, and the modules it reaches for i18n, toasts, favicons and history stubbed.
+// register after browser-store-resolver.mjs and route Tauri calls through globalThis.nativeViewCall
 const stub = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
 
 const STUBS = {

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
 
-// Just enough DOM for native-view.ts: one page placeholder, and overlays the test puts over it.
+// minimal DOM for native-view.ts with one page placeholder and test-controlled overlays
 const frames: (() => void)[] = [];
 const mutations: (() => void)[] = [];
 const overlays: {
@@ -102,7 +102,7 @@ const { startNativeViews } = await import(
 );
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
-// An overlay mounting or unmounting, then the frame it schedules.
+// apply overlay mutations before their scheduled frame
 async function frame(): Promise<void> {
   for (const callback of mutations) callback();
   for (const callback of frames.splice(0)) callback();
@@ -130,7 +130,7 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     overlays.push(menu);
     await frame();
     assert.ok(captureDone, "the covered page is captured before it hides");
-    // While the capture is pending, the menu closes and opens again.
+    // close and reopen the menu before capture resolves
     overlays.length = 0;
     await frame();
     overlays.push(menu);
@@ -168,17 +168,17 @@ test("toasts move left of a page that sits beside the Run settings panel", async
     await frame();
     assert.equal(rootVars.get("--studio-browser-page-inset"), "500px");
 
-    // Something other than the settings panel fills the edge: the page isn't where toasts go.
+    // ignore pages away from the window edge because they do not constrain toasts
     pageBox = rect(400, 100, 300, 600);
     await frame();
     assert.equal(rootVars.has("--studio-browser-page-inset"), false);
 
-    // The settings panel (300px) at the window edge, with the page left of it.
+    // include the 300px Run settings panel between the page and window edge
     rootVars.set("--studio-chat-settings-inset", "300px");
     await frame();
     assert.equal(rootVars.get("--studio-browser-page-inset"), "600px");
 
-    // No room for a toast column left of the page: no inset, so a toast over it hides it instead.
+    // omit the inset when no toast column fits; an overlapping toast will hide the page instead
     pageBox = rect(200, 100, 500, 600);
     await frame();
     assert.equal(rootVars.has("--studio-browser-page-inset"), false);

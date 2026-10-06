@@ -119,7 +119,6 @@ test("the header offset follows the UI font size, the titlebar does not", () => 
     default: { top: 103, right: 12 },
     mobile: { top: 103, right: 16 },
   });
-  // A route with no header keeps its corner inset at any size.
   assert.deepEqual(getToastOffsets("/settings", false, false, 20 / 15), {
     default: { top: 12, right: 12 },
     mobile: { top: 16, right: 16 },
