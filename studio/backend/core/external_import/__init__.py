@@ -54,6 +54,10 @@ class Transcript:
     created_at_ms: int
     updated_at_ms: int
     messages: list[dict]
+    # Which physical file the messages came from; a change (Codex revert) re-bases the ledger
+    # at ``inherited``, the count of leading messages carried over from the previous revision.
+    revision: str = ""
+    inherited: int = 0
 
 
 @dataclass(frozen = True)
@@ -67,6 +71,11 @@ class Source:
     read_transcript: Callable[[Path, str, str], Transcript]
     # Cheaper than list_projects for the status probe that runs whenever Settings > Data opens.
     count_sessions: Optional[Callable[[Path], int]] = None
+    # Thread identity for a session file; Codex keys by session_meta.id (a revert writes a new file).
+    session_key: Optional[Callable[[Path], str]] = None
+
+    def session_id(self, path: Path) -> str:
+        return self.session_key(path) if self.session_key else session_id_of(path)
 
     def session_count(self) -> int:
         home = self.home()
@@ -214,11 +223,14 @@ def _pending_messages(source: Source, transcript: Transcript, existing: bool) ->
     if not existing:
         return list(transcript.messages)
     stored = studio_db.list_chat_messages(transcript.thread_id)
-    turns = studio_db.get_external_import_mark(source.key, transcript.session_id)
-    if turns is None:
+    mark = studio_db.get_external_import_mark(source.key, transcript.session_id)
+    if mark is None:
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
-    pending = transcript.messages[turns:]
+    turns, revision = mark
+    pending = transcript.messages[
+        turns if revision == transcript.revision else transcript.inherited :
+    ]
     # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
     # does not orphan it (the frontend refuses a thread with a missing parent).
     present = {message["id"] for message in stored}
@@ -260,7 +272,7 @@ def _late_tool_results(transcript: Transcript) -> list[dict]:
 
 
 def _import_session(source: Source, path: Path, project_id: str, summary: ImportSummary) -> bool:
-    session_id = session_id_of(path)
+    session_id = source.session_id(path)
     thread_id = thread_id_for(source, session_id)
     try:
         transcript = source.read_transcript(path, thread_id, session_id)
@@ -285,7 +297,9 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
         pending = _late_tool_results(transcript) + pending
     if pending:
         studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
-    studio_db.record_external_import_mark(source.key, session_id, len(transcript.messages))
+    studio_db.record_external_import_mark(
+        source.key, session_id, len(transcript.messages), transcript.revision
+    )
     summary.new_chats += 0 if existing else 1
     summary.messages += len(pending)
     return True
@@ -326,7 +340,7 @@ def run_import(source: Source, *, home: Optional[Path] = None) -> ImportSummary:
     # other tombstones still stop a stale tab resurrecting a chat the user deleted.
     if not studio_db.list_chat_threads():
         studio_db.lift_chat_thread_tombstones(
-            thread_id_for(source, session_id_of(p))
+            thread_id_for(source, source.session_id(p))
             for project in projects
             for p in project.sessions
         )

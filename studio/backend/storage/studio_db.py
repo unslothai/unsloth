@@ -799,6 +799,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             source TEXT NOT NULL,
             session_id TEXT NOT NULL,
             turns_imported INTEGER NOT NULL,
+            revision TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (source, session_id)
         ) WITHOUT ROWID
         """
@@ -5436,30 +5437,39 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
         conn.close()
 
 
-def get_external_import_mark(source: str, session_id: str) -> Optional[int]:
-    """How many turns of an imported session were brought over, or None if it never was."""
+def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int, str]]:
+    """(turns brought over, source revision they came from), or None if never imported."""
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT turns_imported FROM external_import_sessions WHERE source = ? AND session_id = ?",
+            "SELECT turns_imported, revision FROM external_import_sessions"
+            " WHERE source = ? AND session_id = ?",
             (source, session_id),
         ).fetchone()
-        return None if row is None else row["turns_imported"]
+        return None if row is None else (row["turns_imported"], row["revision"])
     finally:
         conn.close()
 
 
-def record_external_import_mark(source: str, session_id: str, turns: int) -> None:
+def record_external_import_mark(
+    source: str,
+    session_id: str,
+    turns: int,
+    revision: str = "",
+) -> None:
     conn = get_connection()
     try:
         conn.execute(
             """
-            INSERT INTO external_import_sessions (source, session_id, turns_imported)
-            VALUES (?, ?, ?)
+            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(source, session_id) DO UPDATE SET
-                turns_imported = MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                    ELSE excluded.turns_imported END,
+                revision = excluded.revision
             """,
-            (source, session_id, int(turns)),
+            (source, session_id, int(turns), revision),
         )
         conn.commit()
     finally:

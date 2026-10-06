@@ -614,14 +614,52 @@ def test_codex_status_counts_rollouts_without_opening_them(codex_home, monkeypat
     assert codex.SOURCE.session_count() == 2
 
 
-def test_codex_reads_archived_rollouts_and_skips_revert_continuations(codex_home):
+def test_codex_reads_archived_rollouts_once(codex_home):
     _rollout(codex_home, sid = "a")
     _rollout(codex_home, sid = "b", root = "archived_sessions")
     _rollout(codex_home, sid = "a", root = "archived_sessions")
-    _rollout(codex_home, sid = "a_rev", history_base = {"thread_id": "a", "end_ordinal_exclusive": 3})
 
     sessions = sorted(s.name for p in codex.list_projects(codex_home) for s in p.sessions)
     assert sessions == [
         "rollout-2026-09-22T12-00-00-a.jsonl",
         "rollout-2026-09-22T12-00-00-b.jsonl",
     ]
+
+
+def _continuation(home, name, thread, base_thread, cut, text):
+    meta = {
+        "id": thread,
+        "cwd": "/Users/me/app",
+        "source": "cli",
+        "history_base": {"thread_id": base_thread, "end_ordinal_exclusive": cut},
+    }
+    path = home / "sessions" / "2026" / "09" / "23" / f"rollout-2026-09-23T12-00-00-{name}.jsonl"
+    return _write(
+        path,
+        [
+            {**x_line("session_meta", meta), "ordinal": cut},
+            {**x_line("event_msg", {"type": "user_message", "message": text}), "ordinal": cut + 1},
+        ],
+    )
+
+
+def test_codex_revert_and_fork_rebuild_the_inherited_prefix(codex_home):
+    base = _rollout(codex_home, sid = "t1")
+    lines = [json.loads(line) for line in base.read_text().splitlines()]
+    base.write_text("".join(json.dumps({**r, "ordinal": i}) + "\n" for i, r in enumerate(lines)))
+    assert run_import(codex.SOURCE).new_chats == 1
+    tid = thread_id_for(codex.SOURCE, "t1")
+    before = [m["id"] for m in _messages(codex.SOURCE, "t1")]
+
+    # Revert to just after the first prompt (ordinal 4), then a new prompt; plus a fork there.
+    _continuation(codex_home, "t1_r2", "t1", "t1", 4, "Try again")
+    _continuation(codex_home, "f1", "f1", "t1", 4, "Forked question")
+    summary = run_import(codex.SOURCE)
+
+    rows = {m["id"]: m for m in studio_db.list_chat_messages(tid)}
+    retry = next(m for m in rows.values() if m["content"][0].get("text") == "Try again")
+    assert set(before) <= set(rows)  # the reverted turns stay, as a sibling branch
+    assert rows[retry["parentId"]]["content"][0]["text"] == "List the files"
+    assert summary.new_chats == 1  # the fork, not a second copy of the reverted thread
+    fork = [m["content"][0].get("text") for m in _messages(codex.SOURCE, "f1")]
+    assert fork == ["List the files", "Forked question"]
