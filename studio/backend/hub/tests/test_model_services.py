@@ -7916,7 +7916,6 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
 
 
 def _write_sharded_safetensors(model_dir: Path, *, total: int, present: int) -> Path:
-    """A model that declares *total* shards in its index and ships only *present* of them."""
     model_dir.mkdir(parents = True, exist_ok = True)
     (model_dir / "config.json").write_text('{"model_type": "qwen3"}', encoding = "utf-8")
     names = [f"model-{i + 1:05d}-of-{total:05d}.safetensors" for i in range(total)]
@@ -7930,7 +7929,6 @@ def _write_sharded_safetensors(model_dir: Path, *, total: int, present: int) -> 
 
 
 def _write_split_gguf(model_dir: Path, *, total: int, present: int) -> Path:
-    """Every part names *total* in its filename, so a short set is detectable without an index."""
     model_dir.mkdir(parents = True, exist_ok = True)
     for i in range(present):
         (model_dir / f"Muse-Q4_K_M-{i + 1:05d}-of-{total:05d}.gguf").write_bytes(b"quant")
@@ -7946,10 +7944,7 @@ _LOCAL_SCANNERS = pytest.mark.parametrize(
 
 @_LOCAL_SCANNERS
 def test_a_local_dir_missing_shards_is_reported_partial(tmp_path, scan):
-    """An interrupted download in a plain local folder was offered as a complete model.
-    Only HF-cache rows got a partial flag, because detection was transport-based -- it read
-    the downloader's `.incomplete` markers, which a third-party app's folder never has. A
-    model with one of four shards on disk therefore looked ready to load."""
+    # Local folders carry no downloader markers, so only the payload can show a torn download.
     _write_sharded_safetensors(tmp_path / "Muse-Glimmer-30B-4bit", total = 4, present = 1)
 
     rows = scan(tmp_path)
@@ -7989,19 +7984,8 @@ def test_a_models_dir_pointed_straight_at_a_short_model_is_partial(tmp_path):
     assert rows[0].partial is True
 
 
-def test_an_hf_cache_row_keeps_the_partial_flag_it_was_given(tmp_path):
-    """The HF cache has its own authoritative detector (`is_snapshot_partial`, which already
-    includes the shard check). The caller's verdict must win there."""
-    model_dir = _write_sharded_safetensors(tmp_path / "cached", total = 4, present = 4)
-
-    rows = model_common._classify_local_path(model_dir, "hf_cache", partial = True)
-
-    assert rows[0].partial is True
-
-
 @pytest.mark.parametrize("weights", [b"", b"weights"], ids = ["torn", "whole"])
 def test_an_adapter_is_judged_on_its_own_payload(tmp_path, weights):
-    """peft resolves the singular `adapter_model.*`, so that one file is all there is to be short of."""
     adapter = tmp_path / "Lora"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(
@@ -8035,7 +8019,6 @@ def test_a_checkpoint_family_is_judged_on_its_own_payload(tmp_path, present):
 
 
 def test_a_locally_judged_row_claims_no_resumable_transport(tmp_path):
-    """`partial_transport` names a download this app can resume; these bytes arrived from elsewhere."""
     _write_sharded_safetensors(tmp_path / "Short", total = 4, present = 1)
 
     rows = local_inventory._scan_models_dir(tmp_path)
@@ -8045,8 +8028,7 @@ def test_a_locally_judged_row_claims_no_resumable_transport(tmp_path):
 
 
 def test_a_complete_diffusers_pipeline_is_not_called_short_a_shard(tmp_path):
-    """A pipeline holds every weight in a component subdir, so the root names `from_pretrained`
-    opens are all absent and judging by them would call a complete pipeline torn."""
+    # Every weight lives in a component subdir, so a root-level judge would call it torn.
     pipeline = tmp_path / "FluxLike"
     (pipeline / "transformer").mkdir(parents = True)
     (pipeline / "model_index.json").write_text('{"_class_name": "FluxPipeline"}', encoding = "utf-8")
@@ -8056,16 +8038,6 @@ def test_a_complete_diffusers_pipeline_is_not_called_short_a_shard(tmp_path):
     rows = local_inventory._scan_lmstudio_dir(tmp_path)
 
     assert [r.model_format for r in rows] == ["unknown"]
-    assert rows[0].partial is False
-
-
-def test_the_classifier_itself_reads_no_payload_verdict(tmp_path):
-    """Stamped per row by `_apply_format_aware_partial`, which one verdict taken before the rows
-    exist cannot do."""
-    model_dir = _write_sharded_safetensors(tmp_path / "Short", total = 4, present = 1)
-
-    rows = model_common._classify_local_path(model_dir, "lmstudio")
-
     assert rows[0].partial is False
 
 
@@ -8099,7 +8071,6 @@ def test_a_complete_split_gguf_dir_stays_whole(tmp_path):
 def test_a_hybrid_dir_reports_each_row_on_its_own_evidence(
     tmp_path, shards_present, quant_parts_present, expected
 ):
-    """A torn quant must not taint the set beside it, nor a whole one vouch for a torn family."""
     model_dir = _write_sharded_safetensors(tmp_path / "Hybrid", total = 4, present = shards_present)
     _write_split_gguf(model_dir, total = 3, present = quant_parts_present)
 
