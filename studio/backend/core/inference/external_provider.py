@@ -5519,13 +5519,24 @@ class ExternalProviderClient:
                             instructions_parts.append(part["text"])
                 continue
 
-            if role == "assistant" and is_openai_cloud and isinstance(content, list):
-                for part in content:
-                    if part.get("type") == "compaction" and part.get("encrypted_content"):
-                        # The item carries everything before it, and resending that would compact it again.
-                        input_items = [
-                            {"type": "compaction", "encrypted_content": part["encrypted_content"]}
-                        ]
+            if role == "assistant" and is_openai_cloud:
+                # A saved turn carries its compaction item as a content part, the tool loop on extra_content.
+                extra = msg.get("extra_content")
+                replayed = (
+                    [extra.get("openai_responses_compaction")] if isinstance(extra, dict) else []
+                )
+                if isinstance(content, list):
+                    replayed += [
+                        part.get("encrypted_content")
+                        for part in content
+                        if part.get("type") == "compaction"
+                    ]
+                replayed = [item for item in replayed if isinstance(item, str) and item]
+                if replayed:
+                    # The item carries everything before it, and resending that would compact it again.
+                    input_items = [{"type": "compaction", "encrypted_content": replayed[-1]}]
+                    if not content and not msg.get("tool_calls"):
+                        continue
 
             # Responses uses item-shape history: each assistant call is a `function_call` item and each role="tool"
             # follow-up a `function_call_output` keyed by call_id (the Chat Completions shape 400s).

@@ -1189,6 +1189,34 @@ def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
     return taken
 
 
+def _openai_compaction_item(event: Any) -> str | None:
+    if not isinstance(event, dict) or event.get("type") != "compaction_block":
+        return None
+    encrypted = event.get("encrypted_content")
+    return encrypted if isinstance(encrypted, str) and encrypted else None
+
+
+def _with_openai_compaction(
+    conversation: list[dict[str, Any]], compaction: tuple[list[dict[str, Any]], str] | None
+) -> list[dict[str, Any]]:
+    """Later rounds replay an OpenAI Responses compaction item after the messages it covers, or the provider compacts
+    the same history again."""
+    if compaction is None:
+        return conversation
+    sent, encrypted = compaction
+    # A continuation merges into the last message sent rather than appending, and that message is no longer covered.
+    covered = next(
+        (index for index, message in enumerate(sent) if conversation[index] is not message),
+        len(sent),
+    )
+    carrier = {
+        "role": "assistant",
+        "content": "",
+        "extra_content": {"openai_responses_compaction": encrypted},
+    }
+    return [*conversation[:covered], carrier, *conversation[covered:]]
+
+
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     """Append a user turn, merging into a trailing one so roles keep alternating. A turn whose only
     calls were no-ops appends no assistant message, so a bare append would leave two user turns
@@ -1253,6 +1281,7 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    openai_compaction: tuple[list[dict[str, Any]], str] | None = None
     # The image parts this run appends, so its cap never counts a caller's own
     # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
     # and seeded with what promotion already put in the conversation.
@@ -1397,8 +1426,9 @@ async def stream_with_studio_tools(
         if executed_any and turn_tool_choice not in ("auto", "none"):
             turn_tool_choice = "auto"
 
+        sent_messages = list(conversation)
         generator = transport.stream(
-            messages = conversation,
+            messages = _with_openai_compaction(conversation, openai_compaction),
             tools = active_tools if tools_available else None,
             tool_choice = turn_tool_choice,
             cancel_event = cancel_event,
@@ -1457,6 +1487,9 @@ async def stream_with_studio_tools(
                 if isinstance(extra, dict):
                     turn.reasoning_extra = extra
                 turn.note_hosted_tool_event(payload.get("_toolEvent"))
+                compaction = _openai_compaction_item(payload.get("_toolEvent"))
+                if compaction:
+                    openai_compaction = (sent_messages, compaction)
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
                 # Only a live healer can still promote a call this turn; once dormant, the wire already carries the

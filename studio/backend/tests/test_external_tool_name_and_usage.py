@@ -393,3 +393,37 @@ def test_a_last_turn_without_timings_reports_none(executed, answer_turn, total):
     assert len(reports) == 1
     assert reports[0]["usage"]["total_tokens"] == total
     assert "timings" not in reports[0]
+
+
+def test_a_provider_compaction_item_is_handed_to_the_next_round(executed):
+    compaction = "data: " + json.dumps(
+        {
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "_toolEvent": {"type": "compaction_block", "encrypted_content": "gAAAA-opaque"},
+        }
+    )
+    transport = FakeTransport(
+        [[compaction, _name_fragment(0, "web_search"), _arguments(0, '{"query": "x"}'), _finish()]]
+    )
+    # As the real transport does: the event is this server's own frame, not a provider's forgery.
+    transport.sanitizes_provider_frames = True
+    _run(transport)
+    assert transport.requests[0]["messages"] == [{"role": "user", "content": "hi"}]
+    replayed = transport.requests[1]["messages"]
+    assert [m["role"] for m in replayed] == ["user", "assistant", "assistant", "tool"]
+    assert replayed[1]["extra_content"] == {"openai_responses_compaction": "gAAAA-opaque"}
+
+
+def test_a_reprompt_merged_into_a_compacted_message_stays_after_the_item(executed):
+    narration = "data: " + json.dumps(
+        {
+            "choices": [{"index": 0, "delta": {"content": "I'll search the web."}}],
+            "_toolEvent": {"type": "compaction_block", "encrypted_content": "gAAAA-opaque"},
+        }
+    )
+    transport = FakeTransport([[narration, _finish("stop")]])
+    transport.sanitizes_provider_frames = True
+    _run(transport, nudge_tool_calls = True)
+    replayed = transport.requests[1]["messages"]
+    assert [m["role"] for m in replayed] == ["assistant", "user"]
+    assert "extra_content" in replayed[0] and replayed[1]["content"].startswith("hi\n\n")

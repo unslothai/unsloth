@@ -382,3 +382,42 @@ def test_build_external_messages_passes_the_compaction_item_to_openai():
     deepseek = _build_external_messages(msgs, supports_vision = True, provider_type = "deepseek")
     for out in (anthropic, deepseek):
         assert "gAAAA-opaque" not in json.dumps(out)
+
+
+def test_a_tool_round_compaction_item_replaces_the_history_it_covers(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
+        )
+
+    _stream(
+        monkeypatch,
+        handler,
+        messages = [
+            {"role": "user", "content": "turn 1"},
+            {
+                "role": "assistant",
+                "content": "",
+                "extra_content": {"openai_responses_compaction": "gAAAA-opaque"},
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "found"},
+        ],
+    )
+    items = captured["body"]["input"]
+    assert items[0] == {"type": "compaction", "encrypted_content": "gAAAA-opaque"}
+    assert "turn 1" not in json.dumps(items)
+    assert [item["type"] for item in items[1:]] == ["function_call", "function_call_output"]
