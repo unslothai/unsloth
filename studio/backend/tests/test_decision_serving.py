@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import struct
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -389,7 +390,10 @@ def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
 
         def start(self):
             # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
-            self.fd = os.dup(self.child.fileno())
+            # Keeping the parent's close from releasing it works on Windows too, where a pipe
+            # end is a handle os.dup cannot copy.
+            held.append(self.child)
+            self.child.close = lambda: None
 
         def join(self, timeout = None):
             calls.append("join")
@@ -400,10 +404,16 @@ def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
         def kill(self):
             calls.append("kill")
 
+    held = []
     monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
     monkeypatch.setattr(clef_runtime, "LOAD_TIMEOUT_S", 0.01)
-    with pytest.raises(clef_runtime.ClefWorkerError, match = "did not answer"):
-        clef_runtime.ClefAgent("unused")
+    try:
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "did not answer"):
+            clef_runtime.ClefAgent("unused")
+    finally:
+        for child in held:
+            del child.close
+            child.close()
     assert "kill" in calls
 
 
@@ -510,14 +520,18 @@ def test_a_clef_worker_that_died_after_loading_is_a_worker_error():
 
 
 def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
+    import types
+
     from core.systemone import clef_runtime
-    from unsloth.models import clef
 
     def encode(tokenizer, record, max_length):
         # The state needs `natural` tokens; anything over max_length is cut to fit.
         return SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
 
-    monkeypatch.setattr(clef, "encode_record", encode)
+    # Studio's backend CI has no unsloth_zoo, so the real module may not import: stand it in.
+    for name in ("unsloth", "unsloth.models"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "unsloth.models.clef", SimpleNamespace(encode_record = encode))
     size = clef_runtime.MAX_LENGTH
 
     def truncated(natural):

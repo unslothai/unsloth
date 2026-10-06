@@ -188,6 +188,21 @@ def _device():
     return torch.device("cpu")
 
 
+def _pin_device_map(kwargs) -> None:
+    """Without a caller's device_map, FastModel's planner may split the backbone over every visible GPU, but the decision head reads its embedding rows on one device. Pin the load to this process's device, its LOCAL_RANK under torchrun."""
+    if kwargs.get("device_map") is not None:
+        return
+    from .loader_utils import prepare_device_map
+
+    device_map, _ = prepare_device_map()
+    if device_map is None:
+        device = _device()
+        backend = getattr(torch, device.type, None)
+        index = backend.current_device() if backend is not None and backend.is_available() else 0
+        device_map = {"": f"{device.type}:{index}"}
+    kwargs["device_map"] = device_map
+
+
 def _amp_dtype(device):
     if device.type == "cuda":
         return torch.bfloat16 if is_bfloat16_supported() else torch.float16
@@ -655,6 +670,7 @@ def _load_clef(
         # FastModel drops load_in_4bit for full finetuning, but not an explicit quantization config.
         if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
+        _pin_device_map(kwargs)
         # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
         # which stores bfloat16 weights: the gated delta net NaNs in pure float16.
         backbone, processor = FastModel.from_pretrained(
