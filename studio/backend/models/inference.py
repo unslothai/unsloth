@@ -2480,8 +2480,9 @@ def _normalize_sandbox_level(value: Any) -> Any:
 _SANDBOX_LEVEL_DESCRIPTION = (
     "[x-unsloth] Sandbox level for the Python and Terminal tools. 'high' (default) runs them "
     "in the OS sandbox when it works and on software safeguards otherwise. 'low' runs them on "
-    "software safeguards only, so 'off' still asks before their high-risk calls. Full access "
-    "overrides both. Case-insensitive; any other value is rejected."
+    "software safeguards only, so on a streaming UI chat 'off' still asks before their "
+    "high-risk calls; elsewhere 'off' never prompts, as before. Full access overrides both. "
+    "Case-insensitive; any other value is rejected."
 )
 
 
