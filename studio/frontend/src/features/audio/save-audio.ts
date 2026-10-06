@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import {
+  downloadBlobStreaming,
   downloadFile,
   downloadUrl,
   isDownloadCancelled,
@@ -18,7 +19,11 @@ export async function saveAudio(
   try {
     if (load && (!url || (isTauri && url.startsWith("blob:")))) {
       const blob = await load();
-      await downloadFile(blob, filename, blob.type || "audio/wav");
+      if (isTauri) {
+        await downloadBlobStreaming(blob, filename);
+      } else {
+        await downloadFile(blob, filename, blob.type || "audio/wav");
+      }
     } else if (url) {
       await downloadUrl(url, filename);
     }
