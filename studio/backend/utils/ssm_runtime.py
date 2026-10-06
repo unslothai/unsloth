@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-install the SSM/Mamba kernels a hybrid model needs before it loads. Mamba/SSM hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, GraniteMoEHybrid, ...) lazy-``import mamba_ssm`` / ``causal_conv1d`` in their ``modeling_*.py`` during ``from_pretrained``; absent, the load dies with "mamba-ssm is required ... cannot be imported". The training worker installs them wheel-first before a fine-tune; this is the shared, callback-based version the inference load path calls so chat behaves the same. The model tables here and the pinned kernels in ``utils.kernel_install`` are the ones the training worker uses."""
+"""Auto-install the SSM/Mamba kernels a hybrid model needs before it loads.
+
+Mamba/SSM hybrids (Nemotron-H, Falcon-H1, Granite-4.0-H, ...) lazy-import ``mamba_ssm`` /
+``causal_conv1d`` during ``from_pretrained`` and die if absent. This is the callback-based
+version of the training worker's install for the inference load path; tables and pins are shared.
+"""
 
 from __future__ import annotations
 

@@ -4,9 +4,7 @@
 """Kernel install pieces shared by Studio setup, the training worker, the SSM runtime and
 `unsloth install-kernels [names]`.
 
-Each caller keeps its own policy (when to probe, how to verify, what to fall back to); this module
-holds the parts they all repeated: the pinned kernel releases, the prebuilt-wheel install loop, the
-HIP-aware source build command and the uninstall command. Only stdlib, wheel_utils and child_stdio
+Callers keep their own policy (probe, verify, fallback). Only stdlib, wheel_utils and child_stdio
 are imported, so setup and torch-less hosts can import it.
 
 The CLI is wheel-only by design: no wheel for this torch / CUDA / Python means nothing is installed
@@ -90,10 +88,8 @@ def install_prebuilt(
     on_failed: Callable[[str, Any], None],
     **install_kwargs: Any,
 ) -> str:
-    """Install a prebuilt wheel and verify it: "installed", "rejected" (installed, `verify()` failed)
-    or "failed" (every installer failed, each reported to `on_failed`). `install` is passed in
-    (normally wheel_utils.install_wheel, with `install_kwargs` forwarded as given) so each caller
-    keeps its own seams and installer flags."""
+    """Install and verify a prebuilt wheel: "installed", "rejected" (installed, `verify()` failed)
+    or "failed". `install_kwargs` are forwarded as given so each caller keeps its own installer flags."""
     for installer, result in install(wheel_url, python_executable = sys.executable, **install_kwargs):
         if getattr(result, "returncode", 1) == 0:
             # A wheel can install yet not load (CUDA/ABI or arch mismatch), so the exit code is no proof.
@@ -106,8 +102,7 @@ def hipcc_gcc_install_dir() -> str | None:
     """Highest-numbered ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` that has BOTH the gcc runtime dir AND
     ``/usr/include/c++/<N>`` headers, or None. Ubuntu 24.04 ships gcc-14 runtime but not
     ``/usr/include/c++/14``; ROCm clang-20 picks the highest runtime dir, finds no ``<cstdlib>``,
-    and the HIP build fails. The returned path is passed to clang via ``--gcc-install-dir``.
-    Mirrors bbf004c in studio/setup.sh (PR #5301)."""
+    and the HIP build fails, hence ``--gcc-install-dir``. Mirrors studio/setup.sh (PR #5301)."""
     if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
         return None
     for ver in (14, 13, 12, 11):
@@ -165,7 +160,6 @@ def source_build_run_kwargs(
         # pip and the compilers it drives write UTF-8 down this pipe; the Windows ANSI codepage would mojibake or raise over a fine install.
         "encoding": "utf-8",
         "errors": "replace",
-        # Make the Python child emit the UTF-8 we decode above.
         "env": utf8_child_env(),
     }
     if not is_hip:
@@ -177,7 +171,6 @@ def source_build_run_kwargs(
     gcc_dir = gcc_install_dir()
     if not gcc_dir:
         return kwargs, None
-    # Extends the UTF-8 env above rather than replacing it.
     env = dict(kwargs["env"])
     env["HIPCC_COMPILE_FLAGS_APPEND"] = f"{existing} --gcc-install-dir={gcc_dir}".strip()
     kwargs["env"] = env

@@ -1429,7 +1429,6 @@ def _attempt_package_install(
             pypi_spec, use_uv = bool(shutil.which("uv")), is_hip = bool(is_hip), reinstall = False
         )
 
-    # No timeout off ROCm; HIP builds get 1800 s and the --gcc-install-dir shim.
     _run_kwargs, _gcc_dir = source_build_run_kwargs(
         is_hip = bool(is_hip), gcc_install_dir = _hipcc_gcc_install_dir
     )

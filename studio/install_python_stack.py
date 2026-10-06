@@ -5446,11 +5446,7 @@ def _warn_still_cpu(expected: str) -> bool:
 
 def _uninstall_distribution(name: str) -> bool:
     """Remove one distribution from the venv this script targets. True iff it is gone.
-
-    --python sys.executable so a uv that also needs --system cannot remove from the
-    system Python instead, and a pip fallback for the same interpreter. Output is
-    swallowed; the caller reports.
-    """
+    Output is swallowed; the caller reports."""
     cmd = uninstall_command(
         name, use_uv = USE_UV and bool(shutil.which("uv")), uv_needs_system = UV_NEEDS_SYSTEM
     )
@@ -8146,10 +8142,8 @@ def _flash_attn_importable() -> bool:
 def _remove_rejected_flash_attn() -> bool:
     """Uninstall a flash-attn that installed but will not import. True iff it is gone.
 
-    Targets the interpreter install_wheel installed into, always ``sys.executable``: its uv
-    command passes --python as well as --system, and its pip fallback runs that interpreter.
-    --system ALONE would remove from the system Python, leaving the rejected wheel in the
-    venv while setup reported it gone.
+    uv gets --python as well as --system: --system ALONE would remove from the system
+    Python, leaving the rejected wheel in the venv while setup reported it gone.
     """
     return _uninstall_distribution("flash-attn")
 
@@ -8173,7 +8167,6 @@ def _ensure_flash_attn() -> None:
         outcome = install_prebuilt(
             wheel_url,
             install = install_wheel,
-            # Verify rather than trust the exit code, so setup reports what happened.
             verify = _flash_attn_importable,
             on_failed = lambda installer, wheel_result: _print_optional_install_failure(
                 f"Installing flash-attn prebuilt wheel with {installer}",
@@ -8195,8 +8188,7 @@ def _ensure_flash_attn() -> None:
                     _cyan,
                 )
             else:
-                # Say so plainly: it is still importable in process, so this is not the
-                # same state as never having installed it.
+                # Still importable in process, unlike never having installed it.
                 _step(
                     "warning",
                     "flash-attn wheel is not importable on this GPU and could not be "
