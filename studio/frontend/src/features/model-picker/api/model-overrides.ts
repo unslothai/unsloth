@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { LlamaCppConfig } from "../model-config/llama-cpp-config";
 // Server-side mirror of the per-model config. per-model-config.ts lives in browser
 // localStorage, so an API auto-switch load came up with none of the user's settings.
 // routes/inference.py reads this map and rebuilds the picker's LoadRequest.
@@ -31,7 +30,6 @@ export interface ApiModelOverride {
   engine?: "auto" | "vllm" | "sglang";
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[];
-  llama_cpp_config?: LlamaCppConfig;
   // biome-ignore lint/style/useNamingConvention: API schema
   max_seq_length?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -41,6 +39,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_kv_quant?: string;
   mlx_kv_bits?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_int8_prefill?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -350,10 +350,10 @@ export function fromApiOverride(
     // Both are stored only when true, so an absent one is a gap like any other.
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
+    mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
-    llamaCppConfig: override.llama_cpp_config ?? local.llamaCppConfig,
     gpuMemoryMode: override.gpu_memory_mode ?? local.gpuMemoryMode,
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
@@ -442,15 +442,15 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.disableVision) {
     payload.disable_vision = true;
   }
+  if (config.mlxInt8Prefill) {
+    payload.mlx_int8_prefill = true;
+  }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;
   }
   // The one field where absent does NOT mean "app default": the route preserves
   // llama_extra_args it is not sent, which kept CLI-set flags alive while this panel had no
   // control. So `undefined` stays omitted and a cleared box sends an explicit empty list.
-  if (config.llamaCppConfig !== undefined) {
-    payload.llama_cpp_config = config.llamaCppConfig;
-  }
   if (config.llamaExtraArgs !== undefined) {
     payload.llama_extra_args = config.llamaExtraArgs ?? [];
   }

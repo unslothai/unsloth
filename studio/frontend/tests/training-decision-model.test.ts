@@ -692,6 +692,7 @@ test("a Clef run keeps QLoRA, sends 4-bit and the recipe's context, and has no c
   assert.equal(payload.model_subfolder, null);
   assert.equal(payload.max_seq_length, CLEF_YAML.training.max_seq_length);
   assert.equal(payload.lora_r, CLEF_YAML.lora.lora_r);
+  assert.equal(payload.optim, "adamw_8bit");
 
   useTrainingConfigStore.getState().setTrainingMethod("lora");
   const lora = buildTrainingStartPayload(

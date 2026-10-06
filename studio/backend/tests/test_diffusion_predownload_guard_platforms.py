@@ -444,3 +444,29 @@ def test_the_default_plan_still_refuses_an_oversized_pipeline(monkeypatch):
     plan = backend.download_plan("unsloth/FLUX.2-dev", model_kind = "pipeline")
     assert plan["incompatible_reason"] is not None
     assert "unified memory" in plan["incompatible_reason"]
+
+
+@pytest.mark.parametrize("mirrored", [False, True])
+def test_a_mirrored_pre_cast_encoder_is_never_staged_from_the_hub(monkeypatch, tmp_path, mirrored):
+    from core.inference import diffusion_te_prequant as te_prequant
+
+    repo, name = "unsloth/FLUX.2-dev-FP8", "te.safetensors"
+    backend = _plan_probe(monkeypatch, [])
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_te_prequant_plan_files",
+        lambda *_a, **_k: {"text_encoder": (repo, [(name, 7)])},
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda *_a, **_k: False)
+    )
+    monkeypatch.delenv(te_prequant.TE_PREQUANT_MIRROR_ENV, raising = False)
+    if mirrored:
+        (tmp_path / repo).mkdir(parents = True)
+        (tmp_path / repo / name).write_bytes(b"x" * 7)
+        monkeypatch.setenv(te_prequant.TE_PREQUANT_MIRROR_ENV, str(tmp_path))
+    plan = backend.download_plan("unsloth/FLUX.2-dev", model_kind = "pipeline", memory_verdict = False)
+    staged = [e for e in plan["entries"] if e["repo_id"] == repo]
+    assert bool(staged) is not mirrored
+    base = [e for e in plan["entries"] if e["repo_id"] == "unsloth/FLUX.2-dev"]
+    assert all(not f.startswith("text_encoder/") for e in base for f in e["files"])

@@ -20,7 +20,7 @@ test("the owner sees every settings tab", () => {
 test("a managed account never sees a tab whose routes are all owner-only", () => {
   const hidden = SETTINGS_TABS.filter((tab) => !settingsTabVisible(tab, false));
   assert.deepEqual(new Set(hidden), OWNER_ONLY_SETTINGS_TABS);
-  for (const tab of ["accounts", "resources", "remote-lan", "agents", "debugging"] as const) {
+  for (const tab of ["accounts", "resources", "remote-lan", "agents", "sandbox", "debugging"] as const) {
     assert.ok(OWNER_ONLY_SETTINGS_TABS.has(tab), tab);
     assert.equal(resolveSettingsTab(tab, false), "general");
   }

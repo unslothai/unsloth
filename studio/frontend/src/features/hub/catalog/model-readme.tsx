@@ -16,7 +16,7 @@ import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
-import { code as streamdownCode } from "@streamdown/code";
+import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
 import { mermaid as streamdownMermaid } from "@streamdown/mermaid";
 import {
@@ -340,7 +340,7 @@ async function loadReadmeFromCache({
 }
 
 function loadPlugins(needs: MarkdownPluginNeeds): ReadmePlugins {
-  const plugins: ReadmePlugins = { code: streamdownCode };
+  const plugins: ReadmePlugins = { code: codePlugin };
   if (needs.math) plugins.math = streamdownMath;
   if (needs.mermaid) plugins.mermaid = streamdownMermaid;
   return plugins;

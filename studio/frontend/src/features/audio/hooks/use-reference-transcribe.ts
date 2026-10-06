@@ -13,9 +13,12 @@ import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 export function useReferenceTranscribe({
   sttRepo,
   onText,
+  purpose = "reference",
 }: {
   sttRepo: string | null;
   onText: (text: string, reference: AudioSourceSelection) => void;
+  /** "convert" transcribes up to Convert's cap instead of the 30 s clone reference. */
+  purpose?: "reference" | "convert";
 }) {
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +28,9 @@ export function useReferenceTranscribe({
 
   const transcribe = useCallback(
     async (reference: AudioSourceSelection | null) => {
-      if (!reference || abort.current) return;
+      if (!reference) return;
+      // A newer clip wins, so its own transcription is never skipped.
+      abort.current?.abort();
       const controller = new AbortController();
       abort.current = controller;
       setTranscribing(true);
@@ -39,6 +44,7 @@ export function useReferenceTranscribe({
             model,
             engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
             device: voice.sttDevice,
+            purpose,
           },
           controller.signal,
         );
@@ -59,14 +65,23 @@ export function useReferenceTranscribe({
             : "Could not transcribe the clip.",
         );
       } finally {
-        if (abort.current === controller) abort.current = null;
-        setTranscribing(false);
+        if (abort.current === controller) {
+          abort.current = null;
+          setTranscribing(false);
+        }
       }
     },
-    [sttRepo],
+    [sttRepo, purpose],
   );
+
+  const cancel = useCallback(() => {
+    abort.current?.abort();
+    abort.current = null;
+    setTranscribing(false);
+    setError(null);
+  }, []);
 
   useEffect(() => () => abort.current?.abort(), []);
 
-  return { transcribe, transcribing, error };
+  return { transcribe, cancel, transcribing, error };
 }

@@ -29,13 +29,21 @@ function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
 
+/** Room kept clear around a picture shown at fit, in px. */
+export type MediaInset = { top: number; right: number; bottom: number; left: number };
+
+const NO_INSET: MediaInset = { top: 0, right: 0, bottom: 0, left: 0 };
+
 export function MediaZoomStage({
   zoom,
   onFitScale,
+  inset = NO_INSET,
   children,
 }: {
   zoom: MediaZoom;
   onFitScale: (scale: number | null) => void;
+  /** Fit within the stage less this; a picture larger than that area may use the whole stage. */
+  inset?: MediaInset;
   children: ReactNode;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -69,9 +77,15 @@ export function MediaZoomStage({
     return () => observer.disconnect();
   }, []);
 
+  const room = stage
+    ? {
+        width: Math.max(1, stage.width - inset.left - inset.right),
+        height: Math.max(1, stage.height - inset.top - inset.bottom),
+      }
+    : null;
   const fit =
-    stage && natural
-      ? Math.min(stage.width / natural.width, stage.height / natural.height)
+    room && natural
+      ? Math.min(room.width / natural.width, room.height / natural.height)
       : null;
   useEffect(() => onFitScale(fit), [fit, onFitScale]);
 
@@ -206,8 +220,15 @@ export function MediaZoomStage({
             ? {
                 width: box.width,
                 height: box.height,
-                left: (stage.width - box.width) / 2,
-                top: (stage.height - box.height) / 2,
+                // Centred in the clear area while it fits there, in the whole stage once larger.
+                left:
+                  room && box.width <= room.width
+                    ? inset.left + (room.width - box.width) / 2
+                    : (stage.width - box.width) / 2,
+                top:
+                  room && box.height <= room.height
+                    ? inset.top + (room.height - box.height) / 2
+                    : (stage.height - box.height) / 2,
                 transform: translate(pan),
               }
             : { inset: 0 }

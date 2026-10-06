@@ -8,7 +8,15 @@ import {
 } from "../components/instructions-fields";
 import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
-import { instructionsKindFor, panelApplies } from "./select";
+import { EDIT_TOOL_PANELS } from "./edit-panels";
+import { CONVERT_TOOL_PANELS } from "./convert-panels";
+import { MUSIC_TOOL_PANELS } from "./music-panels";
+import { SEPARATE_TOOL_PANELS } from "./separate-panels";
+import {
+  instructionsKindFor,
+  legacyMusicDescription,
+  panelApplies,
+} from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
 import type {
   AnyAudioToolPanel,
@@ -44,7 +52,9 @@ function instructionsPanel(
     title,
     // Request fields, not spec options, so Advanced keeps every option.
     claims: [],
-    appliesTo: (ctx) => instructionsKindFor(ctx) === kind,
+    appliesTo: (ctx) =>
+      instructionsKindFor(ctx) === kind &&
+      (kind !== "music" || legacyMusicDescription(ctx)),
     initial: () => ({ instructions: "", language: "" }),
     Component: ({ value, onChange, ctx }) => (
       <>
@@ -107,6 +117,10 @@ export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   ...INSTRUCTION_PANELS,
   ...SPEAK_TOOL_PANELS.slice(1),
   ...CLONE_TOOL_PANELS,
+  ...EDIT_TOOL_PANELS,
+  ...CONVERT_TOOL_PANELS,
+  ...MUSIC_TOOL_PANELS,
+  ...SEPARATE_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(

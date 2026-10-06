@@ -81,14 +81,18 @@ def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> di
     import torch
 
     from unsloth.models.clef import encode_record, systemone_answer
-    from unsloth.models.decision import QUESTION_TYPES, _served_temperatures
+    from unsloth.models.decision import QUESTION_TYPES, _clef_amp_dtype, _served_temperatures
 
     encoded = encode_record(
         tokenizer, {"state": state, "questions": questions}, max_length = MAX_LENGTH
     )
     device = next(model.parameters()).device
     ids = torch.tensor([encoded.input_ids], device = device)
-    with torch.inference_mode(), torch.autocast(device.type, dtype = torch.bfloat16):
+    amp_dtype = _clef_amp_dtype(model, device)
+    with (
+        torch.inference_mode(),
+        torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None),
+    ):
         logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
     rows = [
         row[: len(question.option_ids)]

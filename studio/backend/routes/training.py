@@ -1286,6 +1286,8 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
             for key, value in (defaults.get(section) or {}).items():
                 if key in unset:
                     setattr(request, key, value)
+        if "learning_rate" in unset and request.training_type == "Full Finetuning":
+            request.learning_rate = _DECISION_FULL_FINETUNING_LR
         return
     request.decision_layout = "laya"
     if (

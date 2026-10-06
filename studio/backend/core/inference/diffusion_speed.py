@@ -460,6 +460,13 @@ def apply_speed_optims(
         "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
+    if getattr(target, "backend", None) == "rocm":
+        # Memory, not speed, so before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
+        try:
+            from .diffusion_vae_attn_chunked import install as install_vae_attn_chunks
+            install_vae_attn_chunks(getattr(pipe, "vae", None), target, logger)
+        except Exception as exc:  # noqa: BLE001 - keep stock attention
+            _warn(logger, "vae attention chunks", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
@@ -580,20 +587,33 @@ def apply_speed_optims(
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         cuda_graph = None
         ok, reason = False, "cuda graph layer unavailable"
+        moved = bool(offload_active if denoiser_offloaded is None else denoiser_offloaded)
         try:
             from . import diffusion_cuda_graph as cuda_graph  # noqa: PLC0415 - import cycle
+
+            after_placement = moved and cuda_graph.offload_graphs_enabled()
             ok, reason = cuda_graph.graph_eligible(
                 target,
                 family = family,
                 pipe = pipe,
-                offload_active = offload_active
-                if denoiser_offloaded is None
-                else bool(denoiser_offloaded),
+                offload_active = moved and not after_placement,
                 cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
                 speed_mode = mode,
                 family_default = cuda_graph_default,
                 logger = logger,
+                offloaded = after_placement,
             )
+            if ok and after_placement:
+                # The slot and the recorded copies depend on the hooks placement installs: arm_graphs_after_placement.
+                ok, reason = False, "armed after placement"
+                try:
+                    pipe._unsloth_cuda_graph_after_placement = True
+                    # A family that opts in only offloaded must not get a resident graph if the denoiser stays put.
+                    pipe._unsloth_cuda_graph_offload_only = not bool(
+                        getattr(family, "supports_cuda_graph", cuda_graph_default)
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as exc:  # noqa: BLE001 - an unimportable graph layer means eager, never a failed load
             _warn(logger, "cuda graph eligibility", exc)
         # Stashed either way: status reports WHY graphs are off, not just that they are.
@@ -616,6 +636,51 @@ def _onload_device(target: Any) -> Optional[str]:
         return None
     device = getattr(target, "torch_device", None)
     return str(device) if isinstance(device, str) and device.startswith("cuda") else "cuda"
+
+
+def arm_graphs_after_placement(
+    pipe: Any,
+    applied: dict,
+    logger: Any = None,
+) -> dict:
+    """Arm the denoiser graphs for the placement that actually happened: replaces a resident-planned graph a hook now
+    wraps, and arms the one apply_speed_optims deferred for an offloaded denoiser (the copies are recorded in it)."""
+    pending = bool(getattr(pipe, "_unsloth_cuda_graph_after_placement", False))
+    hooked = bool(applied.get("cuda_graph")) and _denoiser_moves(pipe)
+    if not (pending or hooked):
+        return applied
+    try:
+        from . import diffusion_cuda_graph as cuda_graph  # noqa: PLC0415 - import cycle
+
+        if not cuda_graph.offload_graphs_enabled():
+            cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+            pipe._unsloth_cuda_graphs = ()
+            pipe._unsloth_cuda_graph_reason = "offload active"
+            applied["cuda_graph"] = False
+            return applied
+        handles, reason = cuda_graph.arm_after_placement(pipe, logger = logger)
+        pipe._unsloth_cuda_graph_after_placement = False
+        pipe._unsloth_cuda_graph_reason = reason
+        applied["cuda_graph"] = bool(handles)
+    except Exception as exc:  # noqa: BLE001 - the load proceeds eager
+        _warn(logger, "cuda graph arm after placement", exc)
+        applied["cuda_graph"] = False
+    return applied
+
+
+def _denoiser_moves(pipe: Any) -> bool:
+    for module in _denoiser_dits(pipe) or [m for m in [_denoiser_unet(pipe)] if m is not None]:
+        if getattr(module, "_hf_hook", None) is not None:
+            return True
+        hooks = getattr(getattr(module, "_diffusers_hook", None), "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+        try:
+            if any(getattr(m, "_hf_hook", None) is not None for m in module.modules()):
+                return True
+        except Exception:  # noqa: BLE001
+            return True
+    return False
 
 
 def engage_pinned_denoisers(

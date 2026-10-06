@@ -71,6 +71,7 @@ from .models.loader_utils import (
 from .models._utils import _convert_torchao_model
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
 
@@ -994,7 +995,7 @@ def unsloth_save_model(
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
@@ -1002,7 +1003,7 @@ def unsloth_save_model(
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
-            '"lora"         ==> This is the fastest and easiet. Just saves LoRA modules.\n'
+            '"lora"         ==> This is the fastest and easiest. Just saves LoRA modules.\n'
             '"merged_16bit" ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
             '"merged_4bit"  ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.'
         )
@@ -1479,17 +1480,17 @@ def unsloth_save_model(
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
     state_dict = None
     del state_dict
-    torch.cuda.empty_cache()
+    clean_gpu_cache()
     gc.collect()
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
     return save_directory, username
 
@@ -4128,8 +4129,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         import gc
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
 
     try:
         model_dtype = dtype_from_config(self.config)
@@ -6104,10 +6104,7 @@ def _unsloth_save_torchao_with_given_config(
     model_restore = _offload_model_for_quantize_subprocess(model)
     for _ in range(3):
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            torch.xpu.empty_cache()
+        clean_gpu_cache()
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
@@ -6145,10 +6142,7 @@ def _unsloth_save_torchao_with_given_config(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
 
     if os.path.exists(save_directory):
@@ -6640,8 +6634,7 @@ def _unsloth_save_compressed_tensors(
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
@@ -6707,8 +6700,7 @@ def _unsloth_save_compressed_tensors(
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def _unsloth_save_torchao(
@@ -6827,14 +6819,10 @@ def _unsloth_save_torchao(
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
         # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards, which a plain .to("cpu") cannot move.
-        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if _has_xpu:
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
@@ -6853,8 +6841,7 @@ def _unsloth_save_torchao(
         del quantized_model
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
@@ -6904,17 +6891,13 @@ def _unsloth_save_torchao(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def unsloth_save_pretrained_torchao(

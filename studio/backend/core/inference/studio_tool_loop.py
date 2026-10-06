@@ -83,6 +83,7 @@ def _append_mcp_images_owned(
 
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    _reject_json_constant,
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
@@ -401,11 +402,6 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
-
-
-def _reject_json_constant(name: str) -> Any:
-    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
-    raise ValueError(f"{name} is not JSON")
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1271,7 +1267,12 @@ async def stream_with_studio_tools(
     tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
     allowed_tool_names = _tool_names(tools)
     tool_call_timeout = policy.timeout
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_tool_permissions,
+        requires_os_isolation,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         policy.permission_mode, policy.bypass_permissions
@@ -1343,6 +1344,8 @@ async def stream_with_studio_tools(
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
@@ -1680,12 +1683,14 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
+            # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
+            decision = controller.prepare_call(call)
             if not unlimited and remaining <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
                     tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                    arguments = call.get("arguments"),
+                    arguments = decision.tool_start_payload()["arguments"],
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
@@ -1693,13 +1698,7 @@ async def stream_with_studio_tools(
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
                 # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call: dict[str, Any] = {
-                    "id": call["id"],
-                    "type": "function",
-                    # Copied: the normalized call also carries a parsed arguments dict that must not reach the
-                    # provider
-                    "function": dict(call["function"]),
-                }
+                exhausted_call = decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if isinstance(exhausted_extra, dict) and exhausted_extra:
                     exhausted_call["extra_content"] = exhausted_extra
@@ -1713,13 +1712,22 @@ async def stream_with_studio_tools(
                     }
                 )
                 continue
-            decision = controller.prepare_call(call)
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
-            # emits has to carry it, not just the budget-exhausted one built by hand above.
+            # emits has to carry it, including the budget-exhausted card above.
             decision.provenance["round_id"] = round_id
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
-                noop_messages.append(completion.model_message())
+                if getattr(transport, "tool_result_only_continuation", False):
+                    assistant_tool_calls.append(decision.as_assistant_tool_call())
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": decision.tool_call_id,
+                            "content": completion.model_message()["content"],
+                        }
+                    )
+                else:
+                    noop_messages.append(completion.model_message())
                 # The provider's own tool_calls delta for this call was relayed verbatim while it streamed and the
                 # client painted a card from it. Nothing else closes that card, so without a terminal event it spins
                 # for the rest of the answer and then reads as a tool that ran and returned nothing. Keyed on the
@@ -1752,14 +1760,15 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
-            needs_confirmation = (
-                confirm_tool_calls
-                and not bypass_permissions
-                and permission_mode != "off"
-                and not never_needs_approval(name)
+            needs_confirmation = needs_tool_confirmation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = arguments,
+                is_high_risk = is_high_risk_tool_call,
+                never_needs = never_needs_approval,
             )
-            if needs_confirmation and permission_mode == "auto":
-                needs_confirmation = is_high_risk_tool_call(name, arguments)
             # Sending the user's image always asks, whatever the permission mode.
             image_share = (
                 await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
@@ -1767,6 +1776,15 @@ async def stream_with_studio_tools(
                 else None
             )
             needs_confirmation = needs_confirmation or image_share is not None
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = arguments,
+                prompted = needs_confirmation,
+                is_high_risk = is_high_risk_tool_call,
+            )
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1858,6 +1876,7 @@ async def stream_with_studio_tools(
                 output_callback: Any,
                 call = decision,
                 approved = host_access_approved,
+                strict = strict_isolation,
             ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
@@ -1867,6 +1886,9 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                    kwargs["tool_execution_mode"] = "required"
                 # Provider loops share the local catalogue selector, so search_conversation is advertised here too
                 # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
                 # leaves the replaced response in them.
@@ -2035,7 +2057,8 @@ async def stream_with_studio_tools(
             spent_budget_passes += 1
             # The catalog is gone from here on, so say why rather than letting the next pass ask for a tool no longer
             # offered
-            _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
+            if not getattr(transport, "tool_result_only_continuation", False):
+                _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
     usage_line = _usage_chunk_line(model_name, usage_totals, last_timings)
     if usage_line is not None:

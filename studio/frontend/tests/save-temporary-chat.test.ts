@@ -75,7 +75,7 @@ test("the saved chat keeps the model it started on, not the one loaded at save t
 
 test("saving waits for queued prompts, whose temporary tag would still discard them", () => {
   assert.match(button, /Object\.values\(s\.byThreadId\)\.some\(\(entry\) => entry\.temporary\)/);
-  assert.match(button, /: target\.queued\s*\? "Wait for queued prompts to finish"/);
+  assert.match(button, /const canSave =\s*target\.hasMessages && !target\.running && !target\.queued && !saving;/);
 });
 
 test("the save covers the whole branch tree, not only the visible path", () => {
@@ -83,9 +83,10 @@ test("the save covers the whole branch tree, not only the visible path", () => {
   assert.match(persistBody(), /parentId: parentId \?\? null,/);
 });
 
-test("the button shows only in a temporary single chat and waits for a finished reply", () => {
-  assert.match(page, /view\.mode === "single" && incognito \? \(\s*<SaveTemporaryChatButton/);
-  assert.match(button, /\? "Nothing to save yet"\s*: target\.running\s*\? "Wait for the response to finish"/);
+test("the save menu shows only in a temporary single chat with messages, and saves a finished reply", () => {
+  assert.match(page, /view\.mode === "single" && incognito \? \(\s*<SaveTemporaryChatMenu/);
+  assert.match(button, /\{target\.hasMessages \? \(\s*<DropdownMenu>/);
+  assert.match(button, /\{canSave \? \(\s*<DropdownMenuItem/);
 });
 
 test("Don't show again is remembered only once a save succeeds", () => {

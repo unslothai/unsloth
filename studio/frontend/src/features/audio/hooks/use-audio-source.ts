@@ -198,6 +198,8 @@ export function useAudioSource({
       // Each pick draws under its own key, so a slow decode of an earlier file cannot land on this one.
       const localKey = `local:${++pickCount.current}`;
       dispatch({ type: "upload-start", name: fileName, key: localKey });
+      // The card now shows the new file: a run must not quietly use the one it replaced.
+      onChangeRef.current(null);
       void drawBlob(localKey, file);
       try {
         const record = await uploadAudioInput(file, fileName, {

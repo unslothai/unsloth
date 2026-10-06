@@ -110,6 +110,31 @@ def seed_audio(account) -> dict[str, str]:
     return {"audio_id": record["id"]}
 
 
+@seeder("media-audio-converted")
+def seed_converted_audio(account) -> dict[str, str]:
+    import tempfile
+    from pathlib import Path
+
+    from core.inference import audio_gallery
+    from utils.account_context import run_as
+
+    meta = {
+        "prompt": SENTINEL,
+        "model": "media/none",
+        "audio_type": "speech",
+        "workflow": "convert",
+        "sample_rate": 8000,
+        "duration_s": 0.008,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    # A conversion of an upload keeps the recording it converted beside the clip.
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / "source.wav"
+        source.write_bytes(_wav_bytes())
+        record = run_as(account, audio_gallery.save, _wav_bytes(), meta, source)
+    return {"audio_id": record["id"]}
+
+
 @seeder("media-audio-project")
 def seed_audio_and_project(account, actor: str = "right") -> dict[str, str]:
     params = seed_audio(account)
@@ -330,6 +355,7 @@ FACTORIES = {
         "media-image-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
     ),
     "routes.inference:GET:/audio/gallery/{audio_id}/file": Factory("media-audio"),
+    "routes.inference:GET:/audio/gallery/{audio_id}/source/file": Factory("media-audio-converted"),
     "routes.inference:PATCH:/audio/gallery/{audio_id}": Factory(
         "media-audio", {"archived": True}, fragment = SENTINEL
     ),
@@ -356,6 +382,9 @@ FACTORIES = {
     ),
     "routes.inference:DELETE:/audio/voices/{voice_id}": Factory("media-audio-voice"),
     "routes.inference:GET:/audio/voices/{voice_id}/file": Factory("media-audio-voice"),
+    "routes.inference:GET:/audio/transcripts/{transcript_id}": Factory(
+        "media-transcript", fragment = SENTINEL
+    ),
     "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
         "media-transcript", {"archived": True}, fragment = SENTINEL
     ),
@@ -415,6 +444,10 @@ SKIPPED = {
     "routes.inference:POST:/sandbox/{session_id}/reveal": (
         "opens the backend host's file manager, so a success spawns xdg-open on a machine with "
         "no desktop session and the only in-process outcome is the 500 that failure maps to"
+    ),
+    "routes.inference:POST:/sandbox/{session_id}/open": (
+        "launches the backend host's default app for the file and is owner-only "
+        "(require_installation_owner), so no account other than the installation's own reaches it"
     ),
     "routes.npu:DELETE:/models/{model_id}": _NPU_INSTALLATION_MODEL,
     "routes.npu:POST:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,

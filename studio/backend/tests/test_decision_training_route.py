@@ -502,6 +502,13 @@ def test_api_clef_runs_get_the_clef_recipe_and_keep_qlora(route, device, tmp_pat
     assert (laya["decision_layout"], laya["load_in_4bit"]) == ("laya", False)
 
 
+def test_api_clef_full_finetuning_gets_the_full_finetuning_rate(route, device, tmp_path):
+    clef = str(_clef_folder(tmp_path / "clef"))
+    config = _started_config(route, _request(model_name = clef, training_type = "Full Finetuning"))
+
+    assert float(config["learning_rate"]) == 2.5e-5
+
+
 def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, device, tmp_path):
     clef = _clef_folder(tmp_path / "clef")
     laya = _laya_folder(tmp_path / "laya")

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -137,11 +138,12 @@ def transcode(
     *,
     rate: Optional[int] = None,
     mono: bool = False,
+    stereo: bool = False,
     max_seconds: Optional[float] = None,
     cut: bool = False,
 ) -> dict[str, Any]:
-    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono or at
-    most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
+    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono, two
+    channels (``stereo``) or at most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
 
     Streams frame by frame through FFmpeg's resampler (a voice reference must not alias) into a
     temporary file renamed in at the end."""
@@ -181,7 +183,11 @@ def transcode(
                         if rate <= 0:
                             raise AudioInputError(400, "This audio has no sample rate.")
                         channels = (
-                            1 if mono else max(1, min(_MAX_CHANNELS, len(frame.layout.channels)))
+                            1
+                            if mono
+                            else 2
+                            if stereo
+                            else max(1, min(_MAX_CHANNELS, len(frame.layout.channels)))
                         )
                         layout = "stereo" if channels == 2 else "mono"
                         resampler = av.AudioResampler(format = "s16", layout = layout, rate = rate)
@@ -413,6 +419,12 @@ def sweep(
                 path.unlink(missing_ok = True)
             elif name.startswith(("c-", "v-")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
+        # Music run folders a crash left behind.
+        runs = directory / "runs"
+        if runs.is_dir():
+            for run in runs.iterdir():
+                if run.is_dir() and now - _mtime(run) > _STALE_TMP_SECONDS:
+                    shutil.rmtree(run, ignore_errors = True)
         return removed
     except Exception as exc:  # noqa: BLE001 - housekeeping never fails a request
         logger.warning("audio_inputs.sweep_failed: %s", exc)
@@ -487,23 +499,45 @@ def prepared_path(
     source: Source,
     rate: int,
     max_seconds: Optional[float] = None,
+    stereo: bool = False,
 ) -> Path:
-    """A cached mono copy of ``source`` at ``rate``, cut to ``max_seconds``, in this account's inputs.
+    """A cached copy of ``source`` at ``rate`` (mono, or stereo for music edits), cut to
+    ``max_seconds``, in this account's inputs.
 
-    An input's copies sit beside it as ``{id}.{rate}.mono[.m{n}].wav`` and go when it goes; a
-    clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
+    An input's copies sit beside it as ``{id}.{rate}.{mono|stereo}[.m{n}].wav`` and go when it
+    goes; a clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
     prefix = {"input": "", "clip": "c-", "voice": "v-"}[source.kind]
     cap = f".m{max_seconds:g}" if max_seconds is not None else ""
-    dst = inputs_dir() / f"{prefix}{source.id}.{int(rate)}.mono{cap}.wav"
+    layout = "stereo" if stereo else "mono"
+    dst = inputs_dir() / f"{prefix}{source.id}.{int(rate)}.{layout}{cap}.wav"
     if dst.is_file() and _mtime(dst) >= _mtime(source.path):
         if source.kind != "input":
             os.utime(dst)
         return dst
-    transcode(source.path, dst, rate = rate, mono = True, max_seconds = max_seconds, cut = True)
+    transcode(
+        source.path,
+        dst,
+        rate = rate,
+        mono = not stereo,
+        stereo = stereo,
+        max_seconds = max_seconds,
+        cut = True,
+    )
     if source.kind != "input":
         # Cloning from history or a saved voice may never upload, so expired copies go here too.
         sweep()
     return dst
+
+
+def wav_info(path: Path) -> dict[str, Any]:
+    with wave.open(str(path)) as w:
+        rate = w.getframerate()
+        return {
+            "sample_rate": rate,
+            "channels": w.getnchannels(),
+            "frames": w.getnframes(),
+            "duration_s": round(w.getnframes() / rate, 3) if rate else 0.0,
+        }
 
 
 def prepare_reference(ref: dict[str, Any]) -> tuple[Source, Path]:

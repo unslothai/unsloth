@@ -442,12 +442,6 @@ def normalize_model_override(
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
 
-    if payload.get("llama_cpp_config") is not None:
-        from core.inference.llama_custom_config import parse_config_source
-
-        # A broken custom configuration must not silently become a managed load.
-        entry["llama_cpp_config"] = parse_config_source(payload["llama_cpp_config"]).to_wire()
-
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
         entry["llama_extra_args"] = [str(arg) for arg in extra_args]
@@ -529,6 +523,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -608,16 +605,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
 
-    if is_gguf and override.get("llama_cpp_config") is not None:
-        from core.inference.llama_custom_config import parse_config_source
-
-        custom = parse_config_source(override["llama_cpp_config"])
-        kwargs["llama_cpp_config"] = custom.to_wire()
-        if custom.mode == "custom":
-            if override.get("disable_vision") is not None:
-                kwargs["disable_vision"] = override["disable_vision"]
-            return kwargs
-
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
         kwargs["max_seq_length"] = max_seq_length
@@ -644,6 +631,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
         if override.get(source) is not None:
             kwargs[target] = override[source]

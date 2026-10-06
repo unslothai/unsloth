@@ -1205,6 +1205,28 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
     )
 
 
+def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypatch):
+    model = torch.nn.Linear(1, 1)
+    cuda = torch.device("cuda")
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
+    assert decision._clef_amp_dtype(model, cuda) == torch.bfloat16
+    model._unsloth_forced_float32 = True
+    assert decision._clef_amp_dtype(model, cuda) is None
+    model._unsloth_forced_float32 = False
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    assert decision._clef_amp_dtype(model, cuda) is None
+    assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+
+
+def test_clef_calibration_with_every_holdout_decision_from_one_row():
+    # A holdout row with many questions passes the item minimum with nothing to cross-validate on.
+    logits = [torch.tensor([1.0, 0.0, -1.0]) for _ in range(12)]
+    items = [{"label": i % 3, "target": [1 / 3] * 3, "qtype": i % 3, "row": 0} for i in range(12)]
+    config = {"temperature": [1.0] * 3}
+    calibrated = decision._calibrate_clef(config, logits, items)
+    assert math.isfinite(calibrated["ece"]) and "head_temperature" in config
+
+
 def test_clef_save_keeps_the_source_tokenizer_files_byte_identical(clef_checkpoint, tmp_path):
     model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
     out = tmp_path / "out"
