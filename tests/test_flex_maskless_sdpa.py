@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
+import copy
 import types
 
 import pytest
@@ -177,5 +178,6 @@ def test_a_class_level_sdpa_opt_out_keeps_the_mask():
     config = LlamaConfig()
     U.resolve_attention_implementation(no_sdpa, config)
     accepts = _flex()._unsloth_maskless_causal_sdpa_accepts
-    assert not accepts(config)
+    assert not accepts(copy.deepcopy(config))  # from_pretrained copies the config it is given
+    U._NO_SDPA_MODEL_TYPES.discard("llama")
     assert accepts(LlamaConfig())

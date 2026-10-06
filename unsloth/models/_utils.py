@@ -139,7 +139,6 @@ import re
 from dataclasses import dataclass, field
 import functools
 import threading
-import weakref
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
@@ -674,23 +673,23 @@ def _dropped_causal_mask(module, query, key, args, kwargs):
     return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
 
 
-# Configs the resolver loaded without SDPA support (class opt-out or exclusion list); by identity,
-# so nothing is written into a config that may be saved.
-_NO_SDPA_CONFIGS = weakref.WeakValueDictionary()
+# Model types the resolver loaded without SDPA support (class opt-out or exclusion list). Keyed by
+# model_type, not config identity: from_pretrained deep-copies the config it was given.
+_NO_SDPA_MODEL_TYPES = set()
 
 
 def _remember_no_sdpa_config(config):
     for attention_config in _iter_attention_configs(config):
-        try:
-            _NO_SDPA_CONFIGS[id(attention_config)] = attention_config
-        except TypeError:
-            pass
+        model_type = _config_get(attention_config, "model_type", None)
+        if isinstance(model_type, str) and model_type:
+            _NO_SDPA_MODEL_TYPES.add(model_type.lower())
 
 
 def _maskless_causal_sdpa_accepts(config):
     """False when some decoder layer could not take the SDPA reroute, so unsloth_zoo keeps the mask."""
     for attention_config in _text_attention_configs(config) + [config]:
-        if _NO_SDPA_CONFIGS.get(id(attention_config)) is attention_config:
+        model_type = (_config_get(attention_config, "model_type", None) or "").lower()
+        if model_type in _NO_SDPA_MODEL_TYPES:
             return False
         if _is_sdpa_excluded(_config_get(attention_config, "model_type", None) or ""):
             return False
