@@ -27,6 +27,13 @@ def test_non_float_linear_is_quantized(dtype):
     assert _has_quantized_linears(_model(layer), routed_ok = True)
 
 
+def test_packed_params4bit_in_float_storage_is_quantized():
+    layer = torch.nn.Linear(4, 4)
+    Params4bit = type("Params4bit", (torch.nn.Parameter,), {})
+    layer.weight = Params4bit(layer.weight.data.to(torch.bfloat16), requires_grad = False)
+    assert _has_quantized_linears(_model(layer), routed_ok = True)
+
+
 def test_routed_compressed_linears_pass_except_for_mica():
     nvfp4 = _UnslothNVFP4Linear(4, 4)
     fp8 = torch.nn.Linear(4, 4)
@@ -38,14 +45,14 @@ def test_routed_compressed_linears_pass_except_for_mica():
 
 
 @pytest.mark.parametrize(
-    "init", ["pissa", "pissa_niter_4", "olora", "orthogonal", "corda", "loftq", "lora_ga"]
+    "init", ["pissa", "pissa_niter_4", "olora", "orthogonal", "corda", "loftq", "lora_ga", "mica"]
 )
 def test_weight_reading_inits_reject_moe_expert_parameters(init):
     with pytest.raises(ValueError, match = "target_parameters = \\[\\]"):
         validate_init_target_parameters(init, ["gate_up_proj", "down_proj"])
 
 
-@pytest.mark.parametrize("init", [True, False, "gaussian", "eva", "mica"])
+@pytest.mark.parametrize("init", [True, False, "gaussian", "eva"])
 def test_other_inits_allow_moe_expert_parameters(init):
     validate_init_target_parameters(init, ["gate_up_proj"])
 
