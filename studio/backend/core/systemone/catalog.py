@@ -111,7 +111,7 @@ def _owner_outputs() -> Path:
 
 
 def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
-    from utils.models.model_config import CLEF_MARKERS
+    from utils.models.model_config import clef_folder_kind
 
     from .laya_runtime import is_cached
 
@@ -125,7 +125,7 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
     except (OSError, RuntimeError, ValueError):
         # A NUL byte or a symlink loop in a caller's name.
         return None
-    if all((folder / name).is_file() for name in CLEF_MARKERS):
+    if clef_folder_kind(folder) is not None:
         checkpoint = Checkpoint(
             CLEF_FINE_TUNE_PREFIX + folder_name,
             str(folder),

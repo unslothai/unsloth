@@ -358,6 +358,25 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     assert clef.agents[1].closed
 
 
+def test_an_adapter_clef_fine_tune_serves_through_its_worker(home, client, clef):
+    # FastDecisionModel.save_pretrained: LoRA adapters plus the Clef head over the base LLM.
+    path = home / "qwen_decisions_1"
+    path.mkdir(parents = True)
+    for name in ("adapter_config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (path / name).write_text("{}", encoding = "utf-8")
+    served = catalog.CLEF_FINE_TUNE_PREFIX + "qwen_decisions_1"
+    # Not complete until the adapter weights are there.
+    assert _listed(client) == []
+    (path / "adapter_model.safetensors").write_bytes(b"")
+    assert _listed(client) == [served]
+    assert _put(client, enabled = True, model = served).status_code == 200
+
+    answer = _post(client).json()
+    assert answer["model"] == served
+    assert answer["answers"]["urgent"] == {"type": "noul", "noul": 0.25}
+    assert clef.agents[0].folder == path.resolve() or str(clef.agents[0].folder) == str(path)
+
+
 def test_the_catalog_offers_the_stock_clef_models():
     for name, repo in (("clef", "Cloudflare/clef"), ("clef-flash", "Cloudflare/clef-flash")):
         checkpoint = catalog.CHECKPOINTS[name]

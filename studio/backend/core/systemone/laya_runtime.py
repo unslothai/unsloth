@@ -106,10 +106,14 @@ def _wanted(path: str, subfolder: str | None) -> bool:
 def _clef_complete(folder: Path) -> bool:
     import json
 
-    from utils.models.model_config import CLEF_MARKERS
+    from utils.models.model_config import clef_folder_kind
 
-    if not all((folder / name).is_file() for name in CLEF_MARKERS):
+    kind = clef_folder_kind(folder)
+    if kind is None:
         return False
+    if kind == "adapter":
+        # The base LLM the adapters sit on is fetched by the loader, like any Unsloth LoRA.
+        return (folder / "adapter_model.safetensors").is_file()
     index = folder / "model.safetensors.index.json"
     if not index.is_file():
         return (folder / "model.safetensors").is_file()
