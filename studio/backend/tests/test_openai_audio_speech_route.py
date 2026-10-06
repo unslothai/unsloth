@@ -1437,6 +1437,33 @@ def test_voice_load_refuses_to_replace_another_accounts_resident(monkeypatch, vo
     assert loads == []
 
 
+def test_voice_unload_leaves_another_accounts_load_in_flight(monkeypatch):
+    """Before a load spawns or claims CHAT, nothing marked it as another account's, so any
+    account could cancel it through /voice/unload."""
+    from fastapi import HTTPException
+
+    import core.inference.llama_cpp as llama_cpp
+
+    stopped = []
+    voice = type(
+        "Voice",
+        (),
+        {"is_active": False, "is_loaded": False, "unload_model": lambda self: stopped.append(True)},
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(llama_cpp, "voice_load_active", lambda: True)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
+    monkeypatch.setattr(routes_module, "_voice_loading_account", ["account-a"])
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: "account-b")
+    monkeypatch.setattr(
+        "core.inference.gpu_arbiter.require_no_foreign_generations", lambda *a, **k: None
+    )
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(routes_module.voice_unload_model("s"))
+    assert refused.value.status_code == 404
+    assert stopped == []
+
+
 def test_voice_loads_run_one_at_a_time():
     """Two loads for different voices both passed the already-loaded check, and the second then
     replaced the server the first had just reported as loaded."""

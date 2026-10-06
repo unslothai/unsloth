@@ -8650,6 +8650,9 @@ register_serving_backend(_voice_llama_backend)
 # Audio types accepted by the voice slot (GGUF TTS via llama-server token generation)
 _VOICE_SLOT_AUDIO_TYPES: frozenset[str] = frozenset({"snac", "bicodec", "dac"})
 _voice_load_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+# Account of the load in flight (one at a time under the lock): before it claims CHAT, nothing
+# else says whose it is.
+_voice_loading_account: list[Optional[str]] = [None]
 
 
 def _voice_load_lock() -> asyncio.Lock:
@@ -21025,10 +21028,12 @@ async def voice_load_model(
         in_flight = voice_load_in_flight(load_cancel)
         in_flight.__enter__()
         in_flight_open = [True]
+        _voice_loading_account[0] = account_access.account_scope()
 
         def _leave_in_flight():
             if in_flight_open[0]:
                 in_flight_open[0] = False
+                _voice_loading_account[0] = None
                 in_flight.__exit__(None, None, None)
 
         try:
@@ -21256,7 +21261,12 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
     scope = account_access.account_scope()
     if scope is not None:
         require_no_foreign_generations(scope)
-    if voice_backend.is_active and account_access.resident_hidden("chat"):
+    loading_account = _voice_loading_account[0]
+    if (voice_backend.is_active and account_access.resident_hidden("chat")) or (
+        voice_load_active()
+        and loading_account is not None
+        and loading_account != account_access.account_scope()
+    ):
         raise HTTPException(status_code = 404, detail = "Model not found")
     model_id = voice_backend.model_identifier
     # Off the event loop, as /unload runs the chat slot's teardown: unload_model
