@@ -185,7 +185,7 @@ def test_kill_switch(monkeypatch):
     assert not fast["pissa"]
 
 
-def test_fast_pissa_marker_lookup_fails_closed_only_when_online(monkeypatch):
+def test_fast_pissa_marker_lookup_fails_closed_only_when_online(monkeypatch, tmp_path):
     import huggingface_hub
     from huggingface_hub import constants
     from huggingface_hub.utils import EntryNotFoundError, LocalEntryNotFoundError
@@ -197,7 +197,10 @@ def test_fast_pissa_marker_lookup_fails_closed_only_when_online(monkeypatch):
         return download
 
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "cached")
+    _save_fast_pissa(tmp_path)
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda repo, name, **k: str(tmp_path / name)
+    )
     assert lora_init.adapter_used_fast_pissa("user/adapter")
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", raising(EntryNotFoundError("404")))
     assert not lora_init.adapter_used_fast_pissa("user/adapter")
@@ -243,6 +246,31 @@ def test_fast_init_kill_switch_and_force(monkeypatch):
         with lora_init.fast_lora_init():
             assert LoraLayer.pissa_init is lora_init._pissa_init
     assert LoraLayer.pissa_init is original
+
+
+def _save_fast_pissa(folder):
+    from peft import LoraConfig, get_peft_model
+
+    base = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
+    with lora_init.fast_lora_init():
+        model = get_peft_model(
+            base, LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = "pissa")
+        )
+    lora_init.record_fast_pissa(model)
+    model.save_pretrained(str(folder))
+    return model
+
+
+def test_a_stale_marker_does_not_follow_a_later_ordinary_save(tmp_path):
+    from peft import LoraConfig, get_peft_model
+
+    _save_fast_pissa(tmp_path)
+    assert lora_init.adapter_used_fast_pissa(str(tmp_path))
+    # PEFT overwrites config + weights in place and leaves the old marker file behind.
+    base = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
+    get_peft_model(base, LoraConfig(r = 4, target_modules = ["0"])).save_pretrained(str(tmp_path))
+    assert (tmp_path / lora_init.SIDECAR).is_file()
+    assert not lora_init.adapter_used_fast_pissa(str(tmp_path))
 
 
 def test_fast_pissa_saves_record_their_algorithm(tmp_path):

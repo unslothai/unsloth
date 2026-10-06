@@ -343,24 +343,56 @@ def record_fast_pissa(model):
                 fast |= getattr(module, "_unsloth_fast_pissa", set())
             for name in fast:
                 folder = save_directory if name == "default" else os.path.join(save_directory, name)
-                if os.path.isfile(os.path.join(folder, "adapter_config.json")):
+                weights = _adapter_weights(folder)
+                if weights is not None:
+                    # The digest ties the marker to these weights: a later ordinary save into the same
+                    # folder (PEFT leaves unknown files behind) no longer matches it.
                     with open(os.path.join(folder, SIDECAR), "w", encoding = "utf-8") as f:
-                        json.dump({"pissa": "unsloth_randomized_svd"}, f)
+                        json.dump(
+                            {"pissa": "unsloth_randomized_svd", "sha256": _sha256(weights)}, f
+                        )
         return out
 
     save_pretrained._unsloth_fast_pissa = True
     model.save_pretrained = save_pretrained
 
 
+_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+
+
+def _adapter_weights(folder):
+    for name in _WEIGHT_FILES:
+        if os.path.isfile(os.path.join(folder, name)):
+            return os.path.join(folder, name)
+    return None
+
+
+def _sha256(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _marker_matches(sidecar, weights):
+    with open(sidecar, encoding = "utf-8") as f:
+        expected = json.load(f).get("sha256")
+    return weights is not None and expected == _sha256(weights)
+
+
 def adapter_used_fast_pissa(path, **hub_kwargs):
     if os.path.isdir(path):
-        return os.path.isfile(os.path.join(path, SIDECAR))
+        sidecar = os.path.join(path, SIDECAR)
+        return os.path.isfile(sidecar) and _marker_matches(sidecar, _adapter_weights(path))
     from huggingface_hub import constants, hf_hub_download
     from huggingface_hub.utils import EntryNotFoundError, HFValidationError, LocalEntryNotFoundError
 
+    hub_kwargs = {k: v for k, v in hub_kwargs.items() if v is not None}
     try:
-        hf_hub_download(path, SIDECAR, **{k: v for k, v in hub_kwargs.items() if v is not None})
-        return True
+        sidecar = hf_hub_download(path, SIDECAR, **hub_kwargs)
     except LocalEntryNotFoundError:
         # Offline, an uncached marker means the adapter has none (the prefetch fetches it). Online, the
         # Hub could not be reached: guessing would silently rebuild the wrong residual base.
@@ -369,6 +401,12 @@ def adapter_used_fast_pissa(path, **hub_kwargs):
         raise
     except (EntryNotFoundError, HFValidationError):
         return False
+    for name in _WEIGHT_FILES:
+        try:
+            return _marker_matches(sidecar, hf_hub_download(path, name, **hub_kwargs))
+        except EntryNotFoundError:
+            continue
+    return False
 
 
 # Calibration hooks added after compilation are not guarded on (skip_nnmodule_hook_guards), so compiled
