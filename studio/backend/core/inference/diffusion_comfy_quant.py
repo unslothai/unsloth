@@ -203,7 +203,9 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
         elif len(weight.get("shape") or ()) != 2:
             why = f"{fmt} weight of shape {weight.get('shape')} (only 2-D linears are supported)"
         elif fmt in BLOCK_SIZES:
-            why = f"ConvRot on {fmt}" if convrot else _block_layer_problem(name, fmt, weight, header)
+            why = (
+                f"ConvRot on {fmt}" if convrot else _block_layer_problem(name, fmt, weight, header)
+            )
         elif fmt == INT8_TENSORWISE and weight.get("dtype") != "I8":
             why = f"int8_tensorwise weight stored as {weight.get('dtype')}"
         elif fmt in FP8_FORMATS and weight.get("dtype") not in ("U8", FP8_FORMATS[fmt]):
@@ -474,8 +476,12 @@ def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
     import torch
 
     extras = [extra for _c, _s, extra in value.parts]
-    codes = torch.cat([c for c, _s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][0]
-    scale = torch.cat([s for _c, s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][1]
+    codes = (
+        torch.cat([c for c, _s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][0]
+    )
+    scale = (
+        torch.cat([s for _c, s, _e in value.parts]) if len(value.parts) > 1 else value.parts[0][1]
+    )
     if value.fmt == MXFP8:
         return codes, scale, None, None
     tensor_scales = {e.get("tensor_scale") for e in extras}
@@ -912,7 +918,12 @@ def load_comfy_quant_transformer(
     import torch
     from safetensors.torch import load_file
 
-    from .diffusion_comfy_block import build_runtime_linear, decode_layer, dequant_block, logical_cols
+    from .diffusion_comfy_block import (
+        build_runtime_linear,
+        decode_layer,
+        dequant_block,
+        logical_cols,
+    )
     from .diffusion_transformer_quant import (
         DEFAULT_MIN_LINEAR_FEATURES,
         TQ_FP8,
@@ -988,8 +999,12 @@ def load_comfy_quant_transformer(
         if layer.format in BLOCK_SIZES:
             tensor_scale = state.pop(layer.name + ".weight_scale_2", None)
             extra = {
-                "tensor_scale": None if tensor_scale is None else float(tensor_scale.float().reshape(-1)[0]),
-                "input_scale": None if input_scale is None else float(input_scale.float().reshape(-1)[0]),
+                "tensor_scale": None
+                if tensor_scale is None
+                else float(tensor_scale.float().reshape(-1)[0]),
+                "input_scale": None
+                if input_scale is None
+                else float(input_scale.float().reshape(-1)[0]),
                 "pre_quant_scale": state.pop(layer.name + ".pre_quant_scale", None),
             }
             # row-major from here: codes [N, *] beside plain [N, K / block] scales
@@ -997,11 +1012,15 @@ def load_comfy_quant_transformer(
         elif layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
         # A key-mapped (original-layout) family moves rows whole, which the tiled block scales do not survive.
-        if (backends.get(layer.format) or fp16_keep) and not (extra is not None and key_map is not None):
+        if (backends.get(layer.format) or fp16_keep) and not (
+            extra is not None and key_map is not None
+        ):
             sources.append((layer, codes, scale, extra))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         elif extra is not None:
-            state[layer.name + ".weight"] = _dequant_parts(layer.format, [(codes, scale, extra)], dtype)
+            state[layer.name + ".weight"] = _dequant_parts(
+                layer.format, [(codes, scale, extra)], dtype
+            )
             dequantized += 1
         else:
             state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, dtype)
@@ -1064,7 +1083,10 @@ def load_comfy_quant_transformer(
                 raise ValueError(f"{name}: rows from layers of different formats or ConvRot groups")
             fmt, group = kinds.pop()
             if fmt in BLOCK_SIZES:
-                blocks = [(sources[i][1][r : r + n], sources[i][2][r : r + n], sources[i][3]) for i, r, n in segments]
+                blocks = [
+                    (sources[i][1][r : r + n], sources[i][2][r : r + n], sources[i][3])
+                    for i, r, n in segments
+                ]
                 logical = (sum(n for _i, _r, n in segments), logical_cols(fmt, blocks[0][0]))
                 if name in wanted and tuple(wanted[name].shape) != logical:
                     raise ValueError(
@@ -1277,7 +1299,9 @@ def load_comfy_quant_transformer(
                 warm_rotation_cache(model, device, dtype)
             except Exception:  # noqa: BLE001 -- only saves one recompile
                 pass
-    native_schemes = {v[3] for v in native.values()} | {schemes[v[0]] for v in block_native.values()}
+    native_schemes = {v[3] for v in native.values()} | {
+        schemes[v[0]] for v in block_native.values()
+    }
     on_torchao = {s for s, count in built.items() if count and s not in native_schemes}
     if finalize:
         from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
@@ -1298,7 +1322,6 @@ def load_comfy_quant_transformer(
         # As for Studio's own NVFP4 checkpoints: a per-model step-protect controller, so concurrent image and video
         # renders never move each other's steps. (GEMM tuning happens on each shape's first call.)
         from .diffusion_nvfp4_protect import attach_own_controller
-
         attach_own_controller(model)
     model.eval()
     convrot = len(rotated) + sum(1 for v in native.values() if v[2])

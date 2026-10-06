@@ -7797,7 +7797,6 @@ class DiffusionBackend:
                 path = str(resolve_local_gguf_child(local_root, filename))
             else:
                 from huggingface_hub import try_to_load_from_cache
-
                 path = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
             if not isinstance(path, str):
                 return False

@@ -55,7 +55,9 @@ def untile_scales(tiled: Any, rows: int, blocks: int) -> Any:
     rp, bp = _roundup(rows, 128), _roundup(blocks, 4)
     flat = tiled.reshape(-1)
     if flat.numel() != rp * bp:
-        raise ValueError(f"tiled scales hold {flat.numel()} values, {rp * bp} expected for {rows}x{blocks}")
+        raise ValueError(
+            f"tiled scales hold {flat.numel()} values, {rp * bp} expected for {rows}x{blocks}"
+        )
     # tile (row // 128, block // 4) is 512 values: inner (row % 32, (row % 128) // 32, block % 4)
     v = flat.reshape(rp // 128, bp // 4, 32, 4, 4).permute(0, 3, 2, 1, 4).reshape(rp, bp)
     return v[:rows, :blocks].contiguous()
@@ -91,7 +93,9 @@ def decode_layer(fmt: str, weight: Any, weight_scale: Any) -> tuple[Any, Any]:
     if fmt == NVFP4:
         cols = int(weight.shape[1]) * 2
         codes = swap_nibbles(weight)
-        scale = untile_scales(weight_scale.view(torch.uint8), rows, cols // 16).view(torch.float8_e4m3fn)
+        scale = untile_scales(weight_scale.view(torch.uint8), rows, cols // 16).view(
+            torch.float8_e4m3fn
+        )
         return codes, scale
     if fmt == MXFP8:
         codes = weight if weight.dtype == torch.float8_e4m3fn else weight.view(torch.float8_e4m3fn)
@@ -120,16 +124,22 @@ def dequant_block(
     dtype = dtype or torch.bfloat16
     rows = int(codes.shape[0])
     if fmt == NVFP4:
-        lut = torch.tensor(_E2M1 + tuple(-v for v in _E2M1), dtype = torch.float32, device = codes.device)
+        lut = torch.tensor(
+            _E2M1 + tuple(-v for v in _E2M1), dtype = torch.float32, device = codes.device
+        )
         c = codes.to(torch.int32)
         values = torch.stack((lut[c & 0x0F], lut[c >> 4]), dim = -1).reshape(rows, -1, 16)
         step = scale.to(torch.float32)
         if tensor_scale is not None:
-            step = step * torch.as_tensor(tensor_scale, dtype = torch.float32, device = codes.device).reshape(-1, 1)
+            step = step * torch.as_tensor(
+                tensor_scale, dtype = torch.float32, device = codes.device
+            ).reshape(-1, 1)
         weight = (values * step.unsqueeze(-1)).reshape(rows, -1)
     elif fmt == MXFP8:
         exp = scale.view(torch.uint8).to(torch.float32) - _E8M0_BIAS
-        weight = (codes.to(torch.float32).reshape(rows, -1, 32) * torch.exp2(exp).unsqueeze(-1)).reshape(rows, -1)
+        weight = (
+            codes.to(torch.float32).reshape(rows, -1, 32) * torch.exp2(exp).unsqueeze(-1)
+        ).reshape(rows, -1)
     else:
         raise ValueError(f"not a block-scaled ComfyUI format: {fmt!r}")
     if pre_quant_scale is not None:
@@ -170,7 +180,15 @@ def mxfp8_linear_class():
         """MXFP8-weight Linear from a ComfyUI file: fp8 codes + tiled e8m0 scales as plain buffers, activations
         block-quantized per call, one ``torch._scaled_mm``. No host sync, no data-dependent branch."""
 
-        def __init__(self, in_features: int, out_features: int, *, codes, tiled_scale, bias = None):
+        def __init__(
+            self,
+            in_features: int,
+            out_features: int,
+            *,
+            codes,
+            tiled_scale,
+            bias = None,
+        ):
             super().__init__()
             self.in_features = int(in_features)
             self.out_features = int(out_features)
@@ -183,7 +201,9 @@ def mxfp8_linear_class():
             out_dtype = x.dtype if x.dtype in (torch.bfloat16, torch.float16) else torch.bfloat16
             flat = x.reshape(-1, self.in_features)
             if flat.shape[0] == 0:
-                return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(*shape[:-1], self.out_features)
+                return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
+                    *shape[:-1], self.out_features
+                )
             xq, x_sf = mx_quantize_activation(flat)
             out = torch._scaled_mm(
                 xq,
@@ -197,7 +217,9 @@ def mxfp8_linear_class():
             return out.to(out_dtype).reshape(*shape[:-1], self.out_features)
 
         def extra_repr(self) -> str:  # pragma: no cover - debug aid
-            return f"in_features={self.in_features}, out_features={self.out_features}, mxfp8=scaled_mm"
+            return (
+                f"in_features={self.in_features}, out_features={self.out_features}, mxfp8=scaled_mm"
+            )
 
     _MX_CLASS = ComfyMXFP8Linear
     return _MX_CLASS
@@ -230,15 +252,26 @@ def nvfp4_dynamic_linear_class():
             if out_dtype not in (torch.bfloat16, torch.float16):
                 flat = flat.to(torch.bfloat16)
             if flat.shape[0] == 0:
-                return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(*shape[:-1], self.out_features)
+                return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
+                    *shape[:-1], self.out_features
+                )
             if self.protect.armed and self.protect.protected:
-                out = F.linear(flat, dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16))
+                out = F.linear(
+                    flat,
+                    dequantize_nvfp4_weight(self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16),
+                )
             else:
                 with _device_guard(flat):
                     a_gsf = global_scale(flat)
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
-                        xq, self.wq, x_sf, self.w_sf, self.w_scale / a_gsf, self.out_features, self.backend
+                        xq,
+                        self.wq,
+                        x_sf,
+                        self.w_sf,
+                        self.w_scale / a_gsf,
+                        self.out_features,
+                        self.backend,
                     )
             out = out.to(out_dtype)
             if self.bias is not None:
@@ -307,7 +340,13 @@ def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in _OFF
 
 
-def comfy_block_backend(fmt: str, target: Any, family: Optional[str], *, dtype: Any = None) -> tuple[Optional[str], str]:
+def comfy_block_backend(
+    fmt: str,
+    target: Any,
+    family: Optional[str],
+    *,
+    dtype: Any = None,
+) -> tuple[Optional[str], str]:
     """``(runtime or None, reason)`` for ComfyUI ``fmt`` layers on ``target``. None = dequantize to the compute
     dtype, which is always correct and costs the memory saving.
 
@@ -317,7 +356,6 @@ def comfy_block_backend(fmt: str, target: Any, family: Optional[str], *, dtype: 
     ``UNSLOTH_DIFFUSION_COMFY_NVFP4=0`` / ``UNSLOTH_DIFFUSION_COMFY_MXFP8=0`` force the dequantized path."""
     try:
         from .diffusion_transformer_quant import TQ_MXFP8, TQ_NVFP4, _family_denied
-
         if fmt == NVFP4:
             if _env_off(COMFY_NVFP4_ENV):
                 return None, f"{COMFY_NVFP4_ENV}=0"
@@ -342,7 +380,10 @@ def comfy_block_backend(fmt: str, target: Any, family: Optional[str], *, dtype: 
             import torch
 
             if dtype is not None and dtype is not torch.bfloat16:
-                return None, f"the pipeline runs {str(dtype).replace('torch.', '')}, the mxfp8 GEMM needs bfloat16"
+                return (
+                    None,
+                    f"the pipeline runs {str(dtype).replace('torch.', '')}, the mxfp8 GEMM needs bfloat16",
+                )
             if _family_denied(family, TQ_MXFP8):
                 return None, f"mxfp8 is denied for {family}"
             reason = mxfp8_runtime_reason(target)
@@ -374,7 +415,12 @@ def build_runtime_linear(
 
         register_ops()
         cols = logical_cols(fmt, codes)
-        w_sf = tile_scales(scale).view(torch.uint8).reshape(sf_matrix_shape(rows, cols // 16)).contiguous()
+        w_sf = (
+            tile_scales(scale)
+            .view(torch.uint8)
+            .reshape(sf_matrix_shape(rows, cols // 16))
+            .contiguous()
+        )
         w_scale = torch.as_tensor(tensor_scale, dtype = torch.float32).reshape(1).clone()
         if input_scale is None:
             # No calibrated scale: ComfyUI scales activations from their amax on every call, and so does this Linear.
@@ -398,12 +444,23 @@ def build_runtime_linear(
         )
     if fmt == MXFP8:
         return mxfp8_linear_class()(
-            int(codes.shape[1]), rows, codes = codes.contiguous(), tiled_scale = tile_scales(scale), bias = bias
+            int(codes.shape[1]),
+            rows,
+            codes = codes.contiguous(),
+            tiled_scale = tile_scales(scale),
+            bias = bias,
         )
     raise ValueError(f"not a block-scaled ComfyUI format: {fmt!r}")
 
 
-def comfy_block_backends(scan: Any, target: Any, family: Optional[str], *, dtype: Any = None, logger: Any = None) -> dict:
+def comfy_block_backends(
+    scan: Any,
+    target: Any,
+    family: Optional[str],
+    *,
+    dtype: Any = None,
+    logger: Any = None,
+) -> dict:
     """``{"nvfp4_backend": ..., "mxfp8_backend": ...}`` for ``load_comfy_quant_transformer``, logging, for every
     block format ``scan`` holds, which runtime keeps it or why its layers dequantize."""
     out = {"nvfp4_backend": None, "mxfp8_backend": None}
@@ -415,7 +472,14 @@ def comfy_block_backends(scan: Any, target: Any, family: Optional[str], *, dtype
         out[f"{fmt}_backend"] = backend
         if logger is not None:
             if backend:
-                logger.info("diffusion.comfy_quant: %d %s layer(s) stay %s on the %s runtime (%s)", counts[fmt], fmt, fmt, backend, reason)
+                logger.info(
+                    "diffusion.comfy_quant: %d %s layer(s) stay %s on the %s runtime (%s)",
+                    counts[fmt],
+                    fmt,
+                    fmt,
+                    backend,
+                    reason,
+                )
             else:
                 logger.info(
                     "diffusion.comfy_quant: %d %s layer(s) are dequantized to the compute dtype on load: correct, but no memory "

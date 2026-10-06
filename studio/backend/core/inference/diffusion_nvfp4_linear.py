@@ -131,7 +131,9 @@ def is_nvfp4_flashinfer_linear(module: Any) -> bool:
     """The FlashInfer NVFP4 Linear or a subclass of it (the ComfyUI per-call activation-scale variant)."""
     if not hasattr(module, "a_gsf"):
         return False
-    return type(module).__name__ == "NVFP4FlashInferLinear" or isinstance(module, nvfp4_linear_class())
+    return type(module).__name__ == "NVFP4FlashInferLinear" or isinstance(
+        module, nvfp4_linear_class()
+    )
 
 
 def is_nvfp4_tensor(t: Any) -> bool:

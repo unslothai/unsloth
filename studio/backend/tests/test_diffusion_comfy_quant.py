@@ -83,9 +83,7 @@ def test_per_layer_int8_convrot_is_detected(tmp_path):
     assert cq.comfy_quant_error(scan) is None
 
 
-@pytest.mark.parametrize(
-    "fmt", ["convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"]
-)
+@pytest.mark.parametrize("fmt", ["convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"])
 def test_unsupported_formats_are_refused_by_name(tmp_path, fmt):
     path = _save(
         tmp_path / "m.safetensors",

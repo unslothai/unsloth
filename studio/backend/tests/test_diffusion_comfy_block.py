@@ -24,14 +24,20 @@ import core.inference.diffusion_comfy_block as cb  # noqa: E402
 import core.inference.diffusion_comfy_quant as cq  # noqa: E402
 
 DIM = 512
-E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0])
+E2M1 = torch.tensor(
+    [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
+)
 
 
 def _conf(**conf) -> torch.Tensor:
     return torch.tensor(list(json.dumps(conf).encode("utf-8")), dtype = torch.uint8)
 
 
-def _save(path, tensors, metadata = None) -> str:
+def _save(
+    path,
+    tensors,
+    metadata = None,
+) -> str:
     safetensors_torch.save_file(
         {k: v.contiguous().clone() for k, v in tensors.items()}, str(path), metadata = metadata
     )
@@ -47,7 +53,13 @@ def _tile_offsets(rows: int, blocks: int) -> torch.Tensor:
     r = torch.arange(rows).view(-1, 1)
     b = torch.arange(blocks).view(1, -1)
     tiles_per_row = _ceil(blocks, 4) // 4
-    return (r // 128) * tiles_per_row * 512 + (b // 4) * 512 + (r % 32) * 16 + ((r % 128) // 32) * 4 + (b % 4)
+    return (
+        (r // 128) * tiles_per_row * 512
+        + (b // 4) * 512
+        + (r % 32) * 16
+        + ((r % 128) // 32) * 4
+        + (b % 4)
+    )
 
 
 def _tile(plain_u8: torch.Tensor) -> torch.Tensor:
@@ -87,7 +99,11 @@ def nvfp4_reference(t: dict) -> torch.Tensor:
     j = torch.arange(cols)
     byte = q[:, j // 2].to(torch.int64)
     nibble = torch.where(j % 2 == 0, byte >> 4, byte & 15)
-    scales = _untile(t["weight_scale"].view(torch.uint8), rows, cols // 16).view(torch.float8_e4m3fn).float()
+    scales = (
+        _untile(t["weight_scale"].view(torch.uint8), rows, cols // 16)
+        .view(torch.float8_e4m3fn)
+        .float()
+    )
     step = scales * t["weight_scale_2"].float()
     return E2M1[nibble] * step[:, j // 16]
 
@@ -96,8 +112,16 @@ def mxfp8_encode(w: torch.Tensor) -> dict:
     rows, cols = w.shape
     blocks = w.float().reshape(rows, cols // 32, 32)
     exp = torch.ceil(torch.log2((blocks.abs().amax(-1) / 448.0).clamp(min = 2.0**-127)))
-    codes = (blocks / torch.exp2(exp).unsqueeze(-1)).clamp(-448, 448).to(torch.float8_e4m3fn).reshape(rows, cols)
-    return {"weight": codes, "weight_scale": _tile((exp + 127).to(torch.uint8)).view(torch.float8_e8m0fnu)}
+    codes = (
+        (blocks / torch.exp2(exp).unsqueeze(-1))
+        .clamp(-448, 448)
+        .to(torch.float8_e4m3fn)
+        .reshape(rows, cols)
+    )
+    return {
+        "weight": codes,
+        "weight_scale": _tile((exp + 127).to(torch.uint8)).view(torch.float8_e8m0fnu),
+    }
 
 
 def mxfp8_reference(t: dict) -> torch.Tensor:
@@ -127,7 +151,9 @@ def test_dequant_is_bit_exact_against_the_reference(fmt, rows):
     encode, reference = ENCODERS[fmt]
     t = encode(torch.randn(rows, 96) * 0.05)
     codes, scale = cb.decode_layer(fmt, t["weight"], t["weight_scale"])
-    got = cb.dequant_block(fmt, codes, scale, tensor_scale = t.get("weight_scale_2"), dtype = torch.float32)
+    got = cb.dequant_block(
+        fmt, codes, scale, tensor_scale = t.get("weight_scale_2"), dtype = torch.float32
+    )
     assert torch.equal(got, reference(t))
 
 
@@ -143,13 +169,27 @@ def test_pre_quant_scale_is_folded_into_the_columns():
     codes, scale = cb.decode_layer("nvfp4", t["weight"], t["weight_scale"])
     smooth = torch.rand(64) + 0.5
     got = cb.dequant_block(
-        "nvfp4", codes, scale, tensor_scale = t["weight_scale_2"], pre_quant_scale = smooth, dtype = torch.float32
+        "nvfp4",
+        codes,
+        scale,
+        tensor_scale = t["weight_scale_2"],
+        pre_quant_scale = smooth,
+        dtype = torch.float32,
     )
     assert torch.equal(got, nvfp4_reference(t) * smooth)
 
 
 # ----------------------------------------------------------------------------------- detection / refusal
-def _layer_file(tmp_path, fmt, rows = 128, cols = 64, drop = (), extra = None, conf = None, name = "m"):
+def _layer_file(
+    tmp_path,
+    fmt,
+    rows = 128,
+    cols = 64,
+    drop = (),
+    extra = None,
+    conf = None,
+    name = "m",
+):
     encode, _ref = ENCODERS[fmt]
     t = encode(torch.randn(rows, cols))
     tensors = {f"a.{k}": v for k, v in t.items() if k not in drop}
@@ -167,7 +207,11 @@ def test_block_formats_are_detected(tmp_path, fmt):
 
 def test_block_formats_in_the_header_table_are_detected(tmp_path):
     t = nvfp4_encode(torch.randn(128, 64))
-    meta = {"_quantization_metadata": json.dumps({"format_version": "1.0", "layers": {"a": {"format": "nvfp4"}}})}
+    meta = {
+        "_quantization_metadata": json.dumps(
+            {"format_version": "1.0", "layers": {"a": {"format": "nvfp4"}}}
+        )
+    }
     path = _save(tmp_path / "h.safetensors", {f"a.{k}": v for k, v in t.items()}, metadata = meta)
     assert cq.refuse_comfy_quant(path).counts() == {"nvfp4": 1}
 
@@ -191,7 +235,10 @@ def test_malformed_block_layers_are_refused(tmp_path, fmt, kwargs, why):
 def test_untiled_block_scales_are_refused(tmp_path):
     t = nvfp4_encode(torch.randn(256, 64))
     t["weight_scale"] = t["weight_scale"][:200]  # a plain [N, K/16] matrix is not ComfyUI's layout
-    path = _save(tmp_path / "u.safetensors", {**{f"a.{k}": v for k, v in t.items()}, "a.comfy_quant": _conf(format = "nvfp4")})
+    path = _save(
+        tmp_path / "u.safetensors",
+        {**{f"a.{k}": v for k, v in t.items()}, "a.comfy_quant": _conf(format = "nvfp4")},
+    )
     with pytest.raises(ValueError, match = "tiled layout"):
         cq.refuse_comfy_quant(path)
 
@@ -200,7 +247,11 @@ def test_untiled_block_scales_are_refused(tmp_path):
 def test_remaining_formats_keep_the_refusal(tmp_path, fmt):
     path = _save(
         tmp_path / "r.safetensors",
-        {"a.weight": torch.zeros(8, 8, dtype = torch.uint8), "a.weight_scale": torch.ones(8, 1), "a.comfy_quant": _conf(format = fmt)},
+        {
+            "a.weight": torch.zeros(8, 8, dtype = torch.uint8),
+            "a.weight_scale": torch.ones(8, 1),
+            "a.comfy_quant": _conf(format = fmt),
+        },
     )
     with pytest.raises(ValueError, match = rf"1 layer\(s\) in ComfyUI format '{fmt}'"):
         cq.refuse_comfy_quant(path)
@@ -228,7 +279,11 @@ class _Tiny(nn.Module):
     _keep_in_fp32_modules = None
     _keys_to_ignore_on_load_unexpected = None
 
-    def __init__(self, dim: int = DIM, blocks: int = 2) -> None:
+    def __init__(
+        self,
+        dim: int = DIM,
+        blocks: int = 2,
+    ) -> None:
         super().__init__()
         self.blocks = nn.ModuleList(_Block(dim) for _ in range(blocks))
         self.norm = nn.LayerNorm(dim)
@@ -279,7 +334,9 @@ def block_file(tmp_path, monkeypatch):
         tensors, expected = {}, {}
         for b, block in enumerate(dense.blocks):
             layers = {
-                f"blocks.{b}.qkv": torch.cat([block.to_q.weight, block.to_k.weight, block.to_v.weight]),
+                f"blocks.{b}.qkv": torch.cat(
+                    [block.to_q.weight, block.to_k.weight, block.to_v.weight]
+                ),
                 f"blocks.{b}.out": block.to_out.weight,
             }
             for name, weight in layers.items():
@@ -296,7 +353,9 @@ def block_file(tmp_path, monkeypatch):
                     expected[f"blocks.{b}.to_out.weight"] = ref
                 bias = getattr(block, "to_out" if name.endswith("out") else "to_q").bias
                 tensors[f"{name}.bias"] = (
-                    torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias]) if name.endswith(".qkv") else bias
+                    torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias])
+                    if name.endswith(".qkv")
+                    else bias
                 ).detach()
         tensors["norm.weight"] = dense.norm.weight.detach()
         tensors["norm.bias"] = dense.norm.bias.detach()
@@ -305,7 +364,11 @@ def block_file(tmp_path, monkeypatch):
     return make
 
 
-def _load(path, dtype = torch.float32, **kwargs):
+def _load(
+    path,
+    dtype = torch.float32,
+    **kwargs,
+):
     return cq.load_comfy_quant_transformer(
         _Tiny,
         path,
@@ -345,8 +408,12 @@ def test_runtime_linears_keep_codes_and_tiled_scales_unchanged(block_file, fmt):
         assert torch.equal(out.w_sf.reshape(-1), file_scale)
         assert out.w_scale.item() == tensors["blocks.1.out.weight_scale_2"].item()
         assert out.a_gsf.item() == pytest.approx(1.0 / tensors["blocks.1.out.input_scale"].item())
-        q = model.blocks[0].to_q  # a row split of the fused qkv: scales re-tiled from the plain matrix
-        plain = cb.untile_scales(tensors["blocks.0.qkv.weight_scale"].view(torch.uint8), 3 * DIM, DIM // 16)
+        q = model.blocks[
+            0
+        ].to_q  # a row split of the fused qkv: scales re-tiled from the plain matrix
+        plain = cb.untile_scales(
+            tensors["blocks.0.qkv.weight_scale"].view(torch.uint8), 3 * DIM, DIM // 16
+        )
         assert torch.equal(cb.untile_scales(q.w_sf, DIM, DIM // 16), plain[:DIM])
     else:
         assert type(out).__name__ == "ComfyMXFP8Linear"
@@ -364,14 +431,19 @@ def test_nvfp4_without_an_input_scale_scales_activations_per_call(block_file):
     path, _tensors, _expected = block_file("nvfp4", drop_input_scale = True)
     model = _load(path, dtype = torch.bfloat16, nvfp4_backend = "kept")
     assert model._unsloth_comfy_quant["nvfp4"] == 8
-    assert {type(m).__name__ for m in model.modules() if hasattr(m, "wq")} == {"ComfyNVFP4DynamicLinear"}
+    assert {type(m).__name__ for m in model.modules() if hasattr(m, "wq")} == {
+        "ComfyNVFP4DynamicLinear"
+    }
     from core.inference.diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
     from core.inference.diffusion_nvfp4_protect import protect_controller, protect_layers
 
     layers = [m for _n, m in protect_layers(model)]
     assert len(layers) == 8 and all(is_nvfp4_flashinfer_linear(m) for m in layers)
     # its own step controller, not the process-wide one
-    assert all(m.protect is layers[0].protect for m in layers) and layers[0].protect is not protect_controller()
+    assert (
+        all(m.protect is layers[0].protect for m in layers)
+        and layers[0].protect is not protect_controller()
+    )
 
 
 @pytest.mark.skipif(not _blackwell(), reason = "needs a Blackwell GPU")
@@ -383,7 +455,10 @@ def test_runtime_forward_matches_the_dequantized_product(block_file, fmt, dynami
     path, _tensors, expected = block_file(fmt, drop_input_scale = dynamic)
     model = _load(path, dtype = torch.bfloat16, **{f"{fmt}_backend": "kept"}).cuda()
     x = torch.randn(64, DIM, device = "cuda", dtype = torch.bfloat16)
-    ref = x.float() @ expected["blocks.1.to_out.weight"].cuda().T + model.blocks[1].to_out.bias.float()
+    ref = (
+        x.float() @ expected["blocks.1.to_out.weight"].cuda().T
+        + model.blocks[1].to_out.bias.float()
+    )
     got = model.blocks[1].to_out(x).float()
     rel = ((got - ref).norm() / ref.norm()).item()
     assert rel < (0.15 if fmt == "nvfp4" else 0.05), rel  # activation quantization error only
@@ -418,7 +493,11 @@ def test_nvfp4_without_flashinfer_or_on_a_denied_family_dequantizes(monkeypatch)
     import core.inference.diffusion_nvfp4_ops as ops
 
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
-    monkeypatch.setattr(ops, "_resolve_backend", lambda device = None: ("torchao", "sm_90 is not in the flashinfer NVFP4 set"))
+    monkeypatch.setattr(
+        ops,
+        "_resolve_backend",
+        lambda device = None: ("torchao", "sm_90 is not in the flashinfer NVFP4 set"),
+    )
     backend, reason = cb.comfy_block_backend("nvfp4", _target("cuda:0"), "z-image")
     assert backend is None and "sm_90" in reason
     monkeypatch.setattr(ops, "_resolve_backend", lambda device = None: ("flashinfer", "ok"))
@@ -427,8 +506,13 @@ def test_nvfp4_without_flashinfer_or_on_a_denied_family_dequantizes(monkeypatch)
 
 def test_mxfp8_needs_blackwell_bf16_and_an_allowed_family(monkeypatch):
     monkeypatch.setattr(cb, "mxfp8_runtime_reason", lambda target: None)
-    assert cb.comfy_block_backend("mxfp8", _target("cuda:0"), "krea-2", dtype = torch.bfloat16)[0] == "scaled_mm"
-    assert cb.comfy_block_backend("mxfp8", _target("cuda:0"), "krea-2", dtype = torch.float16)[0] is None
+    assert (
+        cb.comfy_block_backend("mxfp8", _target("cuda:0"), "krea-2", dtype = torch.bfloat16)[0]
+        == "scaled_mm"
+    )
+    assert (
+        cb.comfy_block_backend("mxfp8", _target("cuda:0"), "krea-2", dtype = torch.float16)[0] is None
+    )
     assert cb.comfy_block_backend("mxfp8", _target("cuda:0"), "qwen-image")[0] is None
     monkeypatch.setenv("UNSLOTH_DIFFUSION_COMFY_MXFP8", "0")
     assert cb.comfy_block_backend("mxfp8", _target("cuda:0"), "krea-2")[0] is None
