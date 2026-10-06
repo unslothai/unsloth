@@ -8,6 +8,7 @@ ref2va) is not in the tensors, so it comes from the file name."""
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -28,16 +29,21 @@ _RENAMES = (
     (".attn.k_norm.", ".attn.norm_k."),
     (".attn.out_proj.", ".attn.to_out.0."),
     (".mlp.fc2.", ".ff.net.2."),
+    # dense (non-pruned) files only: the timestep MLP the curve table replaces
+    ("time_embedder.proj_in.", "time_embedder.linear_1."),
+    ("time_embedder.proj_out.", "time_embedder.linear_2."),
 )
 # Kept float32 like the hosted curve-form checkpoints (ComfyUI stores some of them as float16: widening is exact).
 _FP32_PREFIXES = (
     H3_COMFY_TABLE_KEY,
+    "time_embedder.",
     "video_patch_proj.",
     "audio_patch_proj.",
-    "final_layer.adaln_proj.",
     "final_layer.video_out.",
     "final_layer.audio_out.",
 )
+# Only the pruned (curve-form) adaLN projections are float32; a dense file's are bf16 like the block stack.
+_FP32_PRUNED_PREFIXES = ("final_layer.adaln_proj.",)
 _FP32_BLOCK = re.compile(r"^blocks\.\d+\.adaln_proj\.linear\.")
 
 
@@ -92,9 +98,11 @@ def h3_comfy_key_map(key: str, shape: Any) -> list:
     return [(name, None)]
 
 
-def h3_comfy_keep_dtype(key: str) -> Optional[Any]:
-    """float32 for the tensors the pruned H3 keeps at full precision, else None (compute dtype)."""
-    if key.startswith(_FP32_PREFIXES) or _FP32_BLOCK.match(key):
+def h3_comfy_keep_dtype(key: str, pruned: bool = True) -> Optional[Any]:
+    """float32 for the tensors H3 keeps at full precision, else None (compute dtype)."""
+    if key.startswith(_FP32_PREFIXES) or (
+        pruned and (key.startswith(_FP32_PRUNED_PREFIXES) or _FP32_BLOCK.match(key))
+    ):
         import torch
         return torch.float32
     return None
@@ -135,7 +143,7 @@ def comfy_layout(path: str) -> dict:
     metadata = h3_comfy_curve_metadata(path)
     return {
         "key_map": h3_comfy_key_map,
-        "keep_dtype": h3_comfy_keep_dtype,
+        "keep_dtype": functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
         "prepare_model": (lambda model: apply_h3_adaln_curve(model, metadata))
         if metadata is not None
         else None,
@@ -186,5 +194,5 @@ def load_h3_comfy_transformer(
             if metadata is not None
             else None
         ),
-        keep_dtype = h3_comfy_keep_dtype,
+        keep_dtype = functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
     )

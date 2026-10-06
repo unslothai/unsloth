@@ -399,10 +399,11 @@ def _video_comfy_resident_mib(
     *,
     keep: bool = True,
     keep_key: Any = None,
+    offload: bool = False,
 ) -> Optional[int]:
     """Planning size of a ComfyUI-quantized DiT, before the plan exists: int8 layers are priced as int8 when either
     int8 runtime runs here, fp8 layers as fp8 when the resident fp8 path does, the rest at bf16 (a dequantized fp8
-    file is twice its size on disk)."""
+    file is twice its size on disk). ``offload`` prices what an offloaded load keeps instead."""
     name = getattr(fam, "name", None)
     keep_int8 = keep_fp8 = False
     exclude: tuple = ()
@@ -422,10 +423,12 @@ def _video_comfy_resident_mib(
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
         keep_int8 = bool(
-            comfy_int8_backend(target, name, base)
+            comfy_int8_backend(target, name, base, offload = True)
+            if offload
+            else comfy_int8_backend(target, name, base)
             or comfy_int8_backend(target, name, base, offload = True)
         )
-        keep_fp8 = comfy_fp8_backend(target, name, base) is not None
+        keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
     return comfy_resident_mib(
         str(path),
         scan,
@@ -6050,6 +6053,23 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
+            # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
+            offload_mib = _video_comfy_resident_mib(
+                fam,
+                base,
+                target,
+                checkpoint_path,
+                comfy_scan,
+                keep = comfy_keep,
+                keep_key = ltx_keys,
+                offload = True,
+            )
+            if offload_mib is not None and transformer_mib is not None:
+                offload_mib = int(offload_mib * dtype_scale)
+                if offload_mib > transformer_mib:
+                    transformer_mib = offload_mib
+                    plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         settled_te_scale = te_scale
 
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no offload tier left to fall

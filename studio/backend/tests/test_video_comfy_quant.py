@@ -533,7 +533,9 @@ def test_original_layouts_are_found_by_class_name(tmp_path):
     assert cq.original_layout(hv, "x.safetensors")["key_map"] is hv15_comfy_key_map
     path = _save(tmp_path / "h3.safetensors", {"adaln_t_table": torch.zeros(1025, 8)})
     h3 = cq.original_layout(type("MiniMaxH3Transformer3DModel", (), {}), path)
-    assert h3["key_map"] is h3c.h3_comfy_key_map and h3["keep_dtype"] is h3c.h3_comfy_keep_dtype
+    assert h3["key_map"] is h3c.h3_comfy_key_map
+    assert h3["keep_dtype"].func is h3c.h3_comfy_keep_dtype
+    assert h3["keep_dtype"].keywords == {"pruned": True}
     assert callable(h3["prepare_model"])
     assert cq.original_layout(type("WanTransformer3DModel", (), {}), path) is None
 
@@ -659,3 +661,35 @@ def test_a_checkpoint_buffer_keeps_its_keep_dtype(h3like_file, tmp_path):
     )
     assert model.table.dtype is torch.float32
     assert torch.equal(model.table, table.half().float())
+
+
+def test_offloaded_plan_size_prices_fp8_that_only_runs_resident(monkeypatch, tmp_path):
+    rows = cols = 1024
+    tensors = {
+        "x.weight": torch.zeros(rows, cols, dtype = torch.float8_e4m3fn),
+        "x.weight_scale": torch.ones(()),
+        "x.comfy_quant": _conf(format = "float8_e4m3fn"),
+    }
+    path = _save(tmp_path / "f.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(
+        vid, "comfy_fp8_backend", lambda *a, offload = False, **k: None if offload else "torchao"
+    )
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
+
+
+def test_dense_h3_maps_its_timestep_mlp_and_keeps_adaln_at_compute_dtype():
+    m = h3c.h3_comfy_key_map
+    assert m("time_embedder.proj_in.weight", (5376, 256)) == [
+        ("time_embedder.linear_1.weight", None)
+    ]
+    assert m("time_embedder.proj_out.bias", (2688,)) == [("time_embedder.linear_2.bias", None)]
+    keep = h3c.h3_comfy_keep_dtype
+    assert keep("time_embedder.proj_in.weight", pruned = False) is torch.float32
+    assert keep("blocks.3.adaln_proj.linear.weight", pruned = False) is None
+    assert keep("final_layer.adaln_proj.linear.bias", pruned = False) is None
+    assert keep("blocks.3.adaln_proj.linear.weight") is torch.float32
+    assert keep("final_layer.video_out.weight", pruned = False) is torch.float32
