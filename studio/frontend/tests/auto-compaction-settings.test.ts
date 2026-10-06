@@ -203,16 +203,10 @@ test("a provider compaction is kept on the turn and replayed only to API models"
   );
 });
 
-test("provider compaction persistence keeps summary and encrypted state together", () => {
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  const start = adapter.indexOf("function providerCompactionPart(");
-  assert.ok(start >= 0);
-  const declaration = adapter.slice(start, adapter.indexOf("\n}", start) + 2);
-  const providerCompactionPart = new Function(
-    `${ts.transpileModule(declaration, {
-      compilerOptions: { target: ts.ScriptTarget.ES2022 },
-    }).outputText}; return providerCompactionPart;`,
-  )() as (value: unknown) => unknown;
+test("provider compaction persistence keeps summary and encrypted state together", async () => {
+  const { providerCompactionPart } = await import(
+    "../src/features/chat/utils/provider-compaction.ts"
+  );
 
   assert.deepEqual(
     providerCompactionPart({

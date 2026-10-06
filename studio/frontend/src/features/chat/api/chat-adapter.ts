@@ -110,6 +110,7 @@ import {
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
+import { providerCompactionPart } from "../utils/provider-compaction";
 import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
@@ -1276,21 +1277,6 @@ function setAssistantOpenAIResponsesReasoning(
       ? (message.extra_content as Record<string, unknown>)
       : {};
   message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
-}
-
-function providerCompactionPart(
-  value: unknown,
-): ProviderCompactionContentPart | null {
-  if (!value || typeof value !== "object") return null;
-  const { content, encrypted_content } = value as Record<string, unknown>;
-  const compaction: ProviderCompactionContentPart = { type: "compaction" };
-  if (typeof content === "string" && content) {
-    compaction.content = content;
-  }
-  if (typeof encrypted_content === "string" && encrypted_content) {
-    compaction.encrypted_content = encrypted_content;
-  }
-  return compaction.content || compaction.encrypted_content ? compaction : null;
 }
 
 function providerCompactionAssistant(

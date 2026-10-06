@@ -53,6 +53,35 @@ test("replay adds new cards and applies their results", () => {
   );
 });
 
+test("recovery keeps provider compaction at its tool-call boundary", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 1);
+  replay(end(), 20, 2);
+
+  assert.deepEqual(
+    replay(
+      {
+        _toolEvent: {
+          type: "compaction_block",
+          content: "Earlier conversation summary",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+      20,
+      3,
+    ),
+    {
+      providerCompaction: {
+        type: "compaction",
+        content: "Earlier conversation summary",
+        encrypted_content: "opaque-compaction",
+      },
+      providerCompactionAfterToolCalls: 1,
+    },
+  );
+});
+
 test("replay resumes an existing card without duplicating it", () => {
   const saved = {
     type: "tool-call",
@@ -503,6 +532,31 @@ test("the recovery scheduler persists later tool events between reasoning groups
       .map((part) => part.text),
     ["before", "after"],
   );
+});
+
+test("the recovery scheduler persists provider compaction metadata", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      start(),
+      end(),
+      {
+        _toolEvent: {
+          type: "compaction_block",
+          content: "Earlier conversation summary",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+      { choices: [{ delta: { content: "done" } }] },
+    ],
+  );
+  const metadata = snapshots.at(-1)?.metadata;
+  assert.deepEqual(metadata?.providerCompaction, {
+    type: "compaction",
+    content: "Earlier conversation summary",
+    encrypted_content: "opaque-compaction",
+  });
+  assert.equal(metadata?.providerCompactionAfterToolCalls, 1);
 });
 
 test("reopening a run that finished without the tab saves and renders only its end", async () => {

@@ -1539,8 +1539,11 @@ function scheduleGenerationRecovery(
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
           let advanced = false;
+          let recoveredProviderCompaction: ReturnType<
+            typeof toolRecovery.apply
+          >;
           if (update.event?.type === "chunk") {
-            toolRecovery.apply(
+            recoveredProviderCompaction = toolRecovery.apply(
               update.event.payload,
               raw.length,
               update.event.seq,
@@ -1595,6 +1598,12 @@ function scheduleGenerationRecovery(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
                   ),
+                };
+              }
+              if (recoveredProviderCompaction) {
+                currentMetadata = {
+                  ...currentMetadata,
+                  ...recoveredProviderCompaction,
                 };
               }
               if (chunk.quote_cut === true) quoteCut = true;
