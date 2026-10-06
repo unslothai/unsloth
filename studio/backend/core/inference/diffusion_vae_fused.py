@@ -1607,8 +1607,7 @@ def _stock_tiled_decode_clamps(cls: type) -> Optional[bool]:
 
 
 def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
-    # diffusion_vae_tiling's wide tiles own ``tiled_decode``; the batched loop then backs the stock tiles they fall
-    # back to (the kill switch, or a free VRAM under even their floor tile), as fast as without them.
+    # Under the wide tiles the batched loop only backs their stock-tile fallback.
     wide = vae is not None and bool(getattr(vae, "_unsloth_wide_tiles", False))
     if (
         vae is None
