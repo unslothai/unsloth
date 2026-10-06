@@ -132,6 +132,7 @@ function harness(
       "@hugeicons/react": {},
       "@hugeicons/core-free-icons": {},
       "@/lib/tick-icon": {},
+      "@/lib/chevron-icons": {},
       "@assistant-ui/react": { useAui: () => ({ threadListItem: () => item }) },
       "@/lib/utils": { cn: () => "" },
       "@/features/chat/stores/chat-runtime-store": {
