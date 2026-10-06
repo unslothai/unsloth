@@ -3,6 +3,9 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
 
 const {
   INITIAL_STEM_MIXER_STATE,
@@ -12,6 +15,7 @@ const {
   stemMixerReducer,
 } = await import("../src/features/audio/components/stem-mixer-state.ts");
 const {
+  clipFileName,
   sanitizeFileNamePart,
   stemFileName,
   stemZipName,
@@ -109,6 +113,48 @@ test("stem file names read '<title> - <Label>.wav' and are safe on disk", () => 
   assert.ok(long.length <= 120 + " - Instrumental.wav".length);
   assert.equal(stemZipName("My Song.wav"), "My Song - stems.zip");
   assert.equal(sanitizeFileNamePart("", "fallback"), "fallback");
+});
+
+test("clip file names read '<prompt> - <Workflow>.wav' instead of the clip id", () => {
+  const cases: [Parameters<typeof clipFileName>[0], string][] = [
+    [{ prompt: "Hello there.", workflow: "speak" }, "Hello there - Speak.wav"],
+    [{ prompt: "lofi beat", workflow: "music" }, "lofi beat - Music.wav"],
+    [
+      { prompt: "song.wav → Alice", workflow: "convert" },
+      "song.wav → Alice - Convert.wav",
+    ],
+    // older clips lack workflow metadata, so audio_type determines the history label.
+    [{ prompt: "Hi", audio_type: "orpheus" }, "Hi - Speak.wav"],
+    [
+      { prompt: "Line one\n\n  line two", workflow: "clone" },
+      "Line one line two - Clone.wav",
+    ],
+    [{ prompt: 'a/b:c*?"<>|', workflow: "edit" }, "a_b_c______ - Edit.wav"],
+    [{ prompt: "  ", workflow: "speak" }, "Audio - Speak.wav"],
+    [{ prompt: null, workflow: "separate" }, "Audio - Separate.wav"],
+  ];
+  for (const [clip, want] of cases) {
+    assert.equal(clipFileName(clip), want);
+  }
+  const long = clipFileName({ prompt: "語".repeat(500), workflow: "speak" });
+  assert.equal(long, `${"語".repeat(60)} - Speak.wav`);
+  assert.ok(new TextEncoder().encode(long).byteLength <= 255);
+});
+
+test("audio downloads go through the native save boundary, never a raw anchor", async () => {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const root = new URL("../src/features/audio/", import.meta.url);
+  const files = (await readdir(root, { recursive: true })).filter((name) =>
+    /\.tsx?$/.test(name),
+  );
+  for (const name of files) {
+    const source = await readFile(new URL(name, root), "utf8");
+    assert.doesNotMatch(
+      source,
+      /createElement\(["']a["']\)|\.download\s*=/,
+      name,
+    );
+  }
 });
 
 test("repeated names get a counter instead of overwriting", () => {

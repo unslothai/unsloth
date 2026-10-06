@@ -20,6 +20,7 @@ const LOCALE_LIST = [
   "de",
   "it",
   "ru",
+  "sv",
   "hi",
   "ar",
 ] as const;

@@ -845,6 +845,44 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+// tao reapplies the config's `resizable: false` on the first configure, wiping setResizable calls made while hidden
+#[cfg(target_os = "linux")]
+fn keep_resizable_across_first_configure(
+    app: &tauri::App,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gtk::prelude::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    let gtk_window = window.gtk_window()?;
+    let requested: Rc<Cell<Option<bool>>> = Rc::default();
+    let handlers: Rc<RefCell<Vec<glib::SignalHandlerId>>> = Rc::default();
+
+    let seen = requested.clone();
+    // "event" fires before tao's configure-event handler; unrealized configures skip that handler, so refresh each time
+    let before = gtk_window.connect_event(move |window, event| {
+        if event.event_type() == gdk::EventType::Configure {
+            seen.set(Some(window.is_resizable()));
+        }
+        glib::Propagation::Proceed
+    });
+    let owned = handlers.clone();
+    let after = gtk_window.connect_configure_event(move |window, _| {
+        if let Some(resizable) = requested.take() {
+            window.set_resizable(resizable);
+            for id in owned.borrow_mut().drain(..) {
+                window.disconnect(id);
+            }
+        }
+        false
+    });
+    handlers.borrow_mut().extend([before, after]);
+    Ok(())
+}
+
 // WebKitGTK ships two defaults that together break voice dictation on Linux:
 // `enable-media-stream` is off, and the stock `permission-request` handler
 // denies every request it never saw a listener override, including
@@ -2200,6 +2238,7 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
+        .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
@@ -2251,6 +2290,10 @@ fn main() {
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
+            native_file_dialogs::begin_native_file_save,
+            native_file_dialogs::append_native_file_save_chunk,
+            native_file_dialogs::finish_native_file_save,
+            native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
@@ -2313,6 +2356,8 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
+            #[cfg(target_os = "linux")]
+            keep_resizable_across_first_configure(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]
