@@ -70,6 +70,7 @@ from .diffusion_families import (
     resolve_local_gguf_child,
     supported_family_names,
     transformer_config_overrides_for,
+    transformer_variant_differs_from_base,
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
@@ -2526,6 +2527,14 @@ class DiffusionBackend:
         # An explicit Speed="off" load stays GGUF-as-is (dense path never runs); don't widen the prefetch.
         speed = kwargs.get("speed_mode")
         if speed is not None and str(speed).strip().lower() == SPEED_OFF:
+            return False
+        if transformer_variant_differs_from_base(
+            fam,
+            kwargs.get("base_repo"),
+            kwargs.get("gguf_filename"),
+            kwargs.get("repo_id"),
+            kwargs.get("display_repo_id"),
+        ):
             return False
         try:
             # A definite-offload policy skips the dense build, so widening wastes a multi-GB pull with no GGUF
@@ -5656,6 +5665,25 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # A Qwen-Image-Edit 2509 / original GGUF resolves to the 2511 base: its transformer/ (dense or
+                # pre-quantised) is another model, so only the GGUF runs the picked variant.
+                if (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and transformer_variant_differs_from_base(
+                        fam, base, gguf_filename, repo_id, display_repo_id
+                    )
+                ):
+                    dense_declined = True
+                    if transformer_quant_decline is None:
+                        transformer_quant_decline = (
+                            f"{base} has a different transformer than this GGUF, so only the GGUF "
+                            "itself can run it"
+                        )
+                    if transformer_quant_pinned is None:
+                        transformer_quant = "off"
+                    else:
+                        transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
                 gguf_offload_placement: Optional[Any] = None
                 gguf_offload_scheme: Optional[str] = None
@@ -6606,7 +6634,7 @@ class DiffusionBackend:
                                 "local_files_only": local_files_only,
                                 # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
                                 **transformer_config_overrides_for(
-                                    fam, gguf_filename, repo_id, base
+                                    fam, gguf_filename, repo_id, display_repo_id, base
                                 ),
                             }
                             # Before the prefix shim below, which wraps whatever entry it finds and
@@ -7173,7 +7201,9 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
-                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                        pipe,
+                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        logger,
                     )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:

@@ -1222,25 +1222,35 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
 
 
-def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
-    """ComfyUI's static shift for the loaded checkpoint: the first family variant whose key is in
-    an identifier (repo id, GGUF file, base repo), else the family default."""
+def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optional[tuple]:
+    """First ``(key, ...)`` row whose key is in an identifier; ``_`` reads as ``-`` (ComfyUI file names)."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
-        for key, shift in getattr(fam, "comfy_flow_shift_variants", ()) or ():
-            if key in needle:
-                return shift
-    return getattr(fam, "comfy_flow_shift", None)
+        needle = (identifier or "").lower().replace("_", "-")
+        for row in rows or ():
+            if row[0] in needle:
+                return row
+    return None
+
+
+def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    """ComfyUI's static shift for the loaded checkpoint: its variant's, else the family default."""
+    row = _first_variant(getattr(fam, "comfy_flow_shift_variants", ()), identifiers)
+    return row[1] if row else getattr(fam, "comfy_flow_shift", None)
 
 
 def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
-    """Config overrides of the first variant named by an identifier; ``_`` reads as ``-`` (ComfyUI file names)."""
-    for identifier in identifiers:
-        needle = (identifier or "").lower().replace("_", "-")
-        for key, overrides in getattr(fam, "transformer_config_variants", ()) or ():
-            if key in needle:
-                return dict(overrides)
-    return {}
+    """Config overrides of the first variant named by an identifier."""
+    row = _first_variant(getattr(fam, "transformer_config_variants", ()), identifiers)
+    return dict(row[1]) if row else {}
+
+
+def transformer_variant_differs_from_base(
+    fam: Any, base: Optional[str], *identifiers: Optional[str]
+) -> bool:
+    """True when the checkpoint names another variant than ``base``, whose transformer/ is then a different model."""
+    rows = getattr(fam, "transformer_config_variants", ())
+    picked = _first_variant(rows, (*identifiers, base))
+    return picked is not None and picked != _first_variant(rows, (base,))
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:

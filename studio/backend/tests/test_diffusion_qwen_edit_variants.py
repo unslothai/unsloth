@@ -12,6 +12,7 @@ from core.inference.diffusion_families import (
     detect_family,
     detect_family_for_pick,
     transformer_config_overrides_for,
+    transformer_variant_differs_from_base,
 )
 
 _OFF = {"zero_cond_t": False}
@@ -106,3 +107,40 @@ def test_qwen_edit_flow_shift_per_variant():
     assert comfy_flow_shift_for(fam, None, "unsloth/Qwen-Image-Edit-2511", None) == 3.1
     assert comfy_flow_shift_for(fam, "model.gguf", "/models/unet", base) == 3.1
     assert comfy_flow_shift_for(fam, None, None, None) == 3.1
+
+
+@pytest.mark.parametrize(
+    "gguf_filename, shift",
+    [
+        ("qwen_image_edit_2509_Q4_K_M.gguf", 3.0),
+        ("Qwen_Image_Edit-Q4_0.gguf", 3.0),
+        ("qwen_image_edit_2511_Q4_K_M.gguf", 3.1),
+    ],
+)
+def test_comfy_style_names_pick_their_shift(gguf_filename, shift):
+    fam = detect_family("qwen-image-edit")
+    assert comfy_flow_shift_for(fam, gguf_filename, "/models/unet", fam.base_repo) == shift
+
+
+@pytest.mark.parametrize(
+    "base, gguf_filename, differs",
+    [
+        ("Qwen/Qwen-Image-Edit-2511", "qwen-image-edit-2509-Q6_K.gguf", True),
+        ("Qwen/Qwen-Image-Edit-2511", "qwen_image_edit_Q4_K_M.gguf", True),
+        ("Qwen/Qwen-Image-Edit-2511", "qwen-image-edit-2511-Q4_K_M.gguf", False),
+        ("Qwen/Qwen-Image-Edit-2511", "model.gguf", False),
+        ("Qwen/Qwen-Image-Edit-2509", "qwen-image-edit-2509-Q6_K.gguf", False),
+    ],
+)
+def test_variant_differs_from_base(base, gguf_filename, differs):
+    fam = detect_family("qwen-image-edit")
+    assert (
+        transformer_variant_differs_from_base(fam, base, gguf_filename, "/models/unet") is differs
+    )
+
+
+def test_other_families_never_differ_from_base():
+    fam = detect_family("qwen-image")
+    assert not transformer_variant_differs_from_base(
+        fam, fam.base_repo, "qwen-image-edit-2509-Q6_K.gguf"
+    )
