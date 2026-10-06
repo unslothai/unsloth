@@ -462,7 +462,6 @@ def test_setup_fields_name_the_action_only_for_the_owner_here(linux, monkeypatch
     other = plan_mod.setup_fields_for(object(), False, available = False)
     assert other["setup_action"] is None and other["can_run_setup"] is False
     assert other["manual_command"] == owner["manual_command"] != ""
-    # A desktop prompt stays with this computer.
     linux["sudo_ok"] = False
     linux["tool"]("pkexec")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")

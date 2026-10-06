@@ -413,7 +413,6 @@ def profile_id() -> str:
 
 
 def limitations() -> tuple[str, ...]:
-    # ps and anything reading /proc see nothing inside.
     return (*LIMITATIONS, "no_process_filesystem") if empty_proc_layout() else LIMITATIONS
 
 
@@ -689,7 +688,6 @@ def _cache_hazard_memoized(name: str, path: str) -> "str | None":
     return verdict
 
 
-# Every launch asks; one warning per cache and reason a minute is enough.
 _CACHE_WARNING_SECONDS = 60.0
 _cache_warned: "dict[tuple[str, str], float]" = {}
 

@@ -580,7 +580,6 @@ def test_the_capability_names_the_empty_proc_layout_it_was_probed_with(monkeypat
 
 
 def test_the_startup_probe_scans_the_model_caches_before_any_tool_call(monkeypatch):
-    # The warm-up probe runs the real prepare, so a launch later reuses (or joins) this scan.
     if sys.platform != "linux" or shutil.which("bwrap") is None:
         pytest.skip("the cache scan is part of the bubblewrap launch")
     from core.inference import sandbox_linux

@@ -2479,7 +2479,6 @@ def test_a_container_refusing_a_fresh_proc_gets_an_empty_one(tmp_path, _no_proc_
     [
         ("", 0),  # a fresh procfs works: the normal layout
         ("bwrap: setting up uid map: Permission denied", 1),  # bwrap is broken for another reason
-        # Only the proc mount fails, but not as a masked container fails: the probe reports it.
         ("bwrap: Can't mount proc on /newroot/proc: No such file or directory", 0),
         (
             "bwrap: Can't mount proc on /proc: Permission denied",
@@ -2666,13 +2665,11 @@ def test_a_launch_finding_a_check_in_progress_waits_for_its_answer(
 
     monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", slow)
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.2)
-    # The first launch gives up while the walk is still going (a busy host), leaving it pending.
     assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) == (
         sandbox_linux.CACHE_STILL_CHECKING
     )
     assert started.wait(5)
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 10.0)
     threading.Timer(0.3, release.set).start()
-    # The next launch joins that walk and uses its answer instead of giving up at once.
     assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) is None
     assert walks == [str(component)]
