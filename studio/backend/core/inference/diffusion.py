@@ -6631,8 +6631,7 @@ class DiffusionBackend:
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
                             if comfy_scan is not None:
-                                # int8 / fp8 codes and scales go to Studio's int8 / fp8 runtime unchanged where it
-                                # runs; the rest dequantize.
+                                # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
                                 _comfy_offload = not plan_keeps_transformer_resident(plan)
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
@@ -8771,8 +8770,7 @@ class DiffusionBackend:
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
                 if not getattr(fam, "single_file_is_pipeline", False):
-                    # A ComfyUI-quantized file is priced from its header by what the loader keeps: int8 / fp8 layers a
-                    # resident runtime takes stay at their stored size, the rest are dequantized (2x).
+                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
                     _comfy_mib = self._comfy_single_file_resident_mib(
                         single_file_path, fam, target, base
                     )

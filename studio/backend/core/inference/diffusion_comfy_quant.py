@@ -3,42 +3,20 @@
 
 """Load a ComfyUI-format quantized single-file DiT, or refuse it by name.
 
-ComfyUI's quantized checkpoints keep the quantized codes under the layer's own ``.weight`` key and put
-the dequant parameters beside it: ``.weight_scale`` (and for some formats ``.input_scale``,
-``.weight_scale_2``, ...). The format of each layer is declared in one of three ways:
+ComfyUI keeps quantized codes under each layer's ``.weight`` with ``.weight_scale`` (some formats also
+``.input_scale``, ...) beside it, the format declared per layer (``<layer>.comfy_quant`` JSON tensor), in
+the header's ``_quantization_metadata`` table, or by the legacy ``scaled_fp8`` marker + ``.scale_weight``.
+Stock ``from_single_file`` casts the codes as weights and drops the scales: the load succeeds and renders noise.
 
-    per layer     ``<layer>.comfy_quant``: a uint8 tensor holding JSON, ``{"format": "int8_tensorwise",
-                  "convrot": true, "convrot_groupsize": 256}``
-    whole file    the safetensors header's ``_quantization_metadata``: ``{"layers": {<layer>: {...}}}``
-    legacy        a ``scaled_fp8`` marker tensor plus ``<layer>.scale_weight`` / ``.scale_input``
+From the header alone: int8_tensorwise (optionally ConvRot) maps into Studio's int8 runtime with codes and
+per-row scales unchanged; float8_e4m3fn into Studio's per-row fp8 runtime (scalar scale repeated per row);
+where neither runs, or for layers Studio keeps in bf16 and float8_e5m2, layers dequantize. Any other
+format is refused by name, never mis-loaded.
 
-A stock ``from_single_file`` knows none of this: it casts the int8 / fp8 codes to the compute dtype
-as if they were weights and reports the scales as unused keys, so the load succeeds and every
-quantized layer is off by its scale (pure noise for int8). This module reads the declaration from the
-header, before a weight byte is loaded, and either
-
-- maps ``int8_tensorwise`` layers (optionally ConvRot-rotated) into Studio's own int8 runtime with the
-  codes and per-row scales unchanged: the same ``Int8Tensor`` and ``ConvRotLinear`` a hosted
-  INT8 / INT8-ConvRot checkpoint rebuilds into,
-- maps ``float8_e4m3fn`` layers (scalar or per-row ``weight_scale``) into Studio's own fp8 runtime: the
-  same per-row ``Float8Tensor`` (dynamic per-row fp8 activations) a hosted FP8 checkpoint rebuilds into,
-  a scalar scale repeated over the rows, or the torchao-free native fp8 twin where Studio's own fp8 quant
-  takes that path,
-- or dequantizes them (``codes * scale``, then the ConvRot rotation undone) where no int8 / fp8 runtime
-  runs (an older GPU, CPU, MPS, an offloaded fp8 plan) or the layer is one Studio keeps in bf16, which
-  is also what happens to ``float8_e5m2`` layers,
-- and refuses anything else (nvfp4, mxfp8, the 4/6-bit int8 packings, an unknown or missing format,
-  scales with no declaration) with an error naming the format, never a silent mis-load.
-
-The row bookkeeping is generic: the family's own single-file converter runs once, with every int8
-weight replaced by a float64 tensor whose rows are tagged ``(source key, row)``. Whatever splits,
-concatenations and renames the converter applies, the tags that come out say which source rows each
-diffusers weight is made of, and the codes and scales are gathered by row from the file. A converter
-that splices columns of different layers, changes the column count, casts or transforms values
-leaves tags that do not decode, and the load is refused. (The tags are constant along a row, so a
-pure reordering of input columns would go unseen; no diffusers converter reorders a Linear's inputs.)
-
-Reading the declaration is torch-free.
+Row mapping: the family's converter runs once on float64 row tags ``(source key, row)``; the tags that
+come out say which source rows each diffusers weight holds. A converter that splices columns, changes
+the column count or transforms values leaves undecodable tags and is refused. (Tags are constant along a
+row: a pure input-column reorder would go unseen; no diffusers converter does one.)
 """
 
 from __future__ import annotations
@@ -258,8 +236,20 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
     return scan
 
 
-_DTYPE_BYTES = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1,
-                "I16": 2, "I32": 4, "I64": 8, "BOOL": 1}
+_DTYPE_BYTES = {
+    "F64": 8,
+    "F32": 4,
+    "F16": 2,
+    "BF16": 2,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "I8": 1,
+    "U8": 1,
+    "I16": 2,
+    "I32": 4,
+    "I64": 8,
+    "BOOL": 1,
+}
 
 
 def comfy_resident_mib(
@@ -389,7 +379,11 @@ def _int8_tensor(name: str, codes: Any, scale: Any, dtype: Any) -> Optional[Any]
 
 
 def _fp8_tensor(
-    name: str, codes: Any, scale: Any, dtype: Any, fast_accum: Optional[bool] = None
+    name: str,
+    codes: Any,
+    scale: Any,
+    dtype: Any,
+    fast_accum: Optional[bool] = None,
 ) -> Optional[Any]:
     """The torchao fp8 weight a hosted FP8 checkpoint rebuilds into (per-row ``Float8Tensor``, dynamic
     per-row fp8 activations with the same 1e-12 floor, the plain-torch kernel), built by the same decoder.
@@ -453,7 +447,6 @@ def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
         # before its own call; the hosted prequant route reaches here without passing through it.
         try:
             from .diffusion import _register_unregistered_single_file_classes
-
             _register_unregistered_single_file_classes()
         except Exception:  # noqa: BLE001 -- nothing more to register: refused below
             pass
@@ -464,7 +457,12 @@ def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
     return entry["checkpoint_mapping_fn"], sfm
 
 
-def _decode_rows(name: str, tagged: Any, sources: list, width: Optional[int] = None) -> list:
+def _decode_rows(
+    name: str,
+    tagged: Any,
+    sources: list,
+    width: Optional[int] = None,
+) -> list:
     """``[(source index, first row, n rows)]`` for a converted int8 weight, or raise. ``width``: the tag width
     the weights were given (None: their real column count)."""
     import torch
@@ -475,8 +473,7 @@ def _decode_rows(name: str, tagged: Any, sources: list, width: Optional[int] = N
     for j in (tagged.shape[1] // 2, tagged.shape[1] - 1):
         if not torch.equal(col, tagged[:, j]):
             raise ValueError(f"{name}: the converter mixed columns of an int8 weight")
-    # Decoded in Python from one list: a handful of tiny tensor ops per weight costs more than the whole decode
-    # on a busy many-core host (each op wakes the intra-op thread pool).
+    # Pure Python on one list: per-weight tensor ops each wake the intra-op pool and cost more than the decode.
     segments: list = []
     for value in col.tolist():
         if value < 0 or value != int(value):
@@ -551,6 +548,7 @@ def comfy_fp8_backend(
             native_quant_scheme,
             select_transformer_quant_scheme,
         )
+
         if native_quant_scheme(target, TQ_FP8, family = family, offload = offload) == TQ_FP8:
             return "native"
         if (
@@ -632,7 +630,6 @@ def load_comfy_prequant(
     recorded_base = record.get("base_model_id")
     if recorded_base and base:
         from .diffusion_prequant import _same_base_model
-
         if not _same_base_model(str(recorded_base), str(base)):
             raise ValueError(f"{name} was converted from {recorded_base}, not {base}")
     kwargs = {
@@ -731,8 +728,7 @@ def load_comfy_quant_transformer(
     for layer in scan.layers.values():
         codes = state.pop(layer.name + ".weight")
         scale = state.pop(layer.name + ".weight_scale")
-        # Activations are quantized dynamically per row, as for Studio's own fp8: a static
-        # input_scale is not needed (and ComfyUI's own default fp8 layout ignores it too).
+        # Activations are quantized per row at runtime, as for Studio's own fp8; input_scale is unused.
         state.pop(layer.name + ".input_scale", None)
         if layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
@@ -776,8 +772,7 @@ def load_comfy_quant_transformer(
     wanted = model.state_dict()
 
     def _convert_tagged(width: Optional[int]) -> dict:
-        # Each kept weight becomes float64 row tags (constant along a row), ``width`` columns wide (None: the real
-        # width). The converter's output tags say which source rows every diffusers weight is made of.
+        # float64 row tags, ``width`` columns wide (None: real width); converted tags name each output's source rows.
         for index, (layer, codes, _scale) in enumerate(sources):
             rows = torch.arange(codes.shape[0], dtype = torch.float64) + index * _TAG
             cols = codes.shape[1] if width is None else width
@@ -813,9 +808,7 @@ def load_comfy_quant_transformer(
         return out
 
     try:
-        # Narrow tags first: full-width float64 copies of every fused weight cost tens of seconds on a large DiT.
-        # Anything the narrow pass cannot prove (a converter that reads or slices columns) reruns at full width,
-        # whose checks are the authority.
+        # Narrow tags first (full width costs tens of seconds on a large DiT); anything unproven reruns at full width.
         converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
     except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
         converted = _convert_tagged(None)
@@ -938,7 +931,6 @@ def load_comfy_quant_transformer(
     on_torchao = {s for s, count in built.items() if count and s not in native_schemes}
     if finalize:
         from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
-
         for scheme in sorted(on_torchao):
             apply_small_m_padding(model, scheme, family, logger = logger)
             apply_zero_row_guard(model, scheme, family, logger = logger)

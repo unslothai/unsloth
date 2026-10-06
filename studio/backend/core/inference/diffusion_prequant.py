@@ -500,10 +500,7 @@ PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 _PICKLE_SUFFIXES = (".pt", ".pth")
 _logged_twin_choices: set = set()
 
-# The ComfyUI-format twin of a hosted artifact: ``<stem>-ComfyUI.safetensors`` next to ``<stem>.safetensors`` /
-# ``<stem>.pt`` in the same repo. ComfyUI loads it as is (per-layer ``comfy_quant`` declarations, original key
-# names) and Studio rebuilds it into the same torchao weights as its own ``<stem>`` artifact, so it is the one file
-# both apps can share. Older builds never ask for this name and keep resolving the artifacts they already know.
+# ``<stem>-ComfyUI.safetensors``: the twin of a hosted artifact both ComfyUI and Studio load; older builds never ask for it.
 COMFY_PREQUANT_TAG = "-ComfyUI"
 COMFY_PREQUANT_SUFFIX = COMFY_PREQUANT_TAG + ".safetensors"
 # 0 drops the ComfyUI-format names from the chain (back to Studio's own containers only).
@@ -542,14 +539,16 @@ def comfy_prequant_filename(name: Optional[str]) -> Optional[str]:
 
 def comfy_prequant_enabled() -> bool:
     import os
+    return (os.environ.get(COMFY_PREQUANT_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
-    return (os.environ.get(COMFY_PREQUANT_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
-
-# Schemes whose ComfyUI twin holds Studio's own weights bit for bit (int8 and int8 ConvRot: the same per-row codes
-# and scales), so it can lead the chain. ComfyUI's fp8 layout has one scale per tensor, so an fp8 twin is a second,
-# coarser rounding of Studio's per-row fp8 (weight error 2.6% -> 3.7%, FLUX.2-klein LPIPS 0.12 -> 0.16): it stays
-# BEHIND Studio's own fp8 artifact and is used only where the repo has no such artifact.
+# Twins that hold Studio's weights bit for bit (int8) lead the chain. ComfyUI fp8 has one scale per tensor, a coarser
+# second rounding of Studio's per-row fp8, so an fp8 twin trails Studio's own fp8 artifact.
 COMFY_TWIN_LEADS = frozenset({"int8"})
 
 
@@ -689,9 +688,7 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
-        # Whichever container of an artifact is cached is used before an uncached one of the SAME artifact: an
-        # uncached ComfyUI-format twin goes behind a cached, readable Studio container, and a cached twin goes ahead of
-        # uncached ones (an fp8 twin trails its artifact), so nobody downloads a second copy of weights they hold.
+        # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
             stem = _artifact_stem(comfy)
             twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
@@ -721,7 +718,12 @@ def prefer_cached_pickle_twins(
                     hit,
                     comfy,
                 )
-        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
+        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
             return out
 
         for st in [
@@ -1530,7 +1532,6 @@ def usable_prequant_source(
                 from .diffusion_comfy_quant import scan_comfy_quant
 
                 from os.path import expanduser
-
                 if scan_comfy_quant(expanduser(src.location)) is not None:
                     return None
             except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
@@ -1751,17 +1752,13 @@ def load_prequantized_transformer(
         if path is None:
             return None
 
-        # A ComfyUI-format file (the one default artifact ComfyUI and Studio both load) is read from its header and
-        # rebuilt into the SAME torchao weights Studio's own checkpoint of this scheme holds, so placement, offload,
-        # padding and compile below treat the two alike.
+        # A ComfyUI-format file rebuilds into the same torchao weights as Studio's own checkpoint of this scheme.
         from .diffusion_comfy_quant import load_comfy_prequant, scan_comfy_quant
 
         comfy_scan = scan_comfy_quant(path)
         comfy_rotated = False
         if comfy_scan is not None:
-            if prepare_model is not None or (
-                component and component != DEFAULT_PREQUANT_COMPONENT
-            ):
+            if prepare_model is not None or (component and component != DEFAULT_PREQUANT_COMPONENT):
                 raise ValueError(
                     "a ComfyUI-format checkpoint is only read as a whole denoiser, not as the "
                     f"{component or 'reshaped'} component"
