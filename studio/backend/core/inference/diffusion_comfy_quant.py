@@ -20,9 +20,13 @@ header, before a weight byte is loaded, and either
 - maps ``int8_tensorwise`` layers (optionally ConvRot-rotated) into Studio's own int8 runtime with the
   codes and per-row scales unchanged: the same ``Int8Tensor`` and ``ConvRotLinear`` a hosted
   INT8 / INT8-ConvRot checkpoint rebuilds into,
-- or dequantizes them (``codes * scale``, then the ConvRot rotation undone) where that runtime is not
-  available or the layer is one Studio keeps in bf16, and dequantizes fp8 layers
-  (``float8_e4m3fn`` / ``float8_e5m2``, scalar or per-row scale) on load,
+- maps ``float8_e4m3fn`` layers (scalar or per-row ``weight_scale``) into Studio's own fp8 runtime: the
+  same per-row ``Float8Tensor`` (dynamic per-row fp8 activations) a hosted FP8 checkpoint rebuilds into,
+  a scalar scale repeated over the rows, or the torchao-free native fp8 twin where Studio's own fp8 quant
+  takes that path,
+- or dequantizes them (``codes * scale``, then the ConvRot rotation undone) where no int8 / fp8 runtime
+  runs (an older GPU, CPU, MPS, an offloaded fp8 plan) or the layer is one Studio keeps in bf16, which
+  is also what happens to ``float8_e5m2`` layers,
 - and refuses anything else (nvfp4, mxfp8, the 4/6-bit int8 packings, an unknown or missing format,
   scales with no declaration) with an error naming the format, never a silent mis-load.
 
@@ -49,8 +53,12 @@ COMFY_QUANT_SUFFIX = ".comfy_quant"
 QUANT_METADATA_KEY = "_quantization_metadata"
 LEGACY_SCALED_FP8_KEY = "scaled_fp8"
 COMFY_INT8_ENV = "UNSLOTH_DIFFUSION_COMFY_INT8"
+COMFY_FP8_ENV = "UNSLOTH_DIFFUSION_COMFY_FP8"
+# Header metadata our own converter writes (base model, scheme); ComfyUI ignores it.
+CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
 INT8_TENSORWISE = "int8_tensorwise"
+FP8_E4M3 = "float8_e4m3fn"
 FP8_FORMATS = {"float8_e4m3fn": "F8_E4M3", "float8_e5m2": "F8_E5M2"}
 
 # Every companion tensor a ComfyUI quantized layer can carry. A suffix outside what a supported format
@@ -248,6 +256,55 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
     return scan
 
 
+_DTYPE_BYTES = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1,
+                "I16": 2, "I32": 4, "I64": 8, "BOOL": 1}
+
+
+def comfy_resident_mib(
+    path: Optional[str],
+    scan: Optional[ComfyQuantScan] = None,
+    *,
+    keep_int8: bool,
+    keep_fp8: bool,
+    compute_bytes: int = 2,
+) -> Optional[int]:
+    """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
+    weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
+    (2x an int8 / fp8 file), every other floating tensor is cast to the compute dtype. The file name says
+    nothing reliable here (an fp8 file Studio runs natively is not upcast; an int8 one with no runtime is).
+    None when the header cannot be read. Torch-free."""
+    try:
+        scan = scan if scan is not None else scan_comfy_quant(path)
+        if scan is None:
+            return None
+        header, _base = _read_header(str(path))
+    except Exception:  # noqa: BLE001 -- unknown size: the caller keeps its own estimate
+        return None
+    header.pop("__metadata__", None)
+    kept = {
+        name + ".weight": (layer.format == INT8_TENSORWISE and keep_int8)
+        or (layer.format == FP8_E4M3 and keep_fp8)
+        for name, layer in scan.layers.items()
+    }
+    total = 0
+    for key, entry in header.items():
+        shape = entry.get("shape") or ()
+        numel = 1
+        for d in shape:
+            numel *= int(d)
+        dtype = str(entry.get("dtype", ""))
+        stored = numel * _DTYPE_BYTES.get(dtype, 2)
+        if key in kept:
+            total += stored if kept[key] else numel * compute_bytes
+        elif key.endswith(COMFY_QUANT_SUFFIX) or any(key.endswith(s) for s in _SCALE_SUFFIXES):
+            total += stored
+        elif dtype.startswith(("F", "BF")):
+            total += numel * compute_bytes
+        else:
+            total += stored
+    return -(-total // (1024 * 1024)) if total > 0 else None
+
+
 def _is_power_of_four(size: Any) -> bool:
     from .diffusion_convrot import is_power_of_four
     return is_power_of_four(size)
@@ -329,6 +386,61 @@ def _int8_tensor(name: str, codes: Any, scale: Any, dtype: Any) -> Optional[Any]
     return None if rebuilt is None else rebuilt[name]
 
 
+def _fp8_tensor(
+    name: str, codes: Any, scale: Any, dtype: Any, fast_accum: Optional[bool] = None
+) -> Optional[Any]:
+    """The torchao fp8 weight a hosted FP8 checkpoint rebuilds into (per-row ``Float8Tensor``, dynamic
+    per-row fp8 activations with the same 1e-12 floor, the plain-torch kernel), built by the same decoder.
+    A per-tensor scale is the per-row layout with every row's scale equal, so it is repeated, not changed."""
+    import torch
+
+    from .diffusion_transformer_quant import _resolve_fast_accum
+    from .prequant_native import native_unflatten
+
+    rows, cols = codes.shape
+    dtype_name = str(dtype).replace("torch.", "")
+    kernel = {"_type": "KernelPreference", "_data": "TORCH"}
+    entry = {
+        "_type": "Float8Tensor",
+        "_data": {
+            "block_size": [1, cols],
+            "mm_config": {
+                "_type": "Float8MMConfig",
+                "_data": {
+                    "emulate": False,
+                    "use_fast_accum": bool(_resolve_fast_accum(fast_accum)),
+                    "pad_inner_dim": False,
+                },
+            },
+            "act_quant_kwargs": {
+                "_type": "QuantizeTensorToFloat8Kwargs",
+                "_data": {
+                    "float8_dtype": {"_type": "torch.dtype", "_data": FP8_E4M3},
+                    "granularity": {"_type": "PerRow", "_data": {"dim": -1}},
+                    "mm_config": None,
+                    "hp_value_lb": 1e-12,
+                    "hp_value_ub": None,
+                    "kernel_preference": kernel,
+                },
+            },
+            "kernel_preference": kernel,
+            "dtype": {"_type": "torch.dtype", "_data": dtype_name},
+        },
+        "_tensor_data_names": ["qdata", "scale"],
+    }
+    stem = name.rsplit(".", 1)[0]
+    tensors = {
+        f"{stem}._weight_qdata": codes.contiguous(),
+        f"{stem}._weight_scale": scale.to(torch.float32)
+        .reshape(-1, 1)
+        .expand(rows, 1)
+        .contiguous(),
+    }
+    raw = {"tensor_names": json.dumps([name]), name: json.dumps(entry)}
+    rebuilt = native_unflatten(tensors, raw)
+    return None if rebuilt is None else rebuilt[name]
+
+
 def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
     from diffusers.loaders import single_file_model as sfm
 
@@ -397,6 +509,146 @@ def comfy_int8_backend(
     return None
 
 
+def comfy_fp8_backend(
+    target: Any,
+    family: Optional[str],
+    base_repo: Optional[str] = None,
+    *,
+    offload: bool = False,
+) -> Optional[str]:
+    """Which of Studio's fp8 runtimes takes the ``float8_e4m3fn`` layers, by the rule its own fp8 quant
+    follows: ``"torchao"`` (the per-row ``Float8Tensor`` and ``_scaled_mm``) on a resident plan whose GPU
+    passes Studio's fp8 probe, ``"native"`` (the torchao-free weight-only twin) where Studio's own fp8
+    quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
+    older GPU, CPU, MPS, or an offloaded plan on the torchao path. ``UNSLOTH_DIFFUSION_COMFY_FP8=0``
+    always dequantizes."""
+    if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    try:
+        import torch
+
+        from .diffusion_transformer_quant import (
+            TQ_FP8,
+            native_quant_scheme,
+            select_transformer_quant_scheme,
+        )
+        if native_quant_scheme(target, TQ_FP8, family = family, offload = offload) == TQ_FP8:
+            return "native"
+        if (
+            not offload
+            and getattr(target, "dtype", None) is torch.bfloat16
+            and select_transformer_quant_scheme(target, TQ_FP8, family = family, base_repo = base_repo)
+            == TQ_FP8
+        ):
+            return "torchao"
+    except Exception:  # noqa: BLE001 -- an unanswerable probe takes the exact dense path
+        pass
+    return None
+
+
+def comfy_conversion_record(path: Optional[str]) -> dict:
+    """The ``unsloth_comfy_conversion`` header record our converter writes (base model, scheme, family),
+    or {} for any other file. Torch-free, never raises."""
+    try:
+        header, _base = _read_header(str(path))
+        raw = (header.get("__metadata__") or {}).get(CONVERSION_RECORD_KEY)
+        record = json.loads(raw) if raw else {}
+        return record if isinstance(record, dict) else {}
+    except Exception:  # noqa: BLE001 -- no record is not an error
+        return {}
+
+
+# The ComfyUI layer format each Studio prequant scheme is published in.
+PREQUANT_SCHEME_FORMATS = {"int8": (INT8_TENSORWISE,), "fp8": (FP8_E4M3,)}
+
+
+def comfy_prequant_scheme(scan: Optional[ComfyQuantScan]) -> Optional[str]:
+    """The Studio prequant scheme a ComfyUI file's quantized layers all share, else None."""
+    if scan is None or scan.problems or not scan.layers:
+        return None
+    formats = {layer.format for layer in scan.layers.values()}
+    for scheme, allowed in PREQUANT_SCHEME_FORMATS.items():
+        if formats <= set(allowed):
+            return scheme
+    return None
+
+
+def load_comfy_prequant(
+    transformer_cls: Any,
+    path: str,
+    *,
+    scheme: str,
+    base: str,
+    family: Optional[str],
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    fast_accum: Optional[bool] = None,
+    min_features: Optional[int] = None,
+    config_subfolder: str = "transformer",
+    logger: Any = None,
+) -> Any:
+    """A hosted (or local) ComfyUI-format prequant as the transformer Studio's own ``scheme`` checkpoint
+    rebuilds into, on the CPU: int8 layers as ``Int8Tensor`` under ConvRot-rotating Linears, fp8 layers as
+    per-row ``Float8Tensor``. Placement, small-M padding and the rest stay with the caller, exactly as for
+    Studio's own checkpoints. Raises ``ValueError`` for a file it must refuse: a format Studio cannot run,
+    layers of another scheme, or a recorded base model that is not ``base``."""
+    name = os.path.basename(str(path))
+    scan = scan_comfy_quant(path)
+    if scan is None:
+        raise ValueError(f"{name} is not a ComfyUI-quantized checkpoint")
+    problem = comfy_quant_error(scan, name)
+    if problem:
+        raise ValueError(problem)
+    found = comfy_prequant_scheme(scan)
+    if found != scheme:
+        raise ValueError(
+            f"{name} holds {', '.join(f'{k} x{v}' for k, v in sorted(scan.counts().items()))}, "
+            f"not a {scheme} checkpoint"
+        )
+    if not family:
+        raise ValueError(f"{name}: a ComfyUI checkpoint needs the model family to pick its layers")
+    record = comfy_conversion_record(path)
+    recorded_base = record.get("base_model_id")
+    if recorded_base and base:
+        from .diffusion_prequant import _same_base_model
+
+        if not _same_base_model(str(recorded_base), str(base)):
+            raise ValueError(f"{name} was converted from {recorded_base}, not {base}")
+    kwargs = {
+        "config": base,
+        "subfolder": config_subfolder,
+        "torch_dtype": dtype,
+        "cache_dir": cache_dir,
+        "local_files_only": local_files_only,
+    }
+    if hf_token:
+        kwargs["token"] = hf_token
+    import torch
+
+    if scheme == "fp8" and dtype is not torch.bfloat16:
+        raise ValueError(f"{name}: Studio's fp8 runtime needs a bfloat16 pipeline, not {dtype}")
+    model = load_comfy_quant_transformer(
+        transformer_cls,
+        path,
+        scan,
+        kwargs,
+        int8_backend = "torchao" if scheme == "int8" else None,
+        fp8_backend = "torchao" if scheme == "fp8" else None,
+        family = family,
+        fast_accum = fast_accum,
+        min_features = min_features,
+        finalize = False,
+        logger = logger,
+    )
+    kept = (getattr(model, "_unsloth_comfy_quant", None) or {}).get(scheme, 0)
+    if not kept:
+        # never a dense model under a prequant label: the caller falls back to its own quantize path
+        raise ValueError(f"{name}: no layer could be rebuilt as a {scheme} weight on this install")
+    return model
+
+
 def load_comfy_quant_transformer(
     transformer_cls: Any,
     path: str,
@@ -404,8 +656,12 @@ def load_comfy_quant_transformer(
     sf_kwargs: dict,
     *,
     int8_backend: Optional[str],
+    fp8_backend: Optional[str] = None,
     family: Optional[str] = None,
     target: Any = None,
+    fast_accum: Optional[bool] = None,
+    min_features: Optional[int] = None,
+    finalize: bool = True,
     logger: Any = None,
 ) -> Any:
     """Build ``transformer_cls`` from the ComfyUI-quantized ``path``.
@@ -414,16 +670,33 @@ def load_comfy_quant_transformer(
     ``subfolder``, ``torch_dtype``, ``token``, ``cache_dir``, ``local_files_only``). With an
     ``int8_backend`` (``comfy_int8_backend``) the int8 layers Studio's own int8 filter selects keep
     their codes and scales, as torchao ``Int8Tensor`` weights under ConvRot-rotating Linears
-    (``"torchao"``) or as native int8 twins (``"native"``); everything else is dequantized to the
-    compute dtype. Raises ``ValueError`` for a checkpoint it must refuse."""
+    (``"torchao"``) or as native int8 twins (``"native"``); with an ``fp8_backend``
+    (``comfy_fp8_backend``) the ``float8_e4m3fn`` layers Studio's own fp8 filter selects do the same,
+    as per-row ``Float8Tensor`` weights or native fp8 twins. Everything else is dequantized to the
+    compute dtype. ``finalize`` applies the small-M padding here (the single-file path); the hosted
+    prequant loader passes False and pads after placement, as for its own checkpoints. Raises
+    ``ValueError`` for a checkpoint it must refuse."""
     import torch
     from safetensors.torch import load_file
+
+    from .diffusion_transformer_quant import (
+        DEFAULT_MIN_LINEAR_FEATURES,
+        TQ_FP8,
+        TQ_INT8,
+        divisible_for_scheme,
+        exclude_tokens_for_scheme,
+        make_filter_fn,
+        native_int8_act,
+    )
 
     problem = comfy_quant_error(scan, os.path.basename(path))
     if problem:
         raise ValueError(problem)
     kwargs = dict(sf_kwargs)
     dtype = kwargs.pop("torch_dtype", None) or kwargs.pop("dtype", None) or torch.bfloat16
+    if dtype is not torch.bfloat16:
+        # Studio's fp8 runtime asserts bf16 weights; an fp16 / fp32 pipeline dequantizes them instead.
+        fp8_backend = None
     state = load_file(str(path))
     state.pop(LEGACY_SCALED_FP8_KEY, None)
     for key in [k for k in state if k.endswith(COMFY_QUANT_SUFFIX)]:
@@ -433,16 +706,19 @@ def load_comfy_quant_transformer(
             if key.endswith(old):
                 state[key[: -len(old)] + new] = state.pop(key)
 
-    int8_sources: list = []  # (layer, codes, scale)
+    backends = {INT8_TENSORWISE: int8_backend, FP8_E4M3: fp8_backend}
+    sources: list = []  # (layer, codes, scale) kept for a runtime
     dequantized = 0
     for layer in scan.layers.values():
         codes = state.pop(layer.name + ".weight")
         scale = state.pop(layer.name + ".weight_scale")
+        # Activations are quantized dynamically per row, as for Studio's own fp8: a static
+        # input_scale is not needed (and ComfyUI's own default fp8 layout ignores it too).
         state.pop(layer.name + ".input_scale", None)
         if layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
-        if layer.format == INT8_TENSORWISE and int8_backend:
-            int8_sources.append((layer, codes, scale))
+        if backends.get(layer.format):
+            sources.append((layer, codes, scale))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         else:
             state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, dtype)
@@ -457,7 +733,7 @@ def load_comfy_quant_transformer(
         if dtype == torch.float16 and any(m in key.split(".") for m in keep_fp32):
             continue
         state[key] = value.to(dtype)
-    for index, (layer, codes, _scale) in enumerate(int8_sources):
+    for index, (layer, codes, _scale) in enumerate(sources):
         rows = torch.arange(codes.shape[0], dtype = torch.float64) + index * _TAG
         state[layer.name + ".weight"] = rows.view(-1, 1).expand(codes.shape)
 
@@ -493,59 +769,69 @@ def load_comfy_quant_transformer(
         converted = dict(state)
     del state
 
-    rotations: dict = {}
-    native: dict = {}
-    built = 0
     for name in [
         k for k, v in converted.items() if torch.is_tensor(v) and v.dtype == torch.float64
     ]:
-        segments = _decode_rows(name, converted[name], int8_sources)
-        sources = {int8_sources[i][0].group for i, _r, _n in segments}
-        if len(sources) != 1:
-            raise ValueError(f"{name}: rows from layers with different ConvRot groups")
-        group = sources.pop()
-        codes = torch.cat([int8_sources[i][1][r : r + n] for i, r, n in segments])
+        segments = _decode_rows(name, converted[name], sources)
+        kinds = {(sources[i][0].format, sources[i][0].group) for i, _r, _n in segments}
+        if len(kinds) != 1:
+            raise ValueError(f"{name}: rows from layers of different formats or ConvRot groups")
+        fmt, group = kinds.pop()
+        codes = torch.cat([sources[i][1][r : r + n] for i, r, n in segments])
         scale = torch.cat(
             [
-                int8_sources[i][2].reshape(-1, 1).expand(int8_sources[i][1].shape[0], 1)[r : r + n]
+                sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
                 for i, r, n in segments
             ]
         )
-        converted[name] = (codes, scale, group)
+        converted[name] = (codes, scale, group, fmt)
 
-    from .diffusion_transformer_quant import (
-        DEFAULT_MIN_LINEAR_FEATURES,
-        TQ_INT8,
-        exclude_tokens_for_scheme,
-        make_filter_fn,
-        native_int8_act,
-    )
-
-    filter_fn = make_filter_fn(
-        DEFAULT_MIN_LINEAR_FEATURES,
-        exclude_name_tokens = exclude_tokens_for_scheme(TQ_INT8, family),
-    )
+    min_features = DEFAULT_MIN_LINEAR_FEATURES if min_features is None else int(min_features)
+    schemes = {INT8_TENSORWISE: TQ_INT8, FP8_E4M3: TQ_FP8}
+    filters = {
+        fmt: make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family),
+            require_divisible = divisible_for_scheme(scheme),
+        )
+        for fmt, scheme in schemes.items()
+    }
     modules = dict(model.named_modules())
+    rotations: dict = {}
+    native: dict = {}
+    built = {TQ_INT8: 0, TQ_FP8: 0}
     for name, value in list(converted.items()):
         if not isinstance(value, tuple):
             continue
-        codes, scale, group = value
+        codes, scale, group, fmt = value
+        scheme = schemes[fmt]
+        backend = backends[fmt]
         fqn = name[: -len(".weight")] if name.endswith(".weight") else name
         module = modules.get(fqn)
         weight = None
-        if module is not None and name.endswith(".weight") and filter_fn(module, fqn):
-            if int8_backend == "native":
-                native[fqn] = value
+        keep = (
+            module is not None
+            and name.endswith(".weight")
+            and filters[fmt](module, fqn)
+            # Studio's fp8 quant leaves the Linears a DiT keeps in fp32 (require_bf16) at full precision.
+            and not (scheme == TQ_FP8 and any(m in fqn.split(".") for m in keep_fp32))
+        )
+        if keep:
+            if backend == "native":
+                native[fqn] = (codes, scale, group, scheme)
                 del converted[name]
-                built += 1
+                built[scheme] += 1
                 continue
-            weight = _int8_tensor(name, codes, scale, dtype)
+            if scheme == TQ_INT8:
+                weight = _int8_tensor(name, codes, scale, dtype)
+            else:
+                weight = _fp8_tensor(name, codes, scale, dtype, fast_accum)
         if weight is None:
             converted[name] = _dequant(codes, scale, group, dtype)
             dequantized += 1
             continue
         converted[name] = weight
-        built += 1
+        built[scheme] += 1
         if group:
             rotations.setdefault(group, []).append(fqn)
     if len(rotations) > 1:
@@ -556,13 +842,18 @@ def load_comfy_quant_transformer(
 
         cls = native_linear_class()
         act_int8 = native_int8_act(target) if target is not None else False
-        for fqn, (codes, scale, group) in native.items():
+        for fqn, (codes, scale, group, scheme) in native.items():
             parent_name, _, leaf = fqn.rpartition(".")
             parent = model.get_submodule(parent_name) if parent_name else model
             # the Linear supplies only shapes, compute dtype and bias (assigned from the checkpoint below)
             linear = getattr(parent, leaf).to(dtype)
             layer = cls(
-                linear, TQ_INT8, act_int8 = act_int8, rot_group = group, codes = codes, scale = scale
+                linear,
+                scheme,
+                act_int8 = act_int8 and scheme == TQ_INT8,
+                rot_group = group,
+                codes = codes,
+                scale = scale,
             )
             setattr(parent, leaf, layer)
             converted[fqn + ".weight_q"] = layer.weight_q
@@ -608,32 +899,43 @@ def load_comfy_quant_transformer(
                 warm_rotation_cache(model, device, dtype)
             except Exception:  # noqa: BLE001 -- only saves one recompile
                 pass
-    if built:
-        if not native:
-            from .diffusion_transformer_quant import apply_small_m_padding
-            apply_small_m_padding(model, TQ_INT8, family, logger = logger)
+    native_schemes = {v[3] for v in native.values()}
+    on_torchao = {s for s, count in built.items() if count and s not in native_schemes}
+    if finalize:
+        from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
+
+        for scheme in sorted(on_torchao):
+            apply_small_m_padding(model, scheme, family, logger = logger)
+            apply_zero_row_guard(model, scheme, family, logger = logger)
+    if any(built.values()):
         try:
-            model._unsloth_runtime_quant = TQ_INT8
+            # the scheme the runtime treats this transformer as: the one most of its layers run
+            model._unsloth_runtime_quant = max(built, key = lambda s: built[s])
         except Exception:  # noqa: BLE001 -- marker is best-effort
             pass
     model.eval()
+    convrot = len(rotated) + sum(1 for v in native.values() if v[2])
     if logger is not None:
         logger.info(
             "diffusion.comfy_quant: %s loaded from a ComfyUI checkpoint (%s): %d int8 layers kept as "
-            "int8 (%s, %d ConvRot), %d layers dequantized to %s",
+            "int8 (%s, %d ConvRot), %d fp8 layers kept as fp8 (%s), %d layers dequantized to %s",
             transformer_cls.__name__,
             ", ".join(f"{k} x{v}" for k, v in sorted(scan.counts().items())),
-            built,
-            f"{int8_backend} runtime" if built else "no int8 runtime",
-            len(rotated) + sum(1 for v in native.values() if v[2]),
+            built[TQ_INT8],
+            f"{int8_backend} runtime" if built[TQ_INT8] else "no int8 runtime",
+            convrot,
+            built[TQ_FP8],
+            f"{fp8_backend} runtime" if built[TQ_FP8] else "no fp8 runtime",
             dequantized,
             str(dtype).replace("torch.", ""),
         )
     try:
         model._unsloth_comfy_quant = {
-            "backend": int8_backend if built else None,
-            "int8": built,
-            "convrot": len(rotated) + sum(1 for v in native.values() if v[2]),
+            "backend": int8_backend if built[TQ_INT8] else None,
+            "int8": built[TQ_INT8],
+            "convrot": convrot,
+            "fp8_backend": fp8_backend if built[TQ_FP8] else None,
+            "fp8": built[TQ_FP8],
             "dequantized": dequantized,
         }
     except Exception:  # noqa: BLE001 -- diagnostic marker only

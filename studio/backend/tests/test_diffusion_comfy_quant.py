@@ -335,6 +335,8 @@ def test_dequant_path_reproduces_the_dense_weights(comfy_file):
         "backend": None,
         "int8": 0,
         "convrot": 0,
+        "fp8_backend": None,
+        "fp8": 0,
         "dequantized": 6,
     }
     assert not any(is_rotated_linear(m) for m in model.modules())
@@ -360,6 +362,8 @@ def test_int8_runtime_keeps_codes_and_scales_unchanged(comfy_file):
         "backend": "torchao",
         "int8": 8,
         "convrot": 8,
+        "fp8_backend": None,
+        "fp8": 0,
         "dequantized": 2,
     }
     assert model._unsloth_runtime_quant == "int8"
@@ -386,6 +390,8 @@ def test_native_backend_keeps_codes_and_computes_the_dense_product(comfy_file):
         "backend": "native",
         "int8": 8,
         "convrot": 8,
+        "fp8_backend": None,
+        "fp8": 0,
         "dequantized": 2,
     }
     block = model.blocks[1]
@@ -457,3 +463,222 @@ def test_the_loader_refuses_what_the_scan_refuses(tmp_path):
         cq.load_comfy_quant_transformer(
             _Tiny, path, scan, {"config": "base/repo"}, int8_backend = None
         )
+
+
+# ------------------------------------------------------------------------------------- fp8 runtime
+def _fp8_file(tmp_path, *, fmt = "float8_e4m3fn", per_row = False, record = None):
+    """A ComfyUI fp8 file of ``_Tiny`` (fused qkv, per-tensor or per-row ``weight_scale``) and its dense source."""
+    torch.manual_seed(2)
+    dense = _Tiny()
+    tensors = {}
+    fp8 = getattr(torch, fmt)
+    top = torch.finfo(fp8).max
+    for b, block in enumerate(dense.blocks):
+        layers = {
+            f"blocks.{b}.qkv": (
+                torch.cat([block.to_q.weight, block.to_k.weight, block.to_v.weight]).detach(),
+                torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias]),
+            ),
+            f"blocks.{b}.out": (block.to_out.weight.detach(), block.to_out.bias),
+            f"blocks.{b}.adaLN_modulation.0": (
+                block.adaLN_modulation[0].weight.detach(),
+                block.adaLN_modulation[0].bias,
+            ),
+        }
+        for name, (weight, bias) in layers.items():
+            w = weight.float()
+            scale = (w.abs().amax(dim = 1, keepdim = True) if per_row else w.abs().max()) / top
+            tensors[f"{name}.weight"] = (w / scale).to(fp8)
+            tensors[f"{name}.weight_scale"] = scale.float()
+            tensors[f"{name}.input_scale"] = torch.tensor(1.0)
+            tensors[f"{name}.bias"] = bias.detach().clone()
+            tensors[f"{name}.comfy_quant"] = _conf(format = fmt, full_precision_matrix_mult = True)
+    tensors["norm.weight"] = dense.norm.weight.detach().clone()
+    tensors["norm.bias"] = dense.norm.bias.detach().clone()
+    meta = {cq.CONVERSION_RECORD_KEY: json.dumps(record)} if record else None
+    return _save(tmp_path / f"tiny_{fmt}.safetensors", tensors, metadata = meta), dense, tensors
+
+
+def _load_bf16(path, **kwargs):
+    kwargs.setdefault("int8_backend", None)
+    return cq.load_comfy_quant_transformer(
+        _Tiny,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo", "subfolder": "transformer"},
+        family = "z-image",
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("per_row", [False, True])
+def test_fp8_runtime_keeps_codes_and_repeats_a_tensor_scale_per_row(tmp_path, monkeypatch, per_row):
+    pytest.importorskip("torchao")
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, tensors = _fp8_file(tmp_path, per_row = per_row)
+    model = _load_bf16(path, fp8_backend = "torchao")
+    assert model._unsloth_comfy_quant == {
+        "backend": None,
+        "int8": 0,
+        "convrot": 0,
+        "fp8_backend": "torchao",
+        "fp8": 10,
+        "dequantized": 0,
+    }
+    assert model._unsloth_runtime_quant == "fp8"
+    for b, block in enumerate(model.blocks):
+        codes = tensors[f"blocks.{b}.qkv.weight"]
+        scale = tensors[f"blocks.{b}.qkv.weight_scale"].reshape(-1, 1).expand(3 * DIM, 1)
+        for i, leaf in enumerate(("to_q", "to_k", "to_v")):
+            weight = getattr(block, leaf).weight
+            assert type(weight).__name__ == "Float8Tensor"
+            assert torch.equal(
+                weight.qdata.view(torch.uint8), codes[i * DIM : (i + 1) * DIM].view(torch.uint8)
+            )
+            assert torch.equal(weight.scale.float().reshape(-1, 1), scale[i * DIM : (i + 1) * DIM])
+            # the same per-row dynamic-activation layout as Studio's own FP8 checkpoints
+            assert weight.act_quant_kwargs.granularity.__class__.__name__ == "PerRow"
+        assert type(block.adaLN_modulation[0].weight).__name__ == "Float8Tensor"
+    assert not any(is_rotated_linear(m) for m in model.modules())
+
+
+def test_fp8_native_backend_keeps_codes_and_computes_the_dense_product(tmp_path, monkeypatch):
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, dense, tensors = _fp8_file(tmp_path)
+    model = _load_bf16(path, fp8_backend = "native")
+    assert model._unsloth_comfy_quant["fp8_backend"] == "native"
+    assert model._unsloth_comfy_quant["fp8"] == 10
+    linear = model.blocks[1].to_k
+    assert type(linear).__name__ == "NativeWeightOnlyLinear" and linear.scheme == "fp8"
+    codes = tensors["blocks.1.qkv.weight"][DIM : 2 * DIM]
+    assert torch.equal(linear.weight_q, codes.view(torch.uint8))
+    x = torch.randn(4, DIM, dtype = torch.bfloat16)
+    want = torch.nn.functional.linear(x.float(), dense.blocks[1].to_k.weight, dense.blocks[1].to_k.bias)
+    assert _cos(linear(x), want) > 0.999
+
+
+def test_fp8_without_a_runtime_dequantizes(tmp_path, monkeypatch):
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, tensors = _fp8_file(tmp_path)
+    model = _load_bf16(path, fp8_backend = None)
+    assert model._unsloth_comfy_quant["fp8"] == 0
+    assert model._unsloth_comfy_quant["dequantized"] == 6
+    w = tensors["blocks.0.out.weight"].float() * tensors["blocks.0.out.weight_scale"]
+    assert torch.equal(model.blocks[0].to_out.weight, w.to(torch.bfloat16))
+
+
+def test_e5m2_and_non_bf16_pipelines_dequantize(tmp_path, monkeypatch):
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, _tensors = _fp8_file(tmp_path, fmt = "float8_e5m2")
+    assert _load_bf16(path, fp8_backend = "torchao")._unsloth_comfy_quant["fp8"] == 0
+    path, _dense, _tensors = _fp8_file(tmp_path)
+    model = _load(path, fp8_backend = "torchao")  # float32 pipeline
+    assert model._unsloth_comfy_quant["fp8"] == 0
+    assert model._unsloth_comfy_quant["dequantized"] == 6
+
+
+@pytest.mark.parametrize(
+    "native, supported, offload, dtype, env, want",
+    [
+        (None, "fp8", False, "bfloat16", None, "torchao"),
+        (None, "fp8", True, "bfloat16", None, None),  # offloaded torchao fp8: dequantize, as before
+        (None, None, False, "bfloat16", None, None),  # no fp8 GEMM (older GPU, CPU, MPS)
+        ("fp8", None, False, "bfloat16", None, "native"),  # ROCm / stubbed torchao
+        (None, "fp8", False, "float16", None, None),
+        (None, "fp8", False, "bfloat16", "0", None),  # kill switch
+    ],
+)
+def test_fp8_backend_follows_studios_own_fp8_rule(monkeypatch, native, supported, offload, dtype, env, want):
+    import core.inference.diffusion_transformer_quant as tq
+
+    monkeypatch.setattr(tq, "native_quant_scheme", lambda *a, **k: native)
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda *a, **k: supported)
+    if env is None:
+        monkeypatch.delenv(cq.COMFY_FP8_ENV, raising = False)
+    else:
+        monkeypatch.setenv(cq.COMFY_FP8_ENV, env)
+    target = types.SimpleNamespace(device = "cuda", dtype = getattr(torch, dtype))
+    assert cq.comfy_fp8_backend(target, "z-image", offload = offload) == want
+
+
+# ------------------------------------------------------------------------------------- hosted prequant route
+def test_comfy_prequant_scheme_is_read_from_the_header(tmp_path, comfy_file):
+    path, _, _ = comfy_file
+    assert cq.comfy_prequant_scheme(cq.scan_comfy_quant(path)) == "int8"
+    fp8_path, _, _ = _fp8_file(tmp_path)
+    assert cq.comfy_prequant_scheme(cq.scan_comfy_quant(fp8_path)) == "fp8"
+    from core.inference.diffusion_prequant import local_prequant_scheme
+
+    assert local_prequant_scheme(fp8_path) == "fp8"
+    assert local_prequant_scheme(path) == "int8"
+
+
+def test_comfy_prequant_refuses_another_scheme_or_base(tmp_path, monkeypatch):
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _, _ = _fp8_file(tmp_path, record = {"base_model_id": "org/other-model", "scheme": "fp8"})
+    kw = dict(base = "base/repo", family = "z-image", dtype = torch.bfloat16)
+    with pytest.raises(ValueError, match = "not a int8 checkpoint"):
+        cq.load_comfy_prequant(_Tiny, path, scheme = "int8", **kw)
+    with pytest.raises(ValueError, match = "converted from org/other-model"):
+        cq.load_comfy_prequant(_Tiny, path, scheme = "fp8", **kw)
+    with pytest.raises(ValueError, match = "needs a bfloat16 pipeline"):
+        cq.load_comfy_prequant(_Tiny, path, scheme = "fp8", **dict(kw, dtype = torch.float32, base = "org/other-model"))
+
+
+def test_hosted_loader_rebuilds_a_comfy_file_into_studios_int8_weights(comfy_file, monkeypatch, tmp_path):
+    """``load_prequantized_transformer`` on a ComfyUI file: Int8Tensor weights under ConvRot, the loaded file
+    recorded, the same placement tail as Studio's own checkpoints."""
+    pytest.importorskip("torchao")
+    import core.inference.diffusion_prequant as pq
+
+    path, _dense, tensors = comfy_file
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    source = pq.PrequantSource(kind = "path", location = path)
+    model = pq.load_prequantized_transformer(
+        _Tiny,
+        "base/repo",
+        source,
+        device = "cpu",
+        dtype = torch.float32,
+        scheme = "int8",
+        family = "z-image",
+    )
+    assert model is not None, pq.last_prequant_failure()
+    assert model._unsloth_prequant_path == path
+    assert model._unsloth_runtime_quant == "int8"
+    weight = model.blocks[0].to_out.weight
+    assert type(getattr(weight, "data", weight)).__name__ == "Int8Tensor"
+    assert torch.equal(weight.qdata, tensors["blocks.0.out.weight"])
+    assert is_rotated_linear(model.blocks[0].to_out)
+    # Studio's int8 filter keeps the modulation projection dense, as its own INT8 checkpoints do
+    assert type(model.blocks[0].adaLN_modulation[0].weight).__name__ in ("Parameter", "Tensor")
+    # asked for the wrong scheme: refused, with the reason recorded, so the caller quantizes dense instead
+    assert (
+        pq.load_prequantized_transformer(
+            _Tiny, "base/repo", source, device = "cpu", dtype = torch.float32, scheme = "fp8", family = "z-image"
+        )
+        is None
+    )
+    assert "not a fp8 checkpoint" in (pq.last_prequant_failure() or "")
+
+
+def test_resident_size_is_priced_from_the_header_not_the_name(tmp_path, comfy_file):
+    """Kept int8 / fp8 layers cost their stored bytes, dequantized ones twice that; the file name is not read."""
+    int8_path, _, tensors = comfy_file
+    scan = cq.scan_comfy_quant(int8_path)
+    quant = sum(tensors[f"{n}.weight"].numel() for n in scan.layers)
+    plain = sum(
+        v.numel()
+        for k, v in tensors.items()
+        if v.is_floating_point() and k.endswith((".bias", "norm.weight", "norm.bias"))
+    )
+    kept = cq.comfy_resident_mib(int8_path, scan, keep_int8 = True, keep_fp8 = True)
+    dequant = cq.comfy_resident_mib(int8_path, scan, keep_int8 = False, keep_fp8 = True)
+    assert dequant - kept == pytest.approx(quant / 2**20, abs = 1)
+    assert kept >= (quant + 2 * plain) / 2**20
+    fp8_path, _, _ = _fp8_file(tmp_path)
+    fp8_scan = cq.scan_comfy_quant(fp8_path)
+    assert cq.comfy_resident_mib(fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = True) < cq.comfy_resident_mib(
+        fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = False
+    )
+    assert cq.comfy_resident_mib(str(tmp_path / "missing.safetensors"), keep_int8 = True, keep_fp8 = True) is None

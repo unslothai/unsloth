@@ -28,6 +28,8 @@ MIB = 1024 * 1024
 Z_IMAGE_REPO = "Tongyi-MAI/Z-Image-Turbo"
 PREQUANT_REPO = "unsloth/Z-Image-Turbo-FP8"
 PREQUANT_FILE = "Z-Image-Turbo-FP8.safetensors"
+# The chain's primary: the ComfyUI-format twin, ahead of Studio's own container (PREQUANT_FILE).
+PREQUANT_PRIMARY = "Z-Image-Turbo-FP8-ComfyUI.safetensors"
 PREQUANT_BYTES = 6000 * MIB
 
 Z_IMAGE_INDEX = {
@@ -827,7 +829,7 @@ def test_a_seeded_denoiser_engages_the_quant_without_a_second_conversion(fake_ru
     assert spy.restored == []
     seed = spy.seeds[0]
     assert seed["source"].location == PREQUANT_REPO
-    assert seed["source"].filename == PREQUANT_FILE
+    assert seed["source"].candidate_filenames[:2] == (PREQUANT_PRIMARY, PREQUANT_FILE)
     assert seed["scheme"] == "fp8"
     assert seed["min_features"] == dmod.DEFAULT_MIN_LINEAR_FEATURES
     assert seed["cache_dir"] == dmod.hub_cache_dir()
@@ -839,8 +841,9 @@ def test_the_resolved_record_names_the_hosted_file(fake_runtime, monkeypatch):
     resolved = _load(backend)["resolved"]["transformer_quant"]
 
     assert resolved["value"] == "fp8"
-    assert resolved["artifact"] == f"prequant:{PREQUANT_REPO}/{PREQUANT_FILE}"
-    assert PREQUANT_FILE in resolved["reason"]
+    # the fake denoiser records no loaded file, so the label names the chain's primary
+    assert resolved["artifact"] == f"prequant:{PREQUANT_REPO}/{PREQUANT_PRIMARY}"
+    assert PREQUANT_PRIMARY in resolved["reason"]
     # `source` must stay "auto"/"explicit": the frontend branches on it.
     assert resolved["source"] == "auto"
 
