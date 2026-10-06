@@ -139,19 +139,53 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
     return visible_at
 
 
+def _chain_root(node) -> str | None:
+    """The name an attribute chain hangs off, as `stream` in `stream.codec_context`."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _foreign_names(tree: ast.Module) -> set:
     """Names bound to an object another library built.
 
     `z = zipfile.ZipFile(p)` then `z.open(name)` is a binary member stream taking no
-    encoding, so demanding one leaves no correct edit.
+    encoding, so demanding one leaves no correct edit. The same holds for a name bound by
+    `with av.open(...) as dst`, and for what a method of such an object returns:
+    `stream = dst.add_stream(...)` is PyAV's, so `stream.codec_context.open()` opens a
+    codec, not a file.
     """
-    modules = _imported_names(tree)
+    # The imports visible at each call, not only the module's: `import av` inside the function
+    # that uses it is the usual spelling for an optional dependency.
+    visible_at = _imports_at_each_call(tree)
     names = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-            continue
-        if _foreign_receiver(node.value, modules):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+
+    def built_elsewhere(value) -> bool:
+        if not isinstance(value, ast.Call):
+            return False
+        if _foreign_receiver(value, visible_at.get(id(value), {})):
+            return True
+        func = value.func
+        return isinstance(func, ast.Attribute) and _chain_root(func.value) in names
+
+    grew = True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                pairs = [(target, node.value) for target in node.targets]
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                pairs = [(item.optional_vars, item.context_expr) for item in node.items]
+            else:
+                continue
+            for target, value in pairs:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id not in names
+                    and built_elsewhere(value)
+                ):
+                    names.add(target.id)
+                    grew = True
     return names
 
 
@@ -277,7 +311,7 @@ def _offender(
             # binary file. Neither has an encoding to name.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
-            if _foreign_receiver(func.value, modules) or receiver in foreign:
+            if _foreign_receiver(func.value, modules) or _chain_root(func.value) in foreign:
                 return None
             if not _is_text(call, shift):
                 return None
@@ -424,6 +458,32 @@ def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
+
+
+def test_skips_objects_a_foreign_object_hands_back():
+    # PyAV: the container comes from a with-statement, the stream from one of its methods, and the
+    # codec context is an attribute of that. Opening it opens a codec, not a file.
+    pyav = (
+        "def encode(out):\n"
+        "    import av\n"
+        "    with av.open(out, 'w', format = 'wav') as dst:\n"
+        "        stream = dst.add_stream('pcm_s16le', rate = 16000)\n"
+        "        stream.codec_context.open()\n"
+    )
+    assert not _offenders_in(pyav)
+    assert not _offenders_in(
+        "import zipfile\nwith zipfile.ZipFile(p) as z:\n    f = z.open('a.txt')\n"
+    )
+
+
+def test_a_path_reached_through_attributes_is_still_checked():
+    # Only a chain rooted at another library's object is exempt; a path held on self, or one built
+    # from pathlib, still has to name its encoding.
+    assert _offenders_in("class C:\n    def load(self):\n        return self.path.open()\n")
+    assert _offenders_in("from pathlib import Path\nwith tmp() as d:\n    f = Path(d).open()\n")
+    assert _offenders_in(
+        "from pathlib import Path\np = Path('x')\nwith p.open() as f:\n    g = p.parent.open()\n"
+    )
 
 
 def test_test_trees_are_out_of_scope():
