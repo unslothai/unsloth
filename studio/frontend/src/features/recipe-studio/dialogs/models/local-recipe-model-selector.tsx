@@ -76,6 +76,8 @@ function sourceLabel(model: LocalModelInfo): string {
       return "HF cache";
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":

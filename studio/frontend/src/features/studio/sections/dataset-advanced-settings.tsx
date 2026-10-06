@@ -54,6 +54,7 @@ export function DatasetAdvancedSettings({
   datasetSliceEnd,
   datasetSliceStart,
   datasetStreaming,
+  isDecisionModel,
   isStreamingSupported,
   setDatasetFormat,
   setDatasetSliceEnd,
@@ -65,6 +66,7 @@ export function DatasetAdvancedSettings({
   datasetSliceEnd: string | null;
   datasetSliceStart: string | null;
   datasetStreaming: boolean;
+  isDecisionModel: boolean;
   isStreamingSupported: boolean;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDatasetSliceEnd: (value: string | null) => void;
@@ -92,60 +94,62 @@ export function DatasetAdvancedSettings({
       <CollapsibleContent className="mt-4 data-[state=open]:overflow-visible">
         <div className="flex flex-col gap-5">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="flex flex-col gap-2">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {t("studio.dataset.targetFormat")}
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      aria-label={t("studio.dataset.targetFormatTooltip")}
-                      className={cn(
-                        "rounded-sm text-foreground/70 hover:text-foreground",
-                        PICKER_FOCUS_VISIBLE_CLASS,
-                      )}
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {t("studio.dataset.targetFormatTooltip")}{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      {t("studio.params.readMore")}
-                    </a>
-                  </TooltipContent>
-                </Tooltip>
-              </span>
-              <Select
-                value={datasetFormat}
-                onValueChange={(value) =>
-                  setDatasetFormat(value as DatasetFormat)
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="auto">
-                    {t("studio.dataset.auto")}
-                  </SelectItem>
-                  <SelectItem value="alpaca">Alpaca</SelectItem>
-                  <SelectItem value="chatml">ChatML</SelectItem>
-                  <SelectItem value="sharegpt">ShareGPT</SelectItem>
-                  <SelectItem value="raw">
-                    {t("studio.dataset.rawText")}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {!isDecisionModel && (
+              <div className="flex flex-col gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  {t("studio.dataset.targetFormat")}
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        aria-label={t("studio.dataset.targetFormatTooltip")}
+                        className={cn(
+                          "rounded-sm text-foreground/70 hover:text-foreground",
+                          PICKER_FOCUS_VISIBLE_CLASS,
+                        )}
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {t("studio.dataset.targetFormatTooltip")}{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("studio.params.readMore")}
+                      </a>
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <Select
+                  value={datasetFormat}
+                  onValueChange={(value) =>
+                    setDatasetFormat(value as DatasetFormat)
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">
+                      {t("studio.dataset.auto")}
+                    </SelectItem>
+                    <SelectItem value="alpaca">Alpaca</SelectItem>
+                    <SelectItem value="chatml">ChatML</SelectItem>
+                    <SelectItem value="sharegpt">ShareGPT</SelectItem>
+                    <SelectItem value="raw">
+                      {t("studio.dataset.rawText")}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="flex flex-col gap-1.5">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.dataset.trainSplitStart")}
@@ -219,59 +223,61 @@ export function DatasetAdvancedSettings({
               />
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="datasetStreaming"
-              checked={datasetStreaming}
-              disabled={!isStreamingSupported}
-              onCheckedChange={(value) => setDatasetStreaming(Boolean(value))}
-            />
-            <label
-              htmlFor="datasetStreaming"
-              className={`text-xs text-muted-foreground ${
-                isStreamingSupported
-                  ? "cursor-pointer"
-                  : "cursor-not-allowed opacity-60"
-              }`}
-            >
-              {t("studio.dataset.streaming.label")}
-            </label>
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  aria-label={t("studio.dataset.streamingInfoAriaLabel")}
-                  className={cn(
-                    "rounded-sm text-foreground/70 hover:text-foreground",
-                    PICKER_FOCUS_VISIBLE_CLASS,
+          {!isDecisionModel && (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="datasetStreaming"
+                checked={datasetStreaming}
+                disabled={!isStreamingSupported}
+                onCheckedChange={(value) => setDatasetStreaming(Boolean(value))}
+              />
+              <label
+                htmlFor="datasetStreaming"
+                className={`text-xs text-muted-foreground ${
+                  isStreamingSupported
+                    ? "cursor-pointer"
+                    : "cursor-not-allowed opacity-60"
+                }`}
+              >
+                {t("studio.dataset.streaming.label")}
+              </label>
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    aria-label={t("studio.dataset.streamingInfoAriaLabel")}
+                    className={cn(
+                      "rounded-sm text-foreground/70 hover:text-foreground",
+                      PICKER_FOCUS_VISIBLE_CLASS,
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {isStreamingSupported ? (
+                    <span>{t("studio.dataset.streaming.description")}</span>
+                  ) : (
+                    <div className="max-w-xs">
+                      <p className="font-medium">
+                        {t("studio.dataset.streaming.unavailable")}
+                      </p>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                        {streamingBlockers.map((reason) => (
+                          <li key={reason}>
+                            {t(DATASET_STREAMING_BLOCKER_KEYS[reason])}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {isStreamingSupported ? (
-                  <span>{t("studio.dataset.streaming.description")}</span>
-                ) : (
-                  <div className="max-w-xs">
-                    <p className="font-medium">
-                      {t("studio.dataset.streaming.unavailable")}
-                    </p>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                      {streamingBlockers.map((reason) => (
-                        <li key={reason}>
-                          {t(DATASET_STREAMING_BLOCKER_KEYS[reason])}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>

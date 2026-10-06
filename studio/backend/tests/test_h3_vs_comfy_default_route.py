@@ -111,13 +111,35 @@ def test_the_estimators_size_864x480_below_960x544(families):
     )
 
 
+def _streamed_set_tier_gib() -> float:
+    import math
+    import sys
+    from pathlib import Path
+
+    backend = str(Path(__file__).resolve().parents[1])
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from core.inference.video_minimax_h3 import H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
+
+    return float(math.ceil(H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB * 1e9 / 2**30))
+
+
+_STREAMED_SET_TIER_GIB = _streamed_set_tier_gib()
+
+
 @pytest.mark.parametrize(
     "te_stream, arena, expected",
     [
         (
             None,
             None,
-            [{"gpu_gb": 14.0, "system_ram_gb": 66.0, "requires_quantised_streaming": True}],
+            [
+                {
+                    "gpu_gb": 14.0,
+                    "system_ram_gb": _STREAMED_SET_TIER_GIB,
+                    "requires_quantised_streaming": True,
+                }
+            ],
         ),
         (
             "0",
@@ -159,9 +181,9 @@ def test_the_ram_tier_is_the_single_count_host_floor_in_gib():
     assert 60.0 < floor_gb * 1e9 / 2**30 <= 61.0
 
 
-def test_a_streamed_conditioner_raises_the_host_floor_to_the_measured_peak():
-    # Colab G4 at 24 / 16 / 12 GB budgets: ~66 GB process peak with the conditioner streamed, above the 64.5 GB sum.
+def test_a_streamed_int8_set_is_priced_at_the_measured_floor_not_the_component_sum():
     from core.inference.video_minimax_h3 import (
+        H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB,
         H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB,
         estimate_h3_diffusers_host_ram_gb,
     )
@@ -171,8 +193,13 @@ def test_a_streamed_conditioner_raises_the_host_floor_to_the_measured_peak():
         30.0, text_encoder_gb = 27.2, transformer_gb = 20.3, text_encoder_streamed = True
     )
     assert summed == pytest.approx(64.5)
-    assert streamed == H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB >= 66.0 + 3.0
-    # A double-counted denoiser is still larger than the streamed-set floor and wins.
+    assert streamed == H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB < summed
+    # A 58 GiB cgroup (62.3 GB) holds the measured set: main renders it there.
+    assert streamed < 58 * 2**30 / 1e9
+    assert estimate_h3_diffusers_host_ram_gb(
+        30.0, text_encoder_gb = 66.7, transformer_gb = 20.3, text_encoder_streamed = True
+    ) == pytest.approx(66.7 + 20.3 + 11.1 + 5.9)
+    assert H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB == 70.0
     assert estimate_h3_diffusers_host_ram_gb(
         30.0,
         text_encoder_gb = 27.2,
@@ -185,11 +212,13 @@ def test_a_streamed_conditioner_raises_the_host_floor_to_the_measured_peak():
 def test_the_guard_prices_a_streamed_conditioner_at_the_streamed_set_floor(monkeypatch):
     import core.inference.video_minimax_h3 as h3
 
-    monkeypatch.setattr(h3, "h3_host_capacity_bytes", lambda: int(67e9))
+    floor = h3.H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
     kw = dict(text_encoder_gb = 27.2, transformer_gb = 20.3)
-    assert h3.h3_host_ram_shortfall(30.0, **kw) is None
+    monkeypatch.setattr(h3, "h3_host_capacity_bytes", lambda: int((floor + 0.6) * 1e9))
+    assert h3.h3_host_ram_shortfall(30.0, text_encoder_streamed = True, **kw) is None
+    monkeypatch.setattr(h3, "h3_host_capacity_bytes", lambda: int((floor - 1.0) * 1e9))
     message = h3.h3_host_ram_shortfall(30.0, text_encoder_streamed = True, **kw)
-    assert message is not None and "70 GB" in message
+    assert message is not None and f"{floor:.0f} GB" in message
 
 
 def test_the_vram_tier_admits_only_cards_that_render_the_default_request(monkeypatch):

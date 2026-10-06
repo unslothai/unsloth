@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Claude Code: ``~/.claude/projects/<encoded-path>/<session>.jsonl``."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+from core.external_import import (
+    Source,
+    SourceProject,
+    Transcript,
+    clean_text,
+    display_name,
+    file_times_ms,
+    first_user_text,
+    iso_ms,
+    read_jsonl,
+    stable_id,
+    title_from,
+    tool_call,
+)
+
+# Not anchored: Claude Code pads these tags with whitespace.
+_COMMAND = re.compile(r"<command-(?:name|message|args)>")
+_LOCAL_STDOUT = re.compile(r"</?local-command-stdout>")
+
+
+def list_projects(home: Path) -> list[SourceProject]:
+    root = home / "projects"
+    if not root.is_dir():
+        return []
+    projects = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        sessions = sorted(p for p in entry.iterdir() if p.is_file() and p.suffix == ".jsonl")
+        if sessions:
+            projects.append(SourceProject(entry.name, display_name(entry.name), sessions))
+    return projects
+
+
+def _user_text(text: str) -> str:
+    # Slash-command echoes are the harness talking; captured command output is cut, it can follow a prompt.
+    if _COMMAND.search(text):
+        return ""
+    return clean_text(_LOCAL_STDOUT.split(text)[0])
+
+
+def _result_text(content: Any) -> str:
+    if isinstance(content, list):
+        content = "\n\n".join(
+            block.get("text") or ""
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return clean_text(content) if isinstance(content, str) else ""
+
+
+def _parts(record: dict, message_id: str) -> tuple[list[dict], dict[str, str]]:
+    """Text and tool-call parts, plus ``{tool_use_id: result}`` this record answers. Thinking is dropped."""
+    content = record.get("message", {}).get("content")
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    if not isinstance(content, list):
+        return [], {}
+    user = record.get("type") == "user"
+    parts, results = [], {}
+    for position, block in enumerate(content):
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text":
+            text = (_user_text if user else clean_text)(block.get("text") or "")
+            if text:
+                parts.append({"type": "text", "text": text})
+        elif kind == "tool_use" and not user:
+            parts.append(tool_call(str(block.get("id") or f"{message_id}-{position}"), block))
+        elif kind == "tool_result" and user and block.get("tool_use_id"):
+            # An empty output is still a finished call; Studio replays "" differently from none.
+            results[str(block["tool_use_id"])] = _result_text(block.get("content"))
+    return parts, results
+
+
+def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
+    file_created, file_updated = file_times_ms(path)
+    # File order, not a tree walk: the import ledger relies on append-only order.
+    records = [
+        r
+        for r in read_jsonl(path)
+        if r.get("type") in ("user", "assistant")
+        and not r.get("isSidechain")
+        and not r.get("isMeta")
+    ]
+    by_uuid = {str(r["uuid"]): r for r in records if r.get("uuid")}
+    imported: dict[str, str] = {}
+    open_calls: dict[str, dict] = {}
+    messages: list[dict] = []
+    for index, record in enumerate(records):
+        uuid = str(record.get("uuid") or "")
+        message_id = stable_id("claude", session_id, uuid or f"index:{index}", length = 16)
+        parts, results = _parts(record, message_id)
+        for call_id, result in results.items():
+            if call_id in open_calls:
+                open_calls.pop(call_id)["result"] = result
+        if not parts:
+            continue
+        open_calls.update((p["toolCallId"], p) for p in parts if p["type"] == "tool-call")
+        # Nearest ancestor that became a message; rewinds keep their branch this way.
+        parent, seen = record.get("parentUuid"), set()
+        while parent and parent not in imported and parent not in seen:
+            seen.add(parent)
+            parent = by_uuid.get(parent, {}).get("parentUuid")
+        timestamp = iso_ms(record.get("timestamp"))
+        messages.append(
+            {
+                "id": message_id,
+                "threadId": thread_id,
+                "parentId": imported.get(parent) if parent else None,
+                "role": record["type"],
+                "content": parts,
+                "createdAt": timestamp if timestamp is not None else file_created + index,
+                "metadata": {"importedFrom": "claude", "claudeSessionId": session_id},
+            }
+        )
+        if uuid:
+            imported[uuid] = message_id
+    return Transcript(
+        session_id = session_id,
+        thread_id = thread_id,
+        title = title_from(first_user_text(messages), "Claude session"),
+        created_at_ms = messages[0]["createdAt"] if messages else file_created,
+        updated_at_ms = max(messages[-1]["createdAt"] if messages else 0, file_updated),
+        messages = messages,
+    )
+
+
+SOURCE = Source(
+    key = "claude",
+    label = "Claude",
+    home_env = "UNSLOTH_CLAUDE_HOME",
+    default_home = ".claude",
+    list_projects = list_projects,
+    read_transcript = read_transcript,
+)

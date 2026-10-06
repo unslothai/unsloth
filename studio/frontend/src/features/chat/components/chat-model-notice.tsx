@@ -4,15 +4,17 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { ggufVariantsMatch } from "@/features/hub";
+import { modelDisplayName } from "../../model-picker/model-config/model-identity";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
 } from "../api/chat-api";
-import { compareModelDisplayName } from "../lib/external-model-label";
+import { externalModelLabel } from "../lib/external-model-label";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
+  chatModelIsResident,
+  chatModelSelectableId,
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
 
@@ -73,17 +75,22 @@ export function ChatModelNotice({
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
   if (!createdModel) return null;
-  if (
-    createdModel.modelId === checkpoint &&
-    (createdModel.ggufVariant == null ||
-      ggufVariantsMatch(createdModel.ggufVariant, activeGgufVariant))
-  ) {
+  if (chatModelIsResident(createdModel, checkpoint, activeGgufVariant)) {
     return null;
   }
   // A model that has since been deleted, or a connection that is gone: the switch could not be
-  // honoured, and saying so on every open is just noise.
-  if (!selectableModelIds.has(createdModel.modelId)) return null;
-  const label = compareModelDisplayName(createdModel.modelId);
+  // honoured, and saying so on every open is just noise. A gone snapshot loads its repo's live row.
+  const selectableId = chatModelSelectableId(
+    createdModel.modelId,
+    selectableModelIds,
+  );
+  if (!selectableId) {
+    return null;
+  }
+  const switchTarget = { ...createdModel, modelId: selectableId };
+  const label =
+    externalModelLabel(createdModel.modelId) ??
+    modelDisplayName(createdModel.modelId);
   return (
     // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
     // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the scrollbar gutter
@@ -91,7 +98,8 @@ export function ChatModelNotice({
     // and the header fade use, above the fade (z-20) and below the header (z-40).
     <div
       data-chat-model-notice=""
-      className="absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-30 flex h-[var(--studio-chat-notice-height,2.25rem)] items-center gap-2 border-b border-border/60 bg-muted px-4 text-ui-12 text-muted-foreground"
+      data-side-panel-inset=""
+      className="absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-30 flex h-[var(--studio-chat-notice-height,2.25rem)] items-center gap-2 border-b border-border/60 bg-muted px-4 text-ui-12 text-muted-foreground"
     >
       <span className="min-w-0 truncate">
         This chat was started on <span className="font-medium">{label}</span>.
@@ -100,7 +108,7 @@ export function ChatModelNotice({
         variant="ghost"
         size="sm"
         className="ml-auto h-6 shrink-0 px-2 text-ui-12"
-        onClick={() => onSwitch(createdModel)}
+        onClick={() => onSwitch(switchTarget)}
       >
         Switch back
       </Button>

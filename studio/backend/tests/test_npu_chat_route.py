@@ -342,6 +342,22 @@ def test_thinking_off_and_non_reasoning_models(flm):
     assert recorded[-1]["body"]["think"] is False
 
 
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({}, (0.6, 0.95)),
+        ({"enable_thinking": False}, (0.7, 0.8)),
+        ({"reasoning_effort": "none"}, (0.7, 0.8)),
+        ({"enable_thinking": False, "temperature": 0.3}, (0.3, 0.8)),
+    ],
+)
+def test_qwen_sampling_follows_the_thinking_mode(flm, fields, expected):
+    recorded = flm(reasoning = True)
+    _call(stream = False, **fields)
+    body = recorded[-1]["body"]
+    assert (body["temperature"], body["top_p"]) == expected
+
+
 def test_non_streaming_reply_is_collected_from_the_stream(flm):
     flm()
     status, body = _call(stream = False)

@@ -3,6 +3,11 @@
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
 export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
+export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -17,7 +22,9 @@ export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,
+  updateSystemOneSettings,
 } from "./api/systemone";
+export { DECISION_MODEL_LABELS } from "./lib/decision-model-labels";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,

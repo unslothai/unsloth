@@ -18,6 +18,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  ApiIcon,
   BotIcon,
   Cancel01Icon,
   CloudIcon,
@@ -34,6 +35,7 @@ import {
   Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ShieldCogIcon } from "@/lib/shield-cog-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -76,6 +78,10 @@ const TAB_LOADERS = {
   resources: () =>
     import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
   chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  sandbox: () =>
+    import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
+  browser: () =>
+    import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
   voice: () =>
     import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
@@ -207,9 +213,14 @@ const TABS: TabDef[] = [
     icon: MessageCircleIcon,
   },
   {
+    id: "sandbox",
+    labelKey: "settings.tabs.sandbox",
+    icon: ShieldCogIcon,
+  },
+  {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
-    icon: InternetIcon,
+    icon: ApiIcon,
   },
   {
     id: "remote-lan",
@@ -237,10 +248,15 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
   },
   {
-    id: "library",
-    labelKey: "shell.navigation.library",
-    icon: LibrariesIcon,
+    id: "browser",
+    labelKey: "browser.settingsTitle",
+    icon: InternetIcon,
     badgeKey: "common.new",
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: EnergyRectangleIcon,
   },
   {
     id: "data",
@@ -248,9 +264,9 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
   },
   {
-    id: "keyboard-shortcuts",
-    labelKey: "settings.tabs.keyboardShortcuts",
-    icon: EnergyRectangleIcon,
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
   },
   {
     id: "debugging",
@@ -325,7 +341,7 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource)
+      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -342,7 +358,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs, hubSource]);
+  }, [query, t, visibleTabs, hubSource, isOwner]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
@@ -423,6 +439,8 @@ export function SettingsDialog() {
     appearance: null,
     resources: null,
     chat: null,
+    sandbox: null,
+    browser: null,
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,
@@ -454,6 +472,7 @@ export function SettingsDialog() {
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
         <DialogContent
+          data-settings-dialog
           showCloseButton={false}
           overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
           onCloseAutoFocus={(e) => {
@@ -518,6 +537,7 @@ export function SettingsDialog() {
                       setQuery("");
                     }
                   }}
+                  data-type-to-activate="settings-search"
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
                   className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"

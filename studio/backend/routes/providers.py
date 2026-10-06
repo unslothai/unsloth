@@ -62,6 +62,7 @@ from models.providers import (
     ProviderTestRequest,
     ProviderTestResult,
     ProviderUpdate,
+    validate_provider_reasoning_contract,
 )
 from storage import credential_secrets, providers_db
 from hub.services.models import account_access
@@ -84,6 +85,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         display_name = row["display_name"],
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
+        reasoning_config = row.get("reasoning_config"),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = credential_secrets.has_secret(
             credential_secrets.PROVIDER_API_KEY_KIND,
@@ -187,7 +189,9 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
 async def list_registry(
-    include_hidden: bool = False, current_subject: str = Depends(get_current_subject)
+    include_hidden: bool = False,
+    include_oauth: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ):
     """List all supported provider types with their default configurations.
 
@@ -196,8 +200,9 @@ async def list_registry(
     needs. It is opt-in so that a browser still running a pre-capability bundle,
     which does not know to filter on ``hidden``, keeps seeing exactly the list
     it saw before and cannot render them as duplicate dropdown options.
+    OAuth rows need ``include_hidden`` or ``include_oauth``.
     """
-    return list_available_providers(include_hidden = include_hidden)
+    return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
 
 
 @router.get("/pricing")
@@ -231,6 +236,13 @@ async def create_provider_config(
             detail = f"Unknown provider type: {payload.provider_type}. "
             f"Use GET /api/providers/registry to see available types.",
         )
+
+    try:
+        validate_provider_reasoning_contract(
+            payload.provider_type, payload.api_type, payload.reasoning_config
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     _validate_max_output_tokens_contract(
         payload.provider_type,
@@ -270,6 +282,7 @@ async def create_provider_config(
             available_models = payload.available_models,
             max_output_tokens = payload.max_output_tokens,
             api_type = payload.api_type,
+            reasoning_config = payload.reasoning_config,
         )
         try:
             if api_key:
@@ -296,6 +309,19 @@ async def update_provider_config(
     existing = providers_db.get_provider(provider_id)
     if not existing:
         raise HTTPException(status_code = 404, detail = "Provider not found")
+
+    reasoning_config_requested = "reasoning_config" in payload.model_fields_set
+    effective_reasoning_config = (
+        payload.reasoning_config if reasoning_config_requested else existing.get("reasoning_config")
+    )
+    try:
+        validate_provider_reasoning_contract(
+            existing["provider_type"],
+            payload.api_type or existing.get("api_type", "chat_completions"),
+            effective_reasoning_config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     existing_info = get_provider_info(existing["provider_type"]) or {}
     max_output_tokens_requested = "max_output_tokens" in payload.model_fields_set
@@ -361,6 +387,7 @@ async def update_provider_config(
         "available_models",
         "max_output_tokens",
         "api_type",
+        "reasoning_config",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -395,6 +422,12 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
+        if reasoning_config_requested:
+            metadata_updates["reasoning_config"] = (
+                payload.reasoning_config.model_dump()
+                if payload.reasoning_config is not None
+                else None
+            )
 
     # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
@@ -405,6 +438,7 @@ async def update_provider_config(
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
+        reasoning_config = existing.get("reasoning_config"),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
@@ -431,9 +465,8 @@ async def update_provider_config(
         for field, written in metadata_updates.items():
             if field == "id":
                 continue
-            # None means "not sent" for every column but max_output_tokens, which is only present here when it was
-            # explicitly requested. update_provider left the unsent ones alone, so there is nothing to take back.
-            if written is None and field != "max_output_tokens":
+            # Explicit null clears nullable overrides; elsewhere it means "not sent".
+            if written is None and field not in {"max_output_tokens", "reasoning_config"}:
                 continue
             if not _current_matches(current, field, written):
                 continue
@@ -1002,6 +1035,14 @@ async def list_provider_model_capabilities(
     return capabilities
 
 
+def _model_capability_names(model: dict) -> Optional[list[str]]:
+    # Another server's shape under this key must not fail the listing's validation.
+    values = model.get("capabilities")
+    if not isinstance(values, list):
+        return None
+    return [name for name in values if isinstance(name, str) and name]
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -1126,6 +1167,7 @@ async def list_provider_models(
                 display_name = m.get("id", ""),
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
+                capabilities = _model_capability_names(m),
             )
             for m in models
         ]

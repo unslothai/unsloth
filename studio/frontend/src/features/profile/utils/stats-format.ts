@@ -202,6 +202,11 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} шага",
     },
   },
+  sv: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} meddelande", other: "{value} meddelanden" },
+    step: { one: "{value} steg", other: "{value} steg" },
+  },
   hi: {
     token: { one: "{value} टोकन", other: "{value} टोकन" },
     message: { one: "{value} संदेश", other: "{value} संदेश" },
@@ -232,6 +237,15 @@ const PROFILE_COUNT_TEMPLATES = {
       many: "{value} خطوة",
       other: "{value} خطوة",
     },
+  },
+  he: {
+    token: { one: "טוקן אחד", two: "{value} טוקנים", other: "{value} טוקנים" },
+    message: {
+      one: "הודעה אחת",
+      two: "{value} הודעות",
+      other: "{value} הודעות",
+    },
+    step: { one: "צעד אחד", two: "{value} צעדים", other: "{value} צעדים" },
   },
 } satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
 

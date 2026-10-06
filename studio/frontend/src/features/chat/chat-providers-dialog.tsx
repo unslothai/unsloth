@@ -58,6 +58,10 @@ import {
   updateProviderConfig,
 } from "./api/providers-api";
 
+import {
+  type CustomReasoningConfig,
+  normalizeCustomReasoningConfig,
+} from "./custom-reasoning";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -76,6 +80,7 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
+  learnCatalogModelCapabilities,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
@@ -293,6 +298,7 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
   const modelFieldsAtOpenRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
@@ -315,6 +321,12 @@ export function ChatProvidersSettings({
   // llama.cpp hides the key field. Ollama and vLLM show an optional key: Ollama cloud and
   // secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
+  // Legacy OpenAI rows also appear as Custom in the UI, but must not gain this opt-in.
+  const isCustomReasoningConnection =
+    providerType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+    (!editingProviderId || editingBackendProviderType === "custom");
+  const showCustomReasoning =
+    isCustomReasoningConnection && apiType === "chat_completions";
   // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
@@ -421,6 +433,7 @@ export function ChatProvidersSettings({
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
     setApiType("chat_completions");
+    setReasoningConfig(null);
     setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
@@ -546,6 +559,7 @@ export function ChatProvidersSettings({
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
     setApiType("chat_completions");
+    setReasoningConfig(null);
     setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
@@ -723,6 +737,8 @@ export function ChatProvidersSettings({
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
+      // The picker keeps only ids, so per-model capabilities are learned here or lost.
+      learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);
@@ -906,6 +922,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        reasoningConfig: isCustomReasoningConnection
+          ? (showCustomReasoning ? reasoningConfig : null)
+          : undefined,
         apiKey: apiKey.trim(),
 
       });
@@ -931,6 +950,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        reasoningConfig: created.provider_type === "custom"
+          ? normalizeCustomReasoningConfig(created.reasoning_config)
+          : undefined,
 
         hasApiKey: created.has_api_key,
 
@@ -1078,6 +1100,9 @@ export function ChatProvidersSettings({
         models: keepSavedModels ? undefined : modelsToSave,
         availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
+        reasoningConfig: isCustomReasoningConnection
+          ? (showCustomReasoning ? reasoningConfig : null)
+          : undefined,
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -1107,6 +1132,9 @@ export function ChatProvidersSettings({
           ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
           : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        reasoningConfig: updated.provider_type === "custom"
+          ? normalizeCustomReasoningConfig(updated.reasoning_config)
+          : undefined,
 
         hasApiKey: updated.has_api_key,
         autoReloadModels:
@@ -1219,6 +1247,14 @@ export function ChatProvidersSettings({
     modelFieldsAtOpenRef.current = null;
     setApiType(
       provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
+    );
+    setReasoningConfig(
+      provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+      provider.backendProviderType === "custom" &&
+      !provider.decisionsOnly &&
+      (provider.apiType ?? "chat_completions") === "chat_completions"
+        ? (normalizeCustomReasoningConfig(provider.reasoningConfig) ?? null)
+        : null,
     );
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
@@ -1457,6 +1493,7 @@ export function ChatProvidersSettings({
                   onValueChange={(value) => {
                     if (editingProviderId) return;
                     setProviderType(value);
+                    setReasoningConfig(null);
                     setAvailableModels([]);
                     setSelectedModelIds([]);
                     setManualModelIds("");
@@ -1630,7 +1667,10 @@ export function ChatProvidersSettings({
                   </div>
                   <Select
                     value={apiType}
-                    onValueChange={(value) => setApiType(value as ConnectionApiType)}
+                    onValueChange={(value) => {
+                      setApiType(value as ConnectionApiType);
+                      if (value !== "chat_completions") setReasoningConfig(null);
+                    }}
                   >
                     <SelectTrigger id="provider-api-type" className="h-9 w-full text-sm">
                       <SelectValue />
@@ -1749,6 +1789,72 @@ export function ChatProvidersSettings({
                     aria-describedby="provider-auto-reload-models-help"
                   />
                 </div>
+              ) : null}
+              {showCustomReasoning ? (
+                <>
+                  <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
+                        Reasoning support
+                      </Label>
+                      <p id="provider-reasoning-support-help" className="text-xs leading-snug text-muted-foreground">
+                        Opt in only if this endpoint accepts reasoning controls. Otherwise no reasoning fields are sent.
+                      </p>
+                    </div>
+                    <label htmlFor="provider-reasoning-support" className="flex cursor-pointer items-center gap-2 text-sm">
+                      <Checkbox
+                        id="provider-reasoning-support"
+                        checked={reasoningConfig?.enabled === true}
+                        aria-describedby="provider-reasoning-support-help"
+                        onCheckedChange={(checked) => setReasoningConfig({
+                          enabled: checked === true,
+                          style: reasoningConfig?.style ?? "reasoning_effort",
+                        })}
+                      />
+                      Enable reasoning controls
+                    </label>
+                  </div>
+                  {reasoningConfig?.enabled ? (
+                    <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
+                          Reasoning parameter style
+                        </Label>
+                        <p className="text-xs leading-snug text-muted-foreground">
+                          Choose the request format your endpoint supports.
+                        </p>
+                      </div>
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <Select
+                          value={reasoningConfig.style}
+                          onValueChange={(style) => setReasoningConfig({
+                            enabled: true,
+                            style: style as CustomReasoningConfig["style"],
+                          })}
+                        >
+                          <SelectTrigger id="provider-reasoning-style" className="h-9 w-full text-sm" aria-describedby="provider-reasoning-style-help">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="reasoning_effort">reasoning_effort</SelectItem>
+                            <SelectItem value="reasoning">reasoning (enabled / effort)</SelectItem>
+                            <SelectItem value="thinking">thinking (enabled / disabled)</SelectItem>
+                            <SelectItem value="chat_template_kwargs.enable_thinking">chat_template_kwargs.enable_thinking</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p id="provider-reasoning-style-help" className="text-xs leading-snug text-muted-foreground">
+                          {reasoningConfig.style === "reasoning_effort"
+                            ? 'Thinking off sends reasoning_effort: "none".'
+                            : reasoningConfig.style === "reasoning"
+                              ? "Thinking off sends reasoning: { enabled: false }."
+                              : reasoningConfig.style === "thinking"
+                                ? 'Thinking off sends thinking: { type: "disabled" }.'
+                                : "Thinking off sends chat_template_kwargs: { enable_thinking: false }."}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
               ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">

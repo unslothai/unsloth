@@ -1229,7 +1229,7 @@ def test_neither_uninstaller_re_resolves_the_master_root_after_deleting_it():
 
     sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
     saved = sh_code.index('_MASTER_ROOT_SAVED="$(_master_root)"')
-    removal = sh_code.index("_custom_studio_roots | while")
+    removal = sh_code.index("_custom_studio_roots | while IFS= read -r _custom_root")
     # Resolved before the first deletion, and nothing asks again after it. Calls BEFORE the loop
     # are fine: those enumerate while every tree is still on disk.
     assert saved < removal

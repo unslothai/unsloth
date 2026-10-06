@@ -24,6 +24,7 @@ import {
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
+  "omlx",
   "models_dir",
   "ollama",
   "hermes",

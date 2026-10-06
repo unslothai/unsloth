@@ -582,6 +582,43 @@ def _config_has_native_class(auto_class, config):
         return False
 
 
+def _compiled_auto_model(auto_model):
+    """The compiled replacement of a concrete `auto_model` class, else `auto_model` unchanged.
+
+    unsloth_compile_transformers swaps the class in its modeling module, which an Auto class
+    resolves at load time; a class the caller imported earlier (the Whisper notebook passes
+    WhisperForConditionalGeneration) still points at the stock one and skips every compiled forward.
+    """
+    if not isinstance(auto_model, type) or getattr(auto_model, "_model_mapping", None) is not None:
+        return auto_model
+    module = sys.modules.get(getattr(auto_model, "__module__", None) or "")
+    replacement = getattr(module, auto_model.__name__, None) if module is not None else None
+    if (
+        isinstance(replacement, type)
+        and replacement is not auto_model
+        and replacement.__name__ == auto_model.__name__
+        and callable(getattr(replacement, "from_pretrained", None))
+        and _built_by_unsloth_compiler(replacement)
+    ):
+        return replacement
+    return auto_model
+
+
+def _built_by_unsloth_compiler(cls):
+    """True when `cls` is exported by a module the compiler generated (unsloth_compiled_module_*).
+
+    The compiled class keeps the original `__module__`, so check where it actually lives; a same-named
+    class another library rebound in the modeling module is not taken.
+    """
+    for name, module in list(sys.modules.items()):
+        if (
+            name.rsplit(".", 1)[-1].startswith("unsloth_compiled_module_")
+            and getattr(module, cls.__name__, None) is cls
+        ):
+            return True
+    return False
+
+
 def _resolve_omni_auto_model(
     model_config,
     trust_remote_code = None,
@@ -1460,14 +1497,6 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
-        # The optimized path never carried offload_embedding, so a request for one is dropped rather than honoured; say so instead of leaving the caller to infer it from memory use. "auto" stays quiet: it promises a decision, and off is one.
-        if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
-            print(
-                "Unsloth: Not offloading embeddings; the optimized path for this "
-                "architecture does not support it. Pass `device_map` or use FastModel "
-                "if you need the offload."
-            )
-
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -1492,6 +1521,12 @@ class FastLanguageModel(FastLlamaModel):
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
+            # resize_token_embeddings below replaces the embedding and its hooks: only an explicit request offloads.
+            offload_embedding = (
+                False
+                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                else offload_embedding
+            ),
             *args,
             **kwargs,
         )
@@ -2385,6 +2420,7 @@ class FastModel(FastBaseModel):
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
                 supports_sdpa = False
+        auto_model = _compiled_auto_model(auto_model)
 
         # Keep the local checkpoint dir as tokenizer when self-sufficient; a VLM also needs local processor files, else fall back to the base repo so its cached processor loads.
         _ckpt_arch = getattr(model_config, "architectures", None) or []

@@ -16,15 +16,18 @@ import {
   AUDIO_CPP_MUSIC_MIN_SECONDS,
   AUDIO_CPP_REPO,
   AUDIO_CPP_STT_KEYS,
+  AUDIO_CPP_UNOFFERED_FOLDERS,
   audioCppDictationModelFor,
   audioCppDisplayName,
   audioCppModelFor,
   audioCppSizeLabel,
+  audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../src/features/audio/audio-cpp-catalog.ts";
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
+  audioCppRuntimeUpdate,
   audioSamplingControlsApply,
   isGgufTtsTarget,
   isTtsAudioType,
@@ -75,6 +78,7 @@ import {
   readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
@@ -130,6 +134,25 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(audioCppSizeLabel(2358.4 * 1024 * 1024), "2.3 GB");
 });
 
+test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 18);
+  for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
+    assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
+    assert.match(folder, /-GGUF$/);
+    assert.ok(reason.trim(), folder);
+  }
+  // Single-language transcription models say so; the rest are multilingual.
+  for (const [folder, languages] of [
+    ["Granite-Speech-5.0-470M-TurboCTC-GGUF", ["en"]],
+    ["Kroko-ASR-GGUF", ["en"]],
+    ["Niagara-ASR-GGUF", ["en"]],
+    ["Hviske-v5.3-GGUF", ["da"]],
+    ["GigaAM-ASR-GGUF", undefined],
+  ] as const) {
+    assert.deepEqual(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`)?.languages, languages, folder);
+  }
+});
+
 test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
   for (const model of AUDIO_CPP_MODELS) {
     const group = groupForRepoId(model.id, AUDIO_CATALOG);
@@ -157,6 +180,29 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
       assert.equal(option.isGguf, true);
       assert.equal(option.descriptionSuffix, "GGUF");
     }
+  }
+});
+
+test("voice conversion models are seeded with the pages they run on", () => {
+  for (const [name, workflows, description] of [
+    ["RVC-GGUF", ["convert"], "Voice conversion"],
+    ["SeedVC-MLX-GGUF", ["convert"], "Voice conversion"],
+    ["MeanVC2-GGUF", ["convert"], "Voice conversion"],
+    ["Tone-Color-VC-GGUF", ["convert"], "Voice conversion"],
+    ["Chatterbox-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
+    ["Vevo2-GGUF", ["clone", "edit", "convert"], "Voice cloning and conversion"],
+    ["IndexTTS2-GGUF", ["clone"], "Voice cloning"],
+  ] as const) {
+    const id = `${AUDIO_CPP_REPO}/${name}`;
+    const model = audioCppModelFor(id);
+    assert.ok(model, name);
+    assert.equal(model.task, "tts", name);
+    assert.deepEqual(audioCppWorkflowsFor(model), workflows, name);
+    assert.equal(
+      groupForRepoId(id, AUDIO_CATALOG)?.description,
+      description,
+      name,
+    );
   }
 });
 
@@ -222,7 +268,7 @@ test("MiniMax Music 3 and YuE2 need a description beside the lyrics", () => {
     assert.equal(musicNeedsDescription("audiocpp_music", family), false, String(family));
   }
   assert.equal(musicNeedsDescription("audiocpp_tts", "yue2"), false);
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(
     page,
     /musicModelNeedsDescription\(status\?\.audio_type, status\?\.audio_family\)/,
@@ -290,7 +336,7 @@ test("Hub rows published for the audio runtime are runnable on the Audio page", 
       audioType,
     );
   }
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /speak: \["text-to-speech", "text-to-audio"\]/);
 });
 
@@ -365,7 +411,7 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
     /return engine === "audiocpp" && ggufVariant\s*\?[\s\S]*\{ gguf_variant: ggufVariant \}\s*:\s*\{\};/,
   );
   assert.equal(adapter.match(/\.\.\.sttVariantBody\(resolvedEngine, ggufVariant\)/g)?.length, 2);
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /sttGgufVariants\.current\.set\(id\.toLowerCase\(\), meta\.ggufVariant\)/);
   assert.match(
     page,
@@ -422,7 +468,7 @@ test("GGUF music length follows the backend clamp; the MiniMax pipeline keeps it
   });
   assert.equal(AUDIO_CPP_MUSIC_MAX_SECONDS, 240);
   assert.deepEqual(musicDurationRange(true), { min: 1, max: MINIMAX_MUSIC_MAX_SECONDS });
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /musicDurationRange\(cudaMusicGeneration\)/);
   assert.match(page, /min=\{musicRange\.min\}\s*max=\{musicRange\.max\}/);
   assert.match(page, /minimaxMusicFramesForSeconds\(musicSeconds\)/);
@@ -433,7 +479,7 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
   for (const audioType of ["audiocpp_music", "snac", "moss_tts_local", null]) {
     assert.equal(audioSamplingControlsApply(audioType), true, String(audioType));
   }
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(
     page,
     /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
@@ -445,7 +491,7 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
 });
 
 test("pickers, toasts, downloads and loaded models show no engine name", () => {
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   // Every user-visible string literal on the page, without comments.
   const withoutComments = page
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -467,7 +513,7 @@ test("pickers, toasts, downloads and loaded models show no engine name", () => {
 });
 
 test("an Audio GGUF pick downloads its quant as the standard variant job", () => {
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /ggufVariant: meta\.ggufVariant,/);
   const staged = readSrc("features/hub/download-manager/use-staged-download.ts");
   assert.match(staged, /current\.ggufVariant \?\? scopedVariant\(scopeId\)/);
@@ -512,7 +558,7 @@ test("recommended speech and music picks are refused when the runtime cannot run
   assert.equal(audioCppRuntimeProblem(null, missing), null);
   const route = readText("../../backend/routes/inference.py");
   assert.match(route, /"audio_cpp_runtime": _audio_cpp_runtime_status\(\)/);
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /audioCppRuntime\.current = stt\.audio_cpp_runtime \?\? null;/);
   assert.match(
     page,
@@ -520,9 +566,48 @@ test("recommended speech and music picks are refused when the runtime cannot run
   );
 });
 
+test("an outdated managed runtime names both releases; anything else shows no notice", () => {
+  const current = {
+    available: true,
+    espeak: true,
+    backend: "cuda",
+    release_tag: "v0.9.0-unsloth.1",
+    expected_tag: "v0.9.0-unsloth.1",
+    outdated: false,
+  };
+  const outdated = { ...current, release_tag: "v0.8.0-unsloth.1", outdated: true };
+  assert.deepEqual(audioCppRuntimeUpdate(outdated), {
+    installed: "v0.8.0-unsloth.1",
+    expected: "v0.9.0-unsloth.1",
+  });
+  assert.equal(audioCppRuntimeUpdate(current), null);
+  assert.equal(audioCppRuntimeUpdate(null), null);
+  assert.equal(audioCppRuntimeUpdate(undefined), null);
+  // support servers older than these fields or unable to name either release.
+  assert.equal(
+    audioCppRuntimeUpdate({ available: true, espeak: true, backend: null, release_tag: "v0.8.0" }),
+    null,
+  );
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, expected_tag: null }), null);
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, release_tag: null }), null);
+  assert.equal(audioCppRuntimeUpdate({ ...outdated, available: false }), null);
+  const route = readText("../../backend/routes/inference.py");
+  assert.match(route, /"expected_tag": None,\s*"outdated": False,/);
+  const page = readAudioWorkspaceSource();
+  assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
+  assert.match(page, /\{runtimeUpdate \? \(/);
+  assert.match(
+    page,
+    /Stop Studio,\{" "\}\s*run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>,\s*then start Studio again\./,
+  );
+});
+
 test("the capability line names GGUF audio and music, never the runtime's internal type", () => {
   assert.equal(audioCapabilityLine("tts", "audiocpp_tts"), "Text-to-speech · GGUF");
   assert.equal(audioCapabilityLine("music", "audiocpp_music"), "Music generation · GGUF");
+  assert.equal(audioCapabilityLine("clone", "audiocpp_tts"), "Voice cloning · GGUF");
+  assert.equal(audioCapabilityLine("convert", "audiocpp_tts"), "Voice conversion · GGUF");
+  assert.equal(audioCapabilityLine("convert"), "Voice conversion");
   assert.equal(audioCapabilityLine("tts", "higgs_tts2"), "Text-to-speech · higgs_tts2");
   assert.equal(audioCapabilityLine("stt", "ready"), "Speech-to-text · ready");
 });
@@ -533,7 +618,7 @@ test("YuE2 generates from a style description alone; other music still needs lyr
     assert.equal(musicLyricsOptional("audiocpp_music", family), false, String(family));
   }
   assert.equal(musicLyricsOptional("audiocpp_tts", "yue2"), false);
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /\(!prompt\.trim\(\) && !lyricsOptional\)/);
   assert.match(page, /if \(!text && !lyricsOptional\) return;/);
 });
@@ -544,7 +629,7 @@ test("a custom GGUF dictation repo skips the Whisper-only validator", () => {
 });
 
 test("the picked STT quant is remembered with the repo across a restart", () => {
-  const page = readSrc("features/audio/audio-page.tsx");
+  const page = readAudioWorkspaceSource();
   assert.match(page, /usePersistedChoice\("unsloth:audio:last-stt-variant", ""\)/);
   assert.match(page, /lastSttRepo && lastSttVariant \? \[\[lastSttRepo\.toLowerCase\(\), lastSttVariant\]\]/);
   assert.match(page, /setLastSttVariant\(sttGgufVariants\.current\.get\(repo\.toLowerCase\(\)\) \?\? ""\)/);

@@ -57,7 +57,13 @@ def native_linear_class():
             scheme: str,
             act_int8: bool = False,
             rot_group: int = 0,
+            codes: Any = None,
+            scale: Any = None,
         ):
+            """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
+            scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
+            With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
+            not activations go int8."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -71,22 +77,47 @@ def native_linear_class():
                 if self.act_int8 and rot_group and self.in_features % int(rot_group) == 0
                 else 0
             )
-            weight = linear.weight.detach()
-            with torch.no_grad():
-                w = weight.float()
+            if codes is not None:
+                wanted = torch.int8 if scheme == NATIVE_INT8 else torch.float8_e4m3fn
+                if codes.dtype != wanted:
+                    raise ValueError(
+                        f"pre-quantized native {scheme} codes must be {str(wanted).replace('torch.', '')}"
+                    )
+                if rot_group and scheme != NATIVE_INT8:
+                    raise ValueError("a ConvRot rotation needs int8 codes")
+                self.rot_group = int(rot_group or 0)
+                if self.rot_group and self.in_features % self.rot_group:
+                    raise ValueError(
+                        f"rotation group {self.rot_group} does not divide in_features {self.in_features}"
+                    )
+                wq, scale = codes, scale.reshape(-1, 1)
                 if self.rot_group:
                     from .diffusion_convrot import build_convrot_hadamard
-
-                    h = build_convrot_hadamard(self.rot_group, device = w.device, dtype = torch.float32)
-                    g = self.rot_group
-                    w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(self.out_features, -1)
+                    h = build_convrot_hadamard(
+                        self.rot_group, device = codes.device, dtype = torch.float32
+                    )
                     self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
-                scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
-                if scheme == NATIVE_INT8:
-                    wq = (w / scale).round_().clamp_(-127, 127).to(torch.int8)
-                else:
-                    wq = (w / scale).to(torch.float8_e4m3fn)
-                del w
+            else:
+                weight = linear.weight.detach()
+                with torch.no_grad():
+                    w = weight.float()
+                    if self.rot_group:
+                        from .diffusion_convrot import build_convrot_hadamard
+
+                        h = build_convrot_hadamard(
+                            self.rot_group, device = w.device, dtype = torch.float32
+                        )
+                        g = self.rot_group
+                        w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(
+                            self.out_features, -1
+                        )
+                        self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
+                    scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
+                    if scheme == NATIVE_INT8:
+                        wq = (w / scale).round_().clamp_(-127, 127).to(torch.int8)
+                    else:
+                        wq = (w / scale).to(torch.float8_e4m3fn)
+                    del w
             # Integer views: a module-wide ``.to(dtype)`` casts floating buffers, which would widen fp8 or round the scales.
             self.register_buffer("weight_q", wq.view(torch.uint8) if scheme == NATIVE_FP8 else wq)
             self.register_buffer(

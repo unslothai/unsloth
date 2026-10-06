@@ -37,7 +37,6 @@ import {
   DownloadSquare01Icon,
   FlimSlateIcon,
   Folder01Icon,
-  InternetIcon,
   Image03Icon,
   LibrariesIcon,
   Message01Icon,
@@ -46,6 +45,7 @@ import {
   Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -130,6 +130,7 @@ const WORKSPACES: {
     id: "switchToAudio",
     icon: AudioWave01Icon,
     labelKey: "shell.navigation.audio",
+    aliases: ["speech", "tts", "voice", "music", "transcribe"],
   },
   {
     id: "switchToExport",
@@ -150,10 +151,12 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   connections: "settings.tabs.connections",
   library: "shell.navigation.library",
   data: "settings.tabs.data",
+  sandbox: "settings.tabs.sandbox",
   "api-keys": "settings.tabs.apiKeys",
   "remote-lan": "settings.tabs.remoteLan",
   agents: "settings.tabs.agents",
   "keyboard-shortcuts": "settings.tabs.keyboardShortcuts",
+  browser: "browser.settingsTitle",
   debugging: "settings.tabs.debugging",
   about: "settings.tabs.about",
 };
@@ -303,7 +306,7 @@ function PaletteContent() {
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}
             keywords={["api", "monitor", "requests"]}
           >
-            <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.api")}</span>
           </PaletteItem>
           <PaletteItem onSelect={openSettings()} keywords={["preferences"]}>
