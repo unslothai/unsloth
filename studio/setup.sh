@@ -5,6 +5,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The update's dependency pass upgrades the package that ships this file, and bash keeps reading
+# the old copy through its open descriptor. Captured first, for _setup_rerun_if_replaced.
+_SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+_SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
+_SETUP_ARGV=("$@")
+_SETUP_START_PWD=$PWD
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
@@ -2549,6 +2555,32 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# install_python_stack.py upgraded the package that ships this file, so every phase a release adds
+# below would otherwise be skipped by the update that installs it. Finish with the new copy, once:
+# the rerun carries UNSLOTH_SETUP_RERUN. exec keeps the PID the CLI waits on and the exported env.
+_setup_rerun_if_replaced() {
+    if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
+        return 0
+    fi
+    local _now
+    _now=$(cksum < "$_SETUP_SELF" 2>/dev/null) || return 0
+    if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
+        return 0
+    fi
+    step "setup" "the update replaced this setup script; finishing with the new version"
+    export UNSLOTH_SETUP_RERUN=1
+    cd "$_SETUP_START_PWD" 2>/dev/null || :
+    # execfail alone is not enough: under set -e a failed exec still ends the shell.
+    shopt -s execfail
+    set +e
+    exec "${BASH:-bash}" "$_SETUP_SELF" ${_SETUP_ARGV[@]+"${_SETUP_ARGV[@]}"}
+    set -e
+    shopt -u execfail
+    unset UNSLOTH_SETUP_RERUN
+    cd "$SCRIPT_DIR"
+    substep "could not start the updated setup script; continuing with this one" "$C_WARN"
+}
+
 # ── HTTP GET to stdout (supports curl and wget) ──
 # install.sh takes either transport everywhere, so a wget-only box installs fine
 # and then stalled here, where curl was the only way to fetch anything.
@@ -3547,6 +3579,7 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+    _setup_rerun_if_replaced
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"

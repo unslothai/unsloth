@@ -31,6 +31,16 @@ $ProgressPreference = 'SilentlyContinue'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# The update's dependency pass upgrades the package that ships this file, and PowerShell keeps
+# running the copy it parsed. Captured here, before anything changes, so the run can tell after that
+# pass and finish with the new copy (the rerun after install_python_stack.py below).
+$script:SetupSelfPath = $MyInvocation.MyCommand.Path
+$script:SetupSelfAtStart = $null
+try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
+$script:SetupArgs = @($args)
+$script:SetupStartEnv = $null
+try { $script:SetupStartEnv = [System.Environment]::GetEnvironmentVariables() } catch { }
+
 # `unsloth studio update` spawns powershell.exe, which is Windows PowerShell 5.1,
 # and the child inherits the caller's PSModulePath. Launched from a PowerShell 7
 # prompt that path leads with PowerShell 7's module directories, which ship their
@@ -182,17 +192,39 @@ $script:CudaArch = $null
 function Exit-SetupFailure {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
-        [int]$Code = 1
+        [int]$Code = 1,
+        # The updated setup script already printed its own [TAURI:ERROR]; the app keeps the last one.
+        [switch]$NoTauriMarker
     )
     if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
     if ($Code -eq 0) { $Code = 1 }
-    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
-        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    if (-not $NoTauriMarker -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
         [Console]::Out.WriteLine("[TAURI:ERROR] $singleLine")
         [Console]::Out.Flush()
     }
     exit $Code
+}
+
+function Test-SetupScriptReplaced {
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -or -not $script:SetupSelfAtStart) { return $false }
+    try { $now = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { return $false }
+    return ($now -cne $script:SetupSelfAtStart)
+}
+
+# The environment the caller started this run with, so the rerun begins where a fresh
+# `unsloth studio update` would rather than on top of this run's changes.
+function Restore-SetupStartEnvironment {
+    if (-not $script:SetupStartEnv) { return }
+    $keep = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($k in $script:SetupStartEnv.Keys) { [void]$keep.Add([string]$k) }
+    foreach ($k in @([System.Environment]::GetEnvironmentVariables().Keys)) {
+        if (-not $keep.Contains([string]$k)) { try { [System.Environment]::SetEnvironmentVariable([string]$k, $null) } catch { } }
+    }
+    foreach ($k in $script:SetupStartEnv.Keys) {
+        try { [System.Environment]::SetEnvironmentVariable([string]$k, [string]$script:SetupStartEnv[$k]) } catch { }
+    }
 }
 
 # The interpreter this setup was launched from, when it lives inside $VenvDir; $null otherwise.
@@ -3222,8 +3254,9 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         $ElevationState = if ($_principal.IsInRole(
                 [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
     } catch { }
-    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
-        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    # The rerun of an updated setup script runs as the same user; one line per update is enough.
+    if ($env:UNSLOTH_SETUP_RERUN -ne '1' -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
         [Console]::Out.Flush()
     }
@@ -9238,6 +9271,39 @@ if ($stackExit -ne 0) {
     Write-StudioLine "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-StudioLine "   Re-run the installer or check the error above for details." -ForegroundColor Red
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
+}
+
+# ── Finish with the setup script this update installed ──
+# install_python_stack.py upgraded the package that ships this file, so every phase a release adds
+# below would otherwise be skipped by the update that installs it. Once only: the rerun carries
+# UNSLOTH_SETUP_RERUN. A dynamic module gives the new copy its own scope chain -- invoked from here,
+# it would read this run's variables wherever it reads one before assigning it -- and the proxy
+# defaults the CLI prelude left in $PSDefaultParameterValues are handed across explicitly, since a
+# module does not see them.
+if (Test-SetupScriptReplaced) {
+    step "setup" "the update replaced this setup script; finishing with the new version"
+    $_setupRerunArgs = $script:SetupArgs
+    Restore-SetupStartEnvironment
+    $env:UNSLOTH_SETUP_RERUN = '1'
+    $_setupRerunner = New-Module -ScriptBlock { $script:Ok = $false; $script:Code = 1 }
+    try {
+        & $_setupRerunner {
+            param($Path, [object[]]$Arguments, $Defaults)
+            $PSDefaultParameterValues = $Defaults
+            & $Path @Arguments
+            $script:Ok = $?
+            $script:Code = $global:LASTEXITCODE
+        } $script:SetupSelfPath $_setupRerunArgs $PSDefaultParameterValues
+        $_setupRerunOk = & $_setupRerunner { $script:Ok }
+        $_setupRerunCode = & $_setupRerunner { $script:Code }
+    } finally {
+        Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
+        Remove-WoaMergedOverrides
+    }
+    # $? first: under `-Command "& ... *>&1"` a run that fell off its end is a success whatever
+    # its last native command returned; the new copy already printed its own [TAURI:ERROR].
+    if ($_setupRerunOk) { return }
+    Exit-SetupFailure -Message "the updated setup script failed (exit code $_setupRerunCode)" -Code $_setupRerunCode -NoTauriMarker
 }
 
 } else {
