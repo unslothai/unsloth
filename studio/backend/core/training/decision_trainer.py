@@ -49,9 +49,18 @@ def _keep_best(model, warn: Callable[[str], None]):
         best = step = weights = None
         skipped = False
 
-        def on_evaluate(self, args, state, control, metrics = None, **kwargs):
+        def on_evaluate(
+            self,
+            args,
+            state,
+            control,
+            metrics = None,
+            **kwargs,
+        ):
             loss = (metrics or {}).get("eval_loss")
-            if loss is None or self.skipped or (self.best is not None and loss >= self.best):
+            if loss is None or not math.isfinite(loss) or self.skipped:
+                return
+            if self.best is not None and loss >= self.best:
                 return
             params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
             size = sum(p.numel() * p.element_size() for _, p in params)

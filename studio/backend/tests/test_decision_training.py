@@ -774,10 +774,12 @@ def test_the_best_held_out_step_is_kept(monkeypatch):
     evaluate(1, 1.0)
     evaluate(2, 0.4)
     evaluate(3, 0.7)
-    assert keep.restore(3) == 2 and float(model.weight[0, 0]) == 2.0 and warnings == []
+    # A diverged evaluation never becomes the best step.
+    evaluate(4, float("nan"))
+    assert keep.restore(4) == 2 and float(model.weight[0, 0]) == 2.0 and warnings == []
     # A run that ends on its best step keeps what it has.
-    evaluate(4, 0.1)
-    assert keep.restore(4) == 4 and float(model.weight[0, 0]) == 4.0
+    evaluate(5, 0.1)
+    assert keep.restore(5) == 5 and float(model.weight[0, 0]) == 5.0
     # Weights too large to copy: the last step is kept, with one warning.
     monkeypatch.setattr(decision_trainer, "KEEP_BEST_MAX_BYTES", 0)
     keep = decision_trainer._keep_best(model, warnings.append)
