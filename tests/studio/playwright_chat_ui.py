@@ -540,7 +540,8 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
-    # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
+    # Without a sandbox: Run automatically applies at once, the Sandbox switch reads Low, and sliding it
+    # to High opens the install popup, whose "Use Low sandbox" keeps Low.
     choose("Approve for me")
     expect_mode("Approve for me")
     # Landed on the install first, or the reload hydrates the previous "off" back.
@@ -549,22 +550,41 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Approve for me")
     choose("Run automatically")
+    expect_mode("Run automatically")
+    if page.get_by_role("alertdialog").count() != 0:
+        fail("picking Run automatically without a sandbox opened a dialog")
+    # Reopening the menu straight after a pick races its close; a reload also proves the level persisted.
+    reload_and_wait_for_pill()
+    expect_mode("Run automatically")
+    menu = open_menu()
+    expect(menu.get_by_text("Permissions", exact = True)).to_be_visible()
+    if menu.get_by_text("OS sandbox not available").count() != 0:
+        fail("the Run automatically row still carries the 'OS sandbox not available' hint")
+    switch = menu.get_by_role("menuitemcheckbox")
+    expect(switch).to_have_attribute("aria-checked", "false")
+    expect(switch).to_contain_text("Low")
+    switch.click()
     setup = page.get_by_role("alertdialog")
-    expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
+    expect(setup.get_by_role("heading", name = "OS sandbox is not available")).to_be_visible()
     expect(setup).to_contain_text("apt-get install -y bubblewrap")
     expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    expect(setup.get_by_role("button", name = "Learn more")).to_be_visible()
     if setup.get_by_role("button", name = "Install sandbox").count() != 0:
-        fail("setup dialog offered Install sandbox to a request the server did not allow")
-    setup.get_by_role("button", name = "Cancel").click()
+        fail("setup popup offered Install sandbox to a request the server did not allow")
+    setup.get_by_role("button", name = "Use Low sandbox").click()
     expect(setup).to_be_hidden()
-    expect_mode("Approve for me")
-    choose("Run automatically")
-    expect(setup).to_be_visible()
-    setup.get_by_role("button", name = "Use it anyway (risky calls will ask)").click()
-    expect(setup).to_be_hidden()
+    level = page.evaluate("() => localStorage.getItem('unsloth_chat_sandbox_level')")
+    if level != "low":
+        fail(f"Use Low sandbox stored {level!r}, expected 'low'")
     expect_mode("Run automatically")
     sandbox_answer["ready"] = True
     reload_and_wait_for_pill()
+    # With a working sandbox the switch turns High again, and stays High for the next browser's run.
+    switch = open_menu().get_by_role("menuitemcheckbox")
+    expect(switch).to_contain_text("Low")
+    switch.click()
+    page.wait_for_function("() => localStorage.getItem('unsloth_chat_sandbox_level') === 'high'")
+    page.keyboard.press("Escape")
 
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
