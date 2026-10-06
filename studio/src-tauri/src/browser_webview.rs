@@ -839,7 +839,7 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
         };
         match std::fs::hard_link(&staged, &target) {
             Ok(()) => {
-                let _ = std::fs::remove_file(&staged);
+                remove_staged_name(staged);
                 views.lock().unwrap().staged.remove(id);
                 return Ok(target
                     .file_name()
@@ -853,6 +853,27 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
         }
     }
     release(format!("Couldn't keep {name}: its name keeps being taken"))
+}
+
+/// Drop the neutral name once a keep has published the file under its own. Windows can refuse for a
+/// moment (a scanner holding the new file), so it is retried in the background; it is only a second
+/// name for the kept file, never a second copy.
+fn remove_staged_name(path: PathBuf) {
+    let gone = |result: std::io::Result<()>| match result {
+        Ok(()) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
+    if gone(std::fs::remove_file(&path)) {
+        return;
+    }
+    std::thread::spawn(move || {
+        for seconds in [1, 2, 4, 8, 15, 30, 60] {
+            std::thread::sleep(Duration::from_secs(seconds));
+            if gone(std::fs::remove_file(&path)) {
+                return;
+            }
+        }
+    });
 }
 
 /// Delete a finished staged download. Never one still downloading or being kept.
@@ -1298,10 +1319,9 @@ fn create_view<R: Runtime>(
                     true
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    let (path, staged, current) = {
+                    let (path, staged) = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
-                        let current = inner.account_epoch == view_epoch;
                         let pending = inner.downloads.entry(url.to_string()).or_default();
                         let index = path
                             .as_ref()
@@ -1330,7 +1350,7 @@ fn create_view<R: Runtime>(
                             None => path.or(recorded),
                         };
                         let staged = staged.map(|(id, name, _)| (id, name));
-                        (path, staged, current)
+                        (path, staged)
                     };
                     let marked = match (success, path.as_deref()) {
                         (true, Some(path)) => mark_downloaded(path, &url),
@@ -1359,11 +1379,6 @@ fn create_view<R: Runtime>(
                             let _ = std::fs::remove_file(entry.path);
                         }
                     }
-                    // Started under the account signed out since: the file stays (marked), but the
-                    // next account's panel never hears of it.
-                    if !current {
-                        return true;
-                    }
                     let size = path
                         .as_deref()
                         .and_then(|p| std::fs::metadata(p).ok())
@@ -1380,21 +1395,29 @@ fn create_view<R: Runtime>(
                             None,
                         ),
                     };
-                    emit(
-                        app,
-                        BrowserEvent::Download {
-                            tab_id: download_tab.clone(),
-                            url: url.to_string(),
-                            needs_approval: success && id.is_some(),
-                            name,
-                            size,
-                            path,
-                            done: true,
-                            success,
-                            id,
-                            marked,
-                        },
-                    );
+                    // Started under an account signed out since (marking can be slow, so checked
+                    // now, under the lock a switch takes): the file stays, marked, but the next
+                    // account's panel never hears of it.
+                    let state = app.state::<BrowserViews>();
+                    let inner = state.inner.lock().unwrap();
+                    if inner.account_epoch == view_epoch {
+                        emit(
+                            app,
+                            BrowserEvent::Download {
+                                tab_id: download_tab.clone(),
+                                url: url.to_string(),
+                                needs_approval: success && id.is_some(),
+                                name,
+                                size,
+                                path,
+                                done: true,
+                                success,
+                                id,
+                                marked,
+                            },
+                        );
+                    }
+                    drop(inner);
                     true
                 }
                 _ => false,
@@ -1820,14 +1843,10 @@ pub async fn browser_view_clear_data<R: Runtime>(
     // Clear data and an account switch close the pages first, so none can write the cleared data back.
     let closing = close_views.unwrap_or(false);
     if closing {
-        let abandoned = {
+        {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
             set_shown(&state, &mut inner, None);
-            closing_views(&mut inner, account_switch.unwrap_or(false))
-        };
-        for file in abandoned {
-            let _ = std::fs::remove_file(file);
         }
         for page in browser_views(&app) {
             let _ = page.close();
@@ -1865,6 +1884,16 @@ pub async fn browser_view_clear_data<R: Runtime>(
     let result = clear_profile(&page).await;
     if hidden {
         let _ = page.close();
+    }
+    // Only once the clear worked: a failed one keeps the account, and its downloads awaiting Keep.
+    if closing && result.is_ok() {
+        let abandoned = closing_views(
+            &mut state.inner.lock().unwrap(),
+            account_switch.unwrap_or(false),
+        );
+        for file in abandoned {
+            let _ = std::fs::remove_file(file);
+        }
     }
     result
 }
@@ -2479,6 +2508,20 @@ mod tests {
             drop(inner);
             assert!(keep_staged(&views, &busy_id).is_err());
             assert!(discard_staged(&views, &busy_id).is_err());
+        }
+
+        #[test]
+        fn a_kept_files_neutral_name_is_dropped_and_its_content_kept() {
+            let dir = tempfile::tempdir().unwrap();
+            let staged = dir.path().join("Unconfirmed 10.download");
+            let kept = dir.path().join("setup.exe");
+            std::fs::write(&staged, b"payload").unwrap();
+            std::fs::hard_link(&staged, &kept).unwrap();
+            remove_staged_name(staged.clone());
+            assert!(!staged.exists());
+            assert_eq!(std::fs::read(&kept).unwrap(), b"payload");
+            // Already gone is done, not retried.
+            remove_staged_name(staged);
         }
 
         #[test]
