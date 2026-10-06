@@ -538,8 +538,9 @@ def comfy_fp8_backend(
     follows: ``"torchao"`` (the per-row ``Float8Tensor`` and ``_scaled_mm``) on a resident plan whose GPU
     passes Studio's fp8 probe, ``"native"`` (the torchao-free weight-only twin) where Studio's own fp8
     quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
-    older GPU, CPU, MPS, or an offloaded plan on the torchao path. ``UNSLOTH_DIFFUSION_COMFY_FP8=0``
-    always dequantizes."""
+    older GPU, CPU, MPS, or an offloaded plan on the torchao path (the model offload hooks cannot move a
+    ``Float8Tensor``: "Attempted to set the storage of a tensor on device cuda:0 to a storage on ... cpu").
+    ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` always dequantizes."""
     if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
