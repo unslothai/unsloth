@@ -23,8 +23,7 @@ fn probe_command(shell: &str) -> String {
     if NON_POSIX_SHELLS.contains(&name) {
         return env_command();
     }
-    // zsh RCS off also covers a readonly HISTFILE. Unset is tried in a subshell first:
-    // dash exits on unsetting a readonly variable, even under eval / `|| :`.
+    // RCS covers zsh's readonly HISTFILE; subshell first: dash exits on a readonly unset.
     format!(
         "if [ -n \"${{ZSH_VERSION-}}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; \
          (unset HISTFILE) 2>/dev/null && unset HISTFILE; \
