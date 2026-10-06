@@ -841,8 +841,7 @@ export function AudioPage({
         clone: () => {
           if (!(selection && transitionWorkflow("clone"))) return;
           adoptReference(selection);
-          // Typed text for an earlier reference would otherwise survive the new recording;
-          // past 30 s Clone sends only the start, so the full text is left out.
+          // Replaces typed text for an earlier reference; blank past 30 s (Clone sends only the start).
           useAudioCloneStore
             .getState()
             .applyTranscript(selection, referenceTranscript(selection).trim());
