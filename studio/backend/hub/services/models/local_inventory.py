@@ -10,6 +10,8 @@ import asyncio
 import os
 import re
 import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -227,37 +229,75 @@ def nested_scan_roots(folder_path: Path) -> list[Path]:
 
 _SHARD_EVIDENCE_RE = re.compile(r"-\d+-of-\d+\.|\.index\.json$", re.IGNORECASE)
 _PAYLOAD_SUFFIXES = (".safetensors", ".bin", ".gguf", ".pt", ".pth")
+_PAYLOAD_VERDICT_CACHE_MAX = 4096
+_payload_verdicts: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
+_payload_verdicts_lock = threading.Lock()
 
 
-def _payload_may_be_torn(scan_path: Path) -> bool:
-    """Cheap gate before the full judge: only a numbered shard, an index or an empty weight file can make a folder short."""
-    for _dirpath, _dirnames, filenames in os.walk(scan_path):
+def _payload_evidence(scan_path: Path) -> tuple[bool, bool, tuple]:
+    """One walk: whether weights / quants show any sign of being torn (a numbered shard, an index, an empty weight file), and a fingerprint of every file that changes whenever the judge's inputs could."""
+    weights = quants = False
+    fingerprint = []
+    for dirpath, _dirnames, filenames in os.walk(scan_path):
         for name in filenames:
-            if _SHARD_EVIDENCE_RE.search(name):
-                return True
-            if name.lower().endswith(_PAYLOAD_SUFFIXES):
-                try:
-                    if os.stat(os.path.join(_dirpath, name)).st_size <= 0:
-                        return True
-                except OSError:
-                    return True
-    return False
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.stat(path)
+                entry = (path, st.st_size, st.st_mtime_ns, st.st_ino)
+                empty = st.st_size <= 0
+            except OSError:
+                entry = (path, -1, -1, -1)
+                empty = True
+            fingerprint.append(entry)
+            lower = name.lower()
+            torn = _SHARD_EVIDENCE_RE.search(name) is not None or (
+                empty and lower.endswith(_PAYLOAD_SUFFIXES)
+            )
+            if torn:
+                if lower.endswith(".gguf"):
+                    quants = True
+                else:
+                    weights = True
+    return weights, quants, tuple(sorted(fingerprint))
+
+
+def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
+    # Rescanned on every listing; the files are the judge's only input, so an unchanged fingerprint keeps the verdict. Quants are not cached: their judge also reads the account's scan folders.
+    key = os.path.abspath(scan_path)
+    with _payload_verdicts_lock:
+        hit = _payload_verdicts.get(key)
+        if hit is not None and hit[0] == fingerprint:
+            _payload_verdicts.move_to_end(key)
+            return hit[1]
+    complete = hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False)
+    with _payload_verdicts_lock:
+        _payload_verdicts[key] = (fingerprint, complete)
+        _payload_verdicts.move_to_end(key)
+        while len(_payload_verdicts) > _PAYLOAD_VERDICT_CACHE_MAX:
+            _payload_verdicts.popitem(last = False)
+    return complete
 
 
 def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
     """Local folders carry no downloader markers, so the payload is the only partial evidence. ``unknown`` is skipped: a diffusers pipeline keeps its weights in component subdirs and would read as short a shard."""
     if not rows or not scan_path.is_dir():
         return rows
-    formats = {row.model_format for row in rows}
-    judged = formats - {"unknown"}
-    if not judged or not _payload_may_be_torn(scan_path):
+    judged = {row.model_format for row in rows} - {"unknown"}
+    if not judged:
+        return rows
+    weights, quants, fingerprint = _payload_evidence(scan_path)
+    snapshot_partial = (
+        weights and bool(judged - {"gguf"}) and not _weights_complete(scan_path, fingerprint)
+    )
+    gguf_partial = (
+        quants
+        and "gguf" in judged
+        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True)
+    )
+    if not snapshot_partial and not gguf_partial:
         return rows
     return _apply_format_aware_partial(
-        rows,
-        snapshot_partial = bool(judged - {"gguf"})
-        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False),
-        gguf_partial = "gguf" in judged
-        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True),
+        rows, snapshot_partial = snapshot_partial, gguf_partial = gguf_partial
     )
 
 

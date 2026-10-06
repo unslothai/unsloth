@@ -7990,6 +7990,23 @@ def test_a_whole_folder_with_no_shard_evidence_is_not_judged(tmp_path, scan):
     assert [r.partial for r in rows] == [False]
 
 
+def test_a_cached_verdict_follows_the_files(tmp_path):
+    # The verdict is reused across rescans, so each change to the payload must still reach it.
+    model_dir = _write_sharded_safetensors(tmp_path / "Arriving", total = 2, present = 1)
+    scan = lambda: [r.partial for r in local_inventory._scan_models_dir(tmp_path)]
+    assert scan() == [True]
+    assert scan() == [True]
+    (model_dir / "model-00002-of-00002.safetensors").write_bytes(b"weights")
+    assert scan() == [False]
+    assert scan() == [False]
+    (model_dir / "model-00001-of-00002.safetensors").unlink()
+    assert scan() == [True]
+    (model_dir / "model-00001-of-00002.safetensors").write_bytes(b"")
+    assert scan() == [True]
+    (model_dir / "model-00001-of-00002.safetensors").write_bytes(b"weights")
+    assert scan() == [False]
+
+
 def test_a_models_dir_pointed_straight_at_a_short_model_is_partial(tmp_path):
     model_dir = _write_sharded_safetensors(tmp_path / "Short", total = 4, present = 1)
 
