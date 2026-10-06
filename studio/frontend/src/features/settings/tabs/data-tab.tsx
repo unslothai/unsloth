@@ -58,6 +58,7 @@ import {
   formatSize,
   refreshLibraryStorage,
   useLibraryStorage,
+  useLibraryVisitStore,
 } from "@/features/library";
 import {
   LinkedFoldersManager,
@@ -744,6 +745,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             className="px-3.5"
             onClick={() => {
               useSettingsDialogStore.getState().closeDialog();
+              // Already on All, the view would keep its search and filters.
+              useLibraryVisitStore.getState().restart();
               void navigate({ to: "/library", search: { show: "all" } });
             }}
           >
