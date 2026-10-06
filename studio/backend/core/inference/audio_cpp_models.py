@@ -1127,7 +1127,6 @@ _LEGACY_SUBFOLDER_VARIANTS = {
 
 @dataclass(frozen = True)
 class AudioCppRef:
-
     id: str
     repo_id: Optional[str]
     folder: str = ""
