@@ -57,6 +57,7 @@ from .diffusion_attention import (
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_comfy_quant import load_comfy_quant_transformer, refuse_comfy_quant
+from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import scoped_local_files_only
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
@@ -2634,10 +2635,15 @@ class VideoBackend:
                         "MiniMax-H3 needs the Diffusers revision bundled with this Unsloth "
                         "version. Reinstall Unsloth dependencies and retry."
                     )
-        if kind != "gguf" and not _is_trusted_video_repo(repo_id):
+        # A single .safetensors file is trusted per file, from any repo: it is downloaded alone, parsed without
+        # unpickling, and every config and companion still comes from the family base (diffusion_single_file_trust).
+        if kind != "gguf" and not single_file_load_allowed(
+            _is_trusted_video_repo(repo_id), kind, gguf_filename
+        ):
             raise ValueError(
-                f"Non-GGUF video loads are limited to unsloth/* repos, the official "
-                f"family base repos, and local paths; '{repo_id}' is neither."
+                f"Non-GGUF video loads from '{repo_id}' are limited to a single .safetensors "
+                f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
+                f"repos, the official family base repos, and local paths."
             )
         # Companions load with from_pretrained, so a base repo is held to the non-GGUF bar: a GGUF pick must not smuggle
         # in a remote base.
@@ -5673,6 +5679,10 @@ class VideoBackend:
             checkpoint_path = self._resolve_checkpoint_path(
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
             )
+            if kind == "single_file" and not _is_trusted_video_repo(repo_id):
+                # Admitted per file from an untrusted repo, so prove the bytes are a safetensors container before a
+                # loader opens them.
+                assert_safetensors_file(checkpoint_path)
             size_mib = file_size_mib(str(checkpoint_path))
             if kind == "gguf":
                 transformer_mib = estimate_gguf_resident_mib(size_mib)

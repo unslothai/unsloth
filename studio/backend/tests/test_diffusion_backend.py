@@ -4220,9 +4220,15 @@ def test_validate_load_request(tmp_path):
         backend.validate_load_request(
             "unsloth/Z-Image-Turbo-bnb-4bit", gguf_filename = "q.gguf", model_kind = "pipeline"
         )
-    # A single-file safetensors load is also gated to unsloth/* repos.
+    # A single .safetensors file is trusted per file, from any repo; any other weight format there is still refused.
+    assert (
+        backend.validate_load_request("some-org/Z-Image", gguf_filename = "model.safetensors").name
+        == "z-image"
+    )
     with pytest.raises(ValueError, match = "unsloth"):
-        backend.validate_load_request("some-org/Z-Image", gguf_filename = "model.safetensors")
+        backend.validate_load_request(
+            "some-org/Z-Image", gguf_filename = "model.ckpt", model_kind = "single_file"
+        )
     with pytest.raises(ValueError, match = "family"):
         backend.validate_load_request("meta/Llama-3", gguf_filename = "q.gguf")
     # A family-looking repo with a non-GGUF single-file name is rejected before the route evicts chat.
@@ -14714,3 +14720,68 @@ def test_qwen_load_samples_at_comfy_static_shift(fake_runtime, tmp_path, monkeyp
     backend = _loaded_backend(tmp_path, family_override = "qwen-image")
     cfg = backend._state.pipe.scheduler.config
     assert (cfg["shift"], cfg["use_dynamic_shifting"], cfg["shift_terminal"]) == (3.1, False, None)
+
+
+def _write_min_safetensors(path):
+    """A real, minimal safetensors container (one F32 scalar) written by hand: ``torch`` is faked here."""
+    header = json.dumps({"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
+    path.write_bytes(len(header).to_bytes(8, "little") + header + b"\x00\x00\x80\x3f")
+    return path
+
+
+def _hub_single_file_load(monkeypatch, tmp_path, file_bytes_writer, *, card_tag):
+    """``load_pipeline`` on an UNTRUSTED Hub repo + .safetensors name, with the download stubbed to a local file and
+    the repo's base_model card tag pointing back at the untrusted repo itself."""
+    checkpoint = tmp_path / "dit.safetensors"
+    file_bytes_writer(checkpoint)
+    downloads = []
+
+    def _fake_download(self, repo_id, filename, hf_token, local_files_only = False):
+        downloads.append((repo_id, filename))
+        return str(checkpoint)
+
+    monkeypatch.setattr(DiffusionBackend, "_resolve_gguf_path", _fake_download)
+    monkeypatch.setattr("core.inference.diffusion._hf_base_model", lambda repo_id, token: card_tag)
+    backend = DiffusionBackend()
+    status = backend.load_pipeline(
+        "evil-org/z-image-comfy",
+        gguf_filename = "split_files/diffusion_models/dit.safetensors",
+        model_kind = "single_file",
+        family_override = "z-image",
+    )
+    return status, downloads
+
+
+def test_untrusted_hub_safetensors_single_file_takes_config_only_from_the_family_base(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The per-file trust path: the one named file is fetched from the untrusted repo, but config, companions and the
+    pipeline assembly all come from the family's trusted base, even when the repo's card tag names itself."""
+    status, downloads = _hub_single_file_load(
+        monkeypatch, tmp_path, _write_min_safetensors, card_tag = "evil-org/z-image-comfy"
+    )
+    assert status["loaded"] is True
+    assert downloads == [("evil-org/z-image-comfy", "split_files/diffusion_models/dit.safetensors")]
+    assert _FakeTransformer.last["path"] == str(tmp_path / "dit.safetensors")
+    for value in (_FakeTransformer.last["config"], _FakePipeline.last["base"], status["base_repo"]):
+        assert "evil-org" not in str(value).lower()
+    # The family base, or its byte-identical unsloth mirror (the fetch-site swap).
+    assert _FakeTransformer.last["config"] in ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo")
+    assert status["base_repo"] == "Tongyi-MAI/Z-Image-Turbo"
+    assert "trust_remote_code" not in _FakeTransformer.last
+    assert "trust_remote_code" not in _FakePipeline.last
+    assert "original_config" not in _FakeTransformer.last
+
+
+def test_untrusted_hub_single_file_with_a_malformed_header_is_refused_before_any_loader(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """A .safetensors NAME over pickle bytes never reaches from_single_file or the comfy scan."""
+    pickle_bytes = b"\x80\x04\x95" + b"\x00" * 64  # a pickle protocol-4 prefix, not a safetensors header
+
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        _hub_single_file_load(
+            monkeypatch, tmp_path, lambda p: p.write_bytes(pickle_bytes), card_tag = None
+        )
+    assert _FakeTransformer.last == {}
+    assert _FakePipeline.last == {}

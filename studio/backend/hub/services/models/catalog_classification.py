@@ -659,6 +659,23 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
         return False
 
 
+def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = None) -> bool:
+    """Whether a cached repo outside the trusted set is still loadable: a ComfyUI-style repo of
+    single ``.safetensors`` files (no pipeline index) loads per file from any repo, while a pipeline
+    repo still needs a trusted owner. Mirrors ``single_file_load_allowed`` in the loaders."""
+    try:
+        if _repo_has_pipeline_index(repo_info, selected):
+            return False
+        from core.inference.diffusion_single_file_trust import SAFETENSORS_SUFFIX
+        for revision in getattr(repo_info, "revisions", None) or ():
+            for cached in getattr(revision, "files", None) or ():
+                if str(getattr(cached, "file_name", "")).lower().endswith(SAFETENSORS_SUFFIX):
+                    return True
+    except Exception:  # noqa: BLE001 -- a classification failure keeps the row untrusted
+        return False
+    return False
+
+
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
@@ -667,7 +684,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
 
         family = detect_video_family(repo_id)
         if family is not None:
-            if not _is_trusted_video_repo(repo_id) or not _video_family_buildable(family):
+            trusted = _is_trusted_video_repo(repo_id) or _untrusted_repo_single_files_loadable(
+                repo_info, selected
+            )
+            if not trusted or not _video_family_buildable(family):
                 return None
             return _VIDEO_GEN_TASK
     except Exception:
@@ -681,7 +701,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
         if _is_sd_cpp_companion_repo(repo_id):
             return None
         family = detect_family(repo_id)
-        if not _is_trusted_diffusion_repo(repo_id) or family is None:
+        trusted = _is_trusted_diffusion_repo(repo_id) or _untrusted_repo_single_files_loadable(
+            repo_info, selected
+        )
+        if not trusted or family is None:
             return None
         if not family_pipeline_available(family):
             return None
