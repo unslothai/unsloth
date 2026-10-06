@@ -1559,6 +1559,8 @@ def _serve(
     **fields,
 ):
     """Send to an installed backend; ``frames`` off drops the control-frame header."""
+    if fields.get("response_format"):
+        pytest.importorskip("llguidance.mlx")
     if not frames:
         monkeypatch.setattr(_Request, "headers", {})
     payload = _request(**fields)
