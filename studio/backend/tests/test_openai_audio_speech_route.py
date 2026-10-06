@@ -449,6 +449,23 @@ def test_external_rejects_non_wav_response_format(monkeypatch):
     assert speech_calls == []
 
 
+def test_external_rejects_sse_before_the_upstream_call(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "alloy",
+            "stream_format": "sse",
+        },
+    )
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert created == [] and speech_calls == []
+
+
 def test_external_missing_model_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     _install_external(monkeypatch)
