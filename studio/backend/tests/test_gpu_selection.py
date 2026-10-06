@@ -33,6 +33,7 @@ from utils.hardware import (
     prepare_gpu_selection,
     resolve_requested_gpu_ids,
 )
+from utils.hardware import nvidia
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +107,7 @@ class _GpuCacheResetMixin:
     def tearDown(self):
         _hw_module._physical_gpu_count = None
         _hw_module._visible_gpu_count = None
+        nvidia._uuid_mask_cache.clear()
 
 
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
@@ -128,6 +130,102 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [])
+
+    def _uuid_mask_ids(
+        self,
+        mask,
+        smi_stdout,
+        env = None,
+        returncode = 0,
+        probe = get_parent_visible_gpu_ids,
+    ):
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": mask, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", **(env or {})},
+                clear = True,
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 2),
+            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(returncode = returncode, stdout = smi_stdout)
+            return probe(), mock_run.call_count
+
+    def test_uuid_mask_resolves_to_physical_ids_in_mask_order(self):
+        smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
+        ids, _ = self._uuid_mask_ids("GPU-2f902962-578c,GPU-d18a14b7", smi)
+        self.assertEqual(ids, [1, 0])
+
+    def test_llama_backend_inherits_the_resolved_uuid_mask(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
+        mask = "GPU-2f902962-578c,GPU-d18a14b7"
+        with patch.object(LlamaCppBackend, "_torch_is_rocm", return_value = False):
+            ids, _ = self._uuid_mask_ids(
+                mask, smi, probe = LlamaCppBackend._resolve_visible_physical_ids
+            )
+            self.assertEqual(ids, [1, 0])
+            allowed, _ = self._uuid_mask_ids(
+                mask,
+                smi,
+                probe = lambda: LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES"),
+            )
+            self.assertEqual(allowed, {0, 1})
+            ids, _ = self._uuid_mask_ids(
+                "GPU-ffff", smi, probe = LlamaCppBackend._resolve_visible_physical_ids
+            )
+            self.assertIsNone(ids)
+
+    def test_failed_uuid_resolution_is_not_retried_every_call(self):
+        _, first = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        _, again = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        self.assertEqual((first, again), (1, 0))
+        from utils.hardware import gpu_query
+
+        gpu_query.invalidate_static("test")
+        _, after_invalidate = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        self.assertEqual(after_invalidate, 1)
+
+    def test_cross_vendor_inventory_follows_uuid_mask_order(self):
+        inventory = {
+            "devices": [
+                {"index": 0, "name": "GPU Zero", "memory_total_gb": 24.0},
+                {"index": 1, "name": "GPU One", "memory_total_gb": 24.0},
+            ]
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-b,GPU-a", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._visible_devices_mask",
+                return_value = {0, 1},
+            ),
+            patch("utils.hardware.nvidia.resolve_uuid_mask", return_value = [1, 0]),
+            patch("utils.hardware.nvidia.get_physical_gpu_inventory", return_value = inventory),
+            patch(
+                "utils.hardware.nvidia.get_visible_gpu_utilization", return_value = {"devices": []}
+            ),
+        ):
+            devices = _hw_module._nvidia_inference_devices()
+        self.assertEqual([d["index"] for d in devices], [1, 0])
+
+    def test_unresolvable_uuid_mask_stays_unresolved(self):
+        smi = "0, GPU-aaa1\n1, GPU-aaa2\n"
+        for mask in ("GPU-aaa", "GPU-bbb", "MIG-aaa1", "0,GPU-aaa1", "GPU-aaa1,GPU-aaa1"):
+            with self.subTest(mask = mask):
+                self.assertEqual(self._uuid_mask_ids(mask, smi)[0], [])
+        self.assertEqual(self._uuid_mask_ids("GPU-aaa1", smi, returncode = 9)[0], [])
+
+    def test_uuid_mask_not_resolved_off_pci_bus_order_or_on_rocm(self):
+        smi = "0, GPU-aaa1\n"
+        ids, calls = self._uuid_mask_ids("GPU-aaa1", smi, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"})
+        self.assertEqual((ids, calls), ([], 0))
+        with patch("utils.hardware.hardware.IS_ROCM", True):
+            self.assertEqual(self._uuid_mask_ids("GPU-aaa1", smi), ([], 0))
 
     def test_invalid_requests_raise_clear_value_errors(self):
         cases = [

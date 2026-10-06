@@ -176,7 +176,6 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
 
 test("selected and fallback clip actions remain named and downloadable", () => {
   assert.match(source, /aria-label="Download audio clip"/);
-  // Delete sits in the clip card's menu, the same one each history row uses.
   assert.match(
     source,
     /onDelete=\{\(\) => void handleDeleteClip\(clip\.id\)\}/,
@@ -184,22 +183,15 @@ test("selected and fallback clip actions remain named and downloadable", () => {
   assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
   assert.match(
     source,
-    /const handleDownloadFallbackClip[\s\S]*anchor\.download = "generated-audio\.wav"/,
+    /const handleDownloadFallbackClip[\s\S]*saveAudio\(\s*clipFileName\(fallbackClip\),\s*fallbackClip\.url,/,
   );
   assert.match(source, /onDownload=\{handleDownloadFallbackClip\}/);
 });
 
 test("a dictation model this page did not load survives a mode switch", () => {
-  // The activation resync adopts whatever a sidecar holds, including chat dictation's model.
-  // The identity, not a boolean. Another surface can swap the sidecar's model while Audio
-  // is inactive; the activation resync then adopts it, and a bare flag claimed it too, so
-  // Eject unloaded a model this page never loaded. Model only, not model plus engine: a
-  // "gguf" pick without whisper-server is served by the Transformers fallback and reports
-  // residency under that engine, so requiring the requested engine leaked the sidecar.
+  // match model identity because gguf can report the Transformers fallback engine
   assert.match(source, /claim !== null &&\s*claim === sttLoadedModel;/);
-  // Ownership is claimed after a successful load, not before it: claiming up front left the
-  // flag set when a download was cancelled while the backend kept the previous resident
-  // model, so leaving Transcribe unloaded another surface's model.
+  // claim only after load succeeds because cancellation can leave the previous model resident
   assert.doesNotMatch(
     source,
     /setBusy\("loading"\);\s*sttLoadedByThisPage\.current = sidecarKey;/,

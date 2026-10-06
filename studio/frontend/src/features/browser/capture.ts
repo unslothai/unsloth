@@ -8,6 +8,7 @@
 
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { callNative } from "./native-support";
+import { cropTargets } from "./screenshot-support";
 import { hasNativeView, whenNativeViewShown } from "./native-view";
 import { requestFrameSnapshot } from "./page-frame";
 import { type BrowserTab, currentEntry } from "./store";
@@ -72,23 +73,7 @@ export async function printFramePage(tabId: string): Promise<boolean> {
   });
 }
 
-type CropTargetApi = { fromElement: (element: Element) => Promise<unknown> };
 type CroppableTrack = MediaStreamTrack & { cropTo: (target: unknown) => Promise<void> };
-
-function cropTargets(): CropTargetApi | null {
-  const api = (globalThis as { CropTarget?: CropTargetApi }).CropTarget;
-  return typeof api?.fromElement === "function" ? api : null;
-}
-
-/** The desktop app always can; the web build needs region capture (Chromium). */
-export function canScreenshot(): boolean {
-  if (isTauri) return true;
-  return (
-    typeof navigator !== "undefined" &&
-    typeof navigator.mediaDevices?.getDisplayMedia === "function" &&
-    cropTargets() !== null
-  );
-}
 
 export class OtherSurfaceError extends Error {}
 
@@ -225,9 +210,9 @@ async function clearOfOverlays(element: HTMLElement, timeoutMs = 1000): Promise<
   await frame();
 }
 
-// Toasts, tooltips and the file toolbar float over the page; hidden only while the shot is taken.
+// Floating UI over the page, hidden while the shot is taken. Annotation marks stay.
 const CAPTURE_STYLE =
-  "[data-sonner-toaster],[role=tooltip],[data-radix-popper-content-wrapper]:has([role=tooltip]),.browser-file-toolbar{visibility:hidden!important}";
+  "[data-sonner-toaster],[role=tooltip],[data-radix-popper-content-wrapper]:has([role=tooltip]),.browser-file-toolbar,[data-annotate-chrome]{visibility:hidden!important}";
 
 async function withChromeHidden<T>(capture: () => Promise<T>): Promise<T> {
   const style = document.createElement("style");

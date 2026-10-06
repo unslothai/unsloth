@@ -697,6 +697,33 @@ def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     assert llama_cpp._sticky_compaction_boundary("t1") == 7
 
 
+def test_sticky_boundary_ignores_a_provider_summary(monkeypatch):
+    """A provider summary is useful only while its opaque block is replayed to that provider."""
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "a",
+                "metadata": {
+                    "custom": {
+                        "contextTruncation": {
+                            "fits": True,
+                            "dropped_messages": 7,
+                            "boundary_messages": 7,
+                            "summarized": True,
+                        }
+                    }
+                },
+            },
+        ],
+    )
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+
+
 def test_sticky_boundary_is_zero_without_a_thread_or_history(monkeypatch):
     from core.inference import llama_cpp
 

@@ -201,7 +201,7 @@ function BookmarkEditor({
           <SelectTrigger aria-labelledby={`${id}-location`} className="w-full">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="browser-menu">
             {(Object.keys(FOLDERS) as BookmarkFolder[]).map((value) => (
               <SelectItem key={value} value={value}>
                 <HugeiconsIcon
@@ -259,7 +259,7 @@ export function BookmarkEditPopover({
         <PopoverContent
           align={align}
           sideOffset={8}
-          className="w-80 rounded-[16px] p-4"
+          className="browser-menu w-80 rounded-[16px] p-4"
           onOpenAutoFocus={(event) => {
             const input = (event.currentTarget as HTMLElement | null)?.querySelector<HTMLInputElement>(
               "[data-bookmark-name]",
@@ -340,7 +340,7 @@ export function BookmarkStar({
                 bookmark && "text-primary hover:text-primary [&_path]:fill-current",
               )}
             >
-              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-4.25" />
+              <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75" />
             </button>
           </PopoverAnchor>
         </TooltipTrigger>
@@ -466,7 +466,7 @@ function BookmarkMenu({
           {label}
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" sideOffset={6} className="max-h-[min(--spacing(96),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto w-64 rounded-[16px] p-1.5">
+      <DropdownMenuContent align="end" sideOffset={6} className="browser-menu max-h-[min(--spacing(96),var(--radix-dropdown-menu-content-available-height))] overflow-y-auto w-64 rounded-[16px] p-1.5">
         {bookmarks.map((bookmark) => (
           <DropdownMenuItem
             key={bookmark.id}
