@@ -38,14 +38,14 @@ def cursor_home(override: Optional[Path] = None) -> Path:
 
 def state_slug(project_path: Path) -> str:
     """The directory name ``~/.cursor/projects`` uses for a folder."""
-    return re.sub(r"[\\/]+", "-", str(project_path)).strip("-")
+    # ":" too: a Windows directory name cannot hold the drive colon.
+    return re.sub(r"[\\/:]+", "-", str(project_path)).strip("-")
 
 
 def _resolve_roots(first_token: str) -> list[Path]:
     """Where a slug's first token starts from on this platform."""
     if os.name != "nt":
         return [Path("/")]
-    # Windows slugs start with the drive, "C:" or "C".
     if re.fullmatch(r"[A-Za-z]:?", first_token):
         return [Path(f"{first_token[0]}:{os.sep}")]
     return []
@@ -140,8 +140,10 @@ def _workspace_name(slug: str, project_path: Optional[Path]) -> str:
         home_prefix = f"{state_slug(Path.home().resolve())}-"
     except (OSError, RuntimeError):
         home_prefix = ""
-    if home_prefix and slug.startswith(home_prefix):
-        return slug[len(home_prefix) :] or slug
+    # Case- and dash-run-insensitive: the drive letter's case is not fixed on Windows.
+    folded, prefix = re.sub("-+", "-", slug).lower(), re.sub("-+", "-", home_prefix).lower()
+    if prefix and folded.startswith(prefix):
+        return re.sub("-+", "-", slug)[len(prefix) :] or slug
     return slug
 
 

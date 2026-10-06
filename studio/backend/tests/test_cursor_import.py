@@ -97,12 +97,22 @@ def test_names_a_project_after_the_folder_it_resolves_to(tmp_path, monkeypatch):
 
 def test_names_a_project_from_its_slug_when_the_folder_is_gone(cursor_home, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: Path("/Users/me")))
-    write_transcript(cursor_home, "Users-me-deleted-long-ago", "s2", [turn("user", "hi")])
+    slug = f"{discovery.state_slug(Path('/Users/me').resolve())}-deleted-long-ago"
+    write_transcript(cursor_home, slug, "s2", [turn("user", "hi")])
 
     names = {w.slug: w.name for w in discovery.list_cursor_workspaces()}
 
     # Last token alone would give "ago".
-    assert names["Users-me-deleted-long-ago"] == "deleted-long-ago"
+    assert names[slug] == "deleted-long-ago"
+
+
+def test_a_windows_drive_slug_has_no_colon_and_strips_the_home_prefix(cursor_home, monkeypatch):
+    from pathlib import PureWindowsPath
+
+    assert discovery.state_slug(PureWindowsPath(r"C:\Users\me\app")) == "C-Users-me-app"
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: Path("/home/me")))
+    monkeypatch.setattr(Path, "resolve", lambda self, strict = False: self)
+    assert discovery._workspace_name("home-ME-gone-app", None) == "gone-app"
 
 
 def test_names_the_no_folder_window_for_what_it_is(cursor_home):
