@@ -246,6 +246,8 @@ enum BrowserEvent {
         needs_approval: bool,
         /// Marked as from the internet: false if that failed, absent where there is no mark.
         marked: Option<bool>,
+        /// A finished download's handle for Download history (browser_downloads.rs).
+        download_id: Option<String>,
     },
 }
 
@@ -800,7 +802,7 @@ can't be kept here. Download it in your system browser instead.";
 
 /// Publish a staged download under its name without ever replacing a file: a hard link fails if
 /// the name is taken, and keeps the internet mark, which belongs to the file.
-fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
+fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<PathBuf, String> {
     let (staged, name, marked) = {
         let mut inner = views.lock().unwrap();
         let entry = inner.staged.get_mut(id).ok_or("No such download")?;
@@ -854,10 +856,7 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
             Ok(()) => {
                 remove_staged_file(staged);
                 views.lock().unwrap().staged.remove(id);
-                return Ok(target
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or(name));
+                return Ok(target);
             }
             // Taken since it was picked: pick again.
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1306,6 +1305,7 @@ fn create_view<R: Runtime>(
                                 id: None,
                                 needs_approval: false,
                                 marked: None,
+                                download_id: None,
                             },
                         );
                         return false;
@@ -1324,6 +1324,7 @@ fn create_view<R: Runtime>(
                             id,
                             needs_approval: false,
                             marked: None,
+                            download_id: None,
                         },
                     );
                     true
@@ -1393,6 +1394,8 @@ fn create_view<R: Runtime>(
                         .as_deref()
                         .and_then(|p| std::fs::metadata(p).ok())
                         .map(|m| m.len());
+                    // Download history can reveal an ordinary file; a staged one only once kept.
+                    let saved = path.clone().filter(|_| success && staged.is_none());
                     let (name, path, id) = match staged {
                         // Its neutral path stays out of the panel; the name is the one it keeps.
                         Some((id, name)) => (name, None, Some(id)),
@@ -1411,11 +1414,14 @@ fn create_view<R: Runtime>(
                     let state = app.state::<BrowserViews>();
                     let inner = state.inner.lock().unwrap();
                     if inner.account_epoch == view_epoch {
+                        let download_id =
+                            saved.map(|saved| crate::browser_downloads::record(app, saved));
                         emit(
                             app,
                             BrowserEvent::Download {
                                 tab_id: download_tab.clone(),
                                 url: url.to_string(),
+                                download_id,
                                 needs_approval: success && id.is_some(),
                                 name,
                                 size,
@@ -1790,15 +1796,29 @@ pub fn browser_view_close<R: Runtime>(
     Ok(())
 }
 
-/// Keep a staged dangerous download under its name; returns the name it got.
+/// A kept download: the name it got, and its handle for Download history (browser_downloads.rs).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptDownload {
+    name: String,
+    download_id: String,
+}
+
+/// Keep a staged dangerous download under its name.
 #[tauri::command]
 pub fn browser_download_keep<R: Runtime>(
     webview: Webview<R>,
     state: State<'_, BrowserViews>,
     id: String,
-) -> Result<String, String> {
+) -> Result<KeptDownload, String> {
     require_main(&webview)?;
-    keep_staged(&state.inner, &id)
+    let kept = keep_staged(&state.inner, &id)?;
+    let name = kept
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let download_id = crate::browser_downloads::record(webview.app_handle(), kept);
+    Ok(KeptDownload { name, download_id })
 }
 
 /// Delete a staged dangerous download.
@@ -2425,7 +2445,10 @@ mod tests {
             std::fs::write(&staged, b"payload").unwrap();
             let views = Mutex::new(ViewsState::default());
             let id = stage(&views, &staged, "setup.exe", ready(Some(true)));
-            assert_eq!(keep_staged(&views, &id).unwrap(), "setup.exe");
+            assert_eq!(
+                keep_staged(&views, &id).unwrap(),
+                dir.path().join("setup.exe")
+            );
             assert!(!staged.exists());
             assert_eq!(
                 std::fs::read(dir.path().join("setup.exe")).unwrap(),
@@ -2444,7 +2467,10 @@ mod tests {
             std::fs::write(&staged, b"theirs").unwrap();
             let views = Mutex::new(ViewsState::default());
             let id = stage(&views, &staged, "setup.exe", ready(None));
-            assert_eq!(keep_staged(&views, &id).unwrap(), "setup (1).exe");
+            assert_eq!(
+                keep_staged(&views, &id).unwrap(),
+                dir.path().join("setup (1).exe")
+            );
             assert_eq!(
                 std::fs::read(dir.path().join("setup.exe")).unwrap(),
                 b"mine"

@@ -248,7 +248,7 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 
     projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
 
-    assert 'invoke<NativeSavedFile | null>("save_native_file", bytes, {' in helper
+    assert 'invoke<string | null>("save_native_file", bytes, {' in helper
     assert '"x-unsloth-default-name"' in helper
     assert "Array.from(new Uint8Array" not in helper
     assert 'invoke<NativeChatImport | null>("pick_native_chat_import")' in helper

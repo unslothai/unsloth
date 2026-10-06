@@ -19,7 +19,7 @@ Object.assign(globalThis, { localStorage, window: { localStorage, location: { pr
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 const safety = await import("../src/features/browser/download-safety.ts");
 const source = await import("../src/features/browser/download-source.ts");
-const { handleNativeDownload } = await import("../src/features/browser/native-downloads.ts");
+const { handleNativeDownload } = await import("../src/features/browser/native-download-prompts.ts");
 
 const fixture = JSON.parse(
   readFileSync(new URL("./fixtures/dangerous-download-names.json", import.meta.url), "utf8"),
@@ -46,10 +46,10 @@ test("a download's source keeps where it came from, not what can carry a secret"
 type Call = { command: string; args: Record<string, unknown> };
 type Shown = { message: string; options?: Record<string, unknown>; level: string };
 
-function harness(callResult: (command: string) => Promise<unknown> = async () => "setup.exe") {
+function harness(callResult: (command: string) => Promise<unknown> = async () => ({ name: "setup.exe", downloadId: "k0" })) {
   const calls: Call[] = [];
   const shown: Shown[] = [];
-  const recorded: { name: string; url: string | null }[] = [];
+  const recorded: { name: string; url: string | null; nativeId?: string }[] = [];
   const notify = Object.assign(
     (message: string, options?: Record<string, unknown>) => shown.push({ message, options, level: "info" }),
     {
@@ -64,7 +64,7 @@ function harness(callResult: (command: string) => Promise<unknown> = async () =>
       return callResult(command) as Promise<T>;
     }) as <T>(command: string, args: Record<string, unknown>) => Promise<T>,
     toast: notify,
-    record: (item: { name: string; url: string | null }) => void recorded.push(item),
+    record: (item: { name: string; url: string | null; nativeId?: string }) => void recorded.push(item),
     t: (key: string, values?: Record<string, unknown>) => `${key}:${values?.name ?? ""}`,
   };
   return { calls, shown, recorded, deps };
@@ -73,7 +73,7 @@ function harness(callResult: (command: string) => Promise<unknown> = async () =>
 const finished = { kind: "download" as const, tabId: "gone", url: "https://example.com/setup.exe", path: null, size: 10, done: true, success: true };
 
 test("a staged download asks once; Keep keeps it under the name the app gives back", async () => {
-  const h = harness(async () => "setup (1).exe");
+  const h = harness(async () => ({ name: "setup (1).exe", downloadId: "k1" }));
   handleNativeDownload({ ...finished, name: "setup.exe", id: "s1", needsApproval: true, marked: true }, h.deps as never);
   const prompt = h.shown.at(-1);
   assert.match(String(prompt?.options?.id), /^browser-download-s1-\d+$/);
@@ -84,7 +84,8 @@ test("a staged download asks once; Keep keeps it under the name the app gives ba
   (prompt?.options?.onDismiss as () => void)();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(h.calls, [{ command: "browser_download_keep", args: { id: "s1" } }]);
-  assert.deepEqual(h.recorded.map((item) => item.name), ["setup (1).exe"]);
+  // Under the name it got, with its handle so Download history can show it in the folder.
+  assert.deepEqual(h.recorded.map((item) => [item.name, item.nativeId]), [["setup (1).exe", "k1"]]);
   assert.equal(h.shown.at(-1)?.level, "success");
 });
 
@@ -140,9 +141,9 @@ test("a failed Discard asks again, so the staged file is not left behind", async
 
 test("an ordinary download from a closed tab is recorded; an unmarked one warns", () => {
   const h = harness();
-  handleNativeDownload({ ...finished, name: "notes.pdf", marked: true }, h.deps as never);
+  handleNativeDownload({ ...finished, name: "notes.pdf", marked: true, downloadId: "n1" }, h.deps as never);
   handleNativeDownload({ ...finished, name: "data.zip", marked: false }, h.deps as never);
-  assert.deepEqual(h.recorded.map((item) => item.name), ["notes.pdf", "data.zip"]);
+  assert.deepEqual(h.recorded.map((item) => [item.name, item.nativeId]), [["notes.pdf", "n1"], ["data.zip", undefined]]);
   assert.deepEqual(h.shown.map((item) => item.level), ["success", "warning"]);
   assert.equal(h.calls.length, 0);
 });
@@ -167,6 +168,7 @@ type Downloads = { saveBrowserDownload: (download: { blob: Blob; name: string; c
 
 function loadDownloads(answer: "save" | "cancel" | "dismiss", marked: boolean | null = null) {
   const saved: string[] = [];
+  const sources: (string | null | undefined)[] = [];
   const recorded: string[] = [];
   const prompts: string[] = [];
   const warnings: string[] = [];
@@ -181,20 +183,24 @@ function loadDownloads(answer: "save" | "cancel" | "dismiss", marked: boolean | 
   );
   const module = loadWithStubs<Downloads>(new URL("../src/features/browser/downloads.ts", import.meta.url), {
     "@/i18n": { getLocale: () => "en", translate: (key: string) => key },
-    "@/lib/native-files": {
-      saveWebDownload: async (_: Blob, name: string) => {
-        saved.push(name);
-        return { marked };
-      },
-      isDownloadCancelled: () => false,
-    },
+    // The desktop app: saves go through its dialog, which marks them.
+    "@/lib/api-base": { isTauri: true },
+    "@/lib/native-files": { DownloadCancelledError: Error, downloadFile: async () => undefined, isDownloadCancelled: () => false },
     "@/lib/toast": { toast },
     "./address": { fileNameFromUrl: () => "x", withBaseUrl: (html: string) => html },
     "./api": { fetchBrowserPage: async () => undefined },
     "./download-safety": safety,
+    "./native-downloads": {
+      saveNativeDownload: async (_: Blob, name: string, source?: string | null) => {
+        saved.push(name);
+        sources.push(source);
+        return { id: "n1", name, marked };
+      },
+    },
+    "./prefs-store": { useBrowserPrefsStore: { getState: () => ({ askWhereToSave: false }) } },
     "./history-store": { useBrowserHistoryStore: { getState: () => ({ recordDownload: (item: { name: string }) => void recorded.push(item.name) }) } },
   });
-  return { module, saved, recorded, prompts, warnings };
+  return { module, saved, sources, recorded, prompts, warnings };
 }
 
 test("a panel save of a file that runs code waits for Save anyway", async () => {
@@ -217,6 +223,8 @@ test("a panel save the system couldn't mark warns; a marked one does not", async
   const unmarked = loadDownloads("save", false);
   await unmarked.module.saveBrowserDownload({ blob, name: "notes.pdf", contentType: "", url: "https://example.com/notes.pdf" });
   assert.deepEqual([unmarked.recorded, unmarked.warnings], [["notes.pdf"], ["browser.downloadSafety.notMarked"]]);
+  // The page it came from goes to the app, which marks the file with it.
+  assert.deepEqual(unmarked.sources, ["https://example.com/notes.pdf"]);
   for (const marked of [true, null]) {
     const fine = loadDownloads("save", marked);
     await fine.module.saveBrowserDownload({ blob, name: "notes.pdf", contentType: "", url: null });

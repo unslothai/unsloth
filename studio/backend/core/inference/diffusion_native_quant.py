@@ -60,9 +60,10 @@ def native_linear_class():
             codes: Any = None,
             scale: Any = None,
         ):
-            """``codes`` / ``scale``: int8 codes [out, in] and per-row scales made elsewhere, stored as given
-            (``linear`` then supplies only the shapes, dtype and bias). With ``rot_group`` they are already
-            ConvRot-rotated, so the rotation is installed whether or not activations go int8."""
+            """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
+            scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
+            With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
+            not activations go int8."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -77,8 +78,13 @@ def native_linear_class():
                 else 0
             )
             if codes is not None:
-                if scheme != NATIVE_INT8 or codes.dtype != torch.int8:
-                    raise ValueError("pre-quantized native codes must be int8")
+                wanted = torch.int8 if scheme == NATIVE_INT8 else torch.float8_e4m3fn
+                if codes.dtype != wanted:
+                    raise ValueError(
+                        f"pre-quantized native {scheme} codes must be {str(wanted).replace('torch.', '')}"
+                    )
+                if rot_group and scheme != NATIVE_INT8:
+                    raise ValueError("a ConvRot rotation needs int8 codes")
                 self.rot_group = int(rot_group or 0)
                 if self.rot_group and self.in_features % self.rot_group:
                     raise ValueError(

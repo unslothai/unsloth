@@ -275,6 +275,7 @@ from .diffusion_denoiser_prequant import (
     prequant_artifact_label,
 )
 from .diffusion_comfy_quant import (
+    comfy_fp8_backend,
     comfy_int8_backend,
     comfy_torchao_quantized,
     load_comfy_quant_transformer,
@@ -6734,7 +6735,8 @@ class DiffusionBackend:
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
                             if comfy_scan is not None:
-                                # int8 codes and scales go to the int8 runtime unchanged where it runs; the rest dequantize.
+                                # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
+                                _comfy_offload = not plan_keeps_transformer_resident(plan)
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -6744,10 +6746,17 @@ class DiffusionBackend:
                                         target,
                                         fam.name,
                                         base,
-                                        offload = not plan_keeps_transformer_resident(plan),
+                                        offload = _comfy_offload,
+                                    ),
+                                    fp8_backend = comfy_fp8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = _comfy_offload,
                                     ),
                                     family = fam.name,
                                     target = target,
+                                    fast_accum = transformer_quant_fast_accum,
                                     logger = logger,
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
@@ -7767,6 +7776,27 @@ class DiffusionBackend:
             return None
 
     @staticmethod
+    def _comfy_single_file_resident_mib(
+        single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
+    ) -> Optional[int]:
+        """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
+        try:
+            from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
+
+            scan = scan_comfy_quant(single_file_path)
+            if scan is None or scan.problems:
+                return None
+            name = getattr(fam, "name", None)
+            return comfy_resident_mib(
+                single_file_path,
+                scan,
+                keep_int8 = comfy_int8_backend(target, name, base) is not None,
+                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+            )
+        except Exception:  # noqa: BLE001 - a planning aid: the file-size estimate stands
+            return None
+
+    @staticmethod
     def _gguf_offload_prequant_placement(
         replanned: Any,
         candidate: Any,
@@ -7905,6 +7935,7 @@ class DiffusionBackend:
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                     placement_device = None if seed_device == device else seed_device,
+                    family = fam.name,
                 )
                 check_cancelled()
                 if transformer is None:
@@ -8848,6 +8879,13 @@ class DiffusionBackend:
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
+                if not getattr(fam, "single_file_is_pipeline", False):
+                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
+                    _comfy_mib = self._comfy_single_file_resident_mib(
+                        single_file_path, fam, target, base
+                    )
+                    if _comfy_mib is not None:
+                        transformer_resident = _comfy_mib
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base's

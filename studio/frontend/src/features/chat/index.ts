@@ -25,6 +25,7 @@ export {
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
+  notifyChatProjectsUpdated,
   removeScanFolder,
   revealCachedModel,
   revealFineTunedModel,
@@ -90,7 +91,14 @@ export {
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
-export { PermissionModeDropdown, useActivePermissionMode } from "./permission-mode-select";
+export {
+  PermissionModeDropdown,
+  useActivePermissionMode,
+  useSandboxCapability,
+} from "./permission-mode-select";
+export { sandboxSwitchState } from "./sandbox-level";
+export { pickSandboxLevel } from "./sandbox-pick";
+export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {
   type SandboxSetupAction,
   type SandboxSetupJob,

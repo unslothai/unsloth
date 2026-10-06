@@ -14,6 +14,14 @@ import core.inference.diffusion_transformer_quant as tq
 from core.inference.diffusion_convrot import CONVROT_ATTR, is_rotated_linear
 
 
+def candidate_filenames_of(source):
+    """Studio's own containers in resolver order; the ComfyUI-format twins have their own tests."""
+    from core.inference.diffusion_prequant import candidate_filenames_of as names_of
+    from core.inference.diffusion_prequant import is_comfy_prequant_filename
+
+    return tuple(n for n in names_of(source) if not is_comfy_prequant_filename(n))
+
+
 @pytest.fixture(autouse = True)
 def _convrot_opted_in(monkeypatch):
     monkeypatch.setenv(tq.INT8_CONVROT_ENV, "1")
@@ -108,7 +116,7 @@ def test_convrot_spec_only_for_int8_on_declared_families():
 
 def test_int8_artifact_names_the_rotated_build_first_and_keeps_the_plain_one():
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import resolve_prequant_source
 
     fam = detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1")
     names = candidate_filenames_of(resolve_prequant_source(fam, "int8"))
@@ -125,7 +133,7 @@ def test_int8_artifact_names_the_rotated_build_first_and_keeps_the_plain_one():
 def test_without_the_opt_in_int8_is_plain_everywhere(monkeypatch):
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import resolve_prequant_source
 
     fam = detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1")
     names = candidate_filenames_of(resolve_prequant_source(fam, "int8"))
@@ -304,7 +312,9 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
         detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1"), "int8"
     )
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    assert asked == ["Qwen-Image-2.1-INT8-ConvRot.safetensors"]
+    # only the first name is asked (the ComfyUI-format twin of the rotated build); the unreachable Hub then
+    # answers from the cache
+    assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
     plain.unlink()
     with pytest.raises(LocalEntryNotFoundError):
         pq._resolve_checkpoint_path(source, None, None)
@@ -446,7 +456,7 @@ def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(
     monkeypatch, env, rotated_first
 ):
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import resolve_prequant_source
 
     if env is None:
         monkeypatch.delenv(tq.INT8_CONVROT_ENV)
@@ -503,7 +513,7 @@ def test_zimage_rotated_artifact_is_only_named_in_its_own_repo(monkeypatch):
     import dataclasses
 
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import resolve_prequant_source
 
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     fam = dataclasses.replace(

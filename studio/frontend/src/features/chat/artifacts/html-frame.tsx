@@ -394,7 +394,7 @@ export function ArtifactHtmlFrame({
         <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={t("settings.chat.artifacts.blockedTitle")}
             className={NOTICE}
           >
@@ -468,7 +468,7 @@ export function ArtifactHtmlFrame({
         <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={errorTitle}
             className={NOTICE}
           >
@@ -529,7 +529,7 @@ export function ArtifactHtmlFrame({
       {consoleOpen ? (
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
-          dir={locale === "ar" ? "rtl" : "ltr"}
+          dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
           className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
           <div

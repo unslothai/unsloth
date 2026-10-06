@@ -792,6 +792,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # Import ledger: without it a re-import cannot tell a turn deleted in Studio from a newly appended one.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_import_sessions (
+            source TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turns_imported INTEGER NOT NULL,
+            revision TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source, session_id)
+        ) WITHOUT ROWID
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS prompt_entries (
@@ -2550,6 +2562,18 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
             "UPDATE chat_threads SET forked_from_thread_id = ? WHERE id = ?",
             (source_id, row["id"]),
         )
+
+
+def lift_chat_thread_tombstones(thread_ids: Iterable[str]) -> None:
+    """Forget these deleted thread ids, so an import into an emptied Studio can recreate them."""
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "DELETE FROM chat_thread_tombstones WHERE id = ?", [(i,) for i in set(thread_ids)]
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
@@ -5409,5 +5433,44 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
                 inserted += 1
         conn.commit()
         return len(ids), inserted
+    finally:
+        conn.close()
+
+
+def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int, str]]:
+    """(turns brought over, source revision they came from), or None if never imported."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT turns_imported, revision FROM external_import_sessions"
+            " WHERE source = ? AND session_id = ?",
+            (source, session_id),
+        ).fetchone()
+        return None if row is None else (row["turns_imported"], row["revision"])
+    finally:
+        conn.close()
+
+
+def record_external_import_mark(
+    source: str,
+    session_id: str,
+    turns: int,
+    revision: str = "",
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, session_id) DO UPDATE SET
+                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                    ELSE excluded.turns_imported END,
+                revision = excluded.revision
+            """,
+            (source, session_id, int(turns), revision),
+        )
+        conn.commit()
     finally:
         conn.close()

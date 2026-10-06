@@ -4,12 +4,11 @@
 import { isTauri } from "@/lib/api-base";
 import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 
-const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
-const NATIVE_FILE_SOURCE_HEADER = "x-unsloth-source-url";
+export const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
+/** A web page a panel save came from: the desktop app marks the file as downloaded from the internet. */
+export const NATIVE_FILE_SOURCE_HEADER = "x-unsloth-source-url";
 const NATIVE_FILE_SAVE_TOKEN_HEADER = "x-unsloth-save-token";
 const NATIVE_FILE_CHUNK_BYTES = 8 * 1024 * 1024;
-/** `marked` is false where the volume keeps no internet mark, null where nothing marks it. */
-type NativeSavedFile = { name: string; marked: boolean | null };
 export class DownloadCancelledError extends Error {
   constructor() {
     super("Save cancelled.");
@@ -21,7 +20,7 @@ export function isDownloadCancelled(error: unknown): boolean {
   return error instanceof DownloadCancelledError;
 }
 
-function encodeNativeFilename(filename: string): string {
+export function encodeNativeFilename(filename: string): string {
   const bytes = new TextEncoder().encode(filename);
   let binary = "";
   for (const byte of bytes) {
@@ -92,19 +91,6 @@ export async function downloadFile(
   filename: string,
   mimeType = "application/octet-stream",
 ): Promise<void> {
-  await saveWebDownload(content, filename, mimeType);
-}
-
-/**
- * downloadFile for a file from a web page: the desktop app marks it as downloaded from the
- * internet with that source. `marked` is false where the volume keeps no mark, null where nothing marks it.
- */
-export async function saveWebDownload(
-  content: string | Blob | Uint8Array,
-  filename: string,
-  mimeType = "application/octet-stream",
-  sourceUrl?: string | null,
-): Promise<{ marked: boolean | null }> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     const bytes =
@@ -113,16 +99,15 @@ export async function saveWebDownload(
         : content instanceof Blob
           ? new Uint8Array(await content.arrayBuffer())
           : content;
-    const saved = await invoke<NativeSavedFile | null>("save_native_file", bytes, {
+    const savedPath = await invoke<string | null>("save_native_file", bytes, {
       headers: {
         [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(filename),
-        ...(sourceUrl ? { [NATIVE_FILE_SOURCE_HEADER]: encodeNativeFilename(sourceUrl) } : {}),
       },
     });
-    if (saved === null) {
+    if (savedPath === null) {
       throw new DownloadCancelledError();
     }
-    return { marked: saved.marked };
+    return;
   }
 
   const browserContent =
@@ -133,7 +118,7 @@ export async function saveWebDownload(
       : new Blob([browserContent], { type: mimeType });
 
   browserDownload(blob, filename);
-  return { marked: null };
+  return;
 }
 
 /** Save a Blob through bounded IPC chunks in Tauri and retain normal downloads on web. */

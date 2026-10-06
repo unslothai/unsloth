@@ -15,7 +15,7 @@ import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
-import type { NativeDownloadEvent } from "./native-downloads";
+import type { NativeDownloadEvent } from "./native-download-prompts";
 import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
@@ -101,7 +101,7 @@ function onNativeEvent(event: NativeEvent): void {
   // A download outlives its page: the tab may have closed or moved on, and a staged file still needs an answer.
   // Loaded on the first download; one module promise keeps a download's events in order.
   if (event.kind === "download") {
-    void import("./native-downloads").then(({ handleNativeDownload }) => {
+    void import("./native-download-prompts").then(({ handleNativeDownload }) => {
       const record = useBrowserHistoryStore.getState().recordDownload;
       handleNativeDownload(event, { call, toast, record, t });
     });

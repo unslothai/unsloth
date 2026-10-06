@@ -7,13 +7,22 @@ import { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store"
 
 export { ClearBrowsingDataDialog } from "./clear-data-dialog";
 export { BrowserToggleButton } from "./browser-toggle";
-export { saveLinkAs } from "./downloads";
+export { canAskWhereToSave, saveLinkAs } from "./downloads";
+export { BookmarksFileError, exportBookmarksFile, importBookmarksFile } from "./bookmarks-io";
+export { MAX_BOOKMARKS } from "./bookmarks-store";
+export { canScreenshot } from "./screenshot-support";
 export { browserTabType, textFileKind } from "./file-kind";
 export { SEARCH_ENGINES, type SearchEngineId } from "./address";
 export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-support";
 export { pinBrowserPage } from "./resize-pin";
-export { type BookmarksToolbarMode, useBrowserPrefsStore } from "./prefs-store";
+export {
+  type AnnotationScreenshots,
+  type BookmarksToolbarMode,
+  DEFAULT_ZOOM_STEPS,
+  HISTORY_RETENTION_DAYS,
+  useBrowserPrefsStore,
+} from "./prefs-store";
 export { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store";
 
 export { browserPanelAvailable, setBrowserPanelAvailable } from "./panel-availability";

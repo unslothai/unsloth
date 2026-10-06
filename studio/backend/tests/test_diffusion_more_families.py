@@ -435,7 +435,14 @@ def test_qwen_image_2512_prequant_filenames_match_its_repo():
         assert source is not None
         assert source.location == "unsloth/Qwen-Image-2512-FP8"
         names = list(candidate_filenames_of(source))
-        assert names[0] == safetensors_name, names
+        # the int8 ComfyUI twin (Studio's int8 codes bit for bit) leads; Studio's own containers follow unchanged
+        own = [n for n in names if not n.endswith("-ComfyUI.safetensors")]
+        assert own[0] == safetensors_name, names
+        assert names[0] == (
+            safetensors_name.replace(".safetensors", "-ComfyUI.safetensors")
+            if scheme == "int8"
+            else safetensors_name
+        ), names
         assert pickle_name in names[1:], names
         # And the legacy repo-agnostic spelling stays last, for a repo predating the model-named one.
         assert names[-1] == f"transformer_{scheme}.pt", names

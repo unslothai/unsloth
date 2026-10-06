@@ -4,7 +4,7 @@
 import { ChevronDown, Hand, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -27,6 +27,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
@@ -35,18 +36,20 @@ import { cn } from "@/lib/utils";
 import {
   ComputerTerminal01Icon,
   Folder01Icon,
+  HelpCircleIcon,
   InternetIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  capabilityPending,
+  type SandboxCapability,
+  cachedSandboxCapability,
   loadSandboxCapability,
   onSandboxCapabilityChange,
   sandboxReady,
 } from "./api/sandbox-capability";
+import { sandboxSwitchState } from "./sandbox-level";
 import {
-  pickSandboxedMode as pickSandboxedModeWith,
-  samePickIsIgnored,
+  pickSandboxLevel,
 } from "./sandbox-pick";
 import {
   SandboxSetupDialog,
@@ -120,28 +123,92 @@ export function permissionModeOption(mode: PermissionMode) {
   );
 }
 
-/** Menu heading. `learnMore` links to the fuller explanation in Settings. */
-export function PermissionMenuLabel({ learnMore }: { learnMore: boolean }) {
-  const openSettings = useSettingsDialogStore((s) => s.openDialog);
+/** Menu heading. `sandboxControls` adds the Sandbox Low/High switch; Settings shows its own row.
+ *  `onOsSandboxMissing` opens the install popup; by default the one at the chat-page root. */
+export function PermissionMenuLabel({
+  sandboxControls,
+  onOsSandboxMissing,
+}: {
+  sandboxControls: boolean;
+  onOsSandboxMissing?: () => void;
+}) {
+  const t = useT();
   return (
     <DropdownMenuLabel className="flex items-center justify-between gap-3">
-      <span>Tool call permissions</span>
-      {learnMore ? (
-        // A menu item, so arrow keys reach it and selecting closes the menu.
-        <DropdownMenuPrimitive.Item
-          className="shrink-0 cursor-pointer rounded-sm underline underline-offset-2 outline-hidden hover:text-foreground focus-visible:text-foreground data-[highlighted]:text-foreground"
-          // Deferred past the menu's focus restore.
-          onSelect={() =>
-            setTimeout(
-              () => openSettings("general", { scrollTarget: "general-permissions" }),
-              0,
-            )
-          }
-        >
-          Learn more
-        </DropdownMenuPrimitive.Item>
-      ) : null}
+      <span>{t("settings.general.permissions.sectionTitle")}</span>
+      {sandboxControls ? <SandboxLevelMenuSwitch onOsSandboxMissing={onOsSandboxMissing} /> : null}
     </DropdownMenuLabel>
+  );
+}
+
+/** Switch on = High (OS sandboxing), off = Low (software sandboxing). A checkbox item, so arrow
+ *  keys reach it and Enter or Space toggles it. It keeps the menu open, except when High may need
+ *  the setup popup, which cannot open over the menu. The question mark next to it opens Settings. */
+function SandboxLevelMenuSwitch({ onOsSandboxMissing }: { onOsSandboxMissing?: () => void }) {
+  const t = useT();
+  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  const { permissionMode } = useAccountPermissionMode();
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(sandboxLevel, permissionMode, capability);
+  const descriptionId = useId();
+  const help = t("settings.sandbox.levelHelp");
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <DropdownMenuPrimitive.CheckboxItem
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={descriptionId}
+        onSelect={(event) => {
+          const known = cachedSandboxCapability();
+          if (checked || (known !== null && sandboxReady(known))) event.preventDefault();
+        }}
+        onCheckedChange={(next) => {
+          void pickSandboxLevel(next === true ? "high" : "low", setSandboxLevel, () =>
+            // Deferred past the menu's focus restore.
+            setTimeout(onOsSandboxMissing ?? (() => setSandboxSetupOpen(true)), 0),
+          );
+        }}
+        className="flex shrink-0 cursor-pointer items-center gap-2 rounded-sm font-normal outline-hidden hover:text-foreground focus-visible:text-foreground data-[disabled]:cursor-not-allowed data-[highlighted]:text-foreground"
+      >
+        <span>{t("settings.sandbox.levelLabel")}</span>
+        <span className="min-w-[2.25em] text-right text-muted-foreground">
+          {checked ? t("settings.sandbox.levelHigh") : t("settings.sandbox.levelLow")}
+        </span>
+        {/* Presentation only: the item carries the state and the keyboard. */}
+        <Switch
+          size="sm"
+          checked={checked}
+          disabled={disabled}
+          tabIndex={-1}
+          aria-hidden={true}
+          className="pointer-events-none"
+        />
+      </DropdownMenuPrimitive.CheckboxItem>
+      <DropdownMenuPrimitive.Item
+        aria-label={help}
+        title={help}
+        className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-hidden hover:text-foreground focus-visible:text-foreground data-[highlighted]:text-foreground"
+        // Deferred past the menu's focus restore.
+        onSelect={() =>
+          setTimeout(
+            () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
+            0,
+          )
+        }
+      >
+        <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={2} className="size-3.5" />
+      </DropdownMenuPrimitive.Item>
+      <span id={descriptionId} className="sr-only">
+        {disabled
+          ? t("settings.sandbox.levelFullAccessNote")
+          : checked
+            ? t("settings.sandbox.levelHighShort")
+            : t("settings.sandbox.levelLowShort")}
+      </span>
+    </span>
   );
 }
 
@@ -160,23 +227,19 @@ function useAccountPermissionMode() {
   };
 }
 
-/** False while unknown or when the server is too old to say; follows later reads and resets. */
-function useSandboxUnavailable(): boolean {
-  const [unavailable, setUnavailable] = useState(false);
+/** Null while unknown, when the server is too old to say, or when `enabled` is false (Low needs no
+ *  OS sandbox answer, and the read probes it); follows later reads and resets. */
+export function useSandboxCapability(enabled: boolean): SandboxCapability | null {
+  const [capability, setCapability] = useState<SandboxCapability | null>(null);
   useEffect(() => {
+    if (!enabled) return;
     let live = true;
     // Only the newest read applies: an older answer resolving last must not undo a newer one.
     let reads = 0;
     const read = () => {
       const id = ++reads;
-      void loadSandboxCapability().then((capability) => {
-        if (live && id === reads) {
-          setUnavailable(
-            capability !== null &&
-              !capabilityPending(capability) &&
-              !sandboxReady(capability),
-          );
-        }
+      void loadSandboxCapability().then((next) => {
+        if (live && id === reads) setCapability(next);
       });
     };
     read();
@@ -185,37 +248,17 @@ function useSandboxUnavailable(): boolean {
       live = false;
       stop();
     };
-  }, []);
-  return unavailable;
-}
-
-export function pickSandboxedMode(
-  setPermissionMode: (mode: PermissionMode) => void,
-  onRequestSandboxSetup: () => void,
-): Promise<void> {
-  return pickSandboxedModeWith(
-    setPermissionMode,
-    onRequestSandboxSetup,
-    () => useChatRuntimeStore.getState().permissionMode,
-    undefined,
-    (onChange) =>
-      useChatRuntimeStore.subscribe((state, previous) => {
-        if (state.permissionMode !== previous.permissionMode) onChange();
-      }),
-  );
+  }, [enabled]);
+  return enabled ? capability : null;
 }
 
 export function PermissionModeMenuItems({
   onRequestFullAccess,
-  onRequestSandboxSetup,
 }: {
   onRequestFullAccess: () => void;
-  onRequestSandboxSetup: () => void;
 }) {
-  const t = useT();
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
-  const sandboxUnavailable = useSandboxUnavailable();
 
   return (
     <>
@@ -223,13 +266,11 @@ export function PermissionModeMenuItems({
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
-            if (samePickIsIgnored(option.value, permissionMode, sandboxUnavailable)) {
-              return;
-            }
+            if (option.value === permissionMode) return;
+            // Run automatically applies at once: without an OS sandbox the switch reads Low and
+            // risky Python and Terminal calls still ask.
             if (option.value === "full") {
               onRequestFullAccess();
-            } else if (option.value === "off") {
-              void pickSandboxedMode(setPermissionMode, onRequestSandboxSetup);
             } else {
               setPermissionMode(option.value);
             }
@@ -245,11 +286,6 @@ export function PermissionModeMenuItems({
             <span className="text-xs font-normal leading-snug text-muted-foreground">
               {option.description}
             </span>
-            {option.value === "off" && sandboxUnavailable ? (
-              <span className="text-xs font-normal leading-snug text-muted-foreground">
-                {t("sandboxSetup.unavailable")}
-              </span>
-            ) : null}
           </span>
           {permissionMode === option.value ? (
             <HugeiconsIcon
@@ -342,8 +378,8 @@ export function FullAccessConfirmContent({
           className="cursor-pointer text-foreground underline underline-offset-2"
           onClick={() => {
             onClose();
-            openSettings("general", {
-              scrollTarget: "general-permissions",
+            openSettings("sandbox", {
+              scrollTarget: "sandbox-permissions",
               opener: returnFocusRef.current,
             });
           }}
@@ -389,18 +425,18 @@ export function FullAccessConfirmDialog({
 }
 
 /** Select-style dropdown (like the MCP composer menu) for picking the permission level. Used in
- *  General settings and the chat settings sheet. */
+ *  Settings > Sandbox and the chat settings sheet. */
 export function PermissionModeDropdown({
   side = "bottom",
   align = "end",
   triggerClassName,
-  learnMore = true,
+  sandboxControls = true,
 }: {
   side?: "top" | "bottom";
   align?: "start" | "end";
   triggerClassName?: string;
-  /** Off in Settings, which already shows the full explanation. */
-  learnMore?: boolean;
+  /** Off in Settings, which shows the level and the setup in their own rows. */
+  sandboxControls?: boolean;
 } = {}) {
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -431,15 +467,15 @@ export function PermissionModeDropdown({
           className="w-[calc(330px*var(--ui-space-scale,1))]"
           avoidCollisions={true}
         >
-          <PermissionMenuLabel learnMore={learnMore} />
+          <PermissionMenuLabel
+            sandboxControls={sandboxControls}
+            onOsSandboxMissing={() => setSandboxSetupOpen(true)}
+          />
           <PermissionModeMenuItems
             // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
             // dropdown grabbing focus back.
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
-            }
-            onRequestSandboxSetup={() =>
-              setTimeout(() => setSandboxSetupOpen(true), 0)
             }
           />
         </DropdownMenuContent>
@@ -468,7 +504,6 @@ export function PermissionModeComposerPill({
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
-  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
 
@@ -500,14 +535,11 @@ export function PermissionModeComposerPill({
         avoidCollisions={true}
         className="unsloth-plus-menu w-[calc(330px*var(--ui-space-scale,1))]"
       >
-        <PermissionMenuLabel learnMore={true} />
+        <PermissionMenuLabel sandboxControls={true} />
         <PermissionModeMenuItems
           // Defer past the menu-close focus restoration (see PermissionModeDropdown).
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
-          }
-          onRequestSandboxSetup={() =>
-            setTimeout(() => setSandboxSetupOpen(true), 0)
           }
         />
       </DropdownMenuContent>

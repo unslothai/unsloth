@@ -5947,12 +5947,32 @@ def _cmd_reading(command: str) -> str:
     return _CMD_CONTROL_RE.sub(" & ", text)
 
 
+# The request's sandbox level while a call is classified: Low runs the Terminal on the host shell,
+# so the classifier must not probe for (or assume) the isolated cmd profile.
+_classifying_sandbox_level: "ContextVar[str | None]" = ContextVar(
+    "unsloth_classifying_sandbox_level", default = None
+)
+
+
+@contextlib.contextmanager
+def classifying_under(sandbox_level: "str | None"):
+    token = _classifying_sandbox_level.set(sandbox_level)
+    try:
+        yield
+    finally:
+        _classifying_sandbox_level.reset(token)
+
+
+# Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
+_CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
+
+
 def _reads_differently_under_cmd(command: str) -> bool:
-    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    """True when cmd.exe will run ``command`` and would split it unlike bash."""
     return (
         sys.platform == "win32"
         and _cmd_reading(command) != command
-        and _terminal_profile() == "cmd_isolated"
+        and _terminal_profile(_classifying_sandbox_level.get() == "low") in _CMD_PROFILES
     )
 
 
@@ -10246,7 +10266,9 @@ def _profile_for_request() -> str:
     return profile
 
 
-def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+def apply_terminal_profile_for_request(
+    tools: list[dict], sandbox_level: "str | None" = None
+) -> list[dict]:
     """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
     first call can block on the MXC probe, so async callers run it in a worker thread; later calls
     reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
@@ -10255,7 +10277,8 @@ def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
         for t in tools or ()
     ):
         return tools
-    return apply_terminal_profile_description(tools, _profile_for_request())
+    profile = _terminal_profile(True) if sandbox_level == "low" else _profile_for_request()
+    return apply_terminal_profile_description(tools, profile)
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -22162,7 +22185,8 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    profile = _terminal_profile(disable_sandbox)
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
@@ -22171,9 +22195,9 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        if profile == "cmd_isolated":
+        if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
-            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
+            # ' does not quote, so screen every reading.
             unescaped = command.replace("^", "")
             blocked = set().union(
                 *(

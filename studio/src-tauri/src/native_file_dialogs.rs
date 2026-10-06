@@ -31,15 +31,6 @@ pub struct NativeImportedFile {
     content: String,
 }
 
-/// A saved export: the name shown to the user, and for a web download whether it was marked as
-/// from the internet (false on volumes that keep no mark; null when nothing marks it).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeSavedFile {
-    name: String,
-    marked: Option<bool>,
-}
-
 /// A picked chat import addressed by an opaque token instead of a path.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -260,7 +251,7 @@ fn saved_file_name(path: &Path) -> String {
 fn save_selected_file(
     selected_path: Option<PathBuf>,
     content: &[u8],
-) -> Result<Option<String>, String> {
+) -> Result<Option<PathBuf>, String> {
     let Some(path) = selected_path else {
         return Ok(None);
     };
@@ -272,7 +263,7 @@ fn save_selected_file(
     temporary
         .persist(&path)
         .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
-    Ok(Some(saved_file_name(&path)))
+    Ok(Some(path))
 }
 
 fn native_save_chunk(body: &tauri::ipc::InvokeBody) -> Result<Cow<'_, [u8]>, String> {
@@ -458,8 +449,20 @@ pub async fn save_native_file(
     webview: tauri::Webview,
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
-) -> Result<Option<NativeSavedFile>, String> {
+) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
+    Ok(save_request_with_dialog(&app, &request)
+        .await?
+        .map(|(path, _)| saved_file_name(&path)))
+}
+
+/// Save the request body where the user picks; None if cancelled. Keep the path off the webview.
+/// With a web source header the file is marked as downloaded from it: whether that worked (false on
+/// volumes that keep no mark), None when nothing marks it.
+pub(crate) async fn save_request_with_dialog(
+    app: &AppHandle,
+    request: &tauri::ipc::Request<'_>,
+) -> Result<Option<(PathBuf, Option<bool>)>, String> {
     let encoded_name = request
         .headers()
         .get(NATIVE_FILE_NAME_HEADER)
@@ -490,16 +493,13 @@ pub async fn save_native_file(
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
         .map(local_dialog_path)
         .transpose()?;
-    // `saved` is only the basename shown to the user; mark the full path.
-    let destination = selected_path.clone();
-    let Some(name) = save_selected_file(selected_path, content.as_ref())? else {
+    let Some(path) = save_selected_file(selected_path, content.as_ref())? else {
         return Ok(None);
     };
-    let marked = match (destination, source.as_ref()) {
-        (Some(path), Some(source)) => crate::browser_webview::mark_downloaded(&path, source),
-        _ => None,
-    };
-    Ok(Some(NativeSavedFile { name, marked }))
+    let marked = source
+        .as_ref()
+        .and_then(|source| crate::browser_webview::mark_downloaded(&path, source));
+    Ok(Some((path, marked)))
 }
 
 #[tauri::command]

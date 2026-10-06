@@ -1,116 +1,44 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Downloads from the desktop app's native views. A file that runs code arrives under a neutral name
-// (src-tauri/src/browser_webview.rs) and only takes its own once the reader keeps it.
+// Desktop only: the app keeps each download's path (browser_downloads.rs) and the page gets an
+// opaque id to reveal the file or check it still exists.
 
-import type { TranslationKey } from "@/i18n";
-import type { InterpolationValues } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { NATIVE_FILE_NAME_HEADER, NATIVE_FILE_SOURCE_HEADER, encodeNativeFilename } from "@/lib/native-files";
 
-export type NativeDownloadEvent = {
-  kind: "download";
-  tabId: string;
-  url: string;
-  name: string;
-  path: string | null;
-  size: number | null;
-  done: boolean;
-  success: boolean;
-  /** Set for a download staged until the reader keeps it. */
-  id?: string | null;
-  needsApproval?: boolean;
-  /** Whether the file was marked as from the internet; null where nothing marks it. */
-  marked?: boolean | null;
-};
-
-type ToastAction = { label: string; onClick: () => void };
-type ToastOptions = {
-  id?: string;
-  duration?: number;
-  description?: string;
-  action?: ToastAction;
-  cancel?: ToastAction;
-  onDismiss?: () => void;
-};
-type Notify = {
-  (message: string, options?: ToastOptions): unknown;
-  success: (message: string, options?: ToastOptions) => unknown;
-  error: (message: string, options?: ToastOptions) => unknown;
-  warning: (message: string, options?: ToastOptions) => unknown;
-};
-
-export type NativeDownloadDeps = {
-  call: <T>(command: string, args: Record<string, unknown>) => Promise<T>;
-  toast: Notify;
-  record: (item: { name: string; url: string | null; size: number; contentType: string }) => void;
-  t: (key: TranslationKey, values?: InterpolationValues) => string;
-};
-
-// Ids with a keep or discard under way, so a second prompt can't act on one twice. Done ones leave:
-// their prompt's own `answered` keeps its late close inert.
-const settled = new Set<string>();
-// Each prompt gets its own toast id: sonner removes a clicked toast's id a moment later, which would
-// also take a follow-up prompt shown under that id.
-let prompts = 0;
-
-export function handleNativeDownload(event: NativeDownloadEvent, deps: NativeDownloadDeps): void {
-  const { toast, t } = deps;
-  const id = event.id ?? null;
-  if (!event.done) {
-    toast(t(id ? "browser.downloadSafety.stagedDownloading" : "browser.native.downloading", { name: event.name }));
-    return;
-  }
-  if (!event.success) {
-    toast.error(t("browser.native.downloadFailed", { name: event.name }));
-    return;
-  }
-  if (id && event.needsApproval) {
-    askToKeep(event, id, deps);
-    return;
-  }
-  deps.record({ name: event.name, url: event.url, size: event.size ?? 0, contentType: "" });
-  if (event.marked === false) toast.warning(t("browser.downloadSafety.notMarked", { name: event.name }));
-  else toast.success(t("browser.native.downloaded", { name: event.name }));
+async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const core = await import("@tauri-apps/api/core");
+  return core.invoke<T>(command, args);
 }
 
-function askToKeep(
-  event: NativeDownloadEvent,
-  id: string,
-  deps: NativeDownloadDeps,
-  failure?: { title: "keepFailed" | "discardFailed"; detail: string },
-): void {
-  const { toast, t } = deps;
-  // This prompt answers once; an earlier prompt's late close stays inert after a retry.
-  let answered = false;
-  // Asked again with why the last answer failed; the file is still staged.
-  const retry = (failed: "keepFailed" | "discardFailed") => (error: unknown) => {
-    settled.delete(id);
-    askToKeep(event, id, deps, { title: failed, detail: error instanceof Error ? error.message : String(error) });
-  };
-  const discard = () => {
-    if (answered || settled.has(id)) return;
-    answered = true;
-    settled.add(id);
-    deps.call("browser_download_discard", { id }).then(() => settled.delete(id), retry("discardFailed"));
-  };
-  const keep = () => {
-    if (answered || settled.has(id)) return;
-    answered = true;
-    settled.add(id);
-    deps.call<string>("browser_download_keep", { id }).then((name) => {
-      settled.delete(id);
-      deps.record({ name, url: event.url, size: event.size ?? 0, contentType: "" });
-      toast.success(t("browser.native.downloaded", { name }));
-    }, retry("keepFailed"));
-  };
-  prompts += 1;
-  toast(t(`browser.downloadSafety.${failure?.title ?? "keepPrompt"}`, { name: event.name }), {
-    id: `browser-download-${id}-${prompts}`,
-    duration: Number.POSITIVE_INFINITY,
-    description: failure?.detail,
-    // Keep stays offered after a failed discard, never after a refused keep.
-    action: failure?.title === "keepFailed" ? undefined : { label: t("browser.downloadSafety.keep"), onClick: keep },
-    cancel: { label: t("browser.downloadSafety.discard"), onClick: discard },
-    onDismiss: discard,
+/** A panel save: `marked` is false where the volume keeps no internet mark, null where nothing marks it. */
+export type SavedNativeDownload = { id: string; name: string; marked: boolean | null };
+
+/** Save through the desktop app's dialog; the saved name and its id, or null if cancelled. A web
+ *  source has the app mark the file as downloaded from the internet. */
+export async function saveNativeDownload(blob: Blob, name: string, source?: string | null): Promise<SavedNativeDownload | null> {
+  const core = await import("@tauri-apps/api/core");
+  return core.invoke<SavedNativeDownload | null>("browser_download_save", new Uint8Array(await blob.arrayBuffer()), {
+    headers: {
+      [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name),
+      ...(source ? { [NATIVE_FILE_SOURCE_HEADER]: encodeNativeFilename(source) } : {}),
+    },
   });
+}
+
+export function revealNativeDownload(id: string): Promise<void> {
+  return invoke<void>("browser_download_reveal", { id });
+}
+
+/** Whether each download is still where it was saved; all true outside the desktop app. */
+export async function nativeDownloadsExist(ids: string[]): Promise<boolean[]> {
+  if (!isTauri || ids.length === 0) return ids.map(() => true);
+  return invoke<boolean[]>("browser_download_exists", { ids });
+}
+
+/** Forget downloads taken off the history; the files stay. */
+export function forgetNativeDownloads(ids: string[]): void {
+  if (!isTauri || ids.length === 0) return;
+  void invoke<void>("browser_download_forget", { ids }).catch(() => undefined);
 }
