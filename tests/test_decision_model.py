@@ -886,8 +886,10 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         ours_same_dtype, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         model.head = fp32_head
     for row, z in enumerate(theirs):
-        assert torch.allclose(ours_same_dtype[row, : len(z)].float(), z, atol = 2e-2, rtol = 2e-2)
-        assert torch.allclose(ours[row, : len(z)].float(), z, atol = 0.1)
+        same = ours_same_dtype[row, : len(z)].float()
+        assert torch.allclose(same, z, atol = 2e-2, rtol = 2e-2), (row, (same - z).abs().max(), same, z)
+        fp32 = ours[row, : len(z)].float()
+        assert torch.allclose(fp32, z, atol = 0.1), (row, (fp32 - z).abs().max(), fp32, z)
 
     items, report = FastDecisionModel.build_dataset(_clef_rows(64), processor, model)
     assert report["skipped"] == 0 and len(items) == 64 and len(items[0]["targets"]) == 4
@@ -919,7 +921,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     )
     trainer.train()
     after = FastDecisionModel.evaluate(model, processor, holdout)
-    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
+    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"], (losses, before, after)
     calibration = FastDecisionModel.calibrate(model, processor, holdout)
     assert "accuracy" in calibration
     # Fitted to the gold labels, so the calibrated confidence tracks being right.
@@ -947,15 +949,18 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
-    # Saved in bf16, so the reload rounds the trained weights.
-    # Compared as served probabilities: the folded head is trained / folded, and a small folded
-    # temperature would magnify bf16 rounding if the logits were compared directly.
+    # Saved in bf16, so the reload rounds the trained weights. The folded head serves trained / folded,
+    # and training is not bit-reproducible on GPU, so folded (0.28 to 0.78 over 10 runs) and with it
+    # the logit scale vary per run; bf16 rounding grows with that scale, so the bound is relative to
+    # it. Over 10 B200 runs the error peaked at 1.6% of the scale (a fixed 0.02 bound on the served
+    # probabilities reached 0.018 in 15); a fold left out or applied twice is off by >= 20%.
     mask = trained > -1e3
-    served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
-    reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
-    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    expected = (trained / folded).float()[mask]
+    error = (again.float()[mask] - expected).abs().max().item()
+    scale = expected.abs().max().item()
+    assert error <= 0.03 * scale + 0.05, (error, scale, folded)
     for row, z in enumerate(theirs):
-        assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+        assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
