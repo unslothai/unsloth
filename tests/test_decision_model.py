@@ -1315,3 +1315,27 @@ def test_lean_lora_forward_matches_peft(checkpoint, scaling):
     with model.encoder.disable_adapter():
         x = torch.randn(2, 5, layer.in_features, device = device)
         torch.testing.assert_close(layer(x), layer.base_layer(x))
+
+
+def test_compiled_layers_use_plain_sdpa_and_put_the_attention_back(checkpoint):
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+
+    from unsloth.models import _decision_fast
+
+    model, _ = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    config = model.encoder.config
+    assert config._attn_implementation == "sdpa"
+    with _decision_fast._compilable_attention(model, False):
+        assert config._attn_implementation == "sdpa"
+    with _decision_fast._compilable_attention(model, True):
+        assert config._attn_implementation == "unsloth_decision_sdpa"
+    assert config._attn_implementation == "sdpa"
+    q, k, v = (torch.randn(2, 4, 6, 8) for _ in range(3))
+    mask = torch.ones(2, 1, 6, 6, dtype = torch.bool)
+    mask[1, ..., 4:] = False
+    module = model.encoder.layers[0].attn
+    ours, _ = _decision_fast._encoder_sdpa(module, q, k, v, mask, scaling = 0.5)
+    reference, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.5)
+    torch.testing.assert_close(ours, reference)

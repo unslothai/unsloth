@@ -19,6 +19,32 @@ __all__ = ["compiled_encoder"]
 COMPILE_MIN_FORWARDS = 4000
 
 
+def _encoder_sdpa(module, query, key, value, attention_mask, dropout = 0.0, scaling = None, **kwargs):
+    # transformers' SDPA attention without unsloth_zoo's wrappers, which carry a __module__ that
+    # torch 2.11's dynamo cannot guard, so the compiled layers fell back to eager on Linux.
+    out = torch.nn.functional.scaled_dot_product_attention(
+        query, key, value, attn_mask = attention_mask, dropout_p = dropout, scale = scaling
+    )
+    return out.transpose(1, 2).contiguous(), None
+
+
+@contextlib.contextmanager
+def _compilable_attention(model, enabled: bool):
+    config = model.encoder.config
+    original = config._attn_implementation
+    if enabled and original == "sdpa":
+        from transformers import AttentionInterface, AttentionMaskInterface
+        from transformers.masking_utils import sdpa_mask
+
+        AttentionInterface.register("unsloth_decision_sdpa", _encoder_sdpa)
+        AttentionMaskInterface.register("unsloth_decision_sdpa", sdpa_mask)
+        config._attn_implementation = "unsloth_decision_sdpa"
+    try:
+        yield
+    finally:
+        config._attn_implementation = original
+
+
 def _encoder_layers(model):
     if not isinstance(getattr(model, "head", None), nn.TransformerEncoder):
         return []
@@ -83,22 +109,23 @@ def compiled_encoder(
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []
-    for layer in layers:
-        layer.compile(dynamic = True)
-    if layers:
+    with _compilable_attention(model, bool(layers)):
+        for layer in layers:
+            layer.compile(dynamic = True)
+        if layers:
+            try:
+                _warm_up(model, amp_dtype)
+            except Exception as error:
+                for layer in layers:
+                    layer._compiled_call_impl = None
+                torch._dynamo.reset()
+                print(
+                    f"Unsloth: compiling the Laya encoder failed ({type(error).__name__}), training eagerly."
+                )
+                layers = []
+        model.__dict__["_unsloth_decision_compiled"] = bool(layers)
         try:
-            _warm_up(model, amp_dtype)
-        except Exception as error:
+            yield bool(layers)
+        finally:
             for layer in layers:
                 layer._compiled_call_impl = None
-            torch._dynamo.reset()
-            print(
-                f"Unsloth: compiling the Laya encoder failed ({type(error).__name__}), training eagerly."
-            )
-            layers = []
-    model.__dict__["_unsloth_decision_compiled"] = bool(layers)
-    try:
-        yield bool(layers)
-    finally:
-        for layer in layers:
-            layer._compiled_call_impl = None
