@@ -290,6 +290,7 @@ def _install_export_backend_stubs(monkeypatch):
 
     utils_model_config = sys.modules["utils.models.model_config"]
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None
+    utils_model_config.load_mlx_adapter_tokenizer = lambda tokenizer, *args, **kwargs: tokenizer
 
     utils_paths = sys.modules["utils.paths"]
     utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)

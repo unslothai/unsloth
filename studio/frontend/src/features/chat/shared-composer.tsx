@@ -3101,19 +3101,19 @@ export function SharedComposer({
                           setPreserveThinking(false);
                         }}
                       >
-                        <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                          className={cn(
-                            "unsloth-tick size-4",
-                            effectiveReasoningVisualEnabled && "opacity-0",
-                          )}
-                        />
                         {formatReasoningDisabledLabel(
                           effectiveSupportsReasoningOff,
                           isExternalOpenAIReasoning,
                           checkpoint,
                         )}
+                        <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                          className={cn(
+                            "unsloth-tick ms-auto size-4",
+                            effectiveReasoningVisualEnabled && "opacity-0",
+                          )}
+                        />
                       </DropdownMenuItem>
                     )}
                     {effectiveReasoningEffortLevels
@@ -3132,21 +3132,21 @@ export function SharedComposer({
                             }
                           }}
                         >
+                          {formatReasoningEffortLabel(
+                            level,
+                            externalSelection?.modelId,
+                          )}
                           <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                             className={cn(
-                              "unsloth-tick size-4",
+                              "unsloth-tick ms-auto size-4",
                               !(
                                 effectiveReasoningVisualEnabled &&
                                 displayedEffort === level
                               ) && "opacity-0",
                             )}
                           />
-                          {formatReasoningEffortLabel(
-                            level,
-                            externalSelection?.modelId,
-                          )}
                         </DropdownMenuItem>
                       ))}
                   </>
@@ -3166,15 +3166,15 @@ export function SharedComposer({
                         }
                       }}
                     >
+                      Thinking
                       <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                         className={cn(
-                          "unsloth-tick size-4",
+                          "unsloth-tick ms-auto size-4",
                           !effectiveReasoningEnabled && "opacity-0",
                         )}
                       />
-                      Thinking
                     </DropdownMenuItem>
                   )
                 )}
@@ -3192,15 +3192,15 @@ export function SharedComposer({
                       }
                     }}
                   >
+                    Preserve thinking
                     <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                       className={cn(
-                        "unsloth-tick size-4",
+                        "unsloth-tick ms-auto size-4",
                         !preserveThinking && "opacity-0",
                       )}
                     />
-                    Preserve thinking
                   </DropdownMenuItem>
                 )}
               </NonModalDropdownMenu>

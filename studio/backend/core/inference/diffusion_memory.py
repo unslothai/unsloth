@@ -1003,6 +1003,11 @@ def estimate_safetensors_dense_mib(
     return storage_mib
 
 
+# qwen-image-layered's layer_count / layer_resolution (pinned equal by a test; no families import here).
+_QWEN_LAYERED_LAYERS = 2
+_QWEN_LAYERED_CANVAS = 640
+
+
 def estimate_image_runtime_mib(
     *,
     width: Optional[int],
@@ -1018,6 +1023,10 @@ def estimate_image_runtime_mib(
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
     cond = max(0, int(condition_pixels or 0))
+    if width is None and height is None and "qwen-image-layered" in (family or "").lower():
+        # Planning call: reserve what the generation guard charges a decomposition, not one 1024x1024 frame.
+        w = h = _QWEN_LAYERED_CANVAS
+        cond = (_QWEN_LAYERED_LAYERS + 1) * w * h
     pixel_scale = ((w * h + cond) * batch) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT)
     return max(1024, int(8192 * max(0.25, pixel_scale) * _family_activation_multiplier(family)))
 

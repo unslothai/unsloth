@@ -140,8 +140,9 @@ def test_detect_family_matches_reject_and_alias_by_segment():
     # Supported edit families still resolve (edit / kontext are whole tokens).
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF").name == "qwen-image-edit"
     assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF").name == "flux.1-kontext"
+    assert detect_family("unsloth/Qwen-Image-Layered-GGUF").name == "qwen-image-layered"
     # Unsupported variants sharing only a base arch keyword still reject.
-    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
+    assert detect_family("unsloth/FLUX.1-dev-Layered-GGUF") is None
     assert detect_family("unsloth/Qwen-Image-2512-Inpaint") is None
 
 
@@ -153,7 +154,10 @@ def test_detect_family_edit_keyword_scoped_to_basename():
     assert detect_family_for_pick("/models/edit", "Z-Image-Turbo-Q4.gguf").name == "z-image"
     assert detect_family_for_pick("/models/inpaint", "qwen-image-2512-Q4.gguf").name == "qwen-image"
     # A genuinely unsupported variant keyword in the FILENAME still rejects.
-    assert detect_family_for_pick("/models/misc", "Qwen-Image-Layered-Q4.gguf") is None
+    assert detect_family_for_pick("/models/misc", "Z-Image-Turbo-Layered-Q4.gguf") is None
+    assert detect_family_for_pick("/models/misc", "Qwen-Image-Layered-Q4.gguf").name == (
+        "qwen-image-layered"
+    )
 
 
 def test_detect_family_override():
@@ -2363,10 +2367,15 @@ def test_resolve_base_repo_maps_a_mirrored_card_tag_back_to_the_vendor_id(monkey
     )
 
 
-def test_detect_family_rejects_layered():
-    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so reject at load, not at the first step.
-    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
-    assert detect_family("unsloth/qwen_image_layered") is None
+def test_detect_family_routes_layered_to_its_own_pipeline():
+    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so it resolves to its own family rather than
+    # to qwen-image; a layered variant of a family without one is still rejected at load.
+    assert (
+        detect_family("unsloth/Qwen-Image-Layered-GGUF").pipeline_class
+        == "QwenImageLayeredPipeline"
+    )
+    assert detect_family("unsloth/qwen_image_layered").name == "qwen-image-layered"
+    assert detect_family("unsloth/FLUX.1-Layered") is None
 
 
 def test_failed_load_rolls_back_eager_patches(fake_runtime, tmp_path, monkeypatch):

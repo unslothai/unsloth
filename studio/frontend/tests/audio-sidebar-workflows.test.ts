@@ -130,6 +130,36 @@ test("More opens Audio's workflows in a submenu that keeps the flyout open on th
   assert.doesNotMatch(submenu, /max-h/);
 });
 
+test("clicking Audio in More opens the page, and the open page keeps the row out of More", () => {
+  const submenu = block(
+    SIDEBAR,
+    "function AudioMoreSubmenu(",
+    "export function AppSidebar()",
+  );
+  // preventing the click stops Radix from opening the submenu; keys keep the parent behavior.
+  assert.match(
+    submenu,
+    /onClick=\{\(event\) => \{\s*if \(disabled\) return;\s*event\.preventDefault\(\);\s*onOpen\(\);\s*\}\}/,
+  );
+  assert.doesNotMatch(submenu, /onKeyDown/);
+
+  const more = block(SIDEBAR, "{overflowNavIds.map((id) => {", "<MoreMenuItem");
+  assert.match(
+    more,
+    /onOpen=\{\(\) => \{\s*setMoreOpen\(false\);\s*row\.onClick\(\);\s*\}\}/,
+  );
+  // omitting a workflow request preserves the page's current workflow.
+  assert.match(
+    SIDEBAR,
+    /audio: \{[\s\S]*?onClick: \(\) => \{\s*navigateFromRow\(\{ to: "\/audio" \}\);\s*closeMobileIfOpen\(\);\s*\}/,
+  );
+
+  assert.match(
+    SIDEBAR,
+    /const \{ inline: inlineNavIds, overflow: overflowNavIds \} = placeNavRows\(\s*sidebarNav\.map\(\(item\) => \(\{ id: item\.id, pinned: navRowPinned\(item\) \}\)\),\s*navRows\.audio\.active \? "audio" : null,\s*\);/,
+  );
+});
+
 test("the Audio row stays lit while hovered, like Images", () => {
   const css = readSrc("index.css");
   assert.match(

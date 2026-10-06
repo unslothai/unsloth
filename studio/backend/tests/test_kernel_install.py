@@ -105,12 +105,19 @@ def test_causal_conv1d_has_no_wheel_off_linux_cuda(env):
 
 
 class _Runner:
-    def __init__(self, loads):
+    def __init__(
+        self,
+        loads,
+        capability = "9 0",
+    ):
         self.loads = list(loads)
+        self.capability = capability
         self.calls = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
+        if cmd[1] == "-c" and "get_device_capability" in cmd[2]:
+            return SimpleNamespace(returncode = 0, stdout = self.capability)
         if cmd[1] == "-c":
             return SimpleNamespace(returncode = 0 if self.loads.pop(0) else 1, stdout = "")
         return SimpleNamespace(returncode = 0, stdout = "")
@@ -306,3 +313,86 @@ def test_console_entry_drops_an_unwritable_ssl_keylog_file(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "ignoring SSLKEYLOGFILE" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        (
+            _env("2.11.0+cu130", "13.0"),
+            "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/"
+            "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
+        ),
+        (
+            _env("2.13.0+cu130", "13.0"),
+            "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
+            "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
+        ),
+        (_env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"), None),
+        (_env("2.11.0+cpu", ""), None),
+    ],
+)
+def test_flash_attn_resolution(env, expected):
+    assert kernel_install.resolve_wheel_url("flash_attn", env) == expected
+
+
+@pytest.mark.parametrize("capability", ["7 5", "None"])
+def test_flash_attn_is_skipped_below_sm80(capability, capsys):
+    run = _Runner([], capability = capability)
+    assert (
+        kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
+    )
+    assert run.installer_calls == []
+    assert "skipping flash_attn" in capsys.readouterr().out
+
+
+def test_flash_attn_installs_on_sm80_and_newer(uv):
+    uv(False)
+    run = _Runner([False, True], capability = "8 0")
+    assert (
+        kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
+    )
+    assert run.installer_calls[0][-1].endswith(
+        "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
+
+
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        ([], ["xformers", "flash_attn", "causal_conv1d", "mamba_ssm"]),
+        (["mamba_ssm", "causal_conv1d", "mamba_ssm"], ["causal_conv1d", "mamba_ssm"]),
+    ],
+)
+def test_main_installs_all_by_default_in_dependency_order(monkeypatch, argv, expected):
+    order = []
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+    monkeypatch.setattr(
+        kernel_install, "install_kernel", lambda name, env, dry_run = False: order.append(name) or 0
+    )
+    assert kernel_install.main(argv) == 0
+    assert order == expected
+
+
+def test_flash_attn_without_a_wheel_never_probes_the_gpu():
+    run = _Runner([])
+    assert kernel_install.install_kernel("flash_attn", None, run = run, exists = lambda url: True) == 0
+    assert run.calls == []
+
+
+def test_capability_probe_timeout_counts_as_no_gpu():
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    assert kernel_install._gpu_capability(run) is None
+
+
+def test_capability_probe_takes_the_best_visible_gpu():
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["check"], seen["timeout"] = cmd[2], kwargs.get("timeout")
+        return SimpleNamespace(returncode = 0, stdout = "9 0\n")
+
+    assert kernel_install._gpu_capability(run) == (9, 0)
+    assert "max(torch.cuda.get_device_capability(i)" in seen["check"] and seen["timeout"]

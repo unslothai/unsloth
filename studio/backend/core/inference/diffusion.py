@@ -723,7 +723,23 @@ def _compile_shape_dims(
     if init_pil is None or not _is_source_sized(workflow, family):
         return int(width), int(height)
     iw, ih = init_pil.size
+    if getattr(family, "layer_count", 0):
+        return _layered_canvas(family, (iw, ih))
     return int(iw), int(ih)
+
+
+def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
+    """The (width, height) QwenImageLayeredPipeline decomposes at: the ``layer_resolution`` square's area at the input's
+    aspect ratio, each side rounded to 32 (``calculate_dimensions`` in the pipeline). The input image's own size only
+    sets the ratio."""
+    import math
+
+    iw, ih = size
+    area = float(getattr(family, "layer_resolution", 640)) ** 2
+    ratio = float(iw) / float(max(1, ih))
+    width = math.sqrt(area * ratio)
+    height = width / ratio
+    return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
 
 
 # Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match
@@ -755,6 +771,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
+        "qwen/qwen-image-layered",
         # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
         # not a family at all. Detection resolves it, the version gate passes once the pinned main
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
@@ -1403,6 +1420,49 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
             continue
         state_dict[name] = have.reshape(want_shape)
     return state_dict
+
+
+def _dequantize_gguf_outside_linears(
+    model: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> int:
+    """Dequantise GGUF-packed params outside GGUFLinear (only those dequantise per forward; numpy has no bf16, so BF16
+    stays raw bytes too). Qwen-Image-Layered's BF16 addition_t_embedding otherwise fails the first step with 3072 vs
+    6144. A few KB, kept dense at ``dtype``. Returns the count."""
+    try:
+        import torch
+        from diffusers.quantizers.gguf.utils import (
+            GGUFLinear,
+            GGUFParameter,
+            dequantize_gguf_tensor,
+        )
+    except Exception:  # noqa: BLE001 - no GGUF support, nothing packed to fix
+        return 0
+    named_modules = getattr(model, "named_modules", None)
+    if not callable(named_modules):
+        return 0
+    fixed: list = []
+    for module_name, module in named_modules():
+        if isinstance(module, GGUFLinear):
+            continue
+        for name, param in list(module.named_parameters(recurse = False)):
+            if not isinstance(param, GGUFParameter):
+                continue
+            dense = dequantize_gguf_tensor(param).to(dtype)
+            setattr(
+                module,
+                name,
+                torch.nn.Parameter(dense.as_subclass(torch.Tensor), requires_grad = False),
+            )
+            fixed.append(f"{module_name}.{name}" if module_name else name)
+    if fixed and logger is not None:
+        logger.info(
+            "diffusion.gguf: dequantised %d non-linear parameter(s): %s",
+            len(fixed),
+            ", ".join(fixed[:8]),
+        )
+    return len(fixed)
 
 
 def _install_gguf_dim_restore(logger: Any) -> None:
@@ -6622,6 +6682,8 @@ class DiffusionBackend:
                             transformer = transformer_cls.from_single_file(
                                 single_file_path, **sf_kwargs
                             )
+                            if kind == "gguf":
+                                _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
 
                             if fam.name == KREA2_FAMILY_NAME:
@@ -9546,7 +9608,10 @@ class DiffusionBackend:
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
-                    init_pil = decode_b64_image(init_image, mode = "RGB")
+                    # RGB for the instruction editors; the layered VAE reads the alpha as a fourth channel.
+                    init_pil = decode_b64_image(
+                        init_image, mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
+                    )
                 elif requested_workflow == "edit":
                     if not getattr(fam, "unified_edit", False):
                         raise ValueError(
@@ -9732,6 +9797,12 @@ class DiffusionBackend:
                             )
                         else:
                             kwargs["guidance_schedule"] = None
+                layer_count = int(getattr(fam, "layer_count", 0) or 0)
+                if layer_count:
+                    if "layers" in call_params:
+                        kwargs["layers"] = layer_count
+                    if "resolution" in call_params:
+                        kwargs["resolution"] = int(getattr(fam, "layer_resolution", 640))
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
@@ -9786,8 +9857,9 @@ class DiffusionBackend:
                         kwargs["control_mode"] = cn_mode
 
                 # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
-                # cap; the OOM backoff below halves a failed chunk.
-                chunks = chunk_jobs(jobs, batch_size)
+                # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
+                # per-prompt layer stride is only right for one).
+                chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -9798,8 +9870,7 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
-                    # past what the measured placement reserved: stream resident groups again for this call
-                    request_condition_pixels = (
+                    guard_condition_pixels = (
                         int(
                             (1 + len(ref_extra))
                             * ref_resolution
@@ -9809,16 +9880,20 @@ class DiffusionBackend:
                         if ref_resolution is not None
                         else 0
                     )
+                    if layer_count:
+                        # layers + 1 extra canvas-sized frames beside the output-sized one.
+                        guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
+                    # past what the measured placement reserved: stream resident groups again for this call
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
-                        condition_pixels = request_condition_pixels,
+                        condition_pixels = guard_condition_pixels,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
-                        if request_condition_pixels > 0 and extra_mib > releasable_mib:
+                        if guard_condition_pixels > 0 and extra_mib > releasable_mib:
                             # The guard credits a conditioned request nothing the load reserved: hook the resident
                             # transformer so this request can stream part of it.
                             hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
@@ -9839,16 +9914,7 @@ class DiffusionBackend:
                         # resolution" is actionable there; the rest size from the upload alone and get the upload-side
                         # remedy.
                         source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = (
-                            int(
-                                (1 + len(ref_extra))
-                                * ref_resolution
-                                * ref_resolution
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if ref_resolution is not None
-                            else 0
-                        ),
+                        condition_pixels = guard_condition_pixels,
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
                         quadratic_attention = _quadratic_attention(
@@ -10155,8 +10221,14 @@ class DiffusionBackend:
                             settle_compile_fallback(state, state.pipe, logger)
                         if cancel.is_set():
                             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                        images.extend(out)
-                        per_image_seeds.extend(s for _, s in chunk)
+                        if layer_count:
+                            # One list of layers per input; each layer is an output image with its input's seed.
+                            for (_, s), layers_out in zip(chunk, out):
+                                images.extend(layers_out)
+                                per_image_seeds.extend(s for _ in layers_out)
+                        else:
+                            images.extend(out)
+                            per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
                         steps_done[0] += steps
                 except BaseException:
