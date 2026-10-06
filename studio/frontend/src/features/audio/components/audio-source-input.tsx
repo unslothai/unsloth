@@ -347,7 +347,7 @@ export function AudioSourceInput({
                     fileRef.current?.click();
                   }}
                 >
-                  Try another file
+                  {tab === "record" ? "Upload a file" : "Try another file"}
                 </Button>
                 <Button
                   type="button"

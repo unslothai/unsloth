@@ -128,8 +128,10 @@ def test_the_new_companions_stay_fetch_only_and_bases_stay_loadable():
     assert "black-forest-labs/flux.1-schnell" not in companions
 
 
-def test_layered_and_inpaint_variants_are_still_refused():
-    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
+def test_inpaint_and_other_layered_variants_are_still_refused():
+    # Qwen-Image-Layered has a family of its own; a layered or inpaint variant of any other family does not.
+    assert detect_family("unsloth/Qwen-Image-Layered-GGUF").name == "qwen-image-layered"
+    assert detect_family("someone/FLUX.1-dev-layered-GGUF") is None
     assert detect_family("someone/FLUX.1-dev-inpaint-GGUF") is None
 
 

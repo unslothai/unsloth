@@ -195,20 +195,21 @@ def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
 
 @router.patch("/items")
 def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subject)) -> dict:
-    fingerprint = library.fingerprint(body.id)
-    if fingerprint is None and library.path_derived(body.id):
-        raise HTTPException(status_code = 404, detail = "Item not found")
-    try:
-        library_db.update_entry(
-            body.id,
-            name = body.name.strip() if body.name else None,
-            favorite = body.favorite,
-            folder_id = body.folderId,
-            move = "folderId" in body.model_fields_set,
-            fingerprint = fingerprint,
-        )
-    except KeyError:
-        raise HTTPException(status_code = 404, detail = "Folder not found")
+    with library.overlay_write():
+        fingerprint = library.fingerprint(body.id)
+        if fingerprint is None and library.path_derived(body.id):
+            raise HTTPException(status_code = 404, detail = "Item not found")
+        try:
+            library_db.update_entry(
+                body.id,
+                name = body.name.strip() if body.name else None,
+                favorite = body.favorite,
+                folder_id = body.folderId,
+                move = "folderId" in body.model_fields_set,
+                fingerprint = fingerprint,
+            )
+        except KeyError:
+            raise HTTPException(status_code = 404, detail = "Folder not found")
     return {"ok": True}
 
 
