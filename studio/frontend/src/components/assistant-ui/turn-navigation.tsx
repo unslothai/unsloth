@@ -24,11 +24,15 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
+import { create } from "zustand";
 
-import { completeProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
+import {
+  completeProgressiveMounts,
+  hasPendingProgressiveMounts,
+} from "@/components/assistant-ui/progressive-messages";
 import {
   threadTurns,
-  turnNumberAt,
   turnOpenerIdAt,
 } from "@/components/assistant-ui/thread-turns";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -41,11 +45,15 @@ import {
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { prefersReducedMotion } from "@/features/settings";
 import { useT } from "@/i18n";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
 
-const MIN_NAVIGATOR_TURNS = 3;
+const MIN_NAVIGATOR_TURNS = 5;
 // how far an overflowing rail's ends fade out, scaled by how much is hidden past each end
 const RAIL_FADE_PX = 24;
+const RAIL_LEAD = 1.15;
+// clearance kept between the rail and the thread's top and bottom
+const RAIL_INSET_PX = 48;
 const PROMPT_PREVIEW_CHARS = 240;
 const REPLY_PREVIEW_CHARS = 480;
 // long enough to cross from a marker onto the card
@@ -53,6 +61,18 @@ const PREVIEW_HIDE_DELAY_MS = 150;
 const PYRAMID_REACH = 3;
 // math blocks above the target settle from placeholder heights once reached, so the jump re-aligns briefly
 const JUMP_ALIGN_FRAMES = 4;
+
+// keyed by thread (compare panes mount several). Built from the rail's one scan per thread and only
+// marked settled after a switch finishes mounting, so labels and rail add nothing to the switch itself
+interface TurnIndex {
+  turns: ReadonlyMap<string, number>;
+  settled: boolean;
+}
+const useTurnIndexStore = create<Record<string, TurnIndex>>(() => ({}));
+
+function useTurnIndexSettled(threadKey: string): boolean {
+  return useTurnIndexStore((state) => state[threadKey]?.settled === true);
+}
 
 function useIsTurnBookmarked(
   threadId: string | undefined,
@@ -65,12 +85,15 @@ function useIsTurnBookmarked(
   );
 }
 
-function useTurnBookmark(): { bookmarked: boolean; toggle: () => void } | null {
+// ownTurn: a user message opens its own turn, so its action bar skips the message scan
+function useTurnBookmark(
+  ownTurn: boolean,
+): { bookmarked: boolean; toggle: () => void } | null {
   const incognito = useChatRuntimeStore((state) => state.incognito);
   // one primitive selector: it runs on every store write (keystrokes, streamed tokens) for every mounted message
   const key = useAuiState(
     ({ thread, message, threadListItem }) =>
-      `${threadListItem.remoteId ?? ""}\n${turnOpenerIdAt(thread.messages, message.index) ?? ""}`,
+      `${threadListItem.remoteId ?? ""}\n${ownTurn ? message.id : (turnOpenerIdAt(thread.messages, message.index) ?? "")}`,
   );
   const [threadId, openerId] = key.split("\n");
   const bookmarked = useIsTurnBookmarked(threadId, openerId);
@@ -91,7 +114,7 @@ export const BookmarkTurnButton: FC = () => {
 
 const BookmarkTurnButtonInner: FC = () => {
   const t = useT();
-  const turnBookmark = useTurnBookmark();
+  const turnBookmark = useTurnBookmark(true);
   if (!turnBookmark) {
     return null;
   }
@@ -123,7 +146,7 @@ const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
   className,
 }) => {
   const t = useT();
-  const turnBookmark = useTurnBookmark();
+  const turnBookmark = useTurnBookmark(false);
   if (!turnBookmark) {
     return null;
   }
@@ -149,16 +172,20 @@ export const UserTurnLabel: FC = () => {
 
 const UserTurnLabelText: FC = () => {
   const t = useT();
+  // constant per message, so it never rescans thread.messages
   const key = useAuiState(
-    ({ thread, message, threadListItem }) =>
-      `${turnNumberAt(thread.messages, message.index)}\n${threadListItem.remoteId ?? ""}\n${message.id}`,
+    ({ message, threadListItem }) =>
+      `${threadListItem.id}\n${threadListItem.remoteId ?? ""}\n${message.id}`,
   );
-  const [turnText, threadId, messageId] = key.split("\n");
-  const turn = Number(turnText);
+  const [threadKey, threadId, messageId] = key.split("\n");
+  const turn = useTurnIndexStore((state) =>
+    state[threadKey]?.settled
+      ? (state[threadKey].turns.get(messageId) ?? 0)
+      : 0,
+  );
   const bookmarked = useIsTurnBookmarked(threadId, messageId);
-  if (turn === 0) {
-    return null;
-  }
+  // the box mounts with the message and only its text fills in once a switch settles: a late box
+  // would resize every message and restyle the whole document
   return (
     <div
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
@@ -173,7 +200,7 @@ const UserTurnLabelText: FC = () => {
           aria-label={t("turns.bookmarked")}
         />
       )}
-      <span>{t("turns.label", { number: turn })}</span>
+      <span>{turn ? t("turns.label", { number: turn }) : "\u00a0"}</span>
     </div>
   );
 };
@@ -183,9 +210,55 @@ export const TurnNavigator: FC<{
   viewportRef: RefObject<HTMLElement | null>;
 }> = memo(({ viewportRef }) => {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <TurnRail viewportRef={viewportRef} /> : null;
+  return enabled ? <TurnIndexPublisher viewportRef={viewportRef} /> : null;
 });
 TurnNavigator.displayName = "TurnNavigator";
+
+const TurnIndexPublisher: FC<{
+  viewportRef: RefObject<HTMLElement | null>;
+}> = ({ viewportRef }) => {
+  const threadKey = useAuiState(({ threadListItem }) => threadListItem.id);
+  const signature = useAuiState(
+    ({ thread }) => threadTurns(thread.messages).signature,
+  );
+  const settled = useTurnIndexSettled(threadKey);
+  useEffect(() => {
+    const turns = new Map(
+      signature
+        ? signature.split("\n").map((id, index) => [id, index + 1])
+        : [],
+    );
+    useTurnIndexStore.setState((state) => ({
+      [threadKey]: { turns, settled: state[threadKey]?.settled ?? false },
+    }));
+  }, [threadKey, signature]);
+  useEffect(() => {
+    let cancel = () => {};
+    const waitForSettle = () => {
+      cancel = scheduleIdleTask(() => {
+        if (hasPendingProgressiveMounts()) {
+          waitForSettle();
+          return;
+        }
+        useTurnIndexStore.setState((state) => ({
+          [threadKey]: {
+            turns: state[threadKey]?.turns ?? new Map(),
+            settled: true,
+          },
+        }));
+      });
+    };
+    waitForSettle();
+    return () => {
+      cancel();
+      useTurnIndexStore.setState((state) => {
+        const { [threadKey]: _, ...rest } = state;
+        return rest;
+      }, true);
+    };
+  }, [threadKey]);
+  return settled ? <TurnRail viewportRef={viewportRef} /> : null;
+};
 
 function alignTurnTop(
   viewport: HTMLElement,
@@ -207,31 +280,107 @@ function alignTurnTop(
 }
 
 // keep the core wider than one frame of travel, or a thin line strobes
-const SHINE_GRADIENT = {
-  light:
-    "linear-gradient(110deg, transparent 34%, rgb(0 0 0 / 0.03) 40%, rgb(255 255 255 / 0.3) 45.5%, rgb(255 255 255 / 0.8) 48.5%, rgb(255 255 255) 50%, rgb(255 255 255 / 0.8) 51.5%, rgb(255 255 255 / 0.3) 54.5%, rgb(0 0 0 / 0.03) 60%, transparent 66%)",
-  dark: "linear-gradient(110deg, transparent 34%, rgb(255 255 255 / 0.03) 40%, rgb(255 255 255 / 0.1) 45.5%, rgb(255 255 255 / 0.28) 48.5%, rgb(255 255 255 / 0.36) 50%, rgb(255 255 255 / 0.28) 51.5%, rgb(255 255 255 / 0.1) 54.5%, rgb(255 255 255 / 0.03) 60%, transparent 66%)",
+const SHINE_MS = 1100;
+const SHINE_FRAMES = 24;
+const SHINE_SLANT = Math.tan((32 * Math.PI) / 180);
+// nested bands, outer to inner: half-width as a share of the bubble width, and the opacity reached inside it
+const SHINE_LAYERS = [0.25, 0.17, 0.11, 0.07, 0.0375, 0.018];
+const SHINE_ALPHA = {
+  light: [0.04, 0.12, 0.3, 0.55, 0.8, 1],
+  dark: [0.015, 0.04, 0.1, 0.18, 0.28, 0.36],
 };
+let shineNonce = 0;
+const shineOwner = new WeakMap<HTMLElement, number>();
 
+// cubic-bezier(0.4, 0, 0.2, 1) at time t
+function shineEase(t: number): number {
+  const bez = (s: number, a: number, b: number) =>
+    3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (bez(mid, 0.4, 0.2) < t) lo = mid;
+    else hi = mid;
+  }
+  return bez((lo + hi) / 2, 0, 1);
+}
+
+// the band is drawn flat on the bubble "unrolled", then wrapped onto a rounded glass surface: the rounded
+// rim (radius r) unrolls to a quarter circle's arc, so near the edges the band bends and thins as it turns away
 function shineTurn(target: HTMLElement): void {
   const bubble = target.querySelector<HTMLElement>(".aui-user-message-content");
   if (!bubble || prefersReducedMotion()) {
     return;
   }
-  const shine = {
-    backgroundImage: document.documentElement.classList.contains("dark")
-      ? SHINE_GRADIENT.dark
-      : SHINE_GRADIENT.light,
-    backgroundSize: "250% 100%",
-    backgroundRepeat: "no-repeat",
-  };
-  bubble.animate(
-    [
-      { ...shine, backgroundPosition: "100% 0" },
-      { ...shine, backgroundPosition: "0% 0" },
-    ],
-    { duration: 1100, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
+  const w = bubble.offsetWidth;
+  const h = bubble.offsetHeight;
+  const r = Math.min(
+    Number.parseFloat(getComputedStyle(bubble).borderTopLeftRadius) || 0,
+    w / 2,
+    h / 2,
   );
+  // each axis unrolls on its own: the full height curves like a cylinder (a flat face plus a thin rim kinks
+  // the band on tall bubbles), and the ends wrap over their radius. Unrolled deeper than a true quarter
+  // circle on pills, so the bend reads at chat-bubble sizes
+  const half = h / 2;
+  const depth = r >= half - 1 ? Math.PI : Math.PI * 0.6;
+  const reachY = half * depth;
+  const arc = r * Math.PI;
+  const ease = (d: number, span: number) =>
+    Math.sin((Math.min(Math.max(d, -span), span) / span) * (Math.PI / 2));
+  const wrap = (x: number, y: number): string => {
+    let sx = x;
+    if (x < r) sx = r - r * ease(r - x, arc);
+    else if (x > w - r) sx = w - r + r * ease(x - (w - r), arc);
+    const sy = half + half * ease(y - half, reachY);
+    return `${sx.toFixed(1)},${sy.toFixed(1)}`;
+  };
+  const top = half - reachY;
+  const bottom = half + reachY;
+  // band sized off a capped width, so a long prompt gets the same streak as a short one
+  const size = Math.min(w, 240);
+  const rows = 14;
+  const band = (centre: number, half: number): string => {
+    const left: string[] = [];
+    const right: string[] = [];
+    for (let i = 0; i <= rows; i++) {
+      const y = top + ((bottom - top) * i) / rows;
+      const x = centre + ((top + bottom) / 2 - y) * SHINE_SLANT;
+      left.push(wrap(x - half, y));
+      right.unshift(wrap(x + half, y));
+    }
+    return [...left, ...right].join(" ");
+  };
+  const reach = SHINE_LAYERS[0] * size + (bottom - top) * SHINE_SLANT;
+  const from = r - arc - reach;
+  const to = w - r + arc + reach;
+  const alphas = document.documentElement.classList.contains("dark")
+    ? SHINE_ALPHA.dark
+    : SHINE_ALPHA.light;
+  let under = 0;
+  const polygons = SHINE_LAYERS.map((share, index) => {
+    const opacity = 1 - (1 - alphas[index]) / (1 - under);
+    under = alphas[index];
+    const frames = Array.from({ length: SHINE_FRAMES + 1 }, (_, f) =>
+      band(from + (to - from) * shineEase(f / SHINE_FRAMES), share * size),
+    );
+    return `<polygon fill="#fff" fill-opacity="${opacity.toFixed(3)}" points="${frames[0]}"><animate attributeName="points" dur="${SHINE_MS}ms" fill="freeze" values="${frames.join(";")}"/></polygon>`;
+  }).join("");
+  // a fresh nonce restarts the image's timeline on a repeat jump; still a background, so no box is added
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" data-n="${++shineNonce}"><filter id="s"><feGaussianBlur stdDeviation="1.6"/></filter><g id="b" filter="url(#s)">${polygons}</g><mask id="m"><use href="#b"/><use href="#b"/></mask><rect x="0.75" y="0.75" width="${w - 1.5}" height="${h - 1.5}" rx="${Math.max(0, r - 0.75)}" fill="none" stroke="#fff" stroke-width="1.5" mask="url(#m)"/></svg>`;
+  const nonce = shineNonce;
+  shineOwner.set(bubble, nonce);
+  bubble.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  bubble.style.backgroundSize = "100% 100%";
+  bubble.style.backgroundRepeat = "no-repeat";
+  window.setTimeout(() => {
+    if (shineOwner.get(bubble) === nonce) {
+      bubble.style.removeProperty("background-image");
+      bubble.style.removeProperty("background-size");
+      bubble.style.removeProperty("background-repeat");
+    }
+  }, SHINE_MS + 50);
 }
 
 type PreviewPart = { type: string; text?: string };
@@ -240,6 +389,8 @@ function previewText(content: readonly PreviewPart[], maxChars: number) {
   const text = content
     .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
     .join("\n")
+    // the regexes only need what can survive the cut
+    .slice(0, maxChars * 4)
     .replace(/```[^\n]*/g, " ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s*(?:#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "")
@@ -280,8 +431,9 @@ interface TurnPreview {
   turn: number;
   prompt: string;
   reply: string;
-  // marker centre relative to the anchor
-  markerTop: number;
+  // viewport px: portaled, so its text changes stay out of the thread's autoscroll MutationObserver
+  top: number;
+  right: number;
 }
 
 const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
@@ -315,9 +467,13 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     index: Map<string, number>;
   }>({ messages: null, index: new Map() });
   const previewId = useId();
+  // closing keeps the last preview, so the hidden card keeps its text nodes
   const [preview, setPreview] = useState<TurnPreview | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  // non-empty from the start, so the first hover edits text nodes instead of inserting them
+  const lastReplyRef = useRef(" ");
   // only the latest turn can still stream, so an open card follows it and the scan stops at its prompt
-  const previewOpenerId = preview?.openerId;
+  const previewOpenerId = previewOpen ? preview?.openerId : undefined;
   const liveReply = useAuiState(({ thread }) => {
     if (!previewOpenerId) {
       return null;
@@ -421,6 +577,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       }
       const start = messageIndexRef.current.index.get(openerId);
       const box = marker.getBoundingClientRect();
+      setPreviewOpen(true);
       setPreview({
         openerId,
         turn: Number(marker.dataset.turn),
@@ -429,8 +586,10 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             ? ""
             : previewText(messages[start].content, PROMPT_PREVIEW_CHARS),
         reply: start === undefined ? "" : turnReplyText(messages, start),
-        markerTop:
-          box.top + box.height / 2 - anchor.getBoundingClientRect().top,
+        top: box.top + box.height / 2,
+        right:
+          document.documentElement.clientWidth -
+          anchor.getBoundingClientRect().right,
       });
     },
     [aui, cancelHide, setActiveMarker],
@@ -473,8 +632,8 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       if (mag === null || !(dash instanceof HTMLElement)) {
         return;
       }
-      dash.style.width = `${0.5 + mag * 0.75}rem`;
-      dash.style.transitionProperty = "height, background-color";
+      dash.style.width = `calc(var(--spacing) * ${1.5 + mag * 5.5})`;
+      dash.style.transitionProperty = "background-color";
       next.push(dash);
     });
     for (const dash of magnifiedRef.current) {
@@ -517,31 +676,79 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       return;
     }
     let frame = 0;
+    // refit only after a resize; scrolling just moves the rail
+    let fitPending = true;
+    let railRange = 0;
+    let railFull = 0;
+    let railView = 0;
+    const setStyle = (name: string, value: string) => {
+      if (rail.style.getPropertyValue(name) !== value) {
+        rail.style.setProperty(name, value);
+      }
+    };
     const fade = (hidden: number) =>
       `${Math.min(Math.max(hidden, 0), RAIL_FADE_PX)}px`;
-    const fadeEnds = () => {
-      const railRange = Math.max(0, rail.scrollHeight - rail.clientHeight);
-      rail.style.setProperty("--rail-fade-top", fade(rail.scrollTop));
-      rail.style.setProperty(
-        "--rail-fade-bottom",
-        fade(railRange - rail.scrollTop),
-      );
+    const setFades = (top: number) => {
+      setStyle("--rail-fade-top", fade(top));
+      setStyle("--rail-fade-bottom", fade(railRange - top));
     };
+    // every layout read before any write, and writes skipped when unchanged: one layout per frame at most,
+    // which matters while a chat loads (autoscroll) and during a window resize drag
     const sync = () => {
       frame = 0;
-      const railRange = Math.max(0, rail.scrollHeight - rail.clientHeight);
+      const scrollTop = viewport.scrollTop;
       const range = viewport.scrollHeight - viewport.clientHeight;
-      rail.scrollTop =
-        railRange > 0 && range > 0
-          ? (viewport.scrollTop / range) * railRange
-          : 0;
-      fadeEnds();
+      const anchor = anchorRef.current;
+      let fit: Record<string, string> | null = null;
+      if (fitPending && anchor) {
+        const box = viewport.getBoundingClientRect();
+        // the rail is centred on the anchor, so it may grow to twice the room on its tighter side; not the
+        // composer: the rail sits beside the message column, and the composer grows with the queue
+        const centre = anchor.getBoundingClientRect().top;
+        const room =
+          Math.min(centre - box.top, box.bottom - centre) - RAIL_INSET_PX;
+        // whole device pixels for line, pitch and start, or fractional scaling (125%) renders uneven dashes
+        const dpr = window.devicePixelRatio || 1;
+        const dash = rail.querySelector("span");
+        const shift = Number.parseFloat(rail.style.marginTop) || 0;
+        const top = dash ? (dash.getBoundingClientRect().top - shift) * dpr : 0;
+        fit = {
+          "max-height": `${Math.max(0, Math.floor(room * 2))}px`,
+          "margin-top": `${(Math.round(top) - top) / dpr}px`,
+          "--rail-row": `${Math.round(11 * dpr) / dpr}px`,
+          "--rail-line": `${Math.max(1, Math.round(2 * dpr)) / dpr}px`,
+        };
+      }
+      fitPending = false;
+      if (fit) {
+        for (const [name, value] of Object.entries(fit)) {
+          setStyle(name, value);
+        }
+        // the one extra layout, and only after a resize
+        railFull = rail.scrollHeight;
+        railView = rail.clientHeight;
+        railRange = Math.max(0, railFull - railView);
+      }
+      // the marker for where the thread is sits mid-rail, a touch ahead, so the ends come into view early
+      const progress = range > 0 ? scrollTop / range : 0;
+      const ahead = 0.5 + (progress - 0.5) * RAIL_LEAD;
+      const railTop = Math.min(
+        Math.max(ahead * railFull - railView / 2, 0),
+        railRange,
+      );
+      rail.scrollTop = railTop;
+      setFades(railTop);
     };
     const schedule = () => {
       if (!frame) {
         frame = requestAnimationFrame(sync);
       }
     };
+    const refit = () => {
+      fitPending = true;
+      schedule();
+    };
+    const fadeEnds = () => setFades(rail.scrollTop);
     // keyboard focus scrolls the rail to reveal its dash; keep the ends right, then follow the thread again once focus leaves
     const onFocusOut = (event: globalThis.FocusEvent) => {
       if (!rail.contains(event.relatedTarget as Node | null)) {
@@ -553,7 +760,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     rail.addEventListener("scroll", fadeEnds, { passive: true });
     rail.addEventListener("focusout", onFocusOut);
     // the rail eases to a new height on resize, so keep its ends in step
-    const resize = new ResizeObserver(schedule);
+    const resize = new ResizeObserver(refit);
     resize.observe(rail);
     resize.observe(viewport);
     return () => {
@@ -567,16 +774,42 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   const hidePreview = useCallback(() => {
     cancelHide();
     hideTimerRef.current = window.setTimeout(() => {
-      setPreview(null);
+      setPreviewOpen(false);
       setActiveMarker(null);
     }, PREVIEW_HIDE_DELAY_MS);
   }, [cancelHide, setActiveMarker]);
+  // WebView2 sends no pointerleave when the cursor exits the page straight onto the window frame (say, to
+  // drag an edge), so the card and magnify would stay up; leaving the document or resizing closes them
+  useEffect(() => {
+    if (!previewOpen) {
+      return;
+    }
+    const close = () => {
+      cancelHide();
+      clearMagnify();
+      setPreviewOpen(false);
+      setActiveMarker(null);
+    };
+    const onOut = (event: globalThis.MouseEvent) => {
+      if (!event.relatedTarget) {
+        close();
+      }
+    };
+    document.addEventListener("mouseout", onOut);
+    window.addEventListener("resize", close);
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("mouseout", onOut);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [previewOpen, cancelHide, clearMagnify, setActiveMarker]);
 
   const onRailKeyDown = useCallback(
     (event: KeyboardEvent<HTMLElement>) => {
       if (event.key === "Escape") {
         cancelHide();
-        setPreview(null);
+        setPreviewOpen(false);
         setActiveMarker(null);
         return;
       }
@@ -637,11 +870,11 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onPointerLeave={hidePreview}
             onFocus={showPreview}
             onBlur={hidePreview}
-            className="group flex h-3 w-full shrink-0 cursor-pointer items-center justify-end rounded-sm pr-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="group flex h-[var(--rail-row,11px)] w-full shrink-0 cursor-pointer items-center justify-end rounded-sm pr-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <span
               className={cn(
-                "h-1 w-2 rounded-full transition-[width,height,background-color] duration-150 ease-out group-data-[dist=0]:w-5 group-data-[dist=1]:w-4 group-data-[dist=2]:w-3 group-data-[dist=3]:w-2.5 group-data-[hovering]/rail:h-[3px] motion-reduce:transition-none",
+                "h-[var(--rail-line,2px)] w-1.5 rounded-full transition-[width,background-color] duration-150 ease-out group-data-[dist=0]:w-7 group-data-[dist=1]:w-5.5 group-data-[dist=2]:w-3.75 group-data-[dist=3]:w-2.75 motion-reduce:transition-none",
                 isBookmarked
                   ? "bg-primary"
                   : "bg-muted-foreground/40 group-data-[dist=0]:bg-foreground",
@@ -666,6 +899,10 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   }
 
   const previewBookmarked = preview ? bookmarked.has(preview.openerId) : false;
+  const previewReply = preview ? (liveReply ?? preview.reply) : "";
+  if (previewReply) {
+    lastReplyRef.current = previewReply;
+  }
   // sticky, and the rail is not a scroller, so wheel scrolling over it reaches the thread
   return (
     <div
@@ -673,7 +910,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-1/2 z-10 h-0 w-full shrink-0"
     >
-      {/* gutter beside the message column: the rail hides when it would overlap messages */}
+      {/* gutter beside the message column; when it is too narrow the resting dashes sit in the thread padding */}
       <div
         style={{
           width:
@@ -683,29 +920,46 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       >
         <nav
           aria-label={t("turns.navigator")}
-          style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
+          style={{
+            height: `min(calc(var(--rail-row, 11px) * ${openerIds.length} + 8px), 40dvh)`,
+          }}
           ref={railRef}
           onKeyDown={onRailKeyDown}
           onPointerMove={onRailPointerMove}
           onPointerLeave={clearMagnify}
           onScroll={onRailScroll}
-          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] [contain:layout_paint] [mask-image:linear-gradient(to_bottom,transparent,#000_var(--rail-fade-top,0px),#000_calc(100%_-_var(--rail-fade-bottom,0px)),transparent)] motion-reduce:transition-none @[1.5rem]/turn-gutter:flex"
+          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] flex w-9 -translate-y-1/2 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] [contain:layout_paint] [mask-image:linear-gradient(to_bottom,transparent,#000_var(--rail-fade-top,0px),#000_calc(100%_-_var(--rail-fade-bottom,0px)),transparent)] motion-reduce:transition-none"
         >
           {markers}
         </nav>
       </div>
-      {preview && (
+      {/* portaled out of the thread's autoscroll MutationObserver, and made invisible rather than
+          unmounted: adding or removing boxes trips a document-wide :has() restyle */}
+      {createPortal(
         <div
           id={previewId}
           role="tooltip"
-          style={{ top: preview.markerTop }}
+          {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
+          style={
+            preview
+              ? {
+                  top: preview.top,
+                  right: `calc(${preview.right}px + 1.5rem)`,
+                }
+              : undefined
+          }
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
-          className="aui-turn-preview pointer-events-auto absolute right-6 flex w-84 -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md"
+          className={cn(
+            "aui-turn-preview pointer-events-auto fixed z-50 flex w-84 -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md",
+            !previewOpen && "invisible",
+          )}
         >
           <div className="flex items-center gap-2">
             <p className="min-w-0 flex-1 truncate font-medium text-ui-13p5">
-              {preview.prompt || t("turns.label", { number: preview.turn })}
+              {preview
+                ? preview.prompt || t("turns.label", { number: preview.turn })
+                : " "}
             </p>
             {threadId && !incognito && (
               <button
@@ -714,7 +968,9 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
                 aria-label={t(
                   previewBookmarked ? "turns.removeBookmark" : "turns.bookmark",
                 )}
-                onClick={() => toggleBookmarkedTurn(threadId, preview.openerId)}
+                onClick={() =>
+                  preview && toggleBookmarkedTurn(threadId, preview.openerId)
+                }
                 className={cn(
                   "flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-sidebar-accent",
                   previewBookmarked
@@ -730,12 +986,17 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               </button>
             )}
           </div>
-          {(liveReply ?? preview.reply) && (
-            <p className="line-clamp-3 pr-1.5 text-muted-foreground leading-relaxed">
-              {liveReply ?? preview.reply}
-            </p>
-          )}
-        </div>
+          {/* collapsed by class, not `hidden`: toggling display restyles the whole document via :has() */}
+          <p
+            className={cn(
+              "line-clamp-3 pr-1.5 text-muted-foreground leading-relaxed",
+              !previewReply && "invisible -mt-1.5 h-0",
+            )}
+          >
+            {lastReplyRef.current}
+          </p>
+        </div>,
+        document.body,
       )}
     </div>
   );

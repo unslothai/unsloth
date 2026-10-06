@@ -89,7 +89,7 @@ test("an open turn card reads its reply live while it streams", async () => {
     "utf8",
   );
   assert.match(nav, /const liveReply = useAuiState/);
-  assert.match(nav, /\{liveReply \?\? preview\.reply\}/);
+  assert.match(nav, /\(liveReply \?\? preview\.reply\)/);
   // the live scan stops at the latest prompt, so an older card costs one turn per token
   assert.match(
     nav,
