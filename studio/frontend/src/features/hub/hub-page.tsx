@@ -103,6 +103,7 @@ import { residentModelIdMatches } from "./lib/model-identity";
 import {
   createHubModelConfigHandoff,
   type HubModelRunSelection,
+  hubAudioTask,
 } from "./lib/model-run-selection";
 import {
   type ModelTypeFilter,
@@ -1530,9 +1531,12 @@ export function ModelsPage() {
             mediaPage === "audio"
               ? audioPickSearch(selectedModel.hubRepoId, {
                   ...selection,
-                  task: taskForMediaPick(
-                    selectedModel.pipelineTag,
-                    selectedModel.task,
+                  task: hubAudioTask(
+                    selectedModel,
+                    taskForMediaPick(
+                      selectedModel.pipelineTag,
+                      selectedModel.task,
+                    ),
                   ),
                   audioType: selectedModel.audioType,
                   isGguf: selectedModel.isGguf,

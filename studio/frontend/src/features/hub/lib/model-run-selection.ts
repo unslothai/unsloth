@@ -4,7 +4,10 @@
 import { AUDIO_CPP_REPO } from "@/features/audio/audio-cpp-catalog";
 import { audioWorkflowForPick } from "@/features/audio/route-search";
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
-import { audioPickIsRoutable } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import {
+  audioPickIsRoutable,
+  curatedAudioInventoryTask,
+} from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import {
   AUDIO_CATALOG,
   artifactForRepoId,
@@ -114,6 +117,23 @@ function createHandoffMeta(
   return meta;
 }
 
+/** The task the Audio handoff runs on: offline, a cached curated audio GGUF carries only the
+ *  backend's generic text-generation task, which the picker maps back from the catalog too. */
+export function hubAudioTask(
+  model: SelectedModelView,
+  task: string | null,
+): string | null {
+  const artifact = model.hubRepoId
+    ? artifactForRepoId(model.hubRepoId, AUDIO_CATALOG)
+    : null;
+  return curatedAudioInventoryTask({
+    inventoryTask: task,
+    isExactCatalogArtifact: artifact !== null,
+    catalogScope: artifact?.group.scope,
+    catalogTask: artifact?.group.task,
+  });
+}
+
 /** Whether Run opens this model on the Audio page rather than in chat, which refuses audio models.
  *  Judged on the gate the chat picker routes by, so both surfaces send the same models there. */
 export function hubModelRunsOnAudioPage(
@@ -125,6 +145,7 @@ export function hubModelRunsOnAudioPage(
   if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
   // The shared GGUF audio repo holds many models; the Audio page lists them one by one.
   if (id.toLowerCase() === AUDIO_CPP_REPO.toLowerCase()) return false;
+  task = hubAudioTask(model, task);
   const audioType = model.audioType ?? null;
   if (audioWorkflowForPick({ id, task, audioType }) === null) return false;
   return audioPickIsRoutable({

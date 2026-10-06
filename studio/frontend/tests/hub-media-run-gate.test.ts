@@ -217,3 +217,29 @@ test("the Hub forwards the row's audio type into the Audio handoff", async () =>
     /audioPickSearch\([\s\S]{0,400}audioType: selectedModel\.audioType/,
   );
 });
+
+test("an offline cached curated audio GGUF still opens Audio from its catalog task", async () => {
+  const { hubAudioTask } = await import(
+    "../src/features/hub/lib/model-run-selection.ts"
+  );
+  const model: SelectedModelView = {
+    ...mediaModel(undefined, "cache"),
+    id: "unsloth/orpheus-3b-0.1-ft-GGUF",
+    hubRepoId: "unsloth/orpheus-3b-0.1-ft-GGUF",
+    isGguf: true,
+    runtimeCanChat: true,
+    // No Hub tag offline: the backend reports the generic task for a cached GGUF.
+    task: "text-generation",
+  };
+  const task = taskForMediaPick(model.pipelineTag, model.task);
+  assert.equal(hubAudioTask(model, task), "text-to-speech");
+  assert.equal(hubModelRunsOnAudioPage(model, task), true);
+  // A chat GGUF with the same generic task keeps its chat Run.
+  const chat = {
+    ...model,
+    id: "unsloth/Qwen3-8B-GGUF",
+    hubRepoId: "unsloth/Qwen3-8B-GGUF",
+  };
+  assert.equal(hubAudioTask(chat, task), "text-generation");
+  assert.equal(hubModelRunsOnAudioPage(chat, task), false);
+});
