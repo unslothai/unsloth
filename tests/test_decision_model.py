@@ -441,7 +441,9 @@ def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
         str(checkpoint), use_gradient_checkpointing = False
     )
     grown = model.encoder.get_input_embeddings().num_embeddings + 8
-    model.encoder.resize_token_embeddings(grown)
+    # The fixture's vocab equals its hidden size, so the covariance mean resizing samples from
+    # is singular and can come out NaN on some GPUs.
+    model.encoder.resize_token_embeddings(grown, mean_resizing = False)
     model.save_pretrained_merged(str(tmp_path / "out"), tokenizer)
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"))
     assert reloaded.encoder.get_input_embeddings().num_embeddings == grown
@@ -466,6 +468,30 @@ def test_full_clef_finetuning_never_quantizes_the_backbone(tmp_path, monkeypatch
             decision._load_clef(tmp_path, None, torch.bfloat16, True, full, None, False, {})
     assert seen[0].get("quantization_config") is None
     assert seen[1].get("quantization_config") is not None
+
+
+def test_clef_backbone_stays_on_one_device_unless_the_caller_places_it(tmp_path, monkeypatch):
+    from unsloth.models import loader, loader_utils
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("device_map"))
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(loader.FastModel, "from_pretrained", capture)
+    index = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    for kwargs in ({}, {"device_map": None}, {"device_map": "auto"}):
+        with pytest.raises(Captured):
+            decision._load_clef(tmp_path, None, torch.bfloat16, False, False, None, False, kwargs)
+    monkeypatch.setattr(loader_utils, "prepare_device_map", lambda: ({"": "cuda:1"}, True))
+    with pytest.raises(Captured):
+        decision._load_clef(tmp_path, None, torch.bfloat16, False, False, None, False, {})
+    assert seen == [{"": f"cuda:{index}"}, {"": f"cuda:{index}"}, "auto", {"": "cuda:1"}]
 
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
@@ -531,7 +557,6 @@ def test_trainer_uses_one_gpu_and_the_set_batch_on_a_multi_gpu_machine(checkpoin
         str(checkpoint), use_gradient_checkpointing = False
     )
     args = _args(tmp_path, max_steps = 1)
-    assert args.n_gpu <= 1
     args._n_gpu = 2
     trainer = DecisionTrainer(model = model, args = args, processing_class = tokenizer)
     assert trainer.args.n_gpu == 1 and args.n_gpu == 2

@@ -212,7 +212,7 @@ def test_python_older_than_3_10_cannot_train_decision_models(route, monkeypatch)
     [("LoRA/QLoRA", 8e-4), ("Full Finetuning", 2.5e-5)],
 )
 def test_api_runs_without_hyperparameters_get_the_laya_recipe(
-    route, tmp_path, training_type, learning_rate
+    route, device, tmp_path, training_type, learning_rate
 ):
     base = _laya_folder(tmp_path / "laya")
     config = _started_config(route, _request(model_name = str(base), training_type = training_type))
@@ -227,7 +227,7 @@ def test_api_runs_without_hyperparameters_get_the_laya_recipe(
     assert (config["lora_r"], config["lora_alpha"], config["lora_dropout"]) == (64, 64, 0.0)
 
 
-def test_api_runs_keep_the_hyperparameters_they_set(route, tmp_path):
+def test_api_runs_keep_the_hyperparameters_they_set(route, device, tmp_path):
     base = _laya_folder(tmp_path / "laya")
     config = _started_config(
         route,
