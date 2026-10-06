@@ -124,7 +124,6 @@ def _streamed_set_tier_gib() -> float:
     return float(math.ceil(H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB * 1e9 / 2**30))
 
 
-# The picker's RAM tier for the default streamed set is the measured host floor in whole GiB.
 _STREAMED_SET_TIER_GIB = _streamed_set_tier_gib()
 
 
@@ -183,8 +182,6 @@ def test_the_ram_tier_is_the_single_count_host_floor_in_gib():
 
 
 def test_a_streamed_int8_set_is_priced_at_the_measured_floor_not_the_component_sum():
-    # The int8 conditioner and the int8 denoiser both stream from reclaimable page cache under a limit, so the floor is
-    # what the render cannot give back (bisected cgroup MemoryMax), not the 64.5 GB sum or the old 70 GB RSS peak.
     from core.inference.video_minimax_h3 import (
         H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB,
         H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB,
@@ -199,12 +196,10 @@ def test_a_streamed_int8_set_is_priced_at_the_measured_floor_not_the_component_s
     assert streamed == H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB < summed
     # A 58 GiB cgroup (62.3 GB) holds the measured set: main renders it there.
     assert streamed < 58 * 2**30 / 1e9
-    # A larger streamed conditioner than the measured set keeps the old RSS floor.
     assert estimate_h3_diffusers_host_ram_gb(
         30.0, text_encoder_gb = 66.7, transformer_gb = 20.3, text_encoder_streamed = True
     ) == pytest.approx(66.7 + 20.3 + 11.1 + 5.9)
     assert H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB == 70.0
-    # A double-counted denoiser is outside the measured set and keeps the summed floor.
     assert estimate_h3_diffusers_host_ram_gb(
         30.0,
         text_encoder_gb = 27.2,

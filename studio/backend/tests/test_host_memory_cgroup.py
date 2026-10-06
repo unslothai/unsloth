@@ -92,10 +92,6 @@ def host(monkeypatch):
     return state
 
 
-# ---------------------------------------------------------------------------------------------
-# The reader itself.
-
-
 @reader
 def test_no_cgroup_keeps_the_host_reading(fake_cgroup, host):
     fake_cgroup.membership("0::/\n")
@@ -261,10 +257,6 @@ def test_llama_cpp_readers_delegate_to_the_shared_one(fake_cgroup, host):
     assert LlamaCppBackend._host_memory_capacity_mib() == host_memory.host_ram_capacity_mib()
 
 
-# ---------------------------------------------------------------------------------------------
-# The three consumers agree on the same number.
-
-
 def test_pin_budget_sizes_from_the_cgroup_headroom(fake_cgroup, host):
     from core.inference import diffusion_memory as dm
 
@@ -272,7 +264,6 @@ def test_pin_budget_sizes_from_the_cgroup_headroom(fake_cgroup, host):
     _v2(fake_cgroup.root, "s.scope", limit = 58 * GIB, current = 30 * GIB)
     reserve = max(dm._PIN_RESERVE_MIN_MIB, int(58 * 1024 * dm._PIN_RESERVE_FRACTION))
     assert dm._pin_budget_mib() == 28 * 1024 - reserve
-    # Usage grows past limit minus the reserve: nothing more may be pinned.
     _v2(fake_cgroup.root, "s.scope", limit = 58 * GIB, current = 52 * GIB)
     assert dm._pin_budget_mib() == 0
 
@@ -303,7 +294,6 @@ def test_h3_guard_capacity_is_capped_by_the_cgroup(fake_cgroup, host, monkeypatc
     assert capacity == 23 * GIB + int(30.0 * 1e9 / 1024) * 1024
     assert capacity <= 58 * GIB
     kw = dict(text_encoder_gb = 27.2, transformer_gb = 20.3, text_encoder_streamed = True)
-    # main renders the 12 GB streamed set inside 58 GiB, so the guard admits it there.
     assert vmh3.h3_host_ram_shortfall(11.0, **kw) is None
     # Below the measured floor the cgroup is what refuses, not the 1.2 TiB the host reports.
     floor = vmh3.H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
