@@ -332,23 +332,17 @@ def _host_of(module):
 
 @cuda
 def test_the_ram_gate_counts_the_chunks_really_allocated(monkeypatch):
-    psutil = pytest.importorskip("psutil")
     # Weight 256 B and bias 32 B (256 aligned) do not share a 384 B chunk: 384 + 256 B are allocated for 512.
     monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 384)
-    reserve = 4 << 30
+    # The gate reads MiB (system available capped by the cgroup headroom), so pin the readings and move the
+    # reserve by bytes instead: 600 B of room is short of the 640 B allocated, 640 B is enough.
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 5 << 10)
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 16 << 10)
     lin = torch.nn.Linear(8, 8)
-    monkeypatch.setattr(
-        psutil,
-        "virtual_memory",
-        lambda: types.SimpleNamespace(total = 16 << 30, available = reserve + 600),
-    )
+    monkeypatch.setattr(dm, "_PIN_RESERVE_MIN_BYTES", (5 << 30) - 600)
     assert dm._pin_host_weights(lin, _host_of(lin)) == 0
     assert not lin.weight.is_pinned()
-    monkeypatch.setattr(
-        psutil,
-        "virtual_memory",
-        lambda: types.SimpleNamespace(total = 16 << 30, available = reserve + 640),
-    )
+    monkeypatch.setattr(dm, "_PIN_RESERVE_MIN_BYTES", (5 << 30) - 640)
     assert dm._pin_host_weights(lin, _host_of(lin)) == 640
     assert lin.weight.is_pinned() and lin.bias.is_pinned()
 
