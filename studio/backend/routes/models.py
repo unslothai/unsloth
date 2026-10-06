@@ -882,9 +882,7 @@ def _merge_scan_folder_row(
         if m.source == "hf_cache" and not any(
             path_is_same_or_child(Path(m.path), root) for root in configured_cache_roots
         ):
-            return m.model_copy(
-                update = {"source": "custom", "model_id": None, "active_cache": None}
-            )
+            return m.model_copy(update = {"source": "custom", "model_id": None, "active_cache": None})
         return m
     return m.model_copy(update = {"source": "custom"})
 
@@ -1073,9 +1071,7 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
-        local_models += [
-            _merge_scan_folder_row(m, configured_cache_roots) for m in custom_models
-        ]
+        local_models += [_merge_scan_folder_row(m, configured_cache_roots) for m in custom_models]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
     # "Custom Folders" UI section even when the model is also in the HF cache.
