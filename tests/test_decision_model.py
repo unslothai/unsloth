@@ -492,6 +492,44 @@ def test_a_failing_compile_trains_eagerly(checkpoint, tmp_path, monkeypatch):
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
 
 
+def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
+    checkpoint, tmp_path, monkeypatch
+):
+    import functools
+
+    from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+    from unsloth.models import _decision_fast as fast
+
+    model, _ = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
+    layers = fast._encoder_layers(model)
+
+    def unsloth_checkpoint(*args, **kwargs):
+        raise AssertionError("compiled layers must not use Unsloth's checkpoint")
+
+    offloaded = functools.partial(unsloth_checkpoint, use_reentrant = True)
+    for layer in layers:
+        layer._gradient_checkpointing_func = offloaded
+    monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: None)
+    monkeypatch.setattr(fast, "_wants_compile", lambda model, forwards: True)
+    monkeypatch.setattr(fast, "_warm_up", lambda model, amp_dtype: None)
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert compiled
+        for layer in layers:
+            func = layer._gradient_checkpointing_func
+            assert func.func is torch_checkpoint and func.keywords == {"use_reentrant": False}
+    assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+    def broken(model, amp_dtype):
+        raise RuntimeError("inductor cannot serve this platform")
+
+    monkeypatch.setattr(fast, "_warm_up", broken)
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert not compiled
+        assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold

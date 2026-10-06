@@ -5,11 +5,14 @@
 # UNSLOTH_DECISION_COMPILE=0 or 1 turns it off or forces it on.
 
 import contextlib
+import functools
 import importlib.util
 import os
 
 import torch
 import torch.nn as nn
+
+from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 __all__ = ["compiled_encoder"]
 
@@ -79,22 +82,36 @@ def compiled_encoder(
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []
+    # Unsloth's reentrant offloaded checkpoint gives compiled bf16 layers wrong gradients (cosine 0.68
+    # to eager, 0.30 full fine-tune), so compiled runs checkpoint with torch's own.
+    swapped = {}
     for layer in layers:
+        func = getattr(layer, "_gradient_checkpointing_func", None)
+        if func is not None and getattr(func, "func", func) is not _torch_checkpoint:
+            swapped[layer] = func
+            layer._gradient_checkpointing_func = functools.partial(
+                _torch_checkpoint, use_reentrant = False
+            )
         layer.compile(dynamic = True)
+
+    def restore():
+        for layer in layers:
+            layer._compiled_call_impl = None
+        for layer, func in swapped.items():
+            layer._gradient_checkpointing_func = func
+
     if layers:
         try:
             _warm_up(model, amp_dtype)
         except Exception as error:
-            for layer in layers:
-                layer._compiled_call_impl = None
+            restore()
             torch._dynamo.reset()
             print(
                 f"Unsloth: compiling the Laya encoder failed ({type(error).__name__}), training eagerly."
             )
-            layers = []
+            layers, swapped = [], {}
     model.__dict__["_unsloth_decision_compiled"] = bool(layers)
     try:
         yield bool(layers)
     finally:
-        for layer in layers:
-            layer._compiled_call_impl = None
+        restore()
