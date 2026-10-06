@@ -474,7 +474,11 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           description: result.warnings.join("\n"),
         });
       } else if (result.newChats === 0) {
-        toast.success(t("settings.chat.sourceUpToDate", vars));
+        toast.success(
+          result.messages > 0
+            ? t("settings.chat.sourceUpdated", { ...vars, count: result.messages })
+            : t("settings.chat.sourceUpToDate", vars),
+        );
       } else {
         toast.success(
           result.newChats === 1

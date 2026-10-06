@@ -21,6 +21,7 @@ export type ExternalImportStatus = {
 
 export type ExternalImportResult = {
   newChats: number;
+  messages: number;
   warnings: string[];
 };
 
@@ -41,9 +42,14 @@ export function loadExternalImportStatus(
 export async function importExternalChats(
   source: ExternalImportSource,
 ): Promise<ExternalImportResult> {
-  const result = await request<{ new_chats: number; warnings: string[] }>(
-    `/api/import/${source}`,
-    { method: "POST" },
-  );
-  return { newChats: result.new_chats, warnings: result.warnings };
+  const result = await request<{
+    new_chats: number;
+    messages: number;
+    warnings: string[];
+  }>(`/api/import/${source}`, { method: "POST" });
+  return {
+    newChats: result.new_chats,
+    messages: result.messages,
+    warnings: result.warnings,
+  };
 }

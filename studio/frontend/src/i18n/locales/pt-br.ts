@@ -2416,6 +2416,7 @@ export const ptBR = {
       importedSourceOneChat: "1 conversa importada do {source}.",
       importedSourceChatCount:
         "{count} conversas importadas do {source}.",
+      sourceUpdated: "{count} novas mensagens adicionadas do {source}.",
       sourceUpToDate: "As conversas do {source} já estão atualizadas.",
       importedSourcePartial: "Algumas conversas do {source} não puderam ser importadas.",
       clearHistory: "Limpar histórico de chat",

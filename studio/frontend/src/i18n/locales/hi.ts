@@ -2406,6 +2406,7 @@ export const hi = {
       importedSourceOneChat: "{source} से 1 वार्तालाप इंपोर्ट किया गया।",
       importedSourceChatCount:
         "{source} से {count} वार्तालाप इंपोर्ट किए गए।",
+      sourceUpdated: "{source} से {count} नए संदेश जोड़े गए।",
       sourceUpToDate: "{source} वार्तालाप पहले से अद्यतित हैं।",
       importedSourcePartial: "कुछ {source} वार्तालाप इंपोर्ट नहीं हो सके।",
       clearHistory: "चैट इतिहास साफ़ करें",

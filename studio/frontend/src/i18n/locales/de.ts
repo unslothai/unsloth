@@ -2439,6 +2439,7 @@ export const de = {
       importedSourceOneChat: "1 Konversation aus {source} importiert.",
       importedSourceChatCount:
         "{count} Konversationen aus {source} importiert.",
+      sourceUpdated: "{count} neue Nachrichten aus {source} hinzugefügt.",
       sourceUpToDate: "Die {source}-Konversationen sind bereits aktuell.",
       importedSourcePartial: "Einige {source}-Konversationen konnten nicht importiert werden.",
       clearHistory: "Chatverlauf löschen",

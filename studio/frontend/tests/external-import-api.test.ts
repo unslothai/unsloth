@@ -48,6 +48,7 @@ test("the client hits each source's routes and maps new_chats", async () => {
   };
   assert.deepEqual(await importExternalChats("claude"), {
     newChats: 4,
+    messages: 120,
     warnings: [],
   });
   assert.deepEqual(calls, [

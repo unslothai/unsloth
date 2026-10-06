@@ -2358,6 +2358,7 @@ export const zhCN = {
       importingAction: "导入中...",
       importedSourceOneChat: "已从 {source} 导入 1 个对话。",
       importedSourceChatCount: "已从 {source} 导入 {count} 个对话。",
+      sourceUpdated: "已从 {source} 添加 {count} 条新消息。",
       sourceUpToDate: "{source} 对话已是最新。",
       importedSourcePartial: "部分 {source} 对话未能导入。",
       clearHistory: "清除聊天记录",

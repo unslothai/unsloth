@@ -2429,6 +2429,7 @@ export const es = {
       importedSourceOneChat: "Se importó 1 conversación desde {source}.",
       importedSourceChatCount:
         "Se importaron {count} conversaciones desde {source}.",
+      sourceUpdated: "Se añadieron {count} mensajes nuevos desde {source}.",
       sourceUpToDate:
         "Las conversaciones de {source} ya están actualizadas.",
       importedSourcePartial:

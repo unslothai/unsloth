@@ -2435,6 +2435,7 @@ export const fr = {
       importedSourceOneChat: "1 conversation importée depuis {source}.",
       importedSourceChatCount:
         "{count} conversations importées depuis {source}.",
+      sourceUpdated: "{count} nouveaux messages ajoutés depuis {source}.",
       sourceUpToDate: "Les conversations {source} sont déjà à jour.",
       importedSourcePartial: "Certaines conversations {source} n'ont pas pu être importées.",
       clearHistory: "Effacer l'historique des discussions",

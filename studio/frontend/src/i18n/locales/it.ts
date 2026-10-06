@@ -2394,6 +2394,7 @@ export const it = {
       importedSourceOneChat: "1 conversazione importata da {source}.",
       importedSourceChatCount:
         "{count} conversazioni importate da {source}.",
+      sourceUpdated: "Aggiunti {count} nuovi messaggi da {source}.",
       sourceUpToDate: "Le conversazioni di {source} sono già aggiornate.",
       importedSourcePartial: "Alcune conversazioni di {source} non sono state importate.",
       clearHistory: "Cancella la cronologia delle chat",

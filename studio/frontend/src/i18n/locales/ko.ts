@@ -2394,6 +2394,7 @@ export const ko = {
       importingAction: "가져오는 중...",
       importedSourceOneChat: "{source}에서 대화 1개를 가져왔습니다.",
       importedSourceChatCount: "{source}에서 대화 {count}개를 가져왔습니다.",
+      sourceUpdated: "{source}에서 새 메시지 {count}개를 추가했습니다.",
       sourceUpToDate: "{source} 대화가 이미 최신 상태입니다.",
       importedSourcePartial: "일부 {source} 대화를 가져오지 못했습니다.",
       clearHistory: "채팅 기록 지우기",

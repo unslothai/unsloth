@@ -2410,6 +2410,7 @@ export const ru = {
       importingAction: "Импорт…",
       importedSourceOneChat: "Импортирован 1 диалог из {source}.",
       importedSourceChatCount: "Импортировано диалогов из {source}: {count}.",
+      sourceUpdated: "Добавлено новых сообщений из {source}: {count}.",
       sourceUpToDate: "Диалоги {source} уже актуальны.",
       importedSourcePartial: "Некоторые диалоги {source} не удалось импортировать.",
       clearHistory: "Очистить историю чатов",

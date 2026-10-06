@@ -2434,6 +2434,7 @@ export const en = {
       importingAction: "Importing...",
       importedSourceOneChat: "Imported 1 conversation from {source}.",
       importedSourceChatCount: "Imported {count} conversations from {source}.",
+      sourceUpdated: "Added {count} new messages from {source}.",
       sourceUpToDate: "{source} conversations are already up to date.",
       importedSourcePartial: "Some {source} conversations could not be imported.",
       clearHistory: "Clear chat history",
