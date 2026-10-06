@@ -31,6 +31,15 @@ pub struct NativeImportedFile {
     content: String,
 }
 
+/// A saved export: the name shown to the user, and for a web download whether it was marked as
+/// from the internet (false on volumes that keep no mark; null when nothing marks it).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSavedFile {
+    name: String,
+    marked: Option<bool>,
+}
+
 /// A picked chat import addressed by an opaque token instead of a path.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -449,7 +458,7 @@ pub async fn save_native_file(
     webview: tauri::Webview,
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<NativeSavedFile>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
     let encoded_name = request
         .headers()
@@ -483,11 +492,14 @@ pub async fn save_native_file(
         .transpose()?;
     // `saved` is only the basename shown to the user; mark the full path.
     let destination = selected_path.clone();
-    let saved = save_selected_file(selected_path, content.as_ref())?;
-    if let (Some(_), Some(path), Some(source)) = (&saved, destination, source.as_ref()) {
-        crate::browser_webview::mark_downloaded(&path, source);
-    }
-    Ok(saved)
+    let Some(name) = save_selected_file(selected_path, content.as_ref())? else {
+        return Ok(None);
+    };
+    let marked = match (destination, source.as_ref()) {
+        (Some(path), Some(source)) => crate::browser_webview::mark_downloaded(&path, source),
+        _ => None,
+    };
+    Ok(Some(NativeSavedFile { name, marked }))
 }
 
 #[tauri::command]

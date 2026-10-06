@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getLocale, translate } from "@/i18n";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { isDownloadCancelled, saveWebDownload } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { fileNameFromUrl, withBaseUrl } from "./address";
 import { fetchBrowserPage } from "./api";
@@ -16,13 +16,15 @@ export async function saveBrowserDownload(download: BrowserDownload): Promise<vo
   const { blob, contentType, url } = download;
   const name = safeDownloadName(download.name);
   if (isDangerousDownload(name) && !(await confirmDangerous(name))) return;
+  let marked: boolean | null;
   try {
-    await downloadFile(blob, name, contentType || undefined, url);
+    ({ marked } = await saveWebDownload(blob, name, contentType || undefined, url));
   } catch (error) {
     if (!isDownloadCancelled(error)) toast.error(error instanceof Error ? error.message : String(error));
     return;
   }
   useBrowserHistoryStore.getState().recordDownload({ name, url, size: blob.size, contentType });
+  if (marked === false) toast.warning(translate("browser.downloadSafety.notMarked", { name }, getLocale()));
 }
 
 let nextConfirm = 0;

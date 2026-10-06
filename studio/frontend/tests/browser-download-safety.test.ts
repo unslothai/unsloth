@@ -165,10 +165,11 @@ test("native-view hands download events over before its tab guard", () => {
 
 type Downloads = { saveBrowserDownload: (download: { blob: Blob; name: string; contentType: string; url: string | null }) => Promise<void> };
 
-function loadDownloads(answer: "save" | "cancel" | "dismiss") {
+function loadDownloads(answer: "save" | "cancel" | "dismiss", marked: boolean | null = null) {
   const saved: string[] = [];
   const recorded: string[] = [];
   const prompts: string[] = [];
+  const warnings: string[] = [];
   const toast = Object.assign(
     (message: string, options: { action: { onClick: () => void }; cancel: { onClick: () => void }; onDismiss: () => void }) => {
       prompts.push(message);
@@ -176,18 +177,24 @@ function loadDownloads(answer: "save" | "cancel" | "dismiss") {
       else if (answer === "cancel") options.cancel.onClick();
       else options.onDismiss();
     },
-    { error: () => undefined },
+    { error: () => undefined, warning: (message: string) => void warnings.push(message) },
   );
   const module = loadWithStubs<Downloads>(new URL("../src/features/browser/downloads.ts", import.meta.url), {
     "@/i18n": { getLocale: () => "en", translate: (key: string) => key },
-    "@/lib/native-files": { downloadFile: async (_: Blob, name: string) => void saved.push(name), isDownloadCancelled: () => false },
+    "@/lib/native-files": {
+      saveWebDownload: async (_: Blob, name: string) => {
+        saved.push(name);
+        return { marked };
+      },
+      isDownloadCancelled: () => false,
+    },
     "@/lib/toast": { toast },
     "./address": { fileNameFromUrl: () => "x", withBaseUrl: (html: string) => html },
     "./api": { fetchBrowserPage: async () => undefined },
     "./download-safety": safety,
     "./history-store": { useBrowserHistoryStore: { getState: () => ({ recordDownload: (item: { name: string }) => void recorded.push(item.name) }) } },
   });
-  return { module, saved, recorded, prompts };
+  return { module, saved, recorded, prompts, warnings };
 }
 
 test("a panel save of a file that runs code waits for Save anyway", async () => {
@@ -203,6 +210,27 @@ test("a panel save of a file that runs code waits for Save anyway", async () => 
   const plain = loadDownloads("cancel");
   await plain.module.saveBrowserDownload({ blob, name: "notes.pdf", contentType: "", url: null });
   assert.deepEqual([plain.prompts.length, plain.saved], [0, ["notes.pdf"]]);
+});
+
+test("a panel save the system couldn't mark warns; a marked one does not", async () => {
+  const blob = new Blob(["x"]);
+  const unmarked = loadDownloads("save", false);
+  await unmarked.module.saveBrowserDownload({ blob, name: "notes.pdf", contentType: "", url: "https://example.com/notes.pdf" });
+  assert.deepEqual([unmarked.recorded, unmarked.warnings], [["notes.pdf"], ["browser.downloadSafety.notMarked"]]);
+  for (const marked of [true, null]) {
+    const fine = loadDownloads("save", marked);
+    await fine.module.saveBrowserDownload({ blob, name: "notes.pdf", contentType: "", url: null });
+    assert.deepEqual([fine.recorded, fine.warnings], [["notes.pdf"], []], String(marked));
+  }
+});
+
+test("only an account switch asks the desktop app to drop staged downloads", () => {
+  const clear = readFileSync(new URL("../src/lib/native-browser-clear.ts", import.meta.url), "utf8");
+  assert.match(clear, /accountSwitch: options\.accountSwitch \?\? false/);
+  const transition = readFileSync(new URL("../src/lib/account-transition.ts", import.meta.url), "utf8");
+  assert.match(transition, /clearNativeBrowsingData\(\{ accountSwitch: true \}\)/);
+  const dialog = readFileSync(new URL("../src/features/browser/clear-data-dialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /clearNativeBrowsingData\(\)/);
 });
 
 test("download history keeps sanitized sources, and older history is sanitized once", async () => {

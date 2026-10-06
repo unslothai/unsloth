@@ -1797,23 +1797,34 @@ fn abandon_staged(inner: &mut ViewsState) -> Vec<PathBuf> {
     files
 }
 
+/// Every view is closing. Only an account switch drops downloads: clearing data promises that
+/// downloaded files stay, staged ones included, while the next account must never see or be asked
+/// about the last one's. Returns the files to delete.
+fn closing_views(inner: &mut ViewsState, account_switch: bool) -> Vec<PathBuf> {
+    if !account_switch {
+        return Vec::new();
+    }
+    inner.account_epoch = inner.account_epoch.wrapping_add(1);
+    abandon_staged(inner)
+}
+
 #[tauri::command]
 pub async fn browser_view_clear_data<R: Runtime>(
     webview: Webview<R>,
     state: State<'_, BrowserViews>,
     close_views: Option<bool>,
+    account_switch: Option<bool>,
 ) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
-    // An account switch closes the pages first, so none can write the old account's data back.
+    // Clear data and an account switch close the pages first, so none can write the cleared data back.
     let closing = close_views.unwrap_or(false);
     if closing {
         let abandoned = {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
             set_shown(&state, &mut inner, None);
-            inner.account_epoch = inner.account_epoch.wrapping_add(1);
-            abandon_staged(&mut inner)
+            closing_views(&mut inner, account_switch.unwrap_or(false))
         };
         for file in abandoned {
             let _ = std::fs::remove_file(file);
@@ -2468,6 +2479,21 @@ mod tests {
             drop(inner);
             assert!(keep_staged(&views, &busy_id).is_err());
             assert!(discard_staged(&views, &busy_id).is_err());
+        }
+
+        #[test]
+        fn only_an_account_switch_drops_downloads() {
+            let dir = tempfile::tempdir().unwrap();
+            let ready_file = dir.path().join("Unconfirmed 9.download");
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &ready_file, "a.exe", ready(Some(true)));
+            let mut inner = views.lock().unwrap();
+            assert!(closing_views(&mut inner, false).is_empty());
+            assert_eq!(inner.account_epoch, 0);
+            assert!(inner.staged.contains_key(&id));
+            assert_eq!(closing_views(&mut inner, true), vec![ready_file]);
+            assert_eq!(inner.account_epoch, 1);
+            assert!(inner.staged.is_empty());
         }
 
         #[test]

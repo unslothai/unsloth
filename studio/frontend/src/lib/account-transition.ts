@@ -197,7 +197,7 @@ export async function transitionBrowserAccount(
   browser: AccountTransitionBrowser = window,
   // The browser's own clear: it closes the open pages first and keeps them closed while it runs,
   // so none writes the previous account's data back.
-  clearSiteData: () => Promise<void> = clearNativeBrowsingData,
+  clearSiteData: () => Promise<void> = () => clearNativeBrowsingData({ accountSwitch: true }),
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
