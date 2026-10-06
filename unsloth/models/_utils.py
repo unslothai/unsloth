@@ -5959,6 +5959,8 @@ def snapshot_residual_lora_init(model, init_lora_weights):
         return
     if init_lora_weights.split("_niter_")[0] not in RESIDUAL_INIT_LORA_WEIGHTS:
         return
+    # The scale the base rewrite used: LoftQ fits B0 @ A0 to W - Q unscaled, the others subtract s * B0 @ A0.
+    unscaled = init_lora_weights == "loftq"
     for module in model.modules():
         lora_A = getattr(module, "lora_A", None)
         if isinstance(lora_A, torch.nn.ModuleDict) and len(lora_A):
@@ -5966,7 +5968,7 @@ def snapshot_residual_lora_init(model, init_lora_weights):
                 k: (
                     lora_A[k].weight.detach().clone(),
                     module.lora_B[k].weight.detach().clone(),
-                    module.scaling[k],
+                    1.0 if unscaled else module.scaling[k],
                 )
                 for k in lora_A
             }
@@ -5975,7 +5977,7 @@ def snapshot_residual_lora_init(model, init_lora_weights):
 @contextlib.contextmanager
 def lora_relative_to_original_base(model):
     # Training saw W - s0 * B0 @ A0 but the merge reads the original W: merge s0 * [B * s / s0, -B0] @ [A; A0]
-    # (PEFT's path_initial_model_for_weight_conversion). s0 is the init-time scaling; set_scale may change s.
+    # (PEFT's path_initial_model_for_weight_conversion). s0 is the rewrite's scale; set_scale may change s.
     swapped = []
     try:
         for module in model.modules():
