@@ -9819,9 +9819,8 @@ class DiffusionBackend:
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
                         if request_condition_pixels > 0 and extra_mib > releasable_mib:
-                            # A conditioned request is checked against free memory with no allowance for what the load
-                            # reserved, so when the releasable groups fall short a hookless resident transformer takes
-                            # its hooks and streams part of itself for this request.
+                            # The guard credits a conditioned request nothing the load reserved: hook the resident
+                            # transformer so this request can stream part of it.
                             hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
                         restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
                     guard_kwargs = dict(

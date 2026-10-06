@@ -2810,10 +2810,9 @@ def hook_resident_denoiser(
     device: Any,
     logger: Any = None,
 ) -> bool:
-    """Put a resident transformer that carries no offload hooks behind block-level group offloading with every group
-    kept resident, so release_resident_groups can stream part of it for this request. Done on demand rather than at
-    load: under the hooks every load recompiles on its second render, which a hookless transformer never pays.
-    torchao denoisers only (the measured placement); returns True when the hooks are installed."""
+    """Give a hookless resident torchao transformer block-level offload hooks, every group kept resident, so
+    release_resident_groups can stream part of it. On demand, not at load: hooks at load recompile every load's second
+    render. True when installed."""
     transformer = getattr(pipe, "transformer", None)
     if (
         transformer is None
