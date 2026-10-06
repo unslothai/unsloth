@@ -43,7 +43,7 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
-from .diffusion_content import assert_local_pick_is_dit
+from .diffusion_content import assert_local_pick_is_dit, content_variant_hint
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -7167,7 +7167,7 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            gguf_filename, repo_id, base, fam.name
+                            gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base, fam.name
                         )
                         static_plan = auto_static_skip_plan(
                             (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps
@@ -7340,7 +7340,14 @@ class DiffusionBackend:
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
                         pipe,
-                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        comfy_flow_shift_for(
+                            fam,
+                            gguf_filename,
+                            content_variant_hint(repo_id, gguf_filename),
+                            repo_id,
+                            display_repo_id,
+                            base,
+                        ),
                         logger,
                     )
                     # Before the speed optims, so the fused batched tile decode does not replace it.

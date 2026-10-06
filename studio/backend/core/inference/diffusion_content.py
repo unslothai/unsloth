@@ -79,6 +79,8 @@ class CheckpointInfo:
     page: Optional[str] = None  # "image" | "video" | None
     what: str = ""  # human description, e.g. "a VAE"
     layout: str = ""  # "comfy" | "diffusers" | "checkpoint" | "gguf" | ""
+    # Defaults-table identifier the keys imply when the name cannot say (``flux.1-schnell`` vs ``flux.1-dev``).
+    variant: Optional[str] = None
 
 
 def family_page(family: Optional[str]) -> Optional[str]:
@@ -264,7 +266,9 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         in_ch = _dim(s, "img_in.weight", 1)
         if in_ch not in (None, 64):
             return _dit(None, "a FLUX.1 Fill/Depth/Canny-style diffusion transformer (not supported)", "comfy")
-        return _dit("flux.1", "a FLUX.1 diffusion transformer", "comfy")
+        info = _dit("flux.1", "a FLUX.1 diffusion transformer", "comfy")
+        # schnell is the only FLUX.1 without a guidance embedder; dev / Krea-dev / Kontext share keys.
+        return CheckpointInfo(**{**info.__dict__, "variant": "flux.1-dev" if "guidance_in" in tops else "flux.1-schnell"})
 
     # --- HunyuanImage-2.1 / HunyuanVideo-1.5 (ComfyUI layout)
     if "byt5_in" in tops and "double_blocks" in tops:
@@ -351,7 +355,9 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         in_ch = _dim(s, "x_embedder.weight", 1)
         if in_ch not in (None, 64):
             return _dit(None, "a FLUX.1 Fill/Depth/Canny-style diffusion transformer (not supported)", "diffusers")
-        return _dit("flux.1", "a FLUX.1 diffusion transformer", "diffusers")
+        info = _dit("flux.1", "a FLUX.1 diffusion transformer", "diffusers")
+        guided = _any(keys, r"^time_text_embed\.guidance_embedder\.")
+        return CheckpointInfo(**{**info.__dict__, "variant": "flux.1-dev" if guided else "flux.1-schnell"})
 
     # --- SDXL / SD UNets (LDM and diffusers layouts)
     if {"input_blocks", "middle_block", "output_blocks"} <= tops:
@@ -459,7 +465,7 @@ def classify_tensors(shapes: dict[str, list[int]], meta: Optional[dict] = None) 
         info = _match_dit(sub)
         if info is not None:
             layout = "gguf" if arch else ("checkpoint" if bundled else info.layout)
-            return CheckpointInfo(info.role, info.family, info.page, info.what, layout)
+            return CheckpointInfo(info.role, info.family, info.page, info.what, layout, info.variant)
 
     te = _match_text_encoder(keys)
     if te:
@@ -599,3 +605,13 @@ def assert_local_pick_is_dit(repo_id: Optional[str], filename: Optional[str], pa
     message = refusal_for(path, page)
     if message:
         raise ValueError(message)
+
+
+def content_variant_hint(repo_id: Optional[str], filename: Optional[str]) -> Optional[str]:
+    """The defaults / flow-shift identifier a local pick's keys imply (``flux.1-dev`` or
+    ``flux.1-schnell``), or None. Callers place it right AFTER the file name, so a name that says
+    ``krea-dev`` still wins, and BEFORE the folder path (an unrelated word there, ``krea``, would pick
+    another model's row) and the family base repo, which for FLUX.1 is schnell (the ungated
+    companion source) and would otherwise hand a renamed dev file schnell's 4 steps."""
+    path = local_pick_file(repo_id, filename)
+    return inspect_checkpoint(path).variant if path else None

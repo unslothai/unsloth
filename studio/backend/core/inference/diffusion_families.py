@@ -1309,10 +1309,13 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
+    ("flux1-krea", 20, 3.5),  # FLUX.1-Krea-dev file names, before Krea-2's generic row
     ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
+    ("flux1-schnell", 4, 0.0),
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
+    ("flux1", 20, 3.5),  # ComfyUI / BFL file names (flux1-dev, flux1-krea-dev): never schnell's row
     # Undistilled base runs real CFG; keep before the generic distilled key.
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),

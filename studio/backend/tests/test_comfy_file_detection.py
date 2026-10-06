@@ -378,3 +378,30 @@ def test_classifier_is_torch_free():
         "assert 'torch' not in sys.modules and 'diffusers' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check = True, cwd = Path(__file__).resolve().parents[1])
+
+
+def test_qwen_image_21_header_wins_over_a_plain_qwen_image_name(tmp_path):
+    """A Qwen-Image-2.1 DiT read as plain Qwen-Image is rebuilt at the wrong width (4096 vs 3072)."""
+    _write_safetensors(tmp_path / "qwen_image_mine.safetensors", _row("qwen_image_2.1_bf16.safetensors")["shapes"])
+    assert df.detect_family("qwen_image_mine.safetensors").name == "qwen-image"
+    assert df.detect_family_for_pick(str(tmp_path), "qwen_image_mine.safetensors").name == "qwen-image-2.1"
+
+
+def test_flux1_dev_krea_schnell_defaults(tmp_path):
+    base = "black-forest-labs/FLUX.1-schnell"  # the flux.1 family's companion base
+    assert df.default_generation_params("flux1-krea-dev_fp8_scaled.safetensors", base) == (20, 3.5)
+    assert df.default_generation_params("flux1-dev-fp8.safetensors", base) == (20, 3.5)
+    assert df.default_generation_params("flux1-schnell-fp8.safetensors", base) == (4, 0.0)
+    assert df.default_generation_params("flux1-dev-kontext_fp8_scaled.safetensors", base) == (20, 2.5)
+    assert df.default_generation_params("krea2_turbo_bf16.safetensors") == (8, 0.0)
+    # renamed files: the keys separate schnell (no guidance_in) from dev / Krea-dev
+    _write_safetensors(tmp_path / "a.safetensors", _row("flux1-krea-dev_fp8_scaled.safetensors")["shapes"])
+    _write_safetensors(tmp_path / "b.safetensors", _row("Comfy-Org/flux1-schnell/flux1-schnell.safetensors")["shapes"])
+    hint_a = dc.content_variant_hint(str(tmp_path), "a.safetensors")
+    hint_b = dc.content_variant_hint(str(tmp_path), "b.safetensors")
+    assert (hint_a, hint_b) == ("flux.1-dev", "flux.1-schnell")
+    assert df.default_generation_params("a.safetensors", hint_a, str(tmp_path), base) == (20, 3.5)
+    assert df.default_generation_params("b.safetensors", hint_b, str(tmp_path), base) == (4, 0.0)
+    fam = df.detect_family("flux.1")
+    assert df.comfy_flow_shift_for(fam, "a.safetensors", hint_a, base) == df.comfy_flow_shift_for(fam, "flux1-dev")
+    assert df.comfy_flow_shift_for(fam, "b.safetensors", hint_b, base) is None
