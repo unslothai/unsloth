@@ -2670,15 +2670,23 @@ class FastSentenceTransformer(FastModel):
 
         from sentence_transformers.util import load_file_path
 
-        st_config_path = load_file_path(
-            model_name,
-            "config_sentence_transformers.json",
-            token = token,
-            cache_folder = kwargs.get("cache_dir")
-            or kwargs.get("cache_folder")
-            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
-            revision = revision,
-        )
+        # sentence-transformers >= 6 re-raises Hub errors other than "not found" here; the weights already loaded, so warn rather than fail.
+        try:
+            st_config_path = load_file_path(
+                model_name,
+                "config_sentence_transformers.json",
+                token = token,
+                cache_folder = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                revision = revision,
+            )
+        except Exception as e:
+            print(
+                f"Unsloth: Could not read config_sentence_transformers.json for {model_name} ({e}). "
+                "Saved prompts and similarity_fn_name were not restored."
+            )
+            st_config_path = None
         if st_config_path is not None:
             with open(st_config_path, encoding = "utf8") as f:
                 st_config = json.load(f)
