@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Laya's ModernBERT encoder is launch bound at the decision trainer's sizes (8 rows of ~300 tokens), so
-# long runs compile each encoder layer, after a warm-up step that falls back to eager on any compile
-# error. UNSLOTH_DECISION_COMPILE=0 or 1 turns it off or forces it on.
+# Laya's encoder is launch bound at decision sizes, so long runs compile each layer.
+# UNSLOTH_DECISION_COMPILE=0 or 1 turns it off or forces it on.
 
 import contextlib
 import importlib.util
@@ -14,8 +13,7 @@ import torch.nn as nn
 
 __all__ = ["compiled_encoder"]
 
-# Forward passes a run needs before compiling pays for itself even from a cold cache: 38 ms (LoRA) and
-# 16 ms (full) saved per micro-batch of 8 on an L4 against 55-88 s of compiling (22-34 s warm).
+# Shorter runs spend more on a cold compile than it saves.
 COMPILE_MIN_FORWARDS = 4000
 
 
@@ -45,8 +43,7 @@ def _wants_compile(model, forwards: int) -> bool:
 
 
 def _warm_up(model, amp_dtype) -> None:
-    # One compiled forward and backward before training, so a platform Inductor cannot serve trains
-    # eagerly instead of failing the run. The RNG and every gradient are left as they were.
+    # Fails here, not mid-run, on a platform Inductor cannot serve; RNG and gradients are restored.
     device = next(model.parameters()).device
     vocab = int(getattr(model.encoder.config, "vocab_size", 1000))
     ids = torch.randint(5, min(vocab, 1000), (2, 64), device = device)
@@ -75,10 +72,9 @@ def compiled_encoder(
     forwards: int,
     amp_dtype = None,
 ):
-    """Compile each Laya encoder layer for one training run, and run eagerly again afterwards.
+    """Compile each Laya encoder layer in place for one training run, then go back to eager.
 
-    In place (``nn.Module.compile``), so parameter names, saving and LoRA merging see the same modules;
-    calibration and evaluation after training run eagerly instead of compiling a no-grad graph.
+    In place keeps parameter names, saving and LoRA merging unchanged.
     """
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
