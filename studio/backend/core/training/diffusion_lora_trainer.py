@@ -100,8 +100,10 @@ def _load_image_tensor(
     import torch
     from PIL import Image, ImageOps
 
+    from core.inference.mcp_images import flattened_rgb
+
     # Honour EXIF orientation before any geometry, or rotated photos train sideways.
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     original_w, original_h = img.size
     scale = resolution / min(original_w, original_h)
     resized_w = max(resolution, round(original_w * scale))
@@ -137,7 +139,9 @@ def _load_image_tensor_planned(
     import torch
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     original_w, original_h = img.size
     scale = resolution / min(original_w, original_h)
     resized_w = max(resolution, round(original_w * scale))

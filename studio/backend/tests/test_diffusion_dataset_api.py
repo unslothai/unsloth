@@ -261,6 +261,20 @@ def test_thumb_cache_key_distinguishes_same_stem_extensions(client, ds_root):
     assert thumbs == ["sample.jpg_32.jpg", "sample.png_32.jpg"]
 
 
+def test_thumbnail_of_transparent_image_shows_white_background(client, ds_root):
+    folder = ds_root / "d"
+    folder.mkdir()
+    sticker = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    sticker.paste((255, 220, 0, 255), (16, 16, 48, 48))
+    sticker.save(folder / "sticker.png", format = "PNG")
+
+    r = client.get("/api/train/diffusion/dataset/d/image/sticker.png?thumb=64")
+
+    assert r.status_code == 200
+    thumb = Image.open(io.BytesIO(r.content)).convert("RGB")
+    assert min(thumb.getpixel((2, 2))) > 245
+
+
 # ── traversal / validation ───────────────────────────────────────────────────
 def test_dataset_name_traversal_rejected_over_http(client, ds_root):
     # A name that fails the folder-name validator returns 400, never touches disk.
