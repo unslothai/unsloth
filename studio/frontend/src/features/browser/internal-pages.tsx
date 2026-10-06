@@ -338,7 +338,7 @@ function HistoryRow({
               <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} className="size-4" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-48">
+          <DropdownMenuContent align="end" className="browser-menu min-w-48">
             <DropdownMenuItem onSelect={() => useBrowserStore.getState().openUrl(item.url, { newTab: true })}>
               <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} />
               {t("browser.pages.openPage")}
@@ -510,7 +510,7 @@ function HistoryPage({ tabId }: { tabId: string }) {
                 <DropdownMenuContent
                   align="end"
                   sideOffset={4}
-                  className="library-menu w-max min-w-44"
+                  className="browser-menu w-max min-w-44"
                   onCloseAutoFocus={(event) => {
                     if (!openDatesOnClose.current) return;
                     openDatesOnClose.current = false;
@@ -542,7 +542,7 @@ function HistoryPage({ tabId }: { tabId: string }) {
               </DropdownMenu>
             </label>
           </PopoverAnchor>
-          <PopoverContent align="end" sideOffset={6} className="w-auto rounded-2xl p-0">
+          <PopoverContent align="end" sideOffset={6} className="browser-menu w-auto rounded-2xl p-0">
             <Calendar
               mode="range"
               selected={dates}

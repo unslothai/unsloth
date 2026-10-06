@@ -345,23 +345,27 @@ def test_resident_mib_prices_kept_layers_as_stored_and_the_rest_at_bf16(tmp_path
     path = _save(tmp_path / "plan.safetensors", tensors)
     scan = cq.refuse_comfy_quant(path)
     n = rows * cols
-    mib = 1024 * 1024
-    kept = n + 4 * rows
+    small = 8 * rows + 4 + sum(v.numel() for k, v in tensors.items() if k.endswith(".comfy_quant"))
+
+    def mib(total):
+        return -(-total // (1024 * 1024))
+
     # int8 kept (minus the excluded name), fp8 dequantized, fp32 narrowed, VAE out of the read
-    got = cq.comfy_quant_resident_mib(
+    got = cq.comfy_resident_mib(
         path,
         scan,
-        kept_formats = {"int8_tensorwise"},
+        keep_int8 = True,
+        keep_fp8 = False,
         exclude_tokens = ("audio",),
         keep_key = lambda k: not k.startswith("vae."),
     )
-    assert got == int((kept + 2 * n + 2 * n + 2 * n) / mib)
-    everything = cq.comfy_quant_resident_mib(
-        path, scan, kept_formats = {"int8_tensorwise", "float8_e4m3fn"}
-    )
-    assert everything == int((kept + kept + n + 4 * rows + 2 * n + 2 * n) / mib)
+    assert got == mib(n + 2 * n + 2 * n + 2 * n + small)
+    everything = cq.comfy_resident_mib(path, scan, keep_int8 = True, keep_fp8 = True)
+    assert everything == mib(3 * n + 2 * n + 2 * n + small)
     # nothing kept: every quantized layer at bf16, twice its stored size
-    assert cq.comfy_quant_resident_mib(path, scan) == int((2 * n * 3 + 2 * n + 2 * n) / mib)
+    assert cq.comfy_resident_mib(path, scan, keep_int8 = False, keep_fp8 = False) == mib(
+        3 * 2 * n + 2 * n + 2 * n + small
+    )
 
 
 # ------------------------------------------------------------------------------ video.py policy
@@ -412,11 +416,13 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
     fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
     monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: "torchao")
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == int((rows * cols + 4 * rows) / 2**20)
+    n = rows * cols
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2  # 1 MiB of codes + scale + config
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
     # dequantized on load: twice the file
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 2
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
+    assert n == 2**20
 
 
 def test_h3_single_file_validation_accepts_a_comfy_denoiser_and_refuses_the_rest():

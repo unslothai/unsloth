@@ -59,7 +59,7 @@ from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
-    comfy_quant_resident_mib,
+    comfy_resident_mib,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
@@ -388,7 +388,7 @@ def _video_comfy_resident_mib(
     int8 runtime runs here, fp8 layers as fp8 when the resident fp8 path does, the rest at bf16 (a dequantized fp8
     file is twice its size on disk)."""
     name = getattr(fam, "name", None)
-    kept: set = set()
+    keep_int8 = keep_fp8 = False
     exclude: tuple = ()
     if keep:
         try:
@@ -397,14 +397,18 @@ def _video_comfy_resident_mib(
             exclude = exclude_tokens_for_scheme(TQ_INT8, name)
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
-        if comfy_int8_backend(target, name, base) or comfy_int8_backend(
-            target, name, base, offload = True
-        ):
-            kept.add("int8_tensorwise")
-        if comfy_fp8_backend(target, name, base):
-            kept.add("float8_e4m3fn")
-    return comfy_quant_resident_mib(
-        str(path), scan, kept_formats = kept, exclude_tokens = exclude, keep_key = keep_key
+        keep_int8 = bool(
+            comfy_int8_backend(target, name, base)
+            or comfy_int8_backend(target, name, base, offload = True)
+        )
+        keep_fp8 = comfy_fp8_backend(target, name, base) is not None
+    return comfy_resident_mib(
+        str(path),
+        scan,
+        keep_int8 = keep_int8,
+        keep_fp8 = keep_fp8,
+        keep_key = keep_key,
+        exclude_tokens = exclude,
     )
 
 
@@ -7276,7 +7280,11 @@ class VideoBackend:
                     if comfy_int8_backend(umem_target, fam.name, base) == "torchao"
                     else None
                 ),
-                fp8_backend = comfy_fp8_backend(umem_target, fam.name, base),
+                fp8_backend = (
+                    "torchao"
+                    if comfy_fp8_backend(umem_target, fam.name, base) == "torchao"
+                    else None
+                ),
                 target = umem_target,
                 logger = logger,
             )

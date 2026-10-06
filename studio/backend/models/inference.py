@@ -34,6 +34,7 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from models.providers import ProviderReasoningConfig
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -2841,6 +2842,10 @@ class ChatCompletionRequest(BaseModel):
         description = "[x-unsloth] Saved provider config ID. Its stored key is used when encrypted_api_key is omitted.",
     )
     provider_api_type: Literal["chat_completions", "responses"] = "chat_completions"
+    provider_reasoning_config: Optional[ProviderReasoningConfig] = Field(
+        None,
+        description = "[x-unsloth] Explicit Custom reasoning dialect; saved provider configuration takes precedence.",
+    )
     provider_type: Optional[str] = Field(
         None,
         description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",

@@ -46,6 +46,7 @@ export type {
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
 export { modelConfigDraftKey } from "./model-config/model-config-draft";
+export { splitQuantSuffix } from "./model-config/model-identity";
 export {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,

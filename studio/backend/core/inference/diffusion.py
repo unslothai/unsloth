@@ -69,6 +69,8 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    transformer_config_overrides_for,
+    transformer_variant_differs_from_base,
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
@@ -271,7 +273,9 @@ from .diffusion_denoiser_prequant import (
     prequant_artifact_label,
 )
 from .diffusion_comfy_quant import (
+    comfy_fp8_backend,
     comfy_int8_backend,
+    comfy_torchao_quantized,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
@@ -726,7 +730,23 @@ def _compile_shape_dims(
     if init_pil is None or not _is_source_sized(workflow, family):
         return int(width), int(height)
     iw, ih = init_pil.size
+    if getattr(family, "layer_count", 0):
+        return _layered_canvas(family, (iw, ih))
     return int(iw), int(ih)
+
+
+def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
+    """The (width, height) QwenImageLayeredPipeline decomposes at: the ``layer_resolution`` square's area at the input's
+    aspect ratio, each side rounded to 32 (``calculate_dimensions`` in the pipeline). The input image's own size only
+    sets the ratio."""
+    import math
+
+    iw, ih = size
+    area = float(getattr(family, "layer_resolution", 640)) ** 2
+    ratio = float(iw) / float(max(1, ih))
+    width = math.sqrt(area * ratio)
+    height = width / ratio
+    return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
 
 
 # Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match
@@ -758,6 +778,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
+        "qwen/qwen-image-layered",
         # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
         # not a family at all. Detection resolves it, the version gate passes once the pinned main
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
@@ -1406,6 +1427,49 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
             continue
         state_dict[name] = have.reshape(want_shape)
     return state_dict
+
+
+def _dequantize_gguf_outside_linears(
+    model: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> int:
+    """Dequantise GGUF-packed params outside GGUFLinear (only those dequantise per forward; numpy has no bf16, so BF16
+    stays raw bytes too). Qwen-Image-Layered's BF16 addition_t_embedding otherwise fails the first step with 3072 vs
+    6144. A few KB, kept dense at ``dtype``. Returns the count."""
+    try:
+        import torch
+        from diffusers.quantizers.gguf.utils import (
+            GGUFLinear,
+            GGUFParameter,
+            dequantize_gguf_tensor,
+        )
+    except Exception:  # noqa: BLE001 - no GGUF support, nothing packed to fix
+        return 0
+    named_modules = getattr(model, "named_modules", None)
+    if not callable(named_modules):
+        return 0
+    fixed: list = []
+    for module_name, module in named_modules():
+        if isinstance(module, GGUFLinear):
+            continue
+        for name, param in list(module.named_parameters(recurse = False)):
+            if not isinstance(param, GGUFParameter):
+                continue
+            dense = dequantize_gguf_tensor(param).to(dtype)
+            setattr(
+                module,
+                name,
+                torch.nn.Parameter(dense.as_subclass(torch.Tensor), requires_grad = False),
+            )
+            fixed.append(f"{module_name}.{name}" if module_name else name)
+    if fixed and logger is not None:
+        logger.info(
+            "diffusion.gguf: dequantised %d non-linear parameter(s): %s",
+            len(fixed),
+            ", ".join(fixed[:8]),
+        )
+    return len(fixed)
 
 
 def _install_gguf_dim_restore(logger: Any) -> None:
@@ -2530,6 +2594,14 @@ class DiffusionBackend:
         # An explicit Speed="off" load stays GGUF-as-is (dense path never runs); don't widen the prefetch.
         speed = kwargs.get("speed_mode")
         if speed is not None and str(speed).strip().lower() == SPEED_OFF:
+            return False
+        if transformer_variant_differs_from_base(
+            fam,
+            kwargs.get("base_repo"),
+            kwargs.get("gguf_filename"),
+            kwargs.get("repo_id"),
+            kwargs.get("display_repo_id"),
+        ):
             return False
         try:
             # A definite-offload policy skips the dense build, so widening wastes a multi-GB pull with no GGUF
@@ -4309,7 +4381,13 @@ class DiffusionBackend:
                 (
                     lambda companions, transformer_files: self._dense_quant_prefetch_needed(
                         fam,
-                        {**load_kwargs, "base_repo": base, "hf_token": hf_token},
+                        {
+                            **load_kwargs,
+                            "repo_id": repo_id,
+                            "gguf_filename": gguf_filename,
+                            "base_repo": base,
+                            "hf_token": hf_token,
+                        },
                         companion_files = companions,
                         transformer_files = transformer_files,
                     )
@@ -5456,6 +5534,8 @@ class DiffusionBackend:
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
+                # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
+                comfy_compile = False
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
@@ -5663,6 +5743,25 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # 2509 / original Edit GGUFs resolve to the 2511 base, whose transformer/ is another model.
+                if (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and transformer_variant_differs_from_base(
+                        fam, base, gguf_filename, repo_id, display_repo_id
+                    )
+                ):
+                    dense_declined = True
+                    if transformer_quant_decline is None:
+                        transformer_quant_decline = (
+                            f"{base} has a different transformer than this GGUF, so only the GGUF "
+                            "itself can run it"
+                        )
+                    # Baking adapters needs the dense build; staying on auto lets the load fail loudly below.
+                    if transformer_quant_pinned is None and not _has_active_lora(loras):
+                        transformer_quant = "off"
+                    else:
+                        transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
                 gguf_offload_placement: Optional[Any] = None
                 gguf_offload_scheme: Optional[str] = None
@@ -6616,6 +6715,10 @@ class DiffusionBackend:
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
+                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
+                                **transformer_config_overrides_for(
+                                    fam, gguf_filename, repo_id, display_repo_id, base
+                                ),
                             }
                             # Before the prefix shim below, which wraps whatever entry it finds and
                             # finds nothing for a class that is not registered yet.
@@ -6630,7 +6733,8 @@ class DiffusionBackend:
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
                             if comfy_scan is not None:
-                                # int8 codes and scales go to the int8 runtime unchanged where it runs; the rest dequantize.
+                                # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
+                                _comfy_offload = not plan_keeps_transformer_resident(plan)
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -6640,17 +6744,27 @@ class DiffusionBackend:
                                         target,
                                         fam.name,
                                         base,
-                                        offload = not plan_keeps_transformer_resident(plan),
+                                        offload = _comfy_offload,
+                                    ),
+                                    fp8_backend = comfy_fp8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = _comfy_offload,
                                     ),
                                     family = fam.name,
                                     target = target,
+                                    fast_accum = transformer_quant_fast_accum,
                                     logger = logger,
                                 )
+                                comfy_compile = comfy_torchao_quantized(transformer)
                             else:
                                 # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
                                 transformer = transformer_cls.from_single_file(
                                     single_file_path, **sf_kwargs
                                 )
+                                if kind == "gguf":
+                                    _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
 
                             if fam.name == KREA2_FAMILY_NAME:
@@ -6980,7 +7094,7 @@ class DiffusionBackend:
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
                     if (
-                        transformer_quant_engaged is not None
+                        (transformer_quant_engaged is not None or comfy_compile)
                         and native_scheme is None
                         and effective_speed == SPEED_OFF
                     ):
@@ -6995,6 +7109,7 @@ class DiffusionBackend:
                         speed_mode is None
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
+                        and not comfy_compile
                         and compile_eligible(target, is_gguf = False, family = fam)
                         and not fp16_compile_explicit_only(target)
                     )
@@ -7199,7 +7314,9 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
-                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                        pipe,
+                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        logger,
                     )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:
@@ -7398,7 +7515,7 @@ class DiffusionBackend:
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
-                                if transformer_quant_engaged is not None
+                                if (transformer_quant_engaged is not None or comfy_compile)
                                 and native_scheme is None
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
                                 else "auto: exact eager for the first two images; "
@@ -7657,6 +7774,27 @@ class DiffusionBackend:
             return None
 
     @staticmethod
+    def _comfy_single_file_resident_mib(
+        single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
+    ) -> Optional[int]:
+        """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
+        try:
+            from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
+
+            scan = scan_comfy_quant(single_file_path)
+            if scan is None or scan.problems:
+                return None
+            name = getattr(fam, "name", None)
+            return comfy_resident_mib(
+                single_file_path,
+                scan,
+                keep_int8 = comfy_int8_backend(target, name, base) is not None,
+                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+            )
+        except Exception:  # noqa: BLE001 - a planning aid: the file-size estimate stands
+            return None
+
+    @staticmethod
     def _gguf_offload_prequant_placement(
         replanned: Any,
         candidate: Any,
@@ -7795,6 +7933,7 @@ class DiffusionBackend:
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                     placement_device = None if seed_device == device else seed_device,
+                    family = fam.name,
                 )
                 check_cancelled()
                 if transformer is None:
@@ -8738,6 +8877,13 @@ class DiffusionBackend:
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
+                if not getattr(fam, "single_file_is_pipeline", False):
+                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
+                    _comfy_mib = self._comfy_single_file_resident_mib(
+                        single_file_path, fam, target, base
+                    )
+                    if _comfy_mib is not None:
+                        transformer_resident = _comfy_mib
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base's
@@ -9575,7 +9721,10 @@ class DiffusionBackend:
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
-                    init_pil = decode_b64_image(init_image, mode = "RGB")
+                    # RGB for the instruction editors; the layered VAE reads the alpha as a fourth channel.
+                    init_pil = decode_b64_image(
+                        init_image, mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
+                    )
                 elif requested_workflow == "edit":
                     if not getattr(fam, "unified_edit", False):
                         raise ValueError(
@@ -9761,6 +9910,12 @@ class DiffusionBackend:
                             )
                         else:
                             kwargs["guidance_schedule"] = None
+                layer_count = int(getattr(fam, "layer_count", 0) or 0)
+                if layer_count:
+                    if "layers" in call_params:
+                        kwargs["layers"] = layer_count
+                    if "resolution" in call_params:
+                        kwargs["resolution"] = int(getattr(fam, "layer_resolution", 640))
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
@@ -9815,8 +9970,9 @@ class DiffusionBackend:
                         kwargs["control_mode"] = cn_mode
 
                 # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
-                # cap; the OOM backoff below halves a failed chunk.
-                chunks = chunk_jobs(jobs, batch_size)
+                # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
+                # per-prompt layer stride is only right for one).
+                chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -9827,22 +9983,26 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
+                    guard_condition_pixels = (
+                        int(
+                            (1 + len(ref_extra))
+                            * ref_resolution
+                            * ref_resolution
+                            * getattr(fam, "condition_pixel_weight", 1.0)
+                        )
+                        if ref_resolution is not None
+                        else 0
+                    )
+                    if layer_count:
+                        # layers + 1 extra canvas-sized frames beside the output-sized one.
+                        guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
                     # past what the measured placement reserved: stream resident groups again for this call
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
-                        condition_pixels = (
-                            int(
-                                (1 + len(ref_extra))
-                                * ref_resolution
-                                * ref_resolution
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if ref_resolution is not None
-                            else 0
-                        ),
+                        condition_pixels = guard_condition_pixels,
                     )
                     if extra_mib > 0:
                         restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
@@ -9862,16 +10022,7 @@ class DiffusionBackend:
                         # resolution" is actionable there; the rest size from the upload alone and get the upload-side
                         # remedy.
                         source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = (
-                            int(
-                                (1 + len(ref_extra))
-                                * ref_resolution
-                                * ref_resolution
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if ref_resolution is not None
-                            else 0
-                        ),
+                        condition_pixels = guard_condition_pixels,
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
                         quadratic_attention = _quadratic_attention(
@@ -10178,8 +10329,14 @@ class DiffusionBackend:
                             settle_compile_fallback(state, state.pipe, logger)
                         if cancel.is_set():
                             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                        images.extend(out)
-                        per_image_seeds.extend(s for _, s in chunk)
+                        if layer_count:
+                            # One list of layers per input; each layer is an output image with its input's seed.
+                            for (_, s), layers_out in zip(chunk, out):
+                                images.extend(layers_out)
+                                per_image_seeds.extend(s for _ in layers_out)
+                        else:
+                            images.extend(out)
+                            per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
                         steps_done[0] += steps
                 except BaseException:
