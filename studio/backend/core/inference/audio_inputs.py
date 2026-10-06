@@ -477,14 +477,11 @@ def sweep(
         for path in directory.iterdir():
             name = path.name
             age = now - _mtime(path)
-            # .wav: a timed transcription's prepared upload, left behind only by a crash.
-            if (
-                name.startswith(".")
-                and name.endswith((".tmp", ".wav"))
-                and age > _STALE_TMP_SECONDS
-            ):
+            if name.startswith(".") and name.endswith(".tmp") and age > _STALE_TMP_SECONDS:
                 path.unlink(missing_ok = True)
-            elif name.startswith(("c-", "v-")) and name.endswith(".wav") and age > ttl:
+            # A "." copy is a timed transcription's prepared upload that a crash left behind; it
+            # gets the full TTL, since a live one can wait an hour on the aligner download.
+            elif name.startswith(("c-", "v-", ".")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
         # Music run folders a crash left behind.
         runs = directory / "runs"

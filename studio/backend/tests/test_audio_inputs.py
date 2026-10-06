@@ -350,8 +350,9 @@ def test_the_sweep_reaps_a_prepared_upload_a_crash_left_behind():
     from routes.inference import _prepared_upload
 
     stale = _prepared_upload(wav_bytes(0.2), 16000)
-    fresh = _prepared_upload(wav_bytes(0.2), 16000)
-    old = time.time() - 2 * 60 * 60
-    os.utime(stale, (old, old))
+    waiting = _prepared_upload(wav_bytes(0.2), 16000)
+    # One still waiting on a slow aligner download outlives the hour a temp file gets.
+    for path, age in ((stale, audio_inputs.TTL_SECONDS + 60), (waiting, 2 * 60 * 60)):
+        os.utime(path, (time.time() - age, time.time() - age))
     audio_inputs.sweep()
-    assert not stale.exists() and fresh.exists()
+    assert not stale.exists() and waiting.exists()
