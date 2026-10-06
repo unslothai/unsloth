@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -5702,7 +5702,9 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
-        with lora_relative_to_original_base(model):
+        # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
+        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        with nullcontext() if in_place else lora_relative_to_original_base(model):
             merge_and_overwrite_lora(
                 get_model_name,
                 model = model,

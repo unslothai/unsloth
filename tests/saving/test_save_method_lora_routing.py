@@ -61,6 +61,7 @@ def _load(*names, **env):
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
+        "nullcontext": contextlib.nullcontext,
         **env,
     }
     for name in names:
@@ -245,7 +246,7 @@ def _not_reached(*args, **kwargs):
 
 
 def _routing_environment(monkeypatch, model):
-    calls = {"merge": [], "adapter": [], "prewarm": []}
+    calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
     zoo.merge_and_overwrite_lora = lambda *args, **kwargs: calls["merge"].append(kwargs)
@@ -266,6 +267,9 @@ def _routing_environment(monkeypatch, model):
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        lora_relative_to_original_base = lambda model: (
+            calls["convert"].append(model) or contextlib.nullcontext()
+        ),
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
         gc = types.SimpleNamespace(collect = lambda: None),
         torch = types.SimpleNamespace(
@@ -354,6 +358,8 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
+    # merged_4bit merges the loaded residual weights in place; the others re-read the original base.
+    assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
 
 
 def test_a_model_with_no_adapter_is_unchanged(monkeypatch, tmp_path):
