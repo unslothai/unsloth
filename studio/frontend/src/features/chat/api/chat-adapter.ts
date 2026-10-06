@@ -1293,16 +1293,42 @@ function providerCompactionPart(
   return compaction.content || compaction.encrypted_content ? compaction : null;
 }
 
-/** The provider drops what came before its compaction, so it leads the turn that produced it. */
+function providerCompactionAssistant(
+  messages: SerializedMessage[],
+  afterToolCalls: number,
+): SerializedMessage | undefined {
+  const boundary =
+    Number.isInteger(afterToolCalls) && afterToolCalls >= 0
+      ? afterToolCalls
+      : 0;
+  let precedingToolCalls = 0;
+  let lastAssistant: SerializedMessage | undefined;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    lastAssistant = message;
+    if (precedingToolCalls >= boundary) return message;
+    precedingToolCalls += message.tool_calls?.length ?? 0;
+  }
+  return lastAssistant;
+}
+
+/** The provider drops what came before its compaction, so it leads the subturn that produced it. */
 function withProviderCompaction(
   message: RunMessage,
   serialized: SerializedMessage[],
 ): SerializedMessage[] {
+  const custom = (
+    message as { metadata?: { custom?: Record<string, unknown> } }
+  ).metadata?.custom;
   const compaction = providerCompactionPart(
-    (message as { metadata?: { custom?: Record<string, unknown> } }).metadata
-      ?.custom?.providerCompaction,
+    custom?.providerCompaction,
   );
-  const assistant = serialized.find((m) => m.role === "assistant");
+  const assistant = providerCompactionAssistant(
+    serialized,
+    typeof custom?.providerCompactionAfterToolCalls === "number"
+      ? custom.providerCompactionAfterToolCalls
+      : 0,
+  );
   if (!compaction || !assistant) return serialized;
   const content = assistant.content;
   assistant.content = [
@@ -5642,6 +5668,7 @@ export function createOpenAIStreamAdapter(
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
       let providerCompaction: ProviderCompactionContentPart | undefined;
+      let providerCompactionAfterToolCalls: number | undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5656,6 +5683,7 @@ export function createOpenAIStreamAdapter(
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
         providerCompaction,
+        providerCompactionAfterToolCalls,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -7067,8 +7095,14 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "compaction_block") {
-                  providerCompaction =
-                    providerCompactionPart(toolEvent) ?? providerCompaction;
+                  const nextCompaction = providerCompactionPart(toolEvent);
+                  if (nextCompaction) {
+                    providerCompaction = nextCompaction;
+                    // Compaction items arrive before the provider content they introduce. Remember
+                    // how much of this stored run preceded it so replay does not put a later marker
+                    // ahead of earlier Studio tool rounds that the marker already summarizes.
+                    providerCompactionAfterToolCalls = toolCallParts.length;
+                  }
                   continue;
                 }
                 if (toolEvent.type === "document_citations") {
@@ -8393,6 +8427,7 @@ export function createOpenAIStreamAdapter(
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               providerCompaction,
+              providerCompactionAfterToolCalls,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8563,6 +8598,7 @@ export function createOpenAIStreamAdapter(
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
                 providerCompaction,
+                providerCompactionAfterToolCalls,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

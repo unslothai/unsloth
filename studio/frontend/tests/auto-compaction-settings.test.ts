@@ -227,3 +227,45 @@ test("provider compaction persistence keeps summary and encrypted state together
     },
   );
 });
+
+test("provider compaction replay stays on the tool-loop subturn that produced it", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const start = adapter.indexOf("function providerCompactionAssistant(");
+  assert.ok(start >= 0);
+  const declaration = adapter.slice(start, adapter.indexOf("\n}", start) + 2);
+  const providerCompactionAssistant = new Function(
+    `${ts.transpileModule(declaration, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText}; return providerCompactionAssistant;`,
+  )() as (
+    messages: Record<string, unknown>[],
+    afterToolCalls: number,
+  ) => Record<string, unknown> | undefined;
+
+  const first = {
+    role: "assistant",
+    content: null,
+    tool_calls: [{ id: "first" }],
+  };
+  const second = {
+    role: "assistant",
+    content: null,
+    tool_calls: [{ id: "second" }],
+  };
+  const final = { role: "assistant", content: "done" };
+  const replay = [
+    first,
+    { role: "tool", content: "one", tool_call_id: "first" },
+    second,
+    { role: "tool", content: "two", tool_call_id: "second" },
+    final,
+  ];
+
+  assert.equal(providerCompactionAssistant(replay, 0), first);
+  assert.equal(providerCompactionAssistant(replay, 1), second);
+  assert.equal(providerCompactionAssistant(replay, 2), final);
+  assert.match(
+    adapter,
+    /providerCompactionAfterToolCalls = toolCallParts\.length/,
+  );
+});
