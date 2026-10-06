@@ -151,10 +151,12 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           return { downloads: state.downloads.filter((item) => item.id !== id) };
         }),
       clearHistory: () => set({ history: [], icons: {} }),
-      clearDownloads: () => {
-        forgetNativeDownloads();
-        set({ downloads: [] });
-      },
+      clearDownloads: () =>
+        set((state) => {
+          // The app's registry is shared by every account; forget only this one's.
+          forgetNativeDownloads(state.downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : [])));
+          return { downloads: [] };
+        }),
       pruneHistory: () =>
         set((state) => {
           const cutoff = retentionCutoff();

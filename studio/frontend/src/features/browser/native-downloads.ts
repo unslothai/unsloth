@@ -30,8 +30,8 @@ export async function nativeDownloadsExist(ids: string[]): Promise<boolean[]> {
   return invoke<boolean[]>("browser_download_exists", { ids });
 }
 
-/** Forget downloads taken off the history, or all of them; the files stay. */
-export function forgetNativeDownloads(ids?: string[]): void {
-  if (!isTauri || ids?.length === 0) return;
-  void invoke<void>("browser_download_forget", { ids: ids ?? null }).catch(() => undefined);
+/** Forget downloads taken off the history; the files stay. */
+export function forgetNativeDownloads(ids: string[]): void {
+  if (!isTauri || ids.length === 0) return;
+  void invoke<void>("browser_download_forget", { ids }).catch(() => undefined);
 }

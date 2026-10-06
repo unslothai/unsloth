@@ -187,21 +187,18 @@ pub fn browser_download_exists(
         .collect())
 }
 
-/// Forget downloads taken off the history (the files stay); every one without `ids`.
+/// Forget downloads taken off the history (the files stay). Always by id: accounts share this list.
 #[tauri::command]
 pub fn browser_download_forget(
     webview: tauri::Webview,
     app: AppHandle,
     state: State<'_, BrowserDownloads>,
-    ids: Option<Vec<String>>,
+    ids: Vec<String>,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
     with_entries(&app, &state, |entries| {
         let before = entries.len();
-        match ids {
-            Some(ids) => entries.retain(|entry| !ids.contains(&entry.id)),
-            None => entries.clear(),
-        }
+        entries.retain(|entry| !ids.contains(&entry.id));
         ((), entries.len() != before)
     });
     Ok(())
