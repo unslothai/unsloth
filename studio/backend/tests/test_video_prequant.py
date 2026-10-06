@@ -376,7 +376,8 @@ def test_a_modular_family_refuses_a_single_file_load_before_anything_downloads()
     with pytest.raises(ValueError) as excinfo:
         backend.validate_load_request(
             "MiniMaxAI/MiniMax-H3",
-            gguf_filename = "minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
+            # A ComfyUI-quantized denoiser file is the one H3 single file Studio loads; anything else is refused.
+            gguf_filename = "qwen3vl_32b_minimax_h3_bf16.safetensors",
             model_kind = "single_file",
         )
     message = str(excinfo.value)
