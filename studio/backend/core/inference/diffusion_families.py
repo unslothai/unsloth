@@ -401,6 +401,20 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         condition_image_mode = "RGBA",
         # same DiT as qwen-image
         fp16_incompatible = True,
+        # Native: its own 4-channel VAE (the RGB one cannot decode layers; pixel-identical to the ComfyUI repack) and
+        # qwen-image's encoder, no projector (sd.cpp: enable_vision = version != VERSION_QWEN_IMAGE_LAYERED).
+        sd_cpp_vae = ("Qwen/Qwen-Image-Layered", "vae/diffusion_pytorch_model.safetensors"),
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                "qwen2vl",
+            ),
+        ),
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 1.0,
+        # Layered support landed upstream in master-744 (556f04b); an older reused build has no such literal.
+        sd_cpp_arch_marker = "qwen_image_layers",
     ),
     DiffusionFamily(
         name = "qwen-image",
