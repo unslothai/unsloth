@@ -1408,15 +1408,21 @@ def test_voice_unload_refuses_another_accounts_resident(monkeypatch):
     assert stopped == []
 
 
-def test_voice_load_refuses_to_replace_another_accounts_resident(monkeypatch):
-    """A load replaced the singleton voice server another account had loaded."""
+@pytest.mark.parametrize("voice_active", [True, False])
+def test_voice_load_refuses_to_replace_another_accounts_resident(monkeypatch, voice_active):
+    """A load replaced the singleton voice server another account had loaded, and with the slot
+    empty it joined another account's chat claim, hidden from the account that loaded it."""
     from fastapi import HTTPException
 
     loads = []
     voice = type(
         "Voice",
         (),
-        {"is_active": True, "is_loaded": True, "load_model": lambda self, *a, **k: loads.append(a)},
+        {
+            "is_active": voice_active,
+            "is_loaded": voice_active,
+            "load_model": lambda self, *a, **k: loads.append(a),
+        },
     )()
     monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
     monkeypatch.setattr(routes_module.account_access, "managed_account", lambda: False)

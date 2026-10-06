@@ -21005,9 +21005,10 @@ async def voice_load_model(
     # the other's server, and the first caller would be told its voice loaded.
     async with _voice_load_lock():
         voice_backend = get_voice_llama_backend()
-        # Replacing the slot stops whoever holds it: the same idle and hidden-resident checks /unload runs.
+        # The voice joins the CHAT claim alongside its owner, so a foreign owner (a chat model or an
+        # earlier voice) would keep it: hidden from the caller, usable by the other account.
         account_access.require_idle_other_accounts()
-        if voice_backend.is_active and account_access.resident_hidden("chat"):
+        if account_access.resident_hidden("chat"):
             raise HTTPException(status_code = 404, detail = "Model not found")
         # Read first: unload_model bumps it and load_model never does, so an unload that lands
         # anywhere in this request (resolution, preflight, the gap before the spawn, where the
