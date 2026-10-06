@@ -2622,10 +2622,14 @@ def test_the_preflight_runs_a_nix_store_true_with_the_store_bound(monkeypatch):
 
 
 def test_an_inconclusive_preflight_backs_off_then_retries(monkeypatch, _no_proc_layout_left_behind):
-    refused = subprocess.CompletedProcess([], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied")
+    refused = subprocess.CompletedProcess(
+        [], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
     answers = iter([None, refused, subprocess.CompletedProcess([], 0, "", "")])
     runs = []
-    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: runs.append(proc) or next(answers))
+    monkeypatch.setattr(
+        sandbox_linux, "_preflight", lambda bwrap, proc: runs.append(proc) or next(answers)
+    )
     clock = [1000.0]
     monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
     identity = ("/usr/bin/bwrap", 1, 1)
@@ -2636,7 +2640,9 @@ def test_an_inconclusive_preflight_backs_off_then_retries(monkeypatch, _no_proc_
     assert sandbox_linux._fresh_proc_refused(identity) is True
 
 
-def test_a_reset_retries_an_inconclusive_preflight_at_once(monkeypatch, _no_proc_layout_left_behind):
+def test_a_reset_retries_an_inconclusive_preflight_at_once(
+    monkeypatch, _no_proc_layout_left_behind
+):
     answers = iter([None, subprocess.CompletedProcess([], 0, "", "")])
     monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
     identity = ("/usr/bin/bwrap", 1, 1)
