@@ -3,6 +3,7 @@
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 import unsloth  # noqa: F401
 from unsloth.utils import attention_dispatch as ad
@@ -95,7 +96,9 @@ def test_segments_never_build_the_dense_mask(monkeypatch):
     assert out.shape == (1, 9, 2, 8)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+# has_real_cuda, not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches the
+# latter to True process-wide, and this body allocates on "cuda" (test_accelerator_skip_guards).
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_peak_memory_is_linear_in_tokens(monkeypatch):
     # 2 x 2048-token segments, 16 heads over 8 KV heads, as Qwen3-0.6B under padding-free SFT.
     total, n_heads, n_kv = 4096, 16, 8
