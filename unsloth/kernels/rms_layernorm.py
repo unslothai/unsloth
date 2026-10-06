@@ -354,7 +354,7 @@ def _multirow_checked(X, W, eps, gemma):
     multirow = _multirow_settings(n_cols)
     if multirow is None:
         return None
-    key = (X.device, X.dtype, W.dtype, int(n_cols), gemma)
+    key = (X.device, X.dtype, W.dtype, int(n_cols), float(eps), gemma)  # eps is a constexpr
     verdict = _MULTIROW_CHECKED.get(key)
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():

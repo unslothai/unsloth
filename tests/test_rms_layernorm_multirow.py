@@ -199,13 +199,22 @@ def test_multirow_launch_failure_falls_back(multirow, kernel):
     """A failed multi-row launch runs the one-row kernel and turns the lever off process-wide."""
     X, W, dY, one_row = _narrow_case(multirow)
     multirow.setitem(
-        rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True
+        rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, 1e-6, False), True
     )
     multirow.setattr(rms_layernorm, kernel, _Raising(RuntimeError("PTX JIT compilation failed")))
     with pytest.warns(UserWarning, match = "launch failed"):
         got = _run(X, W, dY, False)
     assert not rms_layernorm._MULTIROW
     _assert_bits(one_row, got)
+
+
+def test_multirow_self_check_runs_per_eps(multirow):
+    """eps is a constexpr, so every distinct eps gets its own self-check."""
+    X, W, dY, _ = _narrow_case(multirow)
+    for eps in (1e-6, 1e-5, 1e-6):
+        rms_layernorm._rms_forward(X, W, eps, False, _eager)
+    assert sorted(key[4] for key in rms_layernorm._MULTIROW_CHECKED) == [1e-6, 1e-5]
+    assert all(rms_layernorm._MULTIROW_CHECKED.values())
 
 
 def test_multirow_self_check_failure_under_compile_falls_back(multirow):
@@ -235,7 +244,7 @@ def test_multirow_launch_failure_reraises(multirow, error):
     """OOM and dynamo errors are not launch failures: they propagate and keep the lever on."""
     X, W, dY, _ = _narrow_case(multirow)
     multirow.setitem(
-        rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True
+        rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, 1e-6, False), True
     )
     multirow.setattr(rms_layernorm, "_rms_layernorm_forward_rows", _Raising(error))
     with pytest.raises(type(error)):
