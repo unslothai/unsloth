@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useLocale, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -22,14 +23,19 @@ import { useBrowserPrefsStore } from "./prefs-store";
 import { SiteFavicon } from "./site-favicon";
 import { useBrowserStore } from "./store";
 
+type Site = { title: string; url: string; icon?: string };
+
 // Unsloth's sites have no /favicon.ico, so they use Studio's own sticker.
-const DEFAULT_SITES: Site[] = [
+const UNSLOTH_SITES: Site[] = [
   { title: "Unsloth", url: "https://unsloth.ai", icon: "/sticker.png" },
   {
     title: "Unsloth Docs",
     url: "https://docs.unsloth.ai",
     icon: "/sticker.png",
   },
+];
+
+const OTHER_SITES: Site[] = [
   {
     title: "Unsloth on GitHub",
     url: "https://github.com/unslothai/unsloth",
@@ -38,7 +44,10 @@ const DEFAULT_SITES: Site[] = [
   { title: "Hugging Face", url: "https://huggingface.co/unsloth" },
 ];
 
-type Site = { title: string; url: string; icon?: string };
+const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
+
+// Cloudflare blocks Unsloth's sites in the web build's proxy, so only the desktop app suggests them.
+const DEFAULT_SITES = isTauri ? KNOWN_SITES : OTHER_SITES;
 
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
@@ -54,7 +63,7 @@ function suggestedSites(
     const seen = byHost.get(host);
     if (seen) seen.visits += 1;
     else {
-      const icon = DEFAULT_SITES.find(
+      const icon = KNOWN_SITES.find(
         (site) => hostOf(site.url) === host,
       )?.icon;
       byHost.set(host, {
