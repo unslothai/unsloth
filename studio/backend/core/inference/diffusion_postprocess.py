@@ -1,19 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The decoded image to uint8 on the device, not in numpy on the host.
+"""diffusers' ``postprocess(output_type="pil")`` uint8 conversion on the device instead of numpy on the host.
 
-diffusers' ``VaeImageProcessor.postprocess(output_type="pil")`` copies the decoded float image to the host and runs
-``(x * 255).round().astype("uint8")`` in numpy over a planar (channel-major) float32 view: three full-size float32
-temporaries per 1024 px image. Alone that costs ~25-30 ms on a B200 host, but inside a loaded Studio server it was the
-whole post-decode window (0.02-0.54 s on warm renders, 1.6 s on one, with every other step of the window under 2 ms),
-because host work there competes with everything else on the box. The same arithmetic on the device is one small
-kernel and a 3 MB copy (2 ms).
-
-Bit-identical: the float32 multiply by 255, round-half-to-even and the uint8 cast are the same IEEE operations on
-either side, and the cast only runs on values the denormalize already clamped to [0, 1]. Anything else (a CPU tensor,
-a batch that skips the denormalize, a grayscale image, NaNs, a processor that overrides ``postprocess``) takes the stock
-path. Kill switch: ``UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS=0``.
+Stock runs ``(x * 255).round().astype("uint8")`` over host float32 copies, which stalls under host load. Same IEEE ops
+on clamped [0, 1] values, so bit-identical; anything else takes the stock path. Kill switch:
+``UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS=0``.
 """
 
 from __future__ import annotations
@@ -35,8 +27,7 @@ def disabled() -> bool:
 
 
 def _stock_postprocess_class(processor: Any) -> bool:
-    """Only a processor whose ``postprocess`` is diffusers' own VaeImageProcessor one (subclasses that override it,
-    such as the LDM3D or PixArt processors, keep theirs)."""
+    """Subclasses overriding ``postprocess`` (LDM3D, PixArt) keep theirs."""
     try:
         from diffusers.image_processor import VaeImageProcessor
     except Exception:  # noqa: BLE001
@@ -62,14 +53,13 @@ def to_pil_on_device(
 
     if not isinstance(image, torch.Tensor) or image.device.type == "cpu":
         return None
-    # RGB, or RGBA (Qwen-Image-2.1's VAE decodes 4 channels); stock fromarray picks the mode from the channel count.
+    # RGBA: Qwen-Image-2.1's VAE decodes 4 channels.
     if image.ndim != 4 or int(image.shape[1]) not in (3, 4) or not image.is_floating_point():
         return None
     if not _all_denormalized(processor, image, do_denormalize):
         return None
     from PIL import Image
 
-    # The same call stock makes, so the values (and their dtype) entering the uint8 conversion are the same.
     image = processor._denormalize_conditionally(image, do_denormalize)
     if bool(torch.isnan(image).any()):
         return None
@@ -78,15 +68,13 @@ def to_pil_on_device(
 
 
 def uint8_hwc(image: Any) -> Any:
-    """Stock's ``.permute(0, 2, 3, 1).float()`` then numpy ``(x * 255).round().astype("uint8")``, as torch ops on
-    ``image``'s own device. Values must already lie in [0, 1] (the uint8 cast of anything else is undefined)."""
+    """Values must lie in [0, 1]: the uint8 cast of anything else is undefined."""
     import torch
     return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
 
 
 def install(pipe: Any, logger: Any = None) -> bool:
-    """Route ``pipe.image_processor.postprocess(..., output_type="pil")`` through ``to_pil_on_device``. Idempotent;
-    an instance attribute, so ``uninstall`` (or dropping the pipe) restores stock."""
+    """Idempotent; an instance attribute, so ``uninstall`` restores stock."""
     if disabled():
         return False
     processor = getattr(pipe, "image_processor", None)
