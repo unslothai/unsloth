@@ -292,7 +292,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
-export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 12 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
 /**
