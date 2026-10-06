@@ -90,7 +90,9 @@ def _home(tmp_path, monkeypatch, name, case):
     shell, rc, body, extra, extended, _ = case
     path = shutil.which(shell)
     if path is None:
-        pytest.skip(f"{shell} is not installed")
+        pytest.skip(
+            reason = f"{shell} is not installed; this case needs the real shell (unsloth#12678)"
+        )
     home = tmp_path / name
     home.mkdir()
     (home / rc).write_text(f"export {SENTINEL}=1\n{body}", encoding = "utf-8")
