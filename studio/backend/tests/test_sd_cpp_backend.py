@@ -744,8 +744,7 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
 
 
 def test_map_guidance_flux_uses_distilled_guidance():
-    # Guidance-distilled FLUX: one pass at an EXPLICIT cfg 1.0 plus the embedded guidance. Leaving cfg unset let sd.cpp
-    # apply its own default of 7.0, which renders FLUX.1-dev / schnell dark or burnt.
+    # cfg must be explicit: unset, sd.cpp applies its default 7.0 and FLUX.1 renders dark or burnt.
     assert _map_guidance(detect_family("flux.1"), 3.5) == (1.0, 3.5)
     assert _map_guidance(detect_family("flux.1"), 0.0) == (1.0, 0.0)
     assert _map_guidance(detect_family("flux.1-kontext"), 2.5) == (1.0, 2.5)
@@ -754,13 +753,12 @@ def test_map_guidance_flux_uses_distilled_guidance():
 
 
 def test_map_guidance_flux2_klein_distilled_off_base_real_cfg():
-    # klein has no guidance embedder: the 4-step models default to 1.0 (CFG off), the undistilled base to real CFG.
     assert _map_guidance(detect_family("flux.2-klein"), 1.0) == (1.0, None)
     assert _map_guidance(detect_family("flux.2-klein"), 5.0) == (5.0, None)
     assert _map_guidance(detect_family("flux.2-klein"), None) == (1.0, None)
 
 
-# (load repo id, family, expected cfg, expected embedded guidance) at Studio's own per-model default guidance.
+# (repo, family, cfg, embedded guidance) at Studio's per-model default guidance.
 _FLUX_DEFAULT_GUIDANCE_CASES = [
     ("unsloth/FLUX.1-dev-GGUF", "flux.1", 1.0, 3.5),
     ("unsloth/FLUX.1-schnell-GGUF", "flux.1", 1.0, 0.0),
