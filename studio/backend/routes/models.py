@@ -971,6 +971,9 @@ def collect_local_models(
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
+    from hub.services.models.local_inventory import _local_model_path_is_symlink
+
+    custom_identities: set[str] = set()
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1045,6 +1048,16 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
+        # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
+        for m in custom_models:
+            try:
+                below_root = os.path.join(
+                    os.path.realpath(folder_path), os.path.relpath(m.path, folder_path)
+                )
+            except (OSError, ValueError):
+                continue
+            if not _local_model_path_is_symlink(below_root):
+                custom_identities.add(_compat_inventory_path_identity(m.path))
         # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
         # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
@@ -1055,12 +1068,7 @@ def collect_local_models(
         ]
 
     # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
-    # those (the train picker refuses oMLX rows). Symlink aliases are distinct rows, not twins.
-    custom_identities = {
-        _compat_inventory_path_identity(m.path)
-        for m in local_models
-        if m.source == "custom" and not Path(m.path).is_symlink()
-    }
+    # those (the train picker refuses oMLX rows).
     local_models = [
         m
         for m in local_models
