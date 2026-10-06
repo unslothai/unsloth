@@ -559,6 +559,45 @@ class _Turn:
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
     provider_compaction: dict[str, Any] | None = None
 
+    def compaction_replay_message(self) -> dict[str, Any] | None:
+        """Build one replay turn and remove Anthropic's native block from later metadata."""
+        replay = self.provider_compaction
+        extra = self.reasoning_extra
+        if replay is None or not isinstance(extra, dict):
+            return None if replay is None else {"role": "assistant", "content": [replay]}
+        anthropic = extra.get("anthropic")
+        native_content = anthropic.get("content") if isinstance(anthropic, dict) else None
+        if not isinstance(native_content, list):
+            return {"role": "assistant", "content": [replay]}
+        native_compactions = [
+            block
+            for block in native_content
+            if isinstance(block, dict) and block.get("type") == "compaction"
+        ]
+        if not native_compactions:
+            return {"role": "assistant", "content": [replay]}
+        self.reasoning_extra = {
+            **extra,
+            "anthropic": {
+                **anthropic,
+                "content": [
+                    block
+                    for block in native_content
+                    if not (isinstance(block, dict) and block.get("type") == "compaction")
+                ],
+            },
+        }
+        return {
+            "role": "assistant",
+            "content": "",
+            "extra_content": {
+                "anthropic": {
+                    **anthropic,
+                    "content": [dict(native_compactions[-1])],
+                }
+            },
+        }
+
     def note_hosted_tool_event(self, event: Any) -> None:
         """Record a provider-side tool call carried on ``_toolEvent``. These reach the client as
         their own frames but are not part of the assistant message this loop replays, so the
@@ -1613,6 +1652,8 @@ async def stream_with_studio_tools(
             policy.on_provider_turn_end()
 
         if turn.provider_compaction is not None:
+            compaction_message = turn.compaction_replay_message()
+            assert compaction_message is not None
             system_messages = [
                 message
                 for message in conversation
@@ -1620,10 +1661,7 @@ async def stream_with_studio_tools(
             ]
             conversation[:] = [
                 *system_messages,
-                {
-                    "role": "assistant",
-                    "content": [turn.provider_compaction],
-                },
+                compaction_message,
             ]
 
         # Both of these mean the turn ended before the model finished saying what it wanted: "length" hit the token
