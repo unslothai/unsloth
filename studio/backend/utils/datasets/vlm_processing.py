@@ -39,10 +39,23 @@ def generate_smart_vlm_instruction(
     sample = next(iter(dataset))
 
     # Columns that hold per-sample instructions
-    question_columns = ["question", "query", "prompt", "instruction", "user_prompt"]
+    question_columns = [
+        "question",
+        "query",
+        "prompt",
+        "instruction",
+        "user_prompt",
+        "problem",
+        "input",
+        "inputs",
+    ]
+    columns_by_name = {
+        col.lower(): col for col in column_names if col not in (text_column, image_column)
+    }
 
-    for col in question_columns:
-        if col in column_names:
+    for name in question_columns:
+        col = columns_by_name.get(name)
+        if col is not None:
             # Use it only if it has non-empty content
             sample_content = sample[col]
             if sample_content and str(sample_content).strip():
