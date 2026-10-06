@@ -334,3 +334,25 @@ def test_an_upload_prepared_for_audio_cpp_is_mono_at_the_rate_and_leaves_no_copy
     rate, channels, frames = _frames(path)
     assert (rate, channels) == (24000, 1) and abs(frames - 24000) < 2400
     assert [p.name for p in path.parent.iterdir()] == [path.name]
+
+
+def test_an_upload_too_long_for_audio_cpp_is_refused_not_cut(monkeypatch):
+    from routes.inference import _prepared_upload
+
+    monkeypatch.setattr(audio_inputs, "MAX_SECONDS", 0.5)
+    with pytest.raises(audio_inputs.AudioInputError) as refused:
+        _prepared_upload(wav_bytes(1.0), 16000)
+    assert refused.value.status == 413
+    assert list(audio_inputs.inputs_dir().iterdir()) == []
+
+
+def test_the_sweep_reaps_a_prepared_upload_a_crash_left_behind():
+    from routes.inference import _prepared_upload
+
+    stale = _prepared_upload(wav_bytes(0.2), 16000)
+    waiting = _prepared_upload(wav_bytes(0.2), 16000)
+    # One still waiting on a slow aligner download outlives the hour a temp file gets.
+    for path, age in ((stale, audio_inputs.TTL_SECONDS + 60), (waiting, 2 * 60 * 60)):
+        os.utime(path, (time.time() - age, time.time() - age))
+    audio_inputs.sweep()
+    assert not stale.exists() and waiting.exists()

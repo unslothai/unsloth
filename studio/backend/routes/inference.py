@@ -23780,9 +23780,7 @@ async def openai_audio_speech(
     if fmt == "wav":
         return Response(content = wav_bytes, media_type = "audio/wav")
     content, media_type = await asyncio.to_thread(audio_inputs.encode_wav, wav_bytes, fmt)
-    # Raw samples carry no header, so the rate travels beside them.
-    headers = {"X-Sample-Rate": str(sample_rate)} if fmt == "pcm" else None
-    return Response(content = content, media_type = media_type, headers = headers)
+    return Response(content = content, media_type = media_type)
 
 
 async def _external_stt_transcription(
@@ -25038,7 +25036,8 @@ def _prepared_upload(raw: bytes, rate: int) -> Path:
     dst = directory / f".{stem}.{rate}.wav"
     try:
         src.write_bytes(raw)
-        audio_inputs.transcode(src, dst, rate = rate, mono = True, cut = True)
+        # Refused past 30 minutes like every other transcription, never cut short.
+        audio_inputs.transcode(src, dst, rate = rate, mono = True)
     finally:
         src.unlink(missing_ok = True)
     return dst
