@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The vendored truststore stays byte-identical to the release it came from.
+"""The vendored truststore and laya stay byte-identical to the releases they came from,
+except patches the manifest records with their upstream hash.
 
-It is a static copy: nothing refreshes it, so any change to these bytes is either
-a deliberate version bump that must update the manifest with it, or an accident.
-The accident is the dangerous one, since it means Unsloth verifies certificates
-with code no upstream release ever shipped.
+They are static copies: nothing refreshes them, so any change to these bytes is
+either a deliberate version bump that must update the manifest with it, or an
+accident. For truststore the accident is the dangerous one, since it means
+Unsloth verifies certificates with code no upstream release ever shipped.
 """
 
 from __future__ import annotations
@@ -20,12 +21,22 @@ import pytest
 
 _BACKEND = Path(__file__).resolve().parent.parent
 _VENDOR = _BACKEND / "vendor"
-_MANIFEST = json.loads((_VENDOR / "truststore_manifest.json").read_text(encoding = "utf-8"))
+_MANIFESTS = {
+    path.name.removesuffix("_manifest.json"): json.loads(path.read_text(encoding = "utf-8"))
+    for path in sorted(_VENDOR.glob("*_manifest.json"))
+}
+_MANIFEST = _MANIFESTS["truststore"]
+_PACKAGES = {"truststore", "laya"}
 
-# Everything the vendor directory is allowed to hold, beyond the package itself.
-_SIDECARS = {"LICENSE", "README.md", "truststore_manifest.json"}
-# Ours, not upstream's: prose we may reword, and the manifest cannot hash itself.
-_UNPINNED = {"README.md", "truststore_manifest.json"}
+# Everything the vendor directory is allowed to hold, beyond the packages themselves.
+_SIDECARS = {
+    "LICENSE",
+    "LICENSE.laya",
+    "README.md",
+    *(f"{name}_manifest.json" for name in _PACKAGES),
+}
+# Ours, not upstream's: prose we may reword, and the manifests cannot hash themselves.
+_UNPINNED = {"README.md", *(f"{name}_manifest.json" for name in _PACKAGES)}
 
 
 def _tracked_files() -> dict[str, Path]:
@@ -37,12 +48,18 @@ def _tracked_files() -> dict[str, Path]:
     }
 
 
-def test_vendored_tree_matches_the_manifest():
+def test_every_vendored_package_has_a_manifest():
+    assert set(_MANIFESTS) == _PACKAGES
+    assert all(manifest["package"] == name for name, manifest in _MANIFESTS.items())
+
+
+def test_vendored_tree_matches_the_manifests():
     found = _tracked_files()
-    recorded = _MANIFEST["files"]
+    recorded = {name: digest for m in _MANIFESTS.values() for name, digest in m["files"].items()}
+    assert sum(len(m["files"]) for m in _MANIFESTS.values()) == len(recorded)
     assert set(found) == set(recorded), (
-        "the vendored tree gained or lost a file; it is a static copy of upstream "
-        f"{_MANIFEST['version']}, so update truststore_manifest.json in the same commit"
+        "the vendored tree gained or lost a file; each package is a static copy of an upstream "
+        "release, so update its <package>_manifest.json in the same commit"
     )
     drifted = [
         name
@@ -50,10 +67,22 @@ def test_vendored_tree_matches_the_manifest():
         if hashlib.sha256(path.read_bytes()).hexdigest() != recorded[name]
     ]
     assert not drifted, (
-        f"vendored files no longer match upstream {_MANIFEST['version']}: {', '.join(drifted)}. "
+        f"vendored files no longer match upstream: {', '.join(drifted)}. "
         "A formatter most likely rewrote them; check the vendor excludes in pyproject.toml "
         "and .pre-commit-config.yaml"
     )
+
+
+def test_local_patches_are_recorded_and_documented():
+    readme = (_VENDOR / "README.md").read_text(encoding = "utf-8")
+    for name, manifest in _MANIFESTS.items():
+        for path, patch in manifest.get("patches", {}).items():
+            assert path in manifest["files"], f"{name}: patched {path} is not a vendored file"
+            assert (
+                patch["upstream_sha256"] != manifest["files"][path]
+            ), f"{path}: no change recorded"
+            assert patch["reason"].strip()
+            assert f"`{path}`" in readme, f"{path} is patched but README.md does not say why"
 
 
 def test_no_symlinks_or_special_files():
@@ -66,11 +95,11 @@ def test_no_symlinks_or_special_files():
     assert not offenders, f"vendor tree must be plain files: {offenders}"
 
 
-def test_vendor_holds_nothing_but_truststore():
+def test_vendor_holds_nothing_but_the_vendored_packages():
     """The gate appends this directory to sys.path, so anything else here is importable."""
     top_level = {path.name for path in _VENDOR.iterdir()} - _SIDECARS
-    assert top_level == {"truststore"}, (
-        f"unexpected entries in the vendor directory: {sorted(top_level - {'truststore'})}. "
+    assert top_level == _PACKAGES, (
+        f"unexpected entries in the vendor directory: {sorted(top_level - _PACKAGES)}. "
         "Appending it to sys.path would make them importable as top-level modules"
     )
 
@@ -105,8 +134,9 @@ def test_nothing_imports_the_vendor_path_directly():
                 if any("vendor" in alias.name.split(".") for alias in node.names):
                     offenders.append(f"{path.relative_to(studio)}:{node.lineno}")
     assert not offenders, (
-        "import the vendored package as top-level `truststore` after appending the vendor "
-        f"directory to sys.path, never by its dotted path: {offenders}"
+        "import truststore as top-level `truststore` after appending the vendor directory to "
+        "sys.path, and laya through core.systemone.laya_runtime._laya(), never by a dotted "
+        f"vendor path: {offenders}"
     )
 
 
@@ -124,7 +154,15 @@ def test_vendored_version_is_the_one_recorded():
     ), f"vendored truststore is {version} but the manifest records {_MANIFEST['version']}"
 
 
-@pytest.mark.parametrize("relative", ["LICENSE", "README.md"])
+def test_vendored_laya_version_is_the_one_recorded():
+    from core.systemone.laya_runtime import _VENDORED_LAYA
+
+    assert _VENDORED_LAYA == _VENDOR / "laya"
+    init = (_VENDORED_LAYA / "__init__.py").read_text(encoding = "utf-8")
+    assert f'__version__ = "{_MANIFESTS["laya"]["version"]}"' in init
+
+
+@pytest.mark.parametrize("relative", ["LICENSE", "LICENSE.laya", "README.md"])
 def test_provenance_files_are_present(relative):
-    """MIT requires the licence to travel with the copy."""
+    """MIT and Apache-2.0 both require the licence to travel with the copy."""
     assert (_VENDOR / relative).read_text(encoding = "utf-8").strip()

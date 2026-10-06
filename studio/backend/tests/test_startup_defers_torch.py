@@ -426,12 +426,28 @@ def test_a_failed_detection_degrades_instead_of_raising():
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = saved_device, saved_chat, saved_reason
 
 
+def _confine_the_torch_import_error(monkeypatch, hw):
+    """Undo hw.TORCH_IMPORT_ERROR at teardown, for a test that watches an import fail.
+
+    The three tests below restore ``builtins.__import__``, ``sys.modules`` and the detection
+    verdict, but _has_torch() also writes that module global as a SIDE EFFECT, and nothing
+    put it back: the worker carried ``OSError(...)`` into every later test in the same
+    process. classify_torch_build(), _torch_reports_an_xpu_runtime() and
+    _torch_reports_a_hip_runtime() all branch on it and read the wheel off DISK when it is
+    set, ignoring the fake torch a later test installed in sys.modules -- so
+    test_torch_cpu_build_on_nvidia_host.py failed only in the xdist worker that happened to
+    inherit the leak. Snapshot-restore rather than force None: nothing here owns the value.
+    """
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", hw.TORCH_IMPORT_ERROR)
+
+
 def test_a_broken_torch_counts_as_no_torch(monkeypatch):
     """_has_torch() must not let a non-ImportError escape into detection."""
     import builtins
 
     from utils.hardware import hardware as hw
 
+    _confine_the_torch_import_error(monkeypatch, hw)
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -503,6 +519,7 @@ def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
 
     from utils.hardware import hardware as hw
 
+    _confine_the_torch_import_error(monkeypatch, hw)
     real_import = builtins.__import__
     saved = {name: mod for name, mod in sys.modules.items() if name.split(".")[0] == "torch"}
 
@@ -542,6 +559,8 @@ def test_one_detection_pass_probes_torch_once(monkeypatch):
     saved = {n: m for n, m in sys.modules.items() if n.split(".")[0] == "torch"}
     saved_device = hw.DEVICE
     saved_chat, saved_reason = hw.CHAT_ONLY, hw.CHAT_ONLY_REASON
+    # Before the __import__ patch below, so the finally's monkeypatch.undo() puts it back last.
+    _confine_the_torch_import_error(monkeypatch, hw)
     real_import = builtins.__import__
     attempts = []
 

@@ -38,6 +38,7 @@ type InterfaceScaleModule = {
   sanitizeInterfaceScale: (value: unknown) => number;
   interfaceScaleToZoom: (scale: number) => number;
   getAppliedInterfaceZoom: () => number;
+  webInterfaceScaleFactor: (scale: number) => number;
   applyInterfaceScale: (scale: number) => Promise<void>;
   applyInterfaceScaleBeforeFirstPaint: (
     scale: number,
@@ -73,6 +74,7 @@ async function load(tauri: boolean) {
     documentElement: {
       style: {
         setProperty: (name: string, value: string) => styles.set(name, value),
+        removeProperty: (name: string) => styles.delete(name),
       },
     },
   });
@@ -149,9 +151,21 @@ test("the latest scale wins while an older native update is pending", async () =
 
 test("first paint is not held hostage by a wedged native bridge", async () => {
   const { mod, control } = await load(true);
+  // Park the abandoned call INSIDE setZoom, not on the dynamic import ahead of it. The stub
+  // reads `__TAURI_WEBVIEW_STUB__` when setZoom is called, so a call still waiting on its
+  // import when this test ends resumes against the NEXT test's control and records a zoom
+  // there. That is one leaked 0.75 in a later assertion, blamed on the test it lands in.
+  let markWedged: () => void = () => undefined;
+  const wedgedEntered = new Promise<void>((resolve) => {
+    markWedged = resolve;
+  });
   // Never resolves: the failure a plain catch() does not cover.
-  control.setZoom = () => new Promise<void>(() => undefined);
+  control.setZoom = () => {
+    markWedged();
+    return new Promise<void>(() => undefined);
+  };
   await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+  await wedgedEntered;
 });
 
 // Timed, because the regression these two cover is a queue that never drains: without the
@@ -163,8 +177,13 @@ test(
   async () => {
     const { mod, control, styles } = await load(true);
     let wedged = true;
+    let markWedged: () => void = () => undefined;
+    const wedgedEntered = new Promise<void>((resolve) => {
+      markWedged = resolve;
+    });
     control.setZoom = (zoom) => {
       if (wedged) {
+        markWedged();
         return new Promise<void>(() => undefined);
       }
       control.zooms.push(zoom);
@@ -172,6 +191,10 @@ test(
     };
 
     await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
+    // Wait for the abandoned call to be parked inside setZoom before unwedging. Without this
+    // the deadline can fire while it is still on its dynamic import, and it then reaches a
+    // setZoom that is no longer wedged and records the stale 0.75 the assertion forbids.
+    await wedgedEntered;
     // The bridge comes back. Nothing about the abandoned call may keep the queue closed.
     wedged = false;
     await mod.applyInterfaceScale(125);
@@ -245,6 +268,51 @@ test("browser scale never calls the native webview", async () => {
   assert.deepEqual(control.zooms, []);
 });
 
+test("browser scale resizes the UI through the tokens", async () => {
+  // The page cannot zoom itself: CSS zoom on the root overflows every
+  // viewport unit. It multiplies the font scale instead, which spacing and
+  // icons derive from.
+  const { mod, styles } = await load(false);
+  await mod.applyInterfaceScale(125);
+  assert.equal(styles.get("--ui-interface-scale"), "1.25");
+  assert.equal(mod.webInterfaceScaleFactor(125), 1.25);
+  // At 100% nothing is left behind, so the default document is unchanged.
+  await mod.applyInterfaceScale(100);
+  assert.equal(styles.has("--ui-interface-scale"), false);
+  // Never below the floor, same as the desktop zoom.
+  await mod.applyInterfaceScaleBeforeFirstPaint(10, 5_000);
+  assert.equal(styles.get("--ui-interface-scale"), "0.5");
+});
+
+test("desktop scale leaves the tokens to the webview zoom", async () => {
+  const { mod, styles } = await load(true);
+  assert.equal(mod.webInterfaceScaleFactor(150), 1);
+  await mod.applyInterfaceScale(150);
+  assert.equal(styles.has("--ui-interface-scale"), false);
+});
+
+test("the scale reaches the tokens and their JS twin", async () => {
+  const css = await readFile(
+    new URL("../src/index.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    css,
+    /--ui-font-scale: calc\(var\(--ui-font-size-scale, 0\.9375\) \* var\(--ui-interface-scale, 1\)\);/,
+  );
+  const hook = await readFile(
+    new URL("../src/hooks/use-ui-space-scale.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(hook, /webInterfaceScaleFactor\(interfaceScale\)/);
+  const snapshot = await readFile(
+    new URL("../public/reload-snapshot.js", import.meta.url),
+    "utf8",
+  );
+  assert.ok(snapshot.includes('"--ui-interface-scale"'));
+  assert.ok(snapshot.includes('"--ui-font-size-scale"'));
+});
+
 test("desktop capability allows webview zoom", async () => {
   const capabilities = JSON.parse(await readFile(CAPABILITIES, "utf8")) as {
     permissions: unknown[];
@@ -268,10 +336,9 @@ test("startup, live changes, and both resets use the local scale", async () => {
     provider,
     /useInterfaceScaleStore\(\(s\) => s\.scale\)[\s\S]*applyInterfaceScale\(interfaceScale\)/,
   );
-  assert.match(
-    tab,
-    /isTauri && \([\s\S]*settings\.appearance\.custom\.interfaceScale\.label/,
-  );
+  // Every build: the browser scales through the tokens, desktop through zoom.
+  assert.match(tab, /settings\.appearance\.custom\.interfaceScale\.label/);
+  assert.doesNotMatch(tab, /isTauri && \(/);
   assert.match(controls, /resetAll\(\);\s*resetInterfaceScale\(\);/);
   assert.match(general, /INTERFACE_SCALE_STORAGE_KEY/);
 });

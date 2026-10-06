@@ -12,11 +12,13 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -161,6 +163,7 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
         assert overlay["env"][name] == ""
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert overlay["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
@@ -1299,7 +1302,7 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
     assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh"])
+@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh", "vibe"])
 @pytest.mark.parametrize("flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"])
 def test_unsupported_agents_reject_as_subagent(agent, flag):
     result = CliRunner().invoke(start.start_app, [agent, flag])
@@ -1308,7 +1311,7 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
 
 
 @pytest.mark.parametrize(
-    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
 def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     events = []
@@ -1407,7 +1410,7 @@ def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
 def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
@@ -1428,7 +1431,7 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh", "vibe"])
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -1516,6 +1519,8 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
         if url.endswith("/api/auth/api-keys"):
+            if method == "GET":
+                return {"api_keys": [{"key_prefix": "feedface"}]}
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/settings/embedding-model"):
             return {"embedding_model": "unsloth/bge-small-en-v1.5"}
@@ -1564,6 +1569,7 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
+    _assert_env_set(result.output, "CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off")
     # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
     # window into [100k, that], so the real window has to be pinned as well.
     _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
@@ -1583,6 +1589,60 @@ def test_connect_claude_no_launch(fake_studio):
         assert settings_path.stat().st_mode & 0o777 == 0o600
     assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
+
+
+def test_connect_prints_the_running_models_load_warning(fake_studio, monkeypatch):
+    notice = (
+        "Not enough disk space to download BF16 (7.5 GB needed, 7.5 GB free), "
+        "so Q4_1 (2.4 GB) was loaded instead."
+    )
+    http_json = start._http_json
+
+    def with_warning(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "model_identifier": MODEL["id"], "memory_warning": notice}
+        return http_json(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", with_warning)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+
+    assert result.exit_code == 0, result.output
+    assert f"Warning: {notice}" in result.stderr
+    assert f"Warning: {notice}" not in result.stdout
+
+
+def test_connect_skips_the_load_warning_of_another_active_model(fake_studio, monkeypatch):
+    http_json = start._http_json
+
+    def other_model_warns(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {
+                "is_gguf": True,
+                "active_model": "unsloth/Other-GGUF",
+                "model_identifier": "unsloth/Other-GGUF",
+                "memory_warning": "Not enough disk space to download BF16, so Q4_1 was loaded instead.",
+            }
+        return http_json(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", other_model_warns)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: Not enough disk space" not in result.output
 
 
 def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
@@ -1821,6 +1881,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
     assert captured["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert captured["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
 
 
 @pytest.mark.skipif(
@@ -2775,10 +2836,18 @@ def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     # First run mints; second reuses the minted key cached for this server.
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface"]
+
+
+def test_connect_skips_a_minted_key_the_owner_does_not_hold(fake_studio, tmp_path):
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-a11ce000a11ce000"]}}}))
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
 
 
 def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
@@ -2877,6 +2946,106 @@ def test_connect_model_flag_loads_on_server(fake_studio):
         f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
     ) < result.output.index("This unloads the current model for every attached session.\n")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
+
+
+def _fake_path_resident(
+    monkeypatch,
+    listed_id,
+    load_status,
+    *,
+    load_error = None,
+    after_failure = "kept",
+):
+    # API-key status exposes an opaque ref instead of the resident path.
+    inner = start._http_json
+    state = {"after": None, "listed": listed_id}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/loaded-models"):
+            if state["after"] == "unreachable":
+                raise TimeoutError("timed out")
+            return {"data": [{"id": state["listed"], "loaded": state["after"] != "gone"}]}
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "active_model": listed_id, "model_identifier": "ref:0123"}
+        if url.endswith("/api/inference/load"):
+            if load_error is not None:
+                state["after"] = after_failure
+                raise load_error
+            # Load responses use the path and short name; snapshot listings use the repo ID.
+            name = os.path.basename(payload["model_path"]).removesuffix(".gguf")
+            if load_status == "loaded":
+                state["listed"] = name
+            return {"status": load_status, "model": payload["model_path"], "display_name": name}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+
+@pytest.mark.parametrize(
+    "requested, listed_id",
+    [
+        ("/models/old/foo-Q4_K_M.gguf", "foo-Q4_K_M"),
+        (
+            "/cache/hub/models--unsloth--Foo-GGUF/snapshots/abc123/Foo-UD-IQ1_S.gguf",
+            "unsloth/Foo-GGUF",
+        ),
+    ],
+)
+def test_connect_model_path_reattach_announces_no_switch(
+    fake_studio, monkeypatch, requested, listed_id
+):
+    _fake_path_resident(monkeypatch, listed_id, "already_loaded")
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
+    assert result.exit_code == 0, result.output
+    assert "Switching" not in result.output
+    assert "unload" not in result.output
+    assert f"Reusing loaded model: {requested}" in result.output
+
+
+def test_connect_model_path_same_name_switch_announced_after_load(fake_studio, monkeypatch):
+    _fake_path_resident(monkeypatch, "foo-Q4_K_M", "loaded")
+    requested = "/models/new/foo-Q4_K_M.gguf"
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
+    assert result.exit_code == 0, result.output
+    assert "Switching" not in result.output
+    assert f"Loaded {requested} in place of foo-Q4_K_M.\n" in result.output
+    assert "This unloaded the previous model for every attached session.\n" in result.output
+
+
+def test_connect_model_path_other_name_switch_announced_before_load(fake_studio, monkeypatch):
+    _fake_path_resident(monkeypatch, "foo-Q4_K_M", "loaded")
+    requested = "/models/bar-Q4_K_M.gguf"
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", requested])
+    assert result.exit_code == 0, result.output
+    assert f"Switching the Unsloth server from foo-Q4_K_M to {requested}.\n" in result.output
+    assert "in place of" not in result.output
+
+
+@pytest.mark.parametrize("after_failure", ["kept", "gone", "unreachable"])
+def test_connect_model_path_failed_same_name_load_reports_eviction(
+    fake_studio, monkeypatch, after_failure
+):
+    # An unreachable listing must not be treated as evidence of eviction.
+    failure = urllib.error.HTTPError(
+        f"{BASE}/api/inference/load", 500, "Internal Server Error", None, None
+    )
+    _fake_path_resident(
+        monkeypatch, "foo-Q4_K_M", None, load_error = failure, after_failure = after_failure
+    )
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "/models/new/foo-Q4_K_M.gguf"]
+    )
+    assert result.exit_code != 0
+    evicted = "foo-Q4_K_M was unloaded for every attached session." in result.output
+    assert evicted is (after_failure == "gone")
+    assert "Nothing was unloaded" not in result.output
 
 
 def test_connect_model_flag_forwards_load_options(fake_studio):
@@ -3176,6 +3345,33 @@ def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
 
+def test_start_studio_server_drops_an_inherited_pin_the_agent_overrides(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["env"] = kwargs["env"]
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.7")
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_P", "0.5")
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(unpinned = frozenset({"temperature"})),
+    )
+    assert "UNSLOTH_SAMPLING_TEMPERATURE" not in captured["env"]
+    assert captured["env"]["UNSLOTH_SAMPLING_TOP_P"] == "0.5"
+
+
 def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
     # Sampling pins ride to the child server through UNSLOTH_SAMPLING_*; unset ones stay absent
     # so the backend keeps the per-model recommendation.
@@ -3236,29 +3432,303 @@ def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, c
     assert "--top-p" not in err
 
 
-def test_require_studio_no_sampling_warning_without_pins(monkeypatch, capsys):
-    # Reusing a server with no sampling pins stays silent (tool flags are out of scope here).
+def test_require_studio_no_warning_without_server_flags(monkeypatch, capsys):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
         start.LoadOptions(),
         serve = True,
-        server_options = start.ServerOptions(enable_tools = True),
+        server_options = start.ServerOptions(),
     )
     assert base == BASE and server is None
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("reasoning", ["on", "off", "auto"])
+def test_require_studio_warns_on_tool_flags_when_reusing_server(monkeypatch, capsys):
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(
+            enable_tools = True, tool_call_healing = False, tool_call_nudging = None
+        ),
+    )
+    assert base == BASE and server is None
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert "--enable-tools" in err and "--disable-tool-call-healing" in err
+    assert "nudging" not in err
+
+
+_SESSION_FLAGS = ["--temperature", "0.3", "--top-k", "40", "--reasoning", "off"]
+_SESSION_BODY = {"temperature": 0.3, "top_k": 40, "enable_thinking": False}
+
+
+def _session_request_body(agent, root, output):
+    yaml = pytest.importorskip("yaml")
+    home = root / "agents" / agent
+    model_ref = f"unsloth/{MODEL['id']}"
+    if agent == "pi":
+        config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
+        return config["providers"]["unsloth"]["models"][0].get("samplingParams")
+    if agent == "hermes":
+        config = yaml.safe_load((home / "config.yaml").read_text())
+        return config["providers"]["unsloth"].get("extra_body")
+    if agent == "openclaw":
+        config = json.loads((home / "openclaw.json").read_text())
+        models = config["agents"]["defaults"].get("models", {})
+        return models.get(model_ref, {}).get("params", {}).get("extra_body")
+    if agent == "opencode":
+        provider = json.loads((home / "opencode.json").read_text())["provider"]
+        provider = provider[start._OPENCODE_PROVIDER]
+        options = provider["models"][MODEL["id"]].get("options")
+        assert provider["options"].get("body") == options
+        return options
+    if agent == "claude":
+        settings = Path(shlex.split(re.search(r"--settings (\S+)", output).group(1))[0])
+        extra = json.loads(settings.read_text())["env"].get("CLAUDE_CODE_EXTRA_BODY")
+        return json.loads(extra) if extra else None
+    raise AssertionError(agent)
+
+
+@pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw", "opencode", "claude"])
+def test_session_flags_ride_in_the_agent_config_on_a_running_server(
+    agent, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, [agent, "--no-launch", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "already running" not in result.output
+    assert _session_request_body(agent, tmp_path, result.output) == _SESSION_BODY
+
+
+@pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw", "opencode", "claude"])
+def test_session_flags_from_an_earlier_run_do_not_stick(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for argv in ([agent, "--no-launch", *_SESSION_FLAGS], [agent, "--no-launch"]):
+        result = CliRunner().invoke(start.start_app, argv)
+        assert result.exit_code == 0, result.output
+    assert not _session_request_body(agent, tmp_path, result.output)
+
+
+def test_openclaw_session_flags_keep_the_users_own_extra_body(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    model_ref = f"unsloth/{MODEL['id']}"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {
+                        "models": {
+                            model_ref: {"params": {"extra_body": {"tool_choice": "required"}}}
+                        }
+                    }
+                }
+            }
+        )
+    )
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "--temperature", "0.3"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _session_request_body("openclaw", tmp_path, result.output) == {
+        "tool_choice": "required",
+        "temperature": 0.3,
+    }
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert _session_request_body("openclaw", tmp_path, result.output) == {"tool_choice": "required"}
+
+
+def test_opencode_session_temperature_needs_the_capability(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    for argv, capability in ((["--temperature", "0.3"], True), (["--top-k", "40"], None)):
+        result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", *argv])
+        assert result.exit_code == 0, result.output
+        provider = json.loads(config_path.read_text())["provider"][start._OPENCODE_PROVIDER]
+        assert provider["models"][MODEL["id"]].get("temperature") is capability
+
+
+def test_pi_subagent_carries_the_session_flags(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        start.start_app, ["pi", "--as-subagent", "--no-launch", *_SESSION_FLAGS]
+    )
+    assert result.exit_code == 0, result.output
+    assert "already running" not in result.output
+    config = json.loads((tmp_path / "agents" / "pi-subagent" / "subagent.json").read_text())
+    assert config["samplingParams"] == _SESSION_BODY
+
+
+def test_codex_carries_reasoning_and_warns_about_sampling(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    profile = (tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert 'model_reasoning_effort = "none"' in profile
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "--reasoning" not in result.output
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    profile = (tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert "model_reasoning_effort" not in profile
+
+
+def test_codex_warns_about_reasoning_it_cannot_express(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch", "--reasoning", "on"])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --reasoning on itself" in result.output
+    profile = (tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert "model_reasoning_effort" not in profile
+
+
+@pytest.mark.parametrize("mode", ["--persist", "--no-launch"])
+@pytest.mark.parametrize("agent, version", [("codex", (0, 144, 0)), ("pi", (0, 83, 0))])
+def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
+    agent, version, mode, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: None)
+    result = CliRunner().invoke(start.start_app, [agent, mode, *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "cannot send --reasoning off itself" in result.output
+    if agent == "pi":
+        models = tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json"
+        provider = json.loads(models.read_text())["providers"]["unsloth"]
+        assert "samplingParams" not in provider["models"][0]
+    else:
+        profile = (
+            tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml"
+        ).read_text()
+        assert "model_reasoning_effort" not in profile
+
+
+def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--reasoning-effort", "low"]
+    )
+    assert result.exit_code == 0, result.output
+    provider = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    provider = provider["provider"][start._OPENCODE_PROVIDER]
+    assert provider["models"][MODEL["id"]]["options"] == {"reasoningEffort": "low"}
+    assert provider["options"]["body"] == {"reasoning_effort": "low"}
+
+
+def test_dsh_carries_reasoning_and_warns_about_sampling(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "--reasoning" not in result.output
+    patch = tmp_path / "agents" / "dsh" / start._DSH_PATCH_FILE
+    provider = yaml.safe_load(patch.read_text())[0]["config"]["providers"][start._DSH_PROVIDER]
+    assert provider["compat"]["thinkingFormat"] == "chat-template"
+    assert provider["compat"]["chatTemplateKwargs"] == {"enable_thinking": False}
+    assert "off" in provider["models"][0]["reasoningEfforts"]
+
+
+@pytest.mark.parametrize(
+    "agent, server_keeps",
+    [("pi", {}), ("codex", {"temperature": 0.3, "top_k": 40})],
+)
+def test_spawned_server_keeps_only_what_the_agent_cannot_send(
+    agent, server_keeps, fake_studio, monkeypatch
+):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {}
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        started["options"] = server_options
+        start._auto_served_server = fake
+        return base, fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: (1, 0, 0))
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", "unsloth/Qwen3-1.7B-GGUF", *_SESSION_FLAGS]
+    )
+    assert result.exit_code == 0, result.output
+    options = started["options"]
+    sampling = {name: getattr(options, name) for name in ("temperature", "top_k")}
+    assert {k: v for k, v in sampling.items() if v is not None} == server_keeps
+    assert options.reasoning is None
+    assert options.unpinned == {"reasoning", *({"temperature", "top_k"} - set(server_keeps))}
+    assert ("applies them to every client" in result.output) == bool(server_keeps)
+
+
+@pytest.mark.parametrize("reasoning, warns", [("on", True), ("auto", False)])
+def test_require_studio_warns_when_the_started_server_pins_reasoning(
+    monkeypatch, capsys, reasoning, warns
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda base, model, load, server: (base, None)
+    )
+    start._require_studio(
+        "unsloth/M-GGUF", serve = True, server_options = start.ServerOptions(reasoning = reasoning)
+    )
+    assert ("every client" in capsys.readouterr().err) is warns
+
+
+@pytest.mark.parametrize("inherited", ["0.7", None])
+def test_require_studio_warns_when_a_flag_drops_an_inherited_pin(monkeypatch, capsys, inherited):
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    if inherited:
+        monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", inherited)
+    else:
+        monkeypatch.delenv("UNSLOTH_SAMPLING_TEMPERATURE", raising = False)
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_P", "0.5")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda base, model, load, server: (base, None)
+    )
+    options = start.ServerOptions(temperature = 0.3, carried = frozenset({"temperature"}))
+    start._require_studio("unsloth/M-GGUF", serve = True, server_options = options)
+    err = capsys.readouterr().err
+    assert ("replace the inherited UNSLOTH_SAMPLING_TEMPERATURE" in err) is bool(inherited)
+    assert "UNSLOTH_SAMPLING_TOP_P" not in err
+
+
+@pytest.mark.parametrize(
+    "reasoning, carried",
+    [
+        ("on", frozenset()),
+        ("off", frozenset()),
+        ("auto", frozenset()),
+        ("auto", start._ALL_REQUEST_FIELDS),
+    ],
+)
 def test_require_studio_warns_on_explicit_reasoning_when_reusing_server(
-    monkeypatch, capsys, reasoning
+    monkeypatch, capsys, reasoning, carried
 ):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
         start.LoadOptions(),
         serve = True,
-        server_options = start.ServerOptions(reasoning = reasoning),
+        server_options = start.ServerOptions(reasoning = reasoning, carried = carried),
     )
     assert base == BASE and server is None
     err = capsys.readouterr().err
@@ -3334,8 +3804,8 @@ def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(m
     assert "unsloth studio stop" in err
 
 
-def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
-    # `unsloth start claude ... --temperature 0.3 --top-k 40` routes the pins into ServerOptions.
+def test_start_claude_sends_sampling_flags_itself(fake_studio, monkeypatch):
+    # Claude sends the flags itself, so the server it starts is left at its defaults.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -3354,7 +3824,11 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: captured.update(env = env) or SimpleNamespace(returncode = 0),
+    )
 
     result = CliRunner().invoke(
         start.start_app,
@@ -3372,9 +3846,12 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     so = captured["server_options"]
-    assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
-    assert so.reasoning == "on"
-    assert so.reasoning_effort is None
+    assert so.temperature is None and so.top_k is None and so.reasoning is None
+    assert json.loads(captured["env"]["CLAUDE_CODE_EXTRA_BODY"]) == {
+        "temperature": 0.3,
+        "top_k": 40,
+        "enable_thinking": True,
+    }
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
@@ -3425,7 +3902,7 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
 
 
 @pytest.mark.parametrize(
-    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh", "vibe"]
 )
 def test_start_agents_expose_gpu_memory_mode_option(command_name):
     import inspect
@@ -3761,6 +4238,25 @@ def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
     finally:
         stop_ok()
         stop_bad()
+
+
+def test_studio_token_is_issued_for_the_owner_not_a_managed_account(tmp_path, monkeypatch):
+    import secrets
+
+    import jwt
+
+    import unsloth_cli._inference as inference
+
+    inference.ensure_studio_backend_path()
+    from studio.backend.auth import storage
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    storage.create_initial_user("unsloth", "owner-password", secrets.token_urlsafe(32))
+    storage.issue_account_setup_code(username = "alice")
+
+    token = inference._studio_token()
+    assert token
+    assert jwt.decode(token, options = {"verify_signature": False})["sub"] == "unsloth"
 
 
 def _serve_redirect(target):
@@ -4380,6 +4876,78 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     assert "Nothing was unloaded; owner/model-GGUF is still serving." in captured.err
 
 
+def _other_account_studio(
+    monkeypatch,
+    capsys,
+    load_status = "loaded",
+):
+    state = {"models": [], "loads": []}
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/loaded-models"):
+            return {"object": "list", "data": state["models"]}
+        assert url.endswith("/api/inference/status"), url
+        if state["models"]:
+            return {"is_gguf": True, "active_model": "owner/model-GGUF", "gguf_variant": "Q4_K_M"}
+        return {"loaded": [], "loading": [], "yours": False}
+
+    def load_model(base, key, model, load, payload):
+        state["loads"].append((payload, capsys.readouterr().out))
+        state["models"] = [{"id": model, "loaded": True}]
+        return {"status": load_status, "model": model}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_load_model_with_progress", load_model)
+    return state
+
+
+@pytest.mark.parametrize(
+    "load",
+    [start.LoadOptions(), start.LoadOptions(max_seq_length = 4096)],
+    ids = ["no-settings", "settings-only"],
+)
+def test_resolve_model_says_another_account_holds_the_resident(monkeypatch, capsys, load):
+    state = _other_account_studio(monkeypatch, capsys)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "key", None, load)
+
+    err = capsys.readouterr().err
+    assert "belongs to another account" in err
+    assert "No model is loaded" not in err and "No chat model" not in err
+    assert state["loads"] == []
+
+
+def test_resolve_model_warns_before_replacing_another_accounts_resident(monkeypatch, capsys):
+    state = _other_account_studio(monkeypatch, capsys)
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF")
+
+    [(payload, before_load)] = state["loads"]
+    assert payload == {"model_path": "owner/model-GGUF"}
+    assert "from another account's model to owner/model-GGUF." in before_load
+    assert "unloads it for every attached session" in before_load
+
+
+def test_resolve_model_exact_match_shares_another_accounts_resident(monkeypatch, capsys):
+    state = _other_account_studio(monkeypatch, capsys, load_status = "already_loaded")
+
+    entry = start._resolve_model(
+        BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q4_K_M")
+    )
+
+    assert entry["id"] == "owner/model-GGUF"
+    assert state["loads"][0][0]["gguf_variant"] == "Q4_K_M"
+    assert "Reusing loaded model: owner/model-GGUF:Q4_K_M" in capsys.readouterr().out
+
+
 def test_resolve_model_interrupt_skips_survivor_probe(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
     probes = []
@@ -4777,7 +5345,12 @@ def test_write_openclaw_config_fresh(tmp_path):
     assert provider["apiKey"] == "sk-unsloth-abc"
     assert provider["api"] == "openai-completions"
     assert provider["models"] == [
-        {"id": MODEL["id"], "name": MODEL["id"], "contextWindow": MODEL["context_length"]}
+        {
+            "id": MODEL["id"],
+            "name": MODEL["id"],
+            "contextWindow": MODEL["context_length"],
+            "maxTokens": 32000,
+        }
     ]
     # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
@@ -4787,6 +5360,25 @@ def test_write_openclaw_config_fresh(tmp_path):
     assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
     if os.name != "nt":  # the file holds an API key
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (131_072, 32_000)])
+def test_openclaw_output_limit_follows_the_context(tmp_path, window, expected):
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", {**MODEL, "context_length": window}, path)
+    model = json.loads(path.read_text())["models"]["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == expected
+
+
+@pytest.mark.parametrize("max_tokens, expected", [("40000", 40000), ("200000", 65536)])
+def test_connect_openclaw_max_tokens(fake_studio, tmp_path, max_tokens, expected):
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "--max-tokens", max_tokens]
+    )
+    assert result.exit_code == 0, result.output
+    assert "--max-tokens" not in _launch_command(result.output)
+    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    assert config["models"]["providers"]["unsloth"]["models"][0]["maxTokens"] == expected
 
 
 def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
@@ -4969,13 +5561,125 @@ def test_write_opencode_config_fresh(tmp_path):
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
     # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
-        MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
+        MODEL["id"]: {
+            "name": MODEL["id"],
+            "limit": {"context": 131072, "input": 131072, "output": 32_000},
+        }
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
     # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
+
+
+@pytest.mark.parametrize(
+    "window, max_tokens, expected",
+    [
+        (16_384, None, 4_096),
+        (32_768, None, 8_192),
+        # No longer pinned at 8,192 (#12009).
+        (131_072, None, 32_000),
+        (143_616, None, 32_000),
+        (143_616, 65_536, 65_536),
+        (143_616, 200_000, 71_808),
+        (32_768, 4_000, 4_000),
+    ],
+)
+def test_opencode_output_limit(window, max_tokens, expected):
+    assert start.opencode_output_limit(window, max_tokens) == expected
+
+
+def test_opencode_max_tokens_sets_limit_and_raises_opencode_ceiling(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
+    )
+    assert result.exit_code == 0, result.output
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    config = json.loads(config_path.read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit == {"context": 131072, "input": 131072, "output": 65536}
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "65536")
+
+
+def test_opencode_limit_input_keeps_compaction_off_the_output_limit(tmp_path):
+    # Without input, OpenCode compacts at context - output and a 65,536 limit compacts at half full.
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, max_tokens = 65536)
+    config = json.loads(path.read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["input"] == limit["context"] == 131072
+    assert config["compaction"]["reserved"] == 131072 // 10
+
+
+@pytest.mark.parametrize(
+    "window, expected_reserved, expected_compacts_at",
+    [
+        (16_384, 4_096, 12_288),
+        (32_768, 8_192, 24_576),
+        (131_072, 13_107, 117_965),
+        (262_144, 26_214, 235_930),
+    ],
+)
+def test_opencode_compaction_reserved(window, expected_reserved, expected_compacts_at):
+    reserved = start.opencode_compaction_reserved(window, start.opencode_output_limit(window))
+    assert reserved == expected_reserved
+    assert window - reserved == expected_compacts_at
+
+
+def test_opencode_subagent_drops_the_compaction_a_normal_session_wrote(tmp_path):
+    path = tmp_path / "opencode.json"
+    small = {**MODEL, "context_length": 16_384}
+    start.write_opencode_config(BASE, "sk-unsloth-abc", small, path)
+    assert json.loads(path.read_text())["compaction"] == {"auto": True, "reserved": 4_096}
+    start.write_opencode_config(BASE, "sk-unsloth-abc", small, path, as_subagent = True)
+    assert "compaction" not in json.loads(path.read_text())
+
+
+def test_opencode_max_tokens_without_a_window_warns(capsys):
+    assert start._opencode_output_env({"id": "m"}, 65536) == {}
+    assert "--max-tokens is ignored" in capsys.readouterr().err
+
+
+def test_opencode_max_tokens_under_ceiling_leaves_opencode_env_alone(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]
+    )
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["output"] == 16000
+    assert "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX" not in result.output
+
+
+def test_opencode_max_tokens_raises_a_smaller_inherited_ceiling(fake_studio, monkeypatch):
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "8000")
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "16000")
+
+
+def test_opencode_max_tokens_recipe_keeps_a_larger_inherited_ceiling(fake_studio, monkeypatch):
+    # The --no-launch recipe must carry the ceiling, or a shell without the export reverts to 32,000.
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
+
+
+def test_opencode_max_tokens_past_half_the_window_is_capped(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "120000"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "leaves too little" in result.output
+    config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    limit = config["provider"][start._OPENCODE_PROVIDER]["models"][MODEL["id"]]["limit"]
+    assert limit["output"] == 131072 // 2
 
 
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
@@ -5465,6 +6169,22 @@ def test_write_hermes_config_small_window_claims_floor(hermes_config):
     assert config["compression"] == {"enabled": True, "threshold": 0.5625}
     # The same floor check runs against the compression model mid-session.
     assert config["auxiliary"]["compression"]["context_length"] == 65536
+    # Newer Hermes checks a local server's floor against ollama_num_ctx, not context_length.
+    assert config["model"]["ollama_num_ctx"] == 65536
+
+
+def test_write_hermes_config_large_window_drops_claimed_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, {"id": "small", "context_length": 40960}, hermes_config)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert "ollama_num_ctx" not in yaml.safe_load(hermes_config.read_text())["model"]
+
+
+def test_write_hermes_config_keeps_user_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(yaml.safe_dump({"model": {"ollama_num_ctx": 100000}}))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert yaml.safe_load(hermes_config.read_text())["model"]["ollama_num_ctx"] == 100000
 
 
 def test_write_hermes_config_preserves_and_idempotent(hermes_config):
@@ -5529,7 +6249,7 @@ def test_write_pi_config_fresh(tmp_path):
     # Pin the loaded window (and a sane output cap) so Pi compacts instead of
     # overflowing; without it Pi assumes its 128000 default.
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
 
 
@@ -5546,7 +6266,21 @@ def test_write_pi_config_preserves_and_idempotent(tmp_path):
     assert path.read_text() == before
 
 
-def test_connect_pi_no_launch(fake_studio, tmp_path):
+def _pi_user_agent_dir(tmp_path, monkeypatch) -> Path:
+    user_home = tmp_path / "user-home"
+    agent_dir = user_home / ".pi" / "agent"
+    agent_dir.mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising = False)
+    return agent_dir
+
+
+def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "extensions" / "mine.ts").write_text("export default () => {};\n")
+    (user_agent_dir / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mine"]}))
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
     # Pi resolves its config dir from PI_CODING_AGENT_DIR first, so pin it at the session
@@ -5560,9 +6294,427 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["providers"]["unsloth"]["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+    assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
+    settings = json.loads((home / ".pi" / "agent" / "settings.json").read_text())
+    assert settings == {"packages": ["npm:pi-mine"]}
+    assert not (user_agent_dir / "models.json").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    user_home = user_agent_dir.parent.parent
+    for name in ("extensions", "skills", "npm", "git"):
+        (user_agent_dir / name).mkdir()
+    (user_home / ".agents" / "skills").mkdir(parents = True)
+    (user_agent_dir / "auth.json").write_text('{"google": "user-key"}\n')
+    (user_agent_dir / "models.json").write_text('{"providers": {"mine": {}}}\n')
+    (user_agent_dir / "sessions").mkdir()
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "defaultProvider": "google",
+                "theme": "light",
+                "packages": [
+                    "npm:pi-mine@1.2.3",
+                    "git:github.com/me/pi-tools",
+                    "../../src/local-extension",
+                    {"source": "~/other-extension", "extensions": ["index.ts"]},
+                ],
+                "extensions": [
+                    "extensions/extra.ts",
+                    "-extensions/off.ts",
+                    "root.ts",
+                    "/abs/ext.ts",
+                    "!local/old.ts",
+                    "-~/literal.ts",
+                ],
+                "skills": ["skills/*", "../shared/*"],
+            }
+        )
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, agent_dir / "models.json")
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    for name in ("extensions", "skills", "npm", "git"):
+        assert (agent_dir / name).is_symlink()
+        assert (agent_dir / name).resolve() == (user_agent_dir / name).resolve()
+    assert not (agent_dir / "prompts").exists()
+    assert (session_home / ".agents" / "skills").resolve() == (
+        user_home / ".agents" / "skills"
+    ).resolve()
+    for private in ("auth.json", "sessions"):
+        assert not (agent_dir / private).exists()
+    assert "mine" not in json.loads((agent_dir / "models.json").read_text())["providers"]
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    assert settings == {
+        "packages": [
+            "npm:pi-mine@1.2.3",
+            "git:github.com/me/pi-tools",
+            str(user_home / "src" / "local-extension"),
+            {"source": str(user_home / "other-extension"), "extensions": ["index.ts"]},
+        ],
+        "extensions": [
+            "extensions/extra.ts",
+            "-extensions/off.ts",
+            str(user_agent_dir / "root.ts"),
+            "/abs/ext.ts",
+            # Pi matches patterns relative to the agent directory, so add a user-anchored copy.
+            "!local/old.ts",
+            f"!{user_agent_dir / 'local' / 'old.ts'}",
+            "-~/literal.ts",
+        ],
+        "skills": ["skills/*", "../shared/*", str(user_home / ".pi" / "shared" / "*")],
+    }
+
+
+def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    user_settings = user_agent_dir / "settings.json"
+    user_settings.write_text(json.dumps({"packages": ["npm:old", "npm:kept"]}))
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+    # Add session-only state, then change the user config.
+    settings_path = agent_dir / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["packages"].append("npm:session-only")
+    settings["theme"] = "dark"
+    settings_path.write_text(json.dumps(settings))
+    user_settings.write_text(json.dumps({"packages": ["npm:kept", "npm:new"]}))
+    (user_agent_dir / "extensions").rmdir()
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    # Pi keeps the first entry per package identity, so session-owned packages lead.
+    assert json.loads(settings_path.read_text()) == {
+        "packages": ["npm:session-only", "npm:kept", "npm:new"],
+        "theme": "dark",
+    }
+    assert not (agent_dir / "extensions").exists() and not (agent_dir / "extensions").is_symlink()
+
+    user_settings.unlink()
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert json.loads(settings_path.read_text()) == {
+        "packages": ["npm:session-only"],
+        "theme": "dark",
+    }
+    assert not (agent_dir / start._PI_USER_RESOURCES_MANIFEST).exists()
+
+
+def test_write_pi_user_resources_leaves_session_dirs_and_user_files_alone(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "npm" / "node_modules" / "pi-mine").mkdir(parents = True)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "extensions" / "mine.ts").write_text("mine\n")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents = True)
+    (agent_dir / "npm" / "session.txt").write_text("session\n")
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert not (agent_dir / "npm").is_symlink()
+    assert (agent_dir / "npm" / "session.txt").read_text() == "session\n"
+    assert (agent_dir / "extensions" / "mine.ts").read_text() == "mine\n"
+    # Deleting the session must not delete linked user files.
+    shutil.rmtree(session_home)
+    assert (user_agent_dir / "extensions" / "mine.ts").read_text() == "mine\n"
+    assert (user_agent_dir / "npm" / "node_modules" / "pi-mine").is_dir()
+
+
+def test_write_pi_user_resources_uses_inherited_agent_dir(tmp_path, monkeypatch):
+    _pi_user_agent_dir(tmp_path, monkeypatch)
+    configured = tmp_path / "custom-pi"
+    (configured / "extensions").mkdir(parents = True)
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(configured))
+
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
+
+    # Do not reuse the session as its own source.
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert not (agent_dir / "extensions").exists()
+
+
+def test_write_pi_user_resources_resolves_a_relative_agent_dir_from_the_launch_dir(
+    tmp_path, monkeypatch
+):
+    _pi_user_agent_dir(tmp_path, monkeypatch)
+    configured = tmp_path / "launch" / "custom-pi"
+    (configured / "extensions").mkdir(parents = True)
+    (configured / "settings.json").write_text(json.dumps({"packages": ["../src/local-ext"]}))
+    monkeypatch.chdir(tmp_path / "launch")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", "custom-pi")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    assert settings == {"packages": [str(tmp_path / "launch" / "src" / "local-ext")]}
+
+
+def test_is_junction_reads_the_reparse_tag_before_python_3_12(tmp_path, monkeypatch):
+    # Python 3.13 also defines is_junction on a pathlib base class.
+    for cls in type(tmp_path).__mro__:
+        if "is_junction" in vars(cls):
+            monkeypatch.delattr(cls, "is_junction")
+    tags = {"junction": 0xA0000003, "symlink": 0xA000000C}
+
+    def lstat(path):
+        name = Path(path).name
+        if name not in tags:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(st_reparse_tag = tags[name])
+
+    monkeypatch.setattr(start.os, "lstat", lstat)
+    assert start._is_junction(tmp_path / "junction")
+    assert not start._is_junction(tmp_path / "symlink")
+    assert not start._is_junction(tmp_path / "missing")
+
+
+def test_link_user_dir_replaces_a_junction_from_an_earlier_run(tmp_path, monkeypatch):
+    target = tmp_path / "session" / "extensions"
+    target.mkdir(parents = True)  # stands in for a junction to a previous source
+    source = tmp_path / "user" / "extensions"
+    source.mkdir(parents = True)
+    monkeypatch.setattr(start, "_is_junction", lambda path: path == target and path.is_dir())
+
+    start._link_user_dir(source, target)
+
+    assert target.is_symlink()
+    assert target.resolve() == source.resolve()
+
+
+def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mine"]}))
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert not agent_dir.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, monkeypatch):
+    # Switching a persisted session from a Linux pi to a Windows one must not hand
+    # Windows Pi the WSL-backed links the skip exists to withhold.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"packages": ["npm:user-pkg"], "extensions": ["extensions/mine.ts"]})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert (agent_dir / "extensions").is_symlink()
+    # Something the session set for itself, which must survive.
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    settings["packages"].append("npm:session-only")
+    (agent_dir / "settings.json").write_text(json.dumps(settings))
+
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert not (agent_dir / "extensions").exists()
+    assert json.loads((agent_dir / "settings.json").read_text()) == {
+        "packages": ["npm:session-only"],
+    }
+    assert not (agent_dir / start._PI_USER_RESOURCES_MANIFEST).exists()
+    # The user's own directory is untouched either way.
+    assert (user_agent_dir / "extensions").is_dir()
+
+
+@pytest.mark.parametrize("session_command", [None, ["npm", "--silent"]])
+def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch, session_command):
+    # npmCommand is an argument vector: subtracting it entry by entry would leave a
+    # command missing whatever the copied and session values happen to share.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"npmCommand": ["npm", "--registry=x"]})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == [
+        "npm",
+        "--registry=x",
+    ]
+    if session_command is not None:
+        settings = json.loads((agent_dir / "settings.json").read_text())
+        settings["npmCommand"] = session_command
+        (agent_dir / "settings.json").write_text(json.dumps(settings))
+
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    # The copied command goes; one the session chose survives intact.
+    assert settings.get("npmCommand") == session_command
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_link(
+    tmp_path, monkeypatch
+):
+    # Pi creates <agent dir>/npm the first time a package is installed, so a
+    # persisted session can already own that directory. The link is then skipped
+    # and a session-relative entry would point into it instead of at the user's.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "npm").mkdir()
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"packages": ["npm/pkg"], "extensions": ["extensions/mine.ts"]})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents = True)
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    assert not (agent_dir / "npm").is_symlink()  # the session's own directory survives
+    assert settings["packages"] == [str(user_agent_dir / "npm" / "pkg")]
+    # extensions was linked, so entries under it stay relative and resolve through it.
+    assert settings["extensions"] == ["extensions/mine.ts"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_keeps_a_disabled_global_skill_disabled(tmp_path, monkeypatch):
+    # ~/.agents/skills is reached through HOME, which moved, so a rule naming the
+    # user's copy has to follow it or Pi re-enables the skill inside the session.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    user_home = user_agent_dir.parent.parent
+    disabled = user_home / ".agents" / "skills" / "off" / "SKILL.md"
+    disabled.parent.mkdir(parents = True)
+    disabled.write_text("disabled\n")
+    (user_agent_dir / "settings.json").write_text(json.dumps({"skills": [f"-{disabled}"]}))
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    session_skill = session_home / ".agents" / "skills" / "off" / "SKILL.md"
+    assert session_skill.exists()
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    # The original rule is kept and an alias for the session path is added beside it.
+    assert settings["skills"] == [f"-{disabled}", f"-{session_skill}"]
+
+
+def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
+    # Pi runs every package lookup and install through npmCommand, so a session
+    # that inherits the package list without it falls back to plain npm.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    command = ["mise", "exec", "node@20", "--", "npm"]
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"packages": ["npm:pi-mine"], "npmCommand": command})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == command
+    # A command set inside the session is not overwritten on the next launch.
+    settings_path = agent_dir / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["npmCommand"] = ["pnpm"]
+    settings_path.write_text(json.dumps(settings))
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert json.loads(settings_path.read_text())["npmCommand"] == ["pnpm"]
+
+
+def test_write_pi_user_resources_warns_on_an_unusable_agent_dir_override(
+    tmp_path, monkeypatch, capsys
+):
+    # Otherwise this looks exactly like the bug write_pi_user_resources exists to fix.
+    _pi_user_agent_dir(tmp_path, monkeypatch)
+    missing = tmp_path / "not-a-directory"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", f"  {missing}  ")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    agent_dir.mkdir(parents = True)
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert "PI_CODING_AGENT_DIR" in capsys.readouterr().err
+
+
+def test_write_pi_user_resources_keeps_a_non_list_setting(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "settings.json").write_text(json.dumps({"themes": ["npm:user-theme"]}))
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    agent_dir.mkdir(parents = True)
+    (agent_dir / "settings.json").write_text(json.dumps({"themes": {"name": "dark"}}))
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    # Not a shape we understand, so it is left alone rather than deleted.
+    assert json.loads((agent_dir / "settings.json").read_text())["themes"] == {"name": "dark"}
+
+
+@pytest.mark.parametrize("entry", ["", "   ", "."])
+def test_pi_local_entry_leaves_degenerate_entries_alone(tmp_path, entry):
+    # Anchoring these would name the user's whole agent directory.
+    assert start._pi_local_entry(entry, tmp_path, tmp_path, frozenset()) == entry
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(tmp_path, monkeypatch, dangling):
+    # unlink maps to DeleteFileW, which refuses a directory symlink with WinError 5,
+    # and a dangling link is still one: is_dir() would follow the missing target.
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "keep.txt").write_text("keep\n")
+    target = tmp_path / "link"
+    target.symlink_to(source, target_is_directory = True)
+    if dangling:
+        shutil.rmtree(source)
+        source.mkdir()  # restore the sentinel dir so the assertion below still reads
+        (source / "keep.txt").write_text("keep\n")
+        target.unlink()
+        target.symlink_to(tmp_path / "gone", target_is_directory = True)
+    # POSIX lstat has no st_file_attributes; stand in for the Windows link attributes.
+    real_lstat = os.lstat
+    monkeypatch.setattr(
+        start.os,
+        "lstat",
+        lambda p: SimpleNamespace(
+            st_file_attributes = 0x10,
+            st_reparse_tag = 0,
+            st_mode = real_lstat(p).st_mode,
+        ),
+    )
+    # rmdir on a link is POSIX-invalid, so record the routing instead of running it.
+    monkeypatch.setattr(start.os, "name", "nt")
+    calls = []
+    monkeypatch.setattr(start.Path, "unlink", lambda self, **kw: calls.append("unlink"))
+    monkeypatch.setattr(start.Path, "rmdir", lambda self: calls.append("rmdir"))
+
+    start._remove_overlay_entry(target)
+
+    assert calls == ["rmdir"]
+    assert (source / "keep.txt").read_text() == "keep\n"
 
 
 @pytest.mark.parametrize("yolo", [False, True])
@@ -5604,9 +6756,66 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
+def _pi_generated_model(tmp_path, as_subagent):
+    if as_subagent:
+        return json.loads((tmp_path / "agents" / "pi-subagent" / "subagent.json").read_text())
+    return json.loads((tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json").read_text())[
+        "providers"
+    ]["unsloth"]["models"][0]
+
+
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit(fake_studio, tmp_path, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", "40000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    # Each launch regenerates the config, so the second run must honour the flag too.
+    for _ in range(2):
+        result = CliRunner().invoke(start.start_app, args)
+        assert result.exit_code == 0, result.output
+        assert "--max-tokens" not in _launch_command(result.output)
+        config = _pi_generated_model(tmp_path, as_subagent)
+        assert config["maxTokens"] == 40000
+        assert config["contextWindow"] == MODEL["context_length"]
+
+
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit_capped_at_half_window(fake_studio, tmp_path, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", "200000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 0, result.output
+    assert "leaves too little" in result.output
+    assert _pi_generated_model(tmp_path, as_subagent)["maxTokens"] == MODEL["context_length"] // 2
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_connect_pi_invalid_output_limit(fake_studio, tmp_path, value):
+    result = CliRunner().invoke(start.start_app, ["pi", "--no-launch", "--max-tokens", value])
+    assert result.exit_code != 0
+    assert "--max-tokens" in result.output
+    assert not list((tmp_path / "agents").rglob("models.json"))
+
+
+@pytest.mark.parametrize("context", [{}, {"max_context_length": 32768}])
+def test_write_pi_output_limit_context_metadata(tmp_path, context):
+    path = tmp_path / "models.json"
+    start.write_pi_config(BASE, "test-key", {"id": "test-model", **context}, path, max_tokens = 10000)
+    model = json.loads(path.read_text())["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == 10000
+    if context:
+        assert model["contextWindow"] == 32768
+    else:
+        assert "contextWindow" not in model
+
+
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
     # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
     # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
+    user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
+    # Avoid pathlib selecting WindowsPath on this POSIX runner.
+    monkeypatch.setattr(start.Path, "home", lambda: user_home)
     monkeypatch.setattr(start.os, "name", "nt")
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -5619,62 +6828,69 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
 
 
 @pytest.fixture()
-def dsh_settings(tmp_path):
-    return tmp_path / "settings.yaml"
+def dsh_patch(tmp_path):
+    return tmp_path / "unsloth.patch.yml"
 
 
-def test_write_dsh_config_fresh(dsh_settings):
+def _dsh_entries(path):
     yaml = pytest.importorskip("yaml")
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    config = yaml.safe_load(dsh_settings.read_text())
-    provider = config["llm-pi-ai"]["providers"]["unsloth"]
+    entries = yaml.safe_load(path.read_text())
+    # A loader patch is a top-level list of id-targeted entries, not a settings mapping.
+    assert isinstance(entries, list), entries
+    return {entry["id"]: entry for entry in entries}
+
+
+def test_write_dsh_patch_fresh(dsh_patch):
+    start.write_dsh_patch(BASE, MODEL, dsh_patch)
+    entries = _dsh_entries(dsh_patch)
+    assert set(entries) == {"llm-pi-ai", "agent-default-model"}
+    assert entries["llm-pi-ai"]["name"] == "@deepseek-ai/dsh-llm-pi-ai"
+    assert entries["agent-default-model"]["name"] == "@deepseek-ai/dsh-agent-default-model"
+    provider = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]
     assert provider["api"] == "openai-completions"
     assert provider["baseURL"] == f"{BASE}/v1"
     assert provider["apiKeyEnv"] == "UNSLOTH_API_KEY"
-    assert "sk-unsloth" not in dsh_settings.read_text()
+    assert "sk-unsloth" not in dsh_patch.read_text()
     assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
-    assert config["agent-default-model"] == {"provider": "unsloth", "model": MODEL["id"]}
+    assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
 
 
-def test_write_dsh_config_without_window_omits_limits(dsh_settings):
-    yaml = pytest.importorskip("yaml")
-    start.write_dsh_config(BASE, {"id": "unsloth/unknown-window"}, dsh_settings)
-    config = yaml.safe_load(dsh_settings.read_text())
-    assert config["llm-pi-ai"]["providers"]["unsloth"]["models"] == [
-        {"id": "unsloth/unknown-window"}
-    ]
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (143_616, 32_000)])
+def test_pi_and_dsh_output_limit_follows_the_context(tmp_path, window, expected):
+    model = {**MODEL, "context_length": window}
+    start.write_pi_config(BASE, "sk-unsloth-abc", model, tmp_path / "models.json")
+    start.write_pi_subagent_config(BASE, "sk-unsloth-abc", model, tmp_path / "subagent.json")
+    start.write_dsh_patch(BASE, model, tmp_path / "unsloth.patch.yml")
+    pi = json.loads((tmp_path / "models.json").read_text())["providers"]["unsloth"]["models"][0]
+    subagent = json.loads((tmp_path / "subagent.json").read_text())
+    patch = _dsh_entries(tmp_path / "unsloth.patch.yml")
+    dsh = patch["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+    assert pi["maxTokens"] == subagent["maxTokens"] == dsh["maxTokens"] == expected
 
 
-def test_write_dsh_config_preserves_and_idempotent(dsh_settings):
-    yaml = pytest.importorskip("yaml")
-    dsh_settings.write_text(
-        yaml.safe_dump(
-            {
-                "ui-onboarding": {"welcomeNoticeVersion": "2026-08-13.1"},
-                "llm-pi-ai": {"providers": {"anthropic": {"apiKeyEnv": "ANTHROPIC_API_KEY"}}},
-            }
-        )
-    )
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    config = yaml.safe_load(dsh_settings.read_text())
-    assert config["ui-onboarding"] == {"welcomeNoticeVersion": "2026-08-13.1"}
-    assert config["llm-pi-ai"]["providers"]["anthropic"] == {"apiKeyEnv": "ANTHROPIC_API_KEY"}
-    assert config["llm-pi-ai"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
-    before = dsh_settings.read_text()
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    assert dsh_settings.read_text() == before
+def test_write_dsh_patch_without_window_omits_limits(dsh_patch):
+    start.write_dsh_patch(BASE, {"id": "unsloth/unknown-window"}, dsh_patch)
+    provider = _dsh_entries(dsh_patch)["llm-pi-ai"]["config"]["providers"]["unsloth"]
+    assert provider["models"] == [{"id": "unsloth/unknown-window"}]
 
 
-def test_write_dsh_config_preserves_non_mapping_file(dsh_settings, capsys):
-    pytest.importorskip("yaml")
-    original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
-    dsh_settings.write_text(original)
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    assert dsh_settings.read_text() == original  # user-managed file left untouched
-    assert "couldn't parse" in capsys.readouterr().err
+def test_write_dsh_patch_is_idempotent_and_follows_the_server(dsh_patch, capsys):
+    start.write_dsh_patch(BASE, MODEL, dsh_patch)
+    before = dsh_patch.read_text()
+    capsys.readouterr()
+    start.write_dsh_patch(BASE, MODEL, dsh_patch)
+    assert dsh_patch.read_text() == before
+    assert "Updated" not in capsys.readouterr().out
+    # Unsloth owns this file: a new server or model replaces the old one, it does not pile up.
+    start.write_dsh_patch("http://127.0.0.1:9999", {"id": "other"}, dsh_patch)
+    entries = _dsh_entries(dsh_patch)
+    provider = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]
+    assert provider["baseURL"] == "http://127.0.0.1:9999/v1"
+    assert provider["models"] == [{"id": "other"}]
+    assert entries["agent-default-model"]["config"]["model"] == "other"
 
 
 @pytest.mark.parametrize(
@@ -5696,6 +6912,39 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
     assert start._dsh_command(args) == expected
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        # A bare profile name must stay first so dsh expands it to --profile <name>.
+        ([], ["dsh", "web", "--patch", "P"]),
+        (["--no-open"], ["dsh", "web", "--patch", "P", "--no-open"]),
+        (["web", "--no-open"], ["dsh", "web", "--patch", "P", "--no-open"]),
+        (
+            ["--profile", "headless", "fix the bug"],
+            ["dsh", "--patch", "P", "--profile", "headless", "fix the bug"],
+        ),
+        (["--profile=headless", "fix"], ["dsh", "--patch", "P", "--profile=headless", "fix"]),
+        (["--dump-config"], ["dsh", "--patch", "P", "--dump-config"]),
+        # --patch repeats and composes in order, so a caller's own overlay lands after ours
+        # and wins only on the keys it sets; the Unsloth provider stays defined.
+        (
+            ["--patch", "mine.yml", "--profile", "headless"],
+            ["dsh", "--patch", "P", "--patch", "mine.yml", "--profile", "headless"],
+        ),
+        (["--patch=mine.yml", "web"], ["dsh", "--patch", "P", "--patch=mine.yml", "web"]),
+        # Nothing boots a profile here, so there is nothing for an overlay to apply to.
+        (
+            ["plugin", "--profile", "web", "add", "x"],
+            ["dsh", "plugin", "--profile", "web", "add", "x"],
+        ),
+        (["-V"], ["dsh", "-V"]),
+        (["--version"], ["dsh", "--version"]),
+    ],
+)
+def test_dsh_command_places_the_patch_where_dsh_parses_it(args, expected):
+    assert start._dsh_command(args, "P") == expected
+
+
 def test_connect_dsh_no_launch(fake_studio, tmp_path):
     yaml = pytest.importorskip("yaml")
     result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch"])
@@ -5704,10 +6953,161 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     home = tmp_path / "agents" / "dsh"
     _assert_env_set(result.output, "DSH_HOME", str(home))
     _assert_env_set(result.output, "DSH_TELEMETRY_DISABLED", "1")
-    assert _launch_command(result.output) == ["dsh", "web"]
-    config = yaml.safe_load((home / "settings.yaml").read_text())
-    assert config["agent-default-model"] == {"provider": "unsloth", "model": MODEL["id"]}
-    assert config["llm-pi-ai"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
+    patch = home / "unsloth.patch.yml"
+    assert _launch_command(result.output) == ["dsh", "web", "--patch", str(patch)]
+    entries = {entry["id"]: entry for entry in yaml.safe_load(patch.read_text())}
+    assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
+    assert entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
+    # dsh 0.1.7 imports a settings.yaml into the profile only after boot, so none is written.
+    assert not (home / "settings.yaml").exists()
+
+
+# ── Vibe (Mistral, OpenAI-compatible /v1, settings and key via VIBE_* env) ──
+
+
+def _vibe_settings(env: dict) -> tuple:
+    return json.loads(env["VIBE_PROVIDERS"]), json.loads(env["VIBE_MODELS"])
+
+
+def test_vibe_env(tmp_path):
+    env = start._vibe_env(BASE, MODEL)
+    providers, models = _vibe_settings(env)
+    assert providers == [
+        {
+            "name": start._VIBE_PROVIDER,
+            "api_base": f"{BASE}/v1",
+            "api_key_env_var": start._VIBE_ENV_KEY,
+            "api_style": "openai",
+            "backend": "generic",
+        }
+    ]
+    assert models == [
+        {
+            "name": MODEL["id"],
+            "provider": start._VIBE_PROVIDER,
+            "alias": start._VIBE_MODEL_ALIAS,
+            "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
+        }
+    ]
+    assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
+    assert env["VIBE_ENABLE_TELEMETRY"] == "false"
+    # Only the served model is selectable, so a resumed cloud session cannot switch away.
+    assert json.loads(env["VIBE_ALLOWED_MODELS"]) == ["re:" + re.escape(MODEL["id"])]
+
+
+def test_vibe_env_carries_temperature_and_odd_model_ids():
+    model = {"id": 'C:\\models\\q"\U0001f600.gguf', "max_context_length": 32768}
+    _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
+    assert models[0]["name"] == model["id"]
+    assert models[0]["temperature"] == 0.7
+    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
+    assert set(models[0]) == {"name", "provider", "alias"}
+
+
+def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
+    result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch", "--yolo"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
+    _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
+    assert "VIBE_HOME" not in result.output
+    assert _launch_command(result.output) == ["vibe", "--auto-approve"]
+    # Vibe's own home (instructions, hooks, trust, agents) is used as is; nothing is written.
+    assert not (tmp_path / "agents" / "vibe").exists()
+
+
+def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])
+    assert captured["command"][-3:] == ["/usr/local/bin/vibe", "-p", "hi"]
+    # Vibe's tools run git/ssh/gh, which need the user's real HOME; ~/.vibe stays its home.
+    assert captured["env"].get("HOME") == os.environ.get("HOME")
+    assert "VIBE_HOME" not in captured["env"]
+    assert _vibe_settings(captured["env"])[1][0]["temperature"] == 0.6
+
+
+@pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.headers.get("Authorization"), body))
+            chunk = {
+                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    # Keep the real CLI's own state off the runner's ~/.vibe.
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
+    monkeypatch.chdir(tmp_path)
+    try:
+        result = CliRunner().invoke(
+            start.start_app,
+            ["vibe", "--yolo", "--temperature", "0.5", "--disabled-tools", "*", "-p", "Reply pong"],
+        )
+    finally:
+        server.shutdown()
+    assert result.exit_code == 0, result.output
+    assert requests, "vibe never called the Unsloth /v1 endpoint"
+    auth, body = requests[0]
+    assert auth == "Bearer sk-unsloth-e2e"
+    assert body["model"] == MODEL["id"]
+    assert body["temperature"] == 0.5
+
+
+@pytest.mark.parametrize(
+    ("argv", "status", "expected"),
+    [
+        ([], {"model_identifier": MODEL["id"], "inference": {"temperature": 1.0}}, 1.0),
+        (
+            ["--temperature", "0.3"],
+            {"model_identifier": MODEL["id"], "inference": {"temperature": 1.0}},
+            0.3,
+        ),
+        ([], {"model_identifier": "other/model", "inference": {"temperature": 1.0}}, None),
+        ([], {}, None),
+    ],
+)
+def test_vibe_sends_recommended_temperature(fake_studio, monkeypatch, argv, status, expected):
+    # Vibe always sends a temperature; without one in its model entry it sends 0.2.
+    monkeypatch.setattr(start, "_inference_status", lambda *args: status)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    captured = _capture_launch(monkeypatch, ["vibe", *argv])
+    assert json.loads(captured["env"]["VIBE_MODELS"])[0].get("temperature") == expected
+
+
+def test_vibe_install_hint_per_os(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    assert start._vibe_install_hint() == start._VIBE_WINDOWS_INSTALL_HINT
+    monkeypatch.setattr(start.os, "name", "posix")
+    assert start._vibe_install_hint() == start._VIBE_POSIX_INSTALL_HINT
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_dsh_under_wsl_gets_the_windows_patch_path(fake_studio, monkeypatch):
+    # WSLENV translates DSH_HOME for a Windows dsh, but a path on the command line reaches
+    # the Windows Node process verbatim, where a Linux path does not open.
+    windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.patch.yml"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    shim = "/mnt/c/Users/x/AppData/Roaming/npm/dsh"
+    monkeypatch.setattr(start.shutil, "which", lambda _: shim)
+    monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_path)
+    captured = _capture_launch(monkeypatch, ["dsh", "--profile", "headless", "hi"])
+    command = captured["command"]
+    assert command[command.index("--patch") + 1] == windows_path, command
 
 
 def test_dsh_yolo_sets_permission_mode(fake_studio):
@@ -5742,8 +7142,9 @@ def test_dsh_permission_mode_overrides_an_inherited_bypass(
 
 
 def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
-    # --reasoning-effort is a shared server option: it must reach ServerOptions rather
-    # than pass through to `dsh web`, which does not accept it.
+    # --reasoning-effort is a shared option: it must reach the dsh config rather than
+    # pass through to `dsh web`, which does not accept it.
+    yaml = pytest.importorskip("yaml")
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -5771,6 +7172,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
         **kwargs,
     ):
         captured["command"] = command
+        captured["patch"] = Path(command[command.index("--patch") + 1]).read_text()
         return SimpleNamespace(returncode = 0)
 
     monkeypatch.setattr(start.subprocess, "run", run)
@@ -5780,8 +7182,10 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
         ["dsh", "--model", "unsloth/gemma-4-E2B-it-GGUF", "--reasoning-effort", "high"],
     )
     assert result.exit_code == 0, result.output
-    assert captured["server_options"].reasoning_effort == "high"
+    assert captured["server_options"].reasoning_effort is None
     assert "--reasoning-effort" not in captured["command"]
+    provider = yaml.safe_load(captured["patch"])[0]["config"]["providers"][start._DSH_PROVIDER]
+    assert provider["compat"]["chatTemplateKwargs"] == {"reasoning_effort": "high"}
 
 
 # ── WSLENV path translation + PowerShell quoting (helper units) ──
@@ -7241,8 +8645,8 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
     assert start._hub_gguf_files("owner/mmproj-pack") == []
 
 
-def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
-    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (all three kinds) or exact
+def test_hub_gguf_files_ignores_prefixed_drafters(monkeypatch):
+    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (every kind) or exact
     # parent dir (mtp/, dspark/ only -- dflash/ is a real family name).
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -7250,10 +8654,12 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
         "siblings": [
             {"rfilename": "DSpark-drafter-Q2K-Q8.gguf"},
             {"rfilename": "dflash-drafter-Q8_0.gguf"},
+            {"rfilename": "eagle3-gpt-oss-20b-Q8_0.gguf"},
             {"rfilename": "dspark/DeepSeek-V4-Flash-Q8_0.gguf"},
             # Family names, not companions: these ARE the model.
             {"rfilename": "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"},
             {"rfilename": "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf"},
+            {"rfilename": "Llama-3.1-8B-Eagle3-Q4_K_M.gguf"},
         ]
     }
     monkeypatch.setattr(
@@ -7264,6 +8670,7 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
     assert start._hub_gguf_files("owner/dspark-pack") == [
         "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf",
         "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf",
+        "Llama-3.1-8B-Eagle3-Q4_K_M.gguf",
     ]
 
 
@@ -9045,3 +10452,163 @@ def test_openclaw_memory_search_clears_a_stale_external_fallback(
     config = json.loads(config_path.read_text())
     assert config["memory"]["search"]["fallback"] == "none"
     assert config["memory"]["search"]["provider"] == "openai-compatible"
+
+
+def test_direct_gguf_labels_keep_packed_and_grouped_quants():
+    # Mirrors model_config._extract_quant_label: prism-ml/Ternary-Bonsai-*-gguf ships all three.
+    for name, label in (
+        ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
+        ("Ternary-Bonsai-8B-Q2_0.gguf", "Q2_0"),
+        ("Ternary-Bonsai-8B-Q2_0_g64.gguf", "Q2_0_g64"),
+        ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
+    ):
+        assert start._direct_gguf_variant_labels(name)[1] == label
+
+
+GiB = 1024**3
+
+
+class _LoadServer:
+    """Fake Studio: `listing` answers active-downloads, `repos` maps repo -> iterator of progress readings."""
+
+    def __init__(self, listing, repos):
+        self.listing = listing
+        self.repos = {repo: iter(readings) for repo, readings in repos.items()}
+        self.urls = []
+
+    def __call__(
+        self,
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        self.urls.append(url)
+        if url.endswith("/active-downloads"):
+            if isinstance(self.listing, Exception):
+                raise self.listing
+            return {"downloads": self.listing}
+        repo = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["repo_id"][0]
+        reading = next(self.repos[repo])
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    def count(self, fragment):
+        return sum(fragment in url for url in self.urls)
+
+
+def _reading(
+    downloaded,
+    expected = 4 * GiB,
+    completed = 0,
+):
+    return {
+        "downloaded_bytes": downloaded,
+        "completed_bytes": completed,
+        "expected_bytes": expected,
+    }
+
+
+def _load_job(repo, **extra):
+    return {"repo_id": repo, "owner": "load", "state": "running", **extra}
+
+
+def _progress(monkeypatch, server, clock):
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    return start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+
+def test_model_download_progress_counts_the_base_a_load_reports(monkeypatch, capsys):
+    adapter_done = _reading(8 * 1024**2, 8 * 1024**2, 8 * 1024**2)
+    server = _LoadServer(
+        [
+            _load_job("owner/base"),
+            {"repo_id": "someone/else", "state": "running"},
+            {"repo_id": "owner/attached", "state": "running", "load_attached": True},
+        ],
+        {
+            "owner/adapter": [adapter_done] * 3,
+            "owner/base": [_reading(0), _reading(1 * GiB), _reading(2 * GiB)],
+            "owner/attached": [_reading(3 * GiB)] + [TimeoutError("slow")] * 2,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(3):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert progress.downloaded_bytes == 8 * 1024**2 + 2 * GiB + 3 * GiB
+    assert server.count("someone%2Felse") == 0
+    # The line follows the base as it grows, not the attached job first seen at 3 GiB.
+    out = capsys.readouterr().out
+    assert "1.0 GiB / 4.0 GiB" in out and "3.0 GiB" not in out
+
+
+def test_model_download_progress_lists_load_jobs_at_most_every_interval(monkeypatch):
+    done = _reading(4 * GiB, completed = 4 * GiB)
+    server = _LoadServer(
+        [_load_job("owner/base")],
+        {
+            "owner/adapter": [_reading(1024)] * 20,
+            "owner/base": [_reading(GiB), done] + [AssertionError] * 20,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 3
+    # A finished base is not scanned again, but its bytes still count.
+    assert server.count("owner%2Fbase") == 2
+    assert progress.downloaded_bytes == 1024 + 4 * GiB
+
+
+def test_model_download_progress_stops_listing_on_a_server_without_the_route(monkeypatch):
+    missing = urllib.error.HTTPError(BASE, 404, "Not Found", None, None)
+    server = _LoadServer(missing, {"owner/adapter": [_reading(1024)] * 20})
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 1
+    assert progress.downloaded_bytes == 1024
+
+
+def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    display.update(_reading(19 * 1024**2, 20 * 1024**2), "owner/adapter")
+    display.update(_reading(GiB), "owner/base")
+
+    out = capsys.readouterr().out
+    assert "19.0 MiB / 20.0 MiB" in out
+    assert "1.0 GiB / 4.0 GiB" in out
+
+
+def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monkeypatch):
+    server = _LoadServer(
+        [_load_job("owner/base")], {"owner/base": [_reading(GiB), _reading(2 * GiB)]}
+    )
+    clock = [0.0]
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "/models/my-lora", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 2 * GiB
+    assert server.count("my-lora") == 0

@@ -27,6 +27,7 @@ from unsloth.utils.packing import (
     patch_hybrid_linear_attention_varlen,
 )
 
+import copy
 import inspect
 import logging
 from contextlib import ExitStack
@@ -158,6 +159,68 @@ def test_mask_packed_sequence_boundaries_across_multiple_rows():
     for idx in (2, 4, 8, 9):
         assert flat[idx].item() == -100
     assert torch.any(flat != -100)
+
+
+def test_enable_padding_free_metadata_does_not_mutate_examples():
+    collator = _PaddingFreeCollator()
+    trainer = SimpleNamespace(
+        data_collator = collator,
+        args = SimpleNamespace(remove_unused_columns = True),
+    )
+    enable_padding_free_metadata(_DummyModel(), trainer)
+
+    examples = [
+        {"input_ids": [1, 2, 3], "labels": [1, 2, 3]},
+        {"input_ids": [4, 5], "labels": [4, 5]},
+    ]
+    before = copy.deepcopy(examples)
+
+    batch = trainer.data_collator.torch_call(examples)
+
+    assert examples == before, "collator wrapper mutated the caller's examples"
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32))
+
+    explicit = [{"input_ids": [1, 2, 3], "seq_lengths": [2, 1]}]
+    explicit_before = copy.deepcopy(explicit)
+    batch = trainer.data_collator.torch_call(explicit)
+    assert explicit == explicit_before
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1], dtype = torch.int32))
+
+
+def test_enable_padding_free_metadata_still_hands_derived_lengths_to_the_collator():
+    collator = _PaddingFreeCollator()
+    trainer = SimpleNamespace(
+        data_collator = collator,
+        args = SimpleNamespace(remove_unused_columns = True),
+    )
+    enable_padding_free_metadata(_DummyModel(), trainer)
+
+    examples = [
+        {"input_ids": [1, 2, 3], "labels": [1, 2, 3]},
+        {"input_ids": [4, 5], "labels": [4, 5]},
+    ]
+    before = copy.deepcopy(examples)
+
+    trainer.data_collator.torch_call(examples)
+
+    assert examples == before, "collator wrapper mutated the caller's examples"
+    assert [row["seq_lengths"] for row in collator.seen] == [[3], [2]]
+    assert [row["labels"] for row in collator.seen] == [[1, 2, 3], [4, 5]]
+
+    # seq_lengths=None counts as missing: TRL would sum(None)
+    nulled = [{"input_ids": [1, 2], "seq_lengths": None}]
+    nulled_before = copy.deepcopy(nulled)
+
+    trainer.data_collator.torch_call(nulled)
+
+    assert nulled == nulled_before
+    assert [row["seq_lengths"] for row in collator.seen] == [[2]]
+
+    explicit = [{"input_ids": [1, 2, 3], "seq_lengths": [2, 1]}]
+
+    trainer.data_collator.torch_call(explicit)
+
+    assert collator.seen is explicit
 
 
 def test_configure_sample_packing():
@@ -978,9 +1041,11 @@ class _PaddingFreeCollator:
         self.padding_free = True
         self.return_position_ids = False
         self.calls = 0
+        self.seen = None
 
     def torch_call(self, examples):
         self.calls += 1
+        self.seen = examples
         return {
             "input_ids": torch.tensor([[0]], dtype = torch.long),
             "examples_seen": self.calls,
@@ -1151,24 +1216,14 @@ def test_packing_sdpa(tmp_path):
     )
     assert seq_info is not None
 
-    original_mask = attention_dispatch_utils.build_sdpa_packed_attention_mask
-    mask_calls = []
+    original_lengths = attention_dispatch_utils.packed_segment_lengths
+    segment_calls = []
     captured_loss_labels = {}
 
-    def _capture_mask(
-        seq_info,
-        dtype,
-        device,
-        *,
-        sliding_window = None,
-    ):
-        mask_calls.append(tuple(seq_info[0].tolist()))
-        return original_mask(
-            seq_info,
-            dtype = dtype,
-            device = device,
-            sliding_window = sliding_window,
-        )
+    def _capture_lengths(seq_info, total_tokens = None):
+        lengths = original_lengths(seq_info, total_tokens)
+        segment_calls.append(lengths)
+        return lengths
 
     def _capture_loss(*, logits, labels, **loss_kwargs):
         captured_loss_labels["labels"] = labels.detach().to("cpu")
@@ -1180,8 +1235,8 @@ def test_packing_sdpa(tmp_path):
         stack.enter_context(
             patch.object(
                 attention_dispatch_utils,
-                "build_sdpa_packed_attention_mask",
-                side_effect = _capture_mask,
+                "packed_segment_lengths",
+                side_effect = _capture_lengths,
             )
         )
         stack.enter_context(
@@ -1194,7 +1249,9 @@ def test_packing_sdpa(tmp_path):
         with torch.no_grad():
             outputs = model(**inputs)
 
-    assert mask_calls, "SDPA packed mask was not constructed"
+    assert segment_calls, "SDPA packed path did not split the row into its segments"
+    packed = tuple(batch["packed_seq_lengths"].tolist())
+    assert all(lengths[: len(packed)] == packed for lengths in segment_calls)
     assert outputs.loss is not None
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)

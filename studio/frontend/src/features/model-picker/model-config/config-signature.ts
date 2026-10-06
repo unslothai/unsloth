@@ -9,13 +9,15 @@
 import type { PerModelConfig } from "./per-model-config";
 
 // Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto, gpuLayers
-// Auto (< 0), nCpuMoe 0, and null or absent GPU picks as automatic.
+// Auto (< 0), nCpuMoe 0, null or absent GPU picks as automatic, and no split as the default one.
 export function gpuFieldsSignature(config: PerModelConfig): string {
   const gpuSelection =
     config.selectedGpuIds == null
       ? "automatic"
       : [
-          [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+          // Order-preserving: the list order is the device order, so sorting here
+          // made a reorder read as no change and left Apply disabled on it.
+          config.selectedGpuIds.join(","),
           config.selectedGpuIndexKind === undefined
             ? "physical"
             : (config.selectedGpuIndexKind ?? "deferred"),
@@ -25,6 +27,7 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
     config.nCpuMoe ?? 0,
     gpuSelection,
+    (config.tensorSplit ?? []).join(","),
   ].join("|");
 }
 
@@ -45,14 +48,20 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
+    config.enginePrecision ?? "auto",
+    config.engineParallelism ?? "tensor",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
-    config.mlxKvBits ?? "",
+    config.mlxKvQuant ?? "",
+    config.mlxInt8Prefill ? "1" : "0",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
     config.nParallel ?? "",
+    config.reasoningBudget ?? "",
+    `${(config.reasoningBudgetMessage ?? "").length}:${hashString(config.reasoningBudgetMessage ?? "")}`,
     config.nBatch ?? "",
     config.nUbatch ?? "",
     config.loadMode ?? "",
@@ -63,6 +72,9 @@ export function loadedConfigSignature(
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
+    config.llamaExtraArgs == null
+      ? ""
+      : `${config.llamaExtraArgs.length}:${hashString(config.llamaExtraArgs.join("\u0000"))}`,
     gpuFieldsSignature(config),
   ].join("|");
 }

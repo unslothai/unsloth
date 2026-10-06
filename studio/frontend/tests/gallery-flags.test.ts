@@ -5,17 +5,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type FlaggableItem,
   PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
   hasUnknownRecord,
   mergeGenerated,
+  moveGalleryItem,
   newRecordProbeBaseline,
   nextSelectedId,
   pinnedOrder,
   removeGalleryItem,
   restorePinOrder,
+  scopedMoveAfterId,
   serializeById,
   sortGalleryItems,
 } from "../src/lib/gallery-flags.ts";
@@ -482,10 +485,107 @@ test("a page fetch is refused while a shelf mutation is still pending", async ()
 test("archived audio pages from the stable server cursor", () => {
   assert.match(
     archivedMediaSource,
-    /listAudioGallery\(\s*0,\s*ARCHIVED_PAGE_SIZE,\s*before,\s*true,?\s*\)/,
+    /listAudioGallery\(\s*0,\s*pageSize,\s*before,\s*true,?\s*\)/,
   );
   assert.match(
     archivedMediaSource,
-    /const page = await loadPage\(\s*rowsRef\.current\.length,\s*audioCursor\.current,?\s*\);[\s\S]*audioCursor\.current = page\.nextAudioCursor;/,
+    /const page = await loadPage\(\s*rowsRef\.current\.length,\s*audioCursor\.current,\s*scanAll \? SEARCH_PAGE_SIZE : ARCHIVED_PAGE_SIZE,?\s*\);[\s\S]*audioCursor\.current = page\.nextAudioCursor;/,
   );
+});
+
+// -- manual order (drag) --------------------------------------------------------------------------
+
+const shelf = () => [item("a", 4), item("b", 3), item("c", 2), item("d", 1)];
+
+test("a drag lands just after its neighbour, or at the front for null", () => {
+  assert.deepEqual(ids(moveGalleryItem(shelf(), "d", "a")), ["a", "d", "b", "c"]);
+  assert.deepEqual(ids(moveGalleryItem(shelf(), "c", null)), ["c", "a", "b", "d"]);
+  assert.deepEqual(ids(moveGalleryItem(shelf(), "a", "d")), ["b", "c", "d", "a"]);
+});
+
+test("a drop in place, onto itself or after an unknown id changes nothing", () => {
+  const items = shelf();
+  assert.equal(moveGalleryItem(items, "b", "a"), items);
+  assert.equal(moveGalleryItem(items, "b", "b"), items);
+  assert.equal(moveGalleryItem(items, "b", "gone"), items);
+  assert.equal(moveGalleryItem(items, "gone", "a"), items);
+});
+
+test("a drop between pins pins the item, and among unpinned items unpins it", () => {
+  const items = [item("p1", 1, true), item("p2", 2, true), item("a", 4), item("b", 3)];
+  const pinnedDrop = moveGalleryItem(items, "b", "p1");
+  assert.deepEqual(ids(pinnedDrop), ["p1", "b", "p2", "a"]);
+  assert.equal(pinnedDrop[1].pinned, true);
+  const unpinnedDrop = moveGalleryItem(items, "p1", "a");
+  assert.deepEqual(ids(unpinnedDrop), ["p2", "a", "p1", "b"]);
+  assert.equal(unpinnedDrop[2].pinned, false);
+});
+
+test("on the seam between pins and the rest an item keeps its pin state", () => {
+  const items = [item("p1", 1, true), item("p2", 2, true), item("a", 4), item("b", 3)];
+  assert.equal(moveGalleryItem(items, "b", "p2")[2].pinned, false);
+  assert.equal(moveGalleryItem(items, "p1", "p2")[1].pinned, true);
+});
+
+test("a dragged item keeps its manual place through a later merge", () => {
+  const moved = [item("a", 4), { ...item("d", 1), order_at: 3.5 }, item("b", 3), item("c", 2)];
+  const merged = mergeGenerated(moved, [item("new", 5)]);
+  assert.deepEqual(ids(merged), ["new", "a", "d", "b", "c"]);
+});
+
+test("a manual key compares in seconds against ISO timestamps too", () => {
+  const at = (iso: string) => Date.parse(iso) / 1000;
+  const items = [
+    item("newer", "2026-06-01T00:00:00Z"),
+    { ...item("dragged", "2026-01-01T00:00:00Z"), order_at: at("2026-07-01T00:00:00Z") },
+  ];
+  assert.deepEqual(ids(sortGalleryItems(items)), ["dragged", "newer"]);
+});
+
+// Shelf rows tagged with the page that shows them; a page's history is the shelf filtered to its tag.
+const row = (id: string, page: "s" | "m", pinned = false) => ({ id, created_at: 0, pinned, page });
+const onPage =
+  (page: "s" | "m") =>
+  <T extends { page: string }>(i: T) =>
+    i.page === page;
+const placed = <T extends FlaggableItem & { page: string }>(
+  shelf: T[],
+  page: "s" | "m",
+  id: string,
+  viewAfterId: string | null,
+) => {
+  const afterId = scopedMoveAfterId(shelf, onPage(page), id, viewAfterId);
+  const next = moveGalleryItem(shelf, id, afterId);
+  return {
+    view: next.filter(onPage(page)).map((i) => `${i.id}${i.pinned ? "*" : ""}`),
+    afterId,
+  };
+};
+
+test("a move in one page's view does not take its pin from another page's hidden rows", () => {
+  // Music's pin leads the shared shelf; dragging a Speak clip to the top of Speak's unpinned
+  // history used to drop it next to that pin and pin it.
+  const shelf = [row("m1", "m", true), row("s1", "s"), row("s2", "s"), row("m2", "m")];
+  assert.deepEqual(placed(shelf, "s", "s2", null).view, ["s2", "s1"]);
+  assert.equal(placed(shelf, "s", "s2", null).afterId, "m1");
+  // The unscoped id would have pinned it.
+  assert.equal(moveGalleryItem(shelf, "s2", null).find((i) => i.id === "s2")?.pinned, true);
+});
+
+test("dropping below a page's last pin keeps the clip unpinned past hidden pins", () => {
+  const shelf = [row("s1", "s", true), row("m1", "m", true), row("s2", "s"), row("s3", "s")];
+  // After s1 in Speak's view: between a pin and an unpinned row, the moved clip keeps its own state.
+  assert.deepEqual(placed(shelf, "s", "s3", "s1").view, ["s1*", "s3", "s2"]);
+});
+
+test("a move the page's own view would pin still pins", () => {
+  // Pins sort first on a shelf, so a hidden pin can sit between two of this page's pins.
+  const shelf = [row("s1", "s", true), row("m1", "m", true), row("s2", "s", true), row("s3", "s")];
+  assert.deepEqual(placed(shelf, "s", "s3", "s1").view, ["s1*", "s3*", "s2*"]);
+});
+
+test("a scoped move with no hidden rows sends the view's own neighbour", () => {
+  const shelf = [row("s1", "s", true), row("s2", "s"), row("s3", "s")];
+  assert.equal(scopedMoveAfterId(shelf, onPage("s"), "s3", null), null);
+  assert.equal(scopedMoveAfterId(shelf, onPage("s"), "s3", "s1"), "s1");
 });

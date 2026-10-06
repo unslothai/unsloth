@@ -4,7 +4,8 @@
 
 """Cross-platform Node.js prebuilt installer for Unsloth Studio.
 
-Downloads an official Node.js archive from nodejs.org into an isolated
+Downloads an official Node.js archive from nodejs.org (or the dist mirror in
+``UNSLOTH_NODE_MIRROR``) into an isolated
 ``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
 LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
@@ -13,14 +14,18 @@ Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json
 (committed in-tree), not a checksum re-fetched from the same origin as the archive.
 
 Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
-Exit codes: 0 success, 1 error, 2 fallback, 3 busy. A re-run that already matches
+Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
 logs "already matches" and returns 0 without downloading (the scripts grep it).
+A failed update that keeps a usable install logs "keeping existing isolated Node" and
+also returns 0 (the scripts grep that too).
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import http.client
 import json
 import os
 import stat
@@ -42,6 +47,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+_STUDIO_DIR = str(Path(__file__).resolve().parent)
+if _STUDIO_DIR not in sys.path:
+    sys.path.insert(0, _STUDIO_DIR)
+
+from prebuilt_core import DownloadProgress  # noqa: E402
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -53,13 +64,27 @@ EXIT_SUCCESS = 0
 EXIT_ERROR = 1
 EXIT_FALLBACK = 2
 EXIT_BUSY = 3
+# The install directory cannot be written. Separate from EXIT_ERROR because the
+# caller's advice for that one is "install Node yourself or check your network",
+# which is wrong here and sends people to look at the wrong thing.
+EXIT_DENIED = 4
+# setup.ps1 reads these back out to diagnose the object that was actually
+# refused. The install lock and the .staging root live in the install
+# directory's parent, so "delete or rename the Node cache" is the wrong advice
+# for half of the denials that reach exit 4, and the directory it names may not
+# even exist. Classified here, where the install directory is known, rather than
+# re-derived from a path string on the PowerShell side.
+DENIED_PATH_MARKER = "denied-path: "
+DENIED_SCOPE_MARKER = "denied-scope: "
+DENIED_SCOPE_INSTALL_DIR = "install-dir"
+DENIED_SCOPE_PARENT = "parent"
 
 # Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
 NODE_MIN_LTS_MAJOR = 24
 NPM_MIN_MAJOR = 11
 
 NODE_DIST_BASE = "https://nodejs.org/dist"
-NODE_DIST_INDEX = f"{NODE_DIST_BASE}/index.json"
+NODE_MIRROR_ENV = "UNSLOTH_NODE_MIRROR"
 
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
@@ -158,12 +183,20 @@ def node_asset_name(version: str, host: HostInfo) -> str:
     return f"{node_asset_stem(version, host)}{host.archive_ext}"
 
 
+def node_dist_base() -> str:
+    return (os.environ.get(NODE_MIRROR_ENV, "").strip() or NODE_DIST_BASE).rstrip("/")
+
+
+def node_dist_index_url() -> str:
+    return f"{node_dist_base()}/index.json"
+
+
 def node_download_url(version: str, asset_name: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/{asset_name}"
+    return f"{node_dist_base()}/v{version}/{asset_name}"
 
 
 def node_shasums_url(version: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/SHASUMS256.txt"
+    return f"{node_dist_base()}/v{version}/SHASUMS256.txt"
 
 
 def expected_sha256_for(shasums_text: str, asset_name: str) -> str | None:
@@ -195,7 +228,7 @@ def _meets_node_floor(version: str) -> bool:
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
-    """Pick a concrete Node version from nodejs.org index.json.
+    """Pick a concrete Node version from the Node dist index.json.
 
     channel='lts'    -> newest LTS release line whose major >= min_major.
     channel='latest' -> newest release overall whose major >= min_major.
@@ -218,7 +251,7 @@ def select_node_version(index: list[dict], *, channel: str, min_major: int) -> s
             best_version = version
     if best_version is None:
         raise PrebuiltFallback(
-            f"no Node '{channel}' release found at or above major {min_major} in {NODE_DIST_INDEX}"
+            f"no Node '{channel}' release found at or above major {min_major} in {node_dist_index_url()}"
         )
     return best_version
 
@@ -233,6 +266,9 @@ def is_retryable_url_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in RETRYABLE_HTTP_STATUS
     if isinstance(exc, (urllib.error.URLError, TimeoutError, socket.timeout)):
+        return True
+    # A dropped connection or a body cut short is not wrapped in URLError; see prebuilt_core.
+    if isinstance(exc, (ConnectionError, http.client.IncompleteRead)):
         return True
     return False
 
@@ -285,11 +321,23 @@ def download_file(url: str, destination: Path) -> None:
             ) as handle:
                 tmp_path = Path(handle.name)
                 with urllib.request.urlopen(request, timeout = 120) as response:
+                    content_length = response.headers.get("Content-Length")
+                    total_bytes = (
+                        int(content_length) if content_length and content_length.isdigit() else None
+                    )
+                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
+                    if _LOG_TO_STDOUT:
+                        progress.stream = sys.stdout
+                        progress.is_tty = progress.is_tty and sys.stdout.isatty()
+                    downloaded_bytes = 0
                     while True:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
                         handle.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        progress.update(downloaded_bytes)
+                    progress.finish(downloaded_bytes)
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:
@@ -967,11 +1015,40 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
+# Retried (scanners raise it right after extraction), but unreadable ACLs raise it too (#9928).
+_ERROR_ACCESS_DENIED = 5
+
+
+def _access_denied_recovery_lines(paths: tuple[tuple[Path, bool], ...]) -> list[str]:
+    """Repair commands for a rename still failing with ``ERROR_ACCESS_DENIED``.
+
+    One command per line: joined, takeown swallows the rest as arguments.
+    """
+    lines = [
+        "if this was not a scanner, the ACLs on one of these rename paths may be "
+        "unreadable -- even icacls/Get-Acl report access denied in that state",
+        "from an elevated PowerShell, restore access for each affected path, "
+        "then run the install again:",
+    ]
+    # Non-recursive for the parent: /R would rewrite sibling installs.
+    for path, recursive in dict.fromkeys(paths):
+        takeown_flags = " /R /D Y" if recursive else ""
+        icacls_flags = " /T /C" if recursive else ""
+        lines.extend(
+            (
+                f'  takeown /F "{path}"{takeown_flags}',
+                f'  icacls "{path}" /reset{icacls_flags}',
+            )
+        )
+    return lines
+
+
 def _replace_with_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    access_denied_paths: tuple[tuple[Path, bool], ...] | None = None,
 ) -> None:
     """os.replace, retried against transient Windows sharing violations.
 
@@ -980,6 +1057,10 @@ def _replace_with_retry(
     a fresh install, with no existing directory to conflict with). Handles clear in a
     second or two, so a bounded backoff turns the failure into a pause; other errors
     raise immediately rather than stalling on a real problem.
+
+    An exhausted WinError 5 may be an ACL fault, not a scanner (#9928): with
+    ``access_denied_paths`` the repair lines ride on the error, printed only if an existing
+    Node is kept (otherwise main() exits 4 and setup.ps1 prints its own, #10533).
     """
     delay = 0.25
     for attempt in range(attempts):
@@ -987,13 +1068,20 @@ def _replace_with_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (_ERROR_ACCESS_DENIED, 32, 145)
             if not transient or attempt == attempts - 1:
+                if transient and winerror == _ERROR_ACCESS_DENIED and access_denied_paths:
+                    log(f"rename still blocked (5) after {attempts} attempts")
+                    exc._unsloth_acl_recovery_lines = _access_denied_recovery_lines(
+                        access_denied_paths
+                    )
                 raise
-            log(
-                f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
-                f"-- a scanner is likely still holding the extracted files"
-            )
+            if winerror == _ERROR_ACCESS_DENIED:
+                cause = "a scanner may still hold the files, or the ACLs are unreadable"
+            else:
+                cause = "a scanner is likely still holding the extracted files"
+            log(f"rename blocked ({winerror}), retrying in {delay:.2f}s -- {cause}")
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
 
@@ -1004,16 +1092,28 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     backup: Path | None = None
     if install_dir.exists():
         backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
-        _replace_with_retry(install_dir, backup)
+        _replace_with_retry(
+            install_dir,
+            backup,
+            access_denied_paths = ((install_dir, True), (install_dir.parent, False)),
+        )
     try:
-        _replace_with_retry(extracted_root, install_dir)
+        _replace_with_retry(
+            extracted_root,
+            install_dir,
+            access_denied_paths = ((extracted_root, True), (install_dir.parent, False)),
+        )
     except OSError:
         # The forward rename retries ~16s, ample time for a scanner to grab the backup too.
         # A plain os.replace would raise over the original error and leave no install_dir at all, so the rollback gets
         # the same backoff and never masks it.
         if backup is not None and not install_dir.exists():
             try:
-                _replace_with_retry(backup, install_dir)
+                _replace_with_retry(
+                    backup,
+                    install_dir,
+                    access_denied_paths = ((backup, True), (install_dir.parent, False)),
+                )
             except OSError as rollback_exc:
                 log(f"could not restore the previous Node install from {backup}: {rollback_exc}")
         raise
@@ -1041,15 +1141,14 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         version = pinned_default_version(pins)
     elif channel in {"lts", "latest"}:
         try:
-            index = fetch_json(NODE_DIST_INDEX)
+            index = fetch_json(node_dist_index_url())
         except Exception as exc:  # noqa: BLE001
-            # nodejs.org unreachable: keep a working isolated Node instead of aborting.
             if not force and existing_install_usable(install_dir, host):
                 log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
         if not isinstance(index, list):
-            raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
+            raise PrebuiltFallback(f"unexpected index.json payload from {node_dist_index_url()}")
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")
@@ -1140,7 +1239,15 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 and meta.get("sha256") != pin
             )
             if not force and not pin_mismatch and existing_install_usable(install_dir, host):
-                log(f"Node download failed ({exc}); keeping existing isolated Node")
+                recovery = getattr(exc, "_unsloth_acl_recovery_lines", None)
+                if recovery:
+                    for line in recovery:
+                        log(line)
+                    log(
+                        f"existing Node could not be replaced ({exc}); keeping existing isolated Node"
+                    )
+                else:
+                    log(f"Node download failed ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
 
@@ -1201,9 +1308,63 @@ def main(argv: list[str] | None = None) -> int:
     except PrebuiltFallback as exc:
         log(f"prebuilt unavailable: {exc}")
         return EXIT_FALLBACK
+    except PermissionError as exc:
+        return _report_access_denied(exc, install_dir)
+    except OSError as exc:
+        # Windows reports the ACL and filter-driver denials that matter here as
+        # winerror 5, which does not always arrive as PermissionError.
+        if getattr(exc, "winerror", None) == 5 or exc.errno == errno.EACCES:
+            return _report_access_denied(exc, install_dir)
+        log(f"unexpected error: {exc}")
+        return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")
         return EXIT_ERROR
+
+
+def _report_access_denied(exc: OSError, install_dir: Path) -> int:
+    """Log the denial, and say which object was refused so the caller can name it."""
+    path = getattr(exc, "filename", None) or ""
+    if path:
+        log(f"{DENIED_PATH_MARKER}{path}")
+        scope = DENIED_SCOPE_INSTALL_DIR if _within(path, install_dir) else DENIED_SCOPE_PARENT
+        log(f"{DENIED_SCOPE_MARKER}{scope}")
+    log(_access_denied_message(exc))
+    return EXIT_DENIED
+
+
+def _within(path: str, root: Path) -> bool:
+    """Whether path is root or sits under it, by spelling alone.
+
+    Both sides come from the same --install-dir string, so normalizing without
+    resolving links keeps them comparable; resolving would need the very access
+    that was just denied.
+    """
+    normalized = os.path.normcase(os.path.abspath(path))
+    base = os.path.normcase(os.path.abspath(root))
+    return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _access_denied_message(exc: OSError) -> str:
+    """Say that this is a permission problem, and that elevation may not fix it.
+
+    Reported as "unexpected error" before, which the caller then followed with
+    "install Node yourself, or check your network". Neither is the fix, and a
+    user whose antivirus is holding the folder can spend a long time on the
+    second one. Antivirus ransomware protection and Controlled folder access
+    both deny regardless of privilege, so running elevated is not the answer
+    either.
+    """
+    path = getattr(exc, "filename", None) or ""
+    where = f" writing {path}" if path else ""
+    return (
+        f"access denied{where}. This is a permissions or security-software block, "
+        "not a download problem. Antivirus ransomware protection (Bitdefender Safe Files, "
+        "Defender Controlled folder access and the like) denies this whatever your "
+        "privileges are, so running elevated may not clear it. Allow or exclude the "
+        "Unsloth folder in your antivirus, or delete or rename it (it is a managed cache "
+        "and setup reinstalls it), then re-run setup."
+    )
 
 
 if __name__ == "__main__":

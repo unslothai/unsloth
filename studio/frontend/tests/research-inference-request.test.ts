@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildResearchInferenceRequest } from "../src/features/chat/research-inference-request.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 const clamp = (effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") =>
   effort === "xhigh" ? "high" as const : effort;
@@ -215,4 +216,105 @@ test("the published ceiling rides along, unfolded, when the model has one", () =
   // The backend needs the pair to tell a capped connection from a 8192-token model.
   assert.equal(request.maxOutputTokens, 8192);
   assert.equal(request.maxOutputTokensPublished, 65536);
+});
+
+test("an external run records whether the model reasons and can turn it off", () => {
+  const request = buildResearchInferenceRequest({
+    checkpoint: "external::p1::openai/gpt-oss-120b",
+    external: {
+      providerId: "p1",
+      providerType: "huggingface",
+      modelId: "openai/gpt-oss-120b",
+      maxOutputTokens: null,
+      maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+    },
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 4096,
+    reasoningRequested: true,
+    reasoningStyle: "reasoning_effort",
+    reasoningEffort: "high",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
+  });
+  assert.equal(request.supportsReasoning, true);
+  assert.equal(request.supportsReasoningOff, false);
+  assert.match(
+    readSrc("features/chat/api/chat-adapter.ts"),
+    /supportsReasoning: runtime\.supportsReasoning,\s*supportsReasoningOff: runtime\.supportsReasoningOff,/,
+  );
+});
+
+test("Thinking off reaches research synthesis as an explicit none", () => {
+  assert.deepEqual(
+    buildResearchInferenceRequest({
+      checkpoint: "external::provider::gpt-oss:20b",
+      external: {
+        providerId: "provider",
+        providerType: "ollama",
+        modelId: "gpt-oss:20b",
+        maxOutputTokens: null,
+        maxOutputTokensFromSavedCap: false,
+        maxOutputTokensPublished: null,
+        supportsReasoningOff: true,
+      },
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 4096,
+      reasoningRequested: false,
+      reasoningStyle: "reasoning_effort",
+      reasoningEffort: "medium",
+      reasoningEffortLevels: ["low", "medium", "high", "max"],
+      clampReasoningEffort: clamp,
+    }),
+    {
+      model: "gpt-oss:20b",
+      providerId: "provider",
+      providerType: "ollama",
+      externalModel: "gpt-oss:20b",
+      supportsReasoningOff: true,
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 4096,
+      reasoningEffort: "none",
+    },
+  );
+});
+
+test("a provider without an off value sends no effort when reasoning is off", () => {
+  assert.deepEqual(
+    buildResearchInferenceRequest({
+      checkpoint: "external::provider::gpt-5",
+      external: {
+        providerId: "provider",
+        providerType: "openai",
+        modelId: "gpt-5",
+        maxOutputTokens: null,
+        maxOutputTokensFromSavedCap: false,
+        maxOutputTokensPublished: null,
+        supportsReasoningOff: false,
+      },
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 4096,
+      reasoningRequested: false,
+      reasoningStyle: "reasoning_effort",
+      reasoningEffort: "medium",
+      reasoningEffortLevels: ["low", "medium", "high"],
+      clampReasoningEffort: clamp,
+    }),
+    {
+      model: "gpt-5",
+      providerId: "provider",
+      providerType: "openai",
+      externalModel: "gpt-5",
+      supportsReasoningOff: false,
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 4096,
+    },
+  );
 });
