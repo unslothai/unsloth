@@ -374,3 +374,26 @@ def test_merge_conversion_matches_the_live_adapter(alpha):
         merged = W + s * layer.lora_B["default"].weight @ layer.lora_A["default"].weight
     assert torch.isfinite(merged).all()
     torch.testing.assert_close(x @ merged.T, live, atol = 1e-4, rtol = 1e-4)
+
+
+@pytest.mark.parametrize("layer", ["linear", "embedding"])
+def test_untrained_residual_init_merges_back_to_the_original_weight(layer):
+    # PEFT keeps Embedding factors in lora_embedding_A / _B (LoftQ embeddings on PEFT 0.18 / 0.19);
+    # the conversion must cancel the initial factors there too. Factors set by hand: PEFT >= 0.20's
+    # Embedding.loftq_init call is broken, and the conversion only reads the snapshot.
+    from peft import LoraConfig, get_peft_model
+    from unsloth.models._utils import lora_relative_to_original_base, snapshot_residual_lora_init
+
+    torch.manual_seed(0)
+    base = torch.nn.Linear(64, 48, bias = False) if layer == "linear" else torch.nn.Embedding(48, 64)
+    model = get_peft_model(torch.nn.Sequential(base), LoraConfig(r = 8, target_modules = ["0"]))
+    module = model.base_model.model[0]
+    with torch.no_grad():
+        for p in module.parameters():
+            if p.requires_grad:
+                p.normal_()
+    snapshot_residual_lora_init(model, "loftq")
+    assert module.get_delta_weight("default").abs().max() > 0
+    with lora_relative_to_original_base(model):
+        delta = module.get_delta_weight("default")
+    torch.testing.assert_close(delta, torch.zeros_like(delta), atol = 1e-4, rtol = 0)

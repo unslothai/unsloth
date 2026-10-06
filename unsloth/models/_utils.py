@@ -5959,6 +5959,19 @@ def validate_init_lora_weights(
         )
 
 
+def _lora_factors(module):
+    """(adapter, A holder, A attr, B holder, B attr): Linear / Conv keep factors as `.weight` of lora_A / lora_B
+    modules, Embedding as entries of the lora_embedding_A / lora_embedding_B ParameterDicts."""
+    lora_A = getattr(module, "lora_A", None)
+    if isinstance(lora_A, torch.nn.ModuleDict):
+        for k in lora_A:
+            yield k, lora_A[k], "weight", module.lora_B[k], "weight"
+    lora_embedding_A = getattr(module, "lora_embedding_A", None)
+    if isinstance(lora_embedding_A, torch.nn.ParameterDict):
+        for k in lora_embedding_A:
+            yield k, lora_embedding_A, k, module.lora_embedding_B, k
+
+
 def snapshot_residual_lora_init(model, init_lora_weights):
     if not isinstance(init_lora_weights, str):
         return
@@ -5967,16 +5980,16 @@ def snapshot_residual_lora_init(model, init_lora_weights):
     # The scale the base rewrite used: LoftQ fits B0 @ A0 to W - Q unscaled, the others subtract s * B0 @ A0.
     unscaled = init_lora_weights == "loftq"
     for module in model.modules():
-        lora_A = getattr(module, "lora_A", None)
-        if isinstance(lora_A, torch.nn.ModuleDict) and len(lora_A):
-            module._unsloth_initial_lora = {
-                k: (
-                    lora_A[k].weight.detach().clone(),
-                    module.lora_B[k].weight.detach().clone(),
-                    1.0 if unscaled else module.scaling[k],
-                )
-                for k in lora_A
-            }
+        initial = {
+            k: (
+                getattr(a, a_name).detach().clone(),
+                getattr(b, b_name).detach().clone(),
+                1.0 if unscaled else module.scaling[k],
+            )
+            for k, a, a_name, b, b_name in _lora_factors(module)
+        }
+        if initial:
+            module._unsloth_initial_lora = initial
 
 
 @contextlib.contextmanager
@@ -5989,23 +6002,32 @@ def lora_relative_to_original_base(model):
             initial = getattr(module, "_unsloth_initial_lora", None)
             if not initial:
                 continue
-            for k, (A0, B0, scaling0) in initial.items():
+            for k, a, a_name, b, b_name in list(_lora_factors(module)):
+                if k not in initial:
+                    continue
+                A0, B0, scaling0 = initial[k]
                 if not scaling0:
                     continue  # lora_alpha = 0: the base rewrite was a no-op
-                a, b = module.lora_A[k], module.lora_B[k]
-                swapped.append((module, k, module.scaling[k], a, a.weight, b, b.weight))
-                B = b.weight.detach() * (module.scaling[k] / scaling0)
+                A, B = getattr(a, a_name), getattr(b, b_name)
+                swapped.append((module, k, module.scaling[k], a, a_name, A, b, b_name, B))
+                B_new = B.detach() * (module.scaling[k] / scaling0)
                 module.scaling[k] = scaling0
-                a.weight = torch.nn.Parameter(
-                    torch.cat([a.weight.detach(), A0.to(a.weight)], 0), requires_grad = False
+                setattr(
+                    a,
+                    a_name,
+                    torch.nn.Parameter(torch.cat([A.detach(), A0.to(A)], 0), requires_grad = False),
                 )
-                b.weight = torch.nn.Parameter(torch.cat([B, -B0.to(B)], 1), requires_grad = False)
+                setattr(
+                    b,
+                    b_name,
+                    torch.nn.Parameter(torch.cat([B_new, -B0.to(B_new)], 1), requires_grad = False),
+                )
         yield
     finally:
-        for module, k, scaling, a, weight_A, b, weight_B in swapped:
+        for module, k, scaling, a, a_name, A, b, b_name, B in swapped:
             module.scaling[k] = scaling
-            a.weight = weight_A
-            b.weight = weight_B
+            setattr(a, a_name, A)
+            setattr(b, b_name, B)
 
 
 def freeze_peft_variant_weights(model):
