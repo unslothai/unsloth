@@ -1937,6 +1937,11 @@ def _sticky_compaction_state(
             # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
                 return 0, False
+            # A provider-generated summary boundary is display metadata, not a local-fit epoch. On a provider/model
+            # switch the opaque summary is deliberately withheld, so replaying its boundary here would discard the
+            # original turns without retaining their summary.
+            if truncation.get("summarized") is True:
+                return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
             # directions fail differently.
             #
