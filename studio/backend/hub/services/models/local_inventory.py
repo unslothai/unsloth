@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -224,6 +227,101 @@ def nested_scan_roots(folder_path: Path) -> list[Path]:
     return roots
 
 
+_SHARD_EVIDENCE_RE = re.compile(r"-\d+-of-\d+\.|\.index\.json$", re.IGNORECASE)
+_PAYLOAD_SUFFIXES = (".safetensors", ".gguf", *model_common._LOCAL_CHECKPOINT_EXTENSIONS)
+_PAYLOAD_VERDICT_CACHE_MAX = 4096
+_payload_verdicts: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
+_payload_verdicts_lock = threading.Lock()
+
+
+def _payload_evidence(scan_path: Path) -> tuple[bool, bool, tuple]:
+    """Whether weights / quants could be torn (numbered shard, index, empty weight), plus a fingerprint of every file."""
+    weights = quants = False
+    fingerprint = []
+    for dirpath, _dirnames, filenames in os.walk(scan_path):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.stat(path)
+                entry = (path, st.st_size, st.st_mtime_ns, st.st_ino)
+                empty = st.st_size <= 0
+            except OSError:
+                entry = (path, -1, -1, -1)
+                empty = True
+            fingerprint.append(entry)
+            lower = name.lower()
+            torn = _SHARD_EVIDENCE_RE.search(name) is not None or (
+                empty and lower.endswith(_PAYLOAD_SUFFIXES)
+            )
+            if torn:
+                if lower.endswith(".gguf"):
+                    quants = True
+                else:
+                    weights = True
+    return weights, quants, tuple(sorted(fingerprint))
+
+
+def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
+    # Files are the judge's only input. Quants are not cached: their judge also reads the account's scan folders.
+    key = os.path.abspath(scan_path)
+    with _payload_verdicts_lock:
+        hit = _payload_verdicts.get(key)
+        if hit is not None and hit[0] == fingerprint:
+            _payload_verdicts.move_to_end(key)
+            return hit[1]
+    complete = hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False)
+    with _payload_verdicts_lock:
+        _payload_verdicts[key] = (fingerprint, complete)
+        _payload_verdicts.move_to_end(key)
+        while len(_payload_verdicts) > _PAYLOAD_VERDICT_CACHE_MAX:
+            _payload_verdicts.popitem(last = False)
+    return complete
+
+
+def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
+    """Local folders carry no downloader markers, so only the payload shows a torn download. ``unknown`` is skipped: a diffusers pipeline's weights live in component subdirs."""
+    if not rows:
+        return rows
+    if scan_path.is_file():
+        # A loose quant, split or not: llama-server opens every part, so a missing or empty one fails the load.
+        from utils.models.model_config import colocated_split_shards
+
+        candidates = [scan_path]
+        try:
+            if scan_path.is_symlink():
+                # Same fallback as _local_gguf_load_path: a lone link loads from its target's set.
+                candidates.append(scan_path.resolve())
+        except OSError:
+            pass
+        for candidate in candidates:
+            shards, complete = colocated_split_shards(candidate)
+            try:
+                if complete and all(shard.stat().st_size > 0 for shard in shards):
+                    return rows
+            except OSError:
+                continue
+        return _apply_format_aware_partial(rows, snapshot_partial = False, gguf_partial = True)
+    if not scan_path.is_dir():
+        return rows
+    judged = {row.model_format for row in rows} - {"unknown"}
+    if not judged:
+        return rows
+    weights, quants, fingerprint = _payload_evidence(scan_path)
+    snapshot_partial = (
+        weights and bool(judged - {"gguf"}) and not _weights_complete(scan_path, fingerprint)
+    )
+    gguf_partial = (
+        quants
+        and "gguf" in judged
+        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True)
+    )
+    if not snapshot_partial and not gguf_partial:
+        return rows
+    return _apply_format_aware_partial(
+        rows, snapshot_partial = snapshot_partial, gguf_partial = gguf_partial
+    )
+
+
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
     return get_hf_cache_paths().hub_cache
@@ -261,11 +359,12 @@ def _scan_models_dir(
             updated_at = models_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        return _classify_local_path(
+        rows = _classify_local_path(
             models_dir,
             "models_dir",
             updated_at = updated_at,
         )
+        return _apply_payload_partial(models_dir, rows)
 
     found: List[LocalModelInfo] = []
     visited = 0
@@ -303,6 +402,7 @@ def _scan_models_dir(
             "models_dir",
             updated_at = updated_at,
         )
+        rows = _apply_payload_partial(child, rows)
         if limit is not None:
             rows = rows[: max(0, limit - len(found))]
         found.extend(rows)
@@ -571,11 +671,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             updated_at = lm_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        return _classify_local_path(
+        rows = _classify_local_path(
             lm_dir,
             "lmstudio",
             updated_at = updated_at,
         )
+        return _apply_payload_partial(lm_dir, rows)
 
     found: List[LocalModelInfo] = []
     visited = 0
@@ -604,13 +705,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         updated_at = child.stat().st_mtime
                     except OSError:
                         updated_at = None
-                    found.extend(
-                        _classify_local_path(
-                            child,
-                            "lmstudio",
-                            updated_at = updated_at,
-                        )
+                    rows = _classify_local_path(
+                        child,
+                        "lmstudio",
+                        updated_at = updated_at,
                     )
+                    found.extend(_apply_payload_partial(child, rows))
                 continue
 
             # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline counts, or its component subdirs are walked as models.
@@ -619,13 +719,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     updated_at = child.stat().st_mtime
                 except OSError:
                     updated_at = None
-                found.extend(
-                    _classify_local_path(
-                        child,
-                        "lmstudio",
-                        updated_at = updated_at,
-                    )
+                rows = _classify_local_path(
+                    child,
+                    "lmstudio",
+                    updated_at = updated_at,
                 )
+                found.extend(_apply_payload_partial(child, rows))
                 continue
 
             # child is a publisher directory -- scan its sub-directories
@@ -643,15 +742,14 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
                             updated_at = None
-                        found.extend(
-                            _classify_local_path(
-                                model_dir,
-                                "lmstudio",
-                                display_name = model_dir.name,
-                                model_id = model_id,
-                                updated_at = updated_at,
-                            )
+                        rows = _classify_local_path(
+                            model_dir,
+                            "lmstudio",
+                            display_name = model_dir.name,
+                            model_id = model_id,
+                            updated_at = updated_at,
                         )
+                        found.extend(_apply_payload_partial(model_dir, rows))
                     elif (
                         model_dir.suffix.lower() == ".gguf"
                         and model_dir.is_file()
@@ -661,14 +759,13 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
                             updated_at = None
-                        found.extend(
-                            _classify_local_path(
-                                model_dir,
-                                "lmstudio",
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                updated_at = updated_at,
-                            )
+                        rows = _classify_local_path(
+                            model_dir,
+                            "lmstudio",
+                            model_id = f"{child.name}/{model_dir.stem}",
+                            updated_at = updated_at,
                         )
+                        found.extend(_apply_payload_partial(model_dir, rows))
                 except OSError:
                     continue
             if exhausted:
