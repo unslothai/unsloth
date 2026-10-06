@@ -723,3 +723,21 @@ def test_resident_mib_excludes_by_the_converted_name(tmp_path):
     assert (
         mapped > plain
     )  # time_embed.timestep_embedder.linear_1 is excluded, so it is priced at bf16
+
+
+def test_offload_only_int8_is_priced_dense_for_a_resident_plan(monkeypatch, tmp_path):
+    rows = cols = 1024
+    tensors = {
+        "x.weight": torch.zeros(rows, cols, dtype = torch.int8),
+        "x.weight_scale": torch.ones(rows, 1),
+        "x.comfy_quant": _conf(format = "int8_tensorwise"),
+    }
+    path = _save(tmp_path / "i.safetensors", tensors)
+    scan = cq.refuse_comfy_quant(path)
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    monkeypatch.setattr(
+        vid, "comfy_int8_backend", lambda *a, offload = False, **k: "native" if offload else None
+    )
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2

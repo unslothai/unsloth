@@ -422,12 +422,9 @@ def _video_comfy_resident_mib(
             }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
-        keep_int8 = bool(
-            comfy_int8_backend(target, name, base, offload = True)
-            if offload
-            else comfy_int8_backend(target, name, base)
-            or comfy_int8_backend(target, name, base, offload = True)
-        )
+        # Resident pricing only for a runtime that runs resident: an offload-only int8 twin cannot keep the codes
+        # of a DiT the plan then keeps resident (the plan is re-priced if it offloads).
+        keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
     return comfy_resident_mib(
         str(path),
