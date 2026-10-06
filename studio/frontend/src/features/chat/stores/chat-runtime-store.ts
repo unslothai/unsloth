@@ -747,7 +747,6 @@ const MIRRORED_SETTINGS = {
         ? loadPermissionMode()
         : undefined,
   },
-  // MIRRORED_ENUM_VALUES keeps a server value to "high" or "low".
   sandboxLevel: { storageKey: CHAT_SANDBOX_LEVEL_KEY, ...STRING_SETTING },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },

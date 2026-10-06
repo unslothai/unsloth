@@ -115,7 +115,6 @@ function PermissionsSection() {
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
 
-  // Learn more in the permission menus and the Full access confirmation.
   useEffect(() => {
     if (scrollTarget !== "sandbox-permissions") return;
     const frame = window.requestAnimationFrame(() => {

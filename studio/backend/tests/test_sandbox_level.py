@@ -118,8 +118,6 @@ def test_the_policy_level_defaults_to_high_and_rejects_typos():
         tool_policy.normalize_sandbox_level("lowest")
 
 
-# ── the request field ────────────────────────────────────────────────
-
 
 def _chat(**extra):
     return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **extra)
@@ -170,8 +168,6 @@ def test_an_unknown_level_is_a_422():
             assert response.status_code == 422, (path, bad)
 
 
-# ── the planner and the launch ───────────────────────────────────────
-
 
 @pytest.fixture
 def no_probe(monkeypatch):
@@ -204,7 +200,6 @@ def test_the_planner_runs_low_on_software_safeguards_without_a_probe(no_probe, t
     assert record.os_isolation is False
     assert "no_os_isolation" in record.limitations
     assert "timeout" in record.retained_safeguards
-    # High's cached answer is not touched by a launch that never checked.
     assert not os_sandbox.has_tool_isolation_answer("python")
 
 
@@ -268,8 +263,6 @@ def test_low_keeps_the_managed_account_boundary(monkeypatch, no_probe, function,
     assert tools._last_tool_execution_record is None
 
 
-# ── the Windows Terminal profile ─────────────────────────────────────
-
 _BASH = r"C:\Program Files\Git\bin\bash.exe"
 
 
@@ -320,8 +313,6 @@ def test_windows_low_launches_on_the_host_shell(windows_cmd_host, monkeypatch):
             tools._bash_exec("echo hi", None, 60, _SESSION, tool_execution_mode = mode)
     assert seen == [False, True]
 
-
-# ── the tool loops ───────────────────────────────────────────────────
 
 
 class _ModeRecordingExecuteTool:
@@ -501,7 +492,6 @@ def test_every_route_that_forwards_the_mode_forwards_the_level(path):
             continue
         func = node.func
         callee = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        # Skill loading runs no Python or Terminal.
         if callee == "load_mentioned_skills":
             continue
         assert "sandbox_level" in keywords, f"{path}:{node.lineno} {callee}"
@@ -558,8 +548,6 @@ def test_the_codex_loop_forwards_the_level(monkeypatch):
     )
     assert entered["policy"].sandbox_level == "low"
 
-
-# ── durable chat runs ────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("sent,expected", [("low", "low"), ("LOW", "low"), (None, "high")])

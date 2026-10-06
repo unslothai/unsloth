@@ -402,7 +402,6 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
-    # "low" runs Python and Terminal on software safeguards only (Sandbox Low).
     sandbox_level: str = "high"
 
 

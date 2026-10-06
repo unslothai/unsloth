@@ -123,7 +123,6 @@ test("the setup banner shows only for High with Python or Terminal not OS-isolat
     assert.equal(sandboxBannerVisible("high", mode, capability({})), false);
     // No answer yet, or an old server that cannot say.
     assert.equal(sandboxBannerVisible("high", mode, null), false);
-    // The startup probe has not finished.
     assert.equal(
       sandboxBannerVisible("high", mode, { ...neither, backend: "unknown" }),
       false,
@@ -189,7 +188,6 @@ test("the old general-permissions link opens Permissions under Settings > Sandbo
   dialog.getState().setActiveTab("general");
   assert.equal(dialog.getState().scrollTarget, null);
   dialog.getState().closeDialog();
-  // Other targets are untouched.
   dialog.getState().openDialog("general", { scrollTarget: "general-hub", opener: null });
   assert.equal(dialog.getState().activeTab, "general");
   assert.equal(dialog.getState().scrollTarget, "general-hub");

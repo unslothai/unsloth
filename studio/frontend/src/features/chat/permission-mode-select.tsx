@@ -282,7 +282,6 @@ export function PermissionModeMenuItems({
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
   const capability = useSandboxCapability();
-  // Low never pushes the OS sandbox setup.
   const sandboxUnavailable =
     sandboxLevel === "high" &&
     capability !== null &&
