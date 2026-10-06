@@ -3678,8 +3678,16 @@ class DiffusionBackend:
                 return None
             if _has_active_lora(loras):
                 return None
-            if _memory_request_forces_offload(memory_mode, cpu_offload):
+            # 'balanced' streams through group-offload hooks the preflight refuses torchao weights under, so it keeps
+            # the released shards. low_vram and the legacy flag name whole-module offload, which the runtime quantise
+            # already runs torchao under: the rung loop below prices the artifact under that placement and keeps it
+            # only if its weights survive, seeded on the host like an offloading 'auto' plan. Under a forced offload
+            # only the winning rung is tried (a lower one would change the scheme the runtime picks), and a PINNED
+            # scheme the loader serves torchao-free there (native int8) is never seeded: a torchao artifact cannot
+            # feed that path.
+            if normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED:
                 return None
+            forced_offload = _memory_request_forces_offload(memory_mode, cpu_offload)
             # SCOPED, not pinned: the pooled asyncio.to_thread thread must not be handed back set to this card.
             with diffusion_device_scope(gpu_ordinal):
                 target = self._target_for_ordinal(fam, gpu_ordinal)
@@ -3739,7 +3747,7 @@ class DiffusionBackend:
                 # (Qwen-Image int8 on a 32 GB card) yields to the next resident rung instead of pinning a decline.
                 # An explicit scheme is honored or refused, never swapped.
                 rungs: list[str] = [scheme]
-                if auto:
+                if auto and not forced_offload:
                     try:
                         from .diffusion_transformer_quant import auto_scheme_candidates
                         below = list(
@@ -3767,6 +3775,15 @@ class DiffusionBackend:
                     getattr(getattr(self, "_state", None), "pipe", None)
                 )
                 for rung in rungs:
+                    if (
+                        forced_offload
+                        and not auto
+                        and native_quant_scheme(
+                            target, rung, family = getattr(fam, "name", None), offload = True
+                        )
+                        is not None
+                    ):
+                        continue
                     source = denoiser_prequant_source(
                         fam,
                         rung,

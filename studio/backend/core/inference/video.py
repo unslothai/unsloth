@@ -163,6 +163,7 @@ from .diffusion_transformer_quant import (
     TQ_AUTO,
     TQ_FP8,
     TQ_INT8,
+    TQ_NVFP4,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
     explain_unusable_scheme,
@@ -1758,33 +1759,65 @@ def _pipeline_device_mib(pipe: Any, ordinal: Optional[int] = None) -> int:
     return total // (1024 * 1024)
 
 
+def _auto_seed_yields_to_resident_bf16(scheme: Optional[str], requested: Optional[str]) -> bool:
+    """Whether an AUTO seed of ``scheme`` is bound by "auto keeps a resident bf16 DiT".
+
+    nvfp4 is exempt: it reaches auto only through a gated family preference (``_FAMILY_AUTO_PREFER``) that is
+    measured to be worth taking on a card that holds bf16. An explicit scheme is a request, honored as asked."""
+    if scheme is None or scheme == DENOISER_SEED_DECLINED or scheme == TQ_NVFP4:
+        return False
+    return requested is None or normalize_transformer_quant(requested) == TQ_AUTO
+
+
+def _auto_keeps_resident_bf16(plan: Any, target: Any) -> bool:
+    """The bf16 plan keeps the DiT resident on a measured budget, so auto runs bf16 (int8 fails the LPIPS bar there)."""
+    if plan is None or not plan_keeps_transformer_resident(plan):
+        return False
+    estimates = getattr(plan, "estimates", None) or {}
+    # An unmeasured budget also plans "none" without proving a fit.
+    return (
+        estimates.get("safe_device_budget_mib") is not None
+        and estimates.get("resident_required_mib") is not None
+        and bool(dense_transformer_supported(target))
+    )
+
+
 def _video_seed_stays_resident(
     fam: Any,
     *,
     target: Any,
-    scheme: str,
+    scheme: Optional[str],
     memory_mode: Optional[str],
     text_encoder_quant: Optional[str],
     base_repo: Optional[str],
     reclaimable_mib: int = 0,
 ) -> bool:
-    """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream)."""
+    """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
+
+    ``scheme=None`` sizes the released bf16 DiT instead, and then also requires a measured budget (see
+    ``_auto_keeps_resident_bf16``)."""
     components = getattr(fam, "bf16_components_gb", None)
     if not components:
-        return True
-    measured = video_family_prequant_resident_gb(fam, scheme)
-    factor = _QUANT_STEADY_FACTOR.get(scheme)
-    if measured:
-        denoiser_gb = float(measured)
-    elif factor is not None:
-        denoiser_gb = components[0] * factor
-    else:
-        return True
+        return scheme is not None
     import torch
+
+    dtype = getattr(target, "dtype", None)
+    if scheme is None:
+        denoiser_gb = components[0] * (
+            2.0 if getattr(target, "device", None) != "cpu" and dtype is torch.float32 else 1.0
+        )
+    else:
+        measured = video_family_prequant_resident_gb(fam, scheme)
+        factor = _QUANT_STEADY_FACTOR.get(scheme)
+        if measured:
+            denoiser_gb = float(measured)
+        elif factor is not None:
+            denoiser_gb = components[0] * factor
+        else:
+            return True
 
     from .diffusion_te_prequant import te_prequant_budget_scale
 
-    dtype = getattr(target, "dtype", None)
     dtype_scale = (
         2.0 if getattr(target, "device", None) != "cpu" and dtype is torch.float32 else 1.0
     )
@@ -1818,6 +1851,8 @@ def _video_seed_stays_resident(
         text_encoder_dense_mib = int(text_encoder_gb * mib_per_gb),
         requested_mode = normalize_memory_mode(memory_mode),
     )
+    if scheme is None:
+        return _auto_keeps_resident_bf16(planned, target)
     return plan_keeps_transformer_resident(planned)
 
 
@@ -4217,6 +4252,23 @@ class VideoBackend:
                 if scheme is None:
                     return None
                 resident = self._state
+                reclaimable = _pipeline_device_mib(
+                    getattr(resident, "pipe", None),
+                    ordinal = _target_ordinal(target),
+                )
+                if _auto_seed_yields_to_resident_bf16(
+                    scheme, transformer_quant
+                ) and _video_seed_stays_resident(
+                    fam,
+                    target = target,
+                    scheme = None,
+                    memory_mode = memory_mode,
+                    text_encoder_quant = text_encoder_quant,
+                    base_repo = base,
+                    reclaimable_mib = reclaimable,
+                ):
+                    # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
+                    return None
                 if not _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -6051,6 +6103,19 @@ class VideoBackend:
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        if _auto_seed_yields_to_resident_bf16(
+            denoiser_seed_scheme, transformer_quant
+        ) and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target):
+            # The runtime rule below (auto keeps a resident bf16 DiT) applies to a hosted artifact too: seeding it
+            # would change auto's precision on every card that holds bf16, not just skip a runtime quantise.
+            logger.info(
+                "video.denoiser_prequant: auto keeps the bf16 DiT (it fits resident), so the hosted "
+                "%s checkpoint is not seeded",
+                denoiser_seed_scheme,
+            )
+            denoiser_seed_scheme = None
+            denoiser_seed_gb = None
+            plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         if comfy_scan is not None and not _video_comfy_resident(plan, bf16_plan):
             # Offloaded, fp8 layers dequantize on NVIDIA: price the DiT the load will actually build.
             offload_mib = _video_comfy_resident_mib(
@@ -6409,11 +6474,7 @@ class VideoBackend:
             and normalize_transformer_quant(transformer_quant) == TQ_AUTO
             and not quant_replanned
             and not denoiser_injected
-            and plan_keeps_transformer_resident(plan)
-            # An unmeasured budget also plans "none" without proving a fit.
-            and plan.estimates.get("safe_device_budget_mib") is not None
-            and plan.estimates.get("resident_required_mib") is not None
-            and dense_transformer_supported(target)
+            and _auto_keeps_resident_bf16(plan, target)
         ):
             logger.info("video.transformer_quant: auto keeps the bf16 DiT (it fits resident)")
             transformer_quant = "off"

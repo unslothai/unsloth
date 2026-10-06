@@ -374,9 +374,62 @@ def test_a_baked_lora_keeps_the_dense_path(monkeypatch):
     assert _settle(backend, loras = [("adapter", 0.0)]) == "fp8"
 
 
-@pytest.mark.parametrize("mode", ["balanced", "low_vram"])
-def test_a_definite_offload_request_keeps_the_released_weights(monkeypatch, mode):
-    assert _settle(_settle_backend(monkeypatch), memory_mode = mode) is None
+def test_balanced_keeps_the_released_weights(monkeypatch):
+    """balanced streams through group-offload hooks the preflight refuses torchao weights under."""
+    assert _settle(_settle_backend(monkeypatch), memory_mode = "balanced") is None
+
+
+def _forced_offload_backend(monkeypatch, *, scheme = "fp8", survives = True, native = None):
+    """low_vram's whole-module plan: the denoiser is offloaded, and ``survives`` says whether its torchao weights
+    survive that placement. ``native`` is the scheme the loader would serve torchao-free under offload."""
+    backend = _settle_backend(monkeypatch, offload = "model", scheme = scheme)
+    monkeypatch.setattr(dmod, "torchao_survives_plan", lambda *_a, **_k: survives)
+    monkeypatch.setattr(
+        dmod,
+        "native_quant_scheme",
+        lambda target, requested, family = None, offload = False: (
+            requested if offload and requested == native else None
+        ),
+    )
+    return backend
+
+
+@pytest.mark.parametrize("request_kwargs", [{"memory_mode": "low_vram"}, {"cpu_offload": True}])
+def test_a_whole_module_offload_request_seeds_the_hosted_checkpoint(monkeypatch, request_kwargs):
+    """low_vram (and the legacy flag) offload whole modules, which the runtime fp8 quantise already runs torchao
+    under; the artifact is seeded on the host instead of quantising the released bf16 shards."""
+    assert _settle(_forced_offload_backend(monkeypatch), **request_kwargs) == "fp8"
+
+
+def test_a_whole_module_offload_request_never_seeds_a_torchao_free_rung(monkeypatch):
+    """A PINNED int8 under offload runs torchao-free (native kernels); a torchao artifact cannot feed that path."""
+    backend = _forced_offload_backend(monkeypatch, scheme = "int8", native = "int8")
+    assert _settle(backend, memory_mode = "low_vram", transformer_quant = "int8") is None
+
+
+def test_auto_under_a_whole_module_offload_seeds_the_winner_it_quantises(monkeypatch):
+    """AUTO under low_vram quantises its winner with torchao (the native path is for a pinned scheme only), so the
+    winner's artifact is seeded."""
+    backend = _forced_offload_backend(monkeypatch, scheme = "int8", native = "int8")
+    assert _settle(backend, memory_mode = "low_vram") == "int8"
+
+
+def test_auto_under_a_whole_module_offload_never_walks_to_a_lower_rung(monkeypatch):
+    """Under a forced offload a lower rung would change the scheme the runtime picks, so a winner whose artifact does
+    not survive the placement declines instead of seeding the next rung."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _forced_offload_backend(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda *_a, **_k: ("int8", "fp8"))
+    monkeypatch.setattr(
+        dmod, "torchao_survives_plan", lambda _plan, rung, **_k: rung == "fp8"
+    )
+    assert _settle(backend, memory_mode = "low_vram") == PIPELINE_SEED_DECLINED
+
+
+def test_a_whole_module_offload_request_declines_when_torchao_does_not_survive(monkeypatch):
+    backend = _forced_offload_backend(monkeypatch, survives = False)
+    assert _settle(backend, memory_mode = "low_vram") == PIPELINE_SEED_DECLINED
 
 
 def test_an_artifact_sized_plan_that_still_offloads_declines(monkeypatch):

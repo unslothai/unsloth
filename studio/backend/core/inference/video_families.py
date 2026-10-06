@@ -291,9 +291,17 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
+        # fp8 and int8 share one repo at the root, named by prequant_repo_filename (Wan2.2-TI2V-5B-<SCHEME>.pt); a
+        # .safetensors twin, once hosted, is preferred automatically. The fp8 file keeps condition_embedder in bf16 (a
+        # superset of the runtime excludes, which the loader accepts). Resident sizes from Hub file metadata
+        # (2026-08-04): FP8 5,119,620,358 bytes, INT8 5,038,556,145.
+        prequant_repos = (
+            ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
+            ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
+            ("int8", "unsloth/Wan2.2-TI2V-5B-FP8"),
+        ),
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
-        prequant_resident_gb_by_scheme = (("nvfp4", 2.9),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
@@ -327,13 +335,22 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-        prequant_repos = (("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),),
+        # fp8 / int8: one repo, expert 1 under the derived name, expert 2 as <name>-2.pt (archive root
+        # transformer_2_<scheme>). The derived transformer_2 name is never hosted there, so expert 2 needs its row.
+        prequant_repos = (
+            ("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
+            ("fp8", "unsloth/Wan2.2-T2V-A14B-FP8"),
+            ("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),
+        ),
         prequant_filenames = (
             ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
             ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+            ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
+            ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
-        # BOTH experts: the plan subtracts one denoiser term and this family builds two.
-        prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
+        # BOTH experts: the plan subtracts one denoiser term and this family builds two. fp8 / int8 from Hub file
+        # metadata (2026-08-04): 2 x 14.59 GB and 2 x 14.39 GB.
+        prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
