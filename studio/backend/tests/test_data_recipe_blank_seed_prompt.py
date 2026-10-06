@@ -146,3 +146,23 @@ def test_stringifying_filters_render_blank_cells_as_empty_text(template: str) ->
     assert render(None) == "<>"
     assert render(float("nan")) == "<>"
     assert render("Ab c") not in ("<>", "<None>")
+
+
+def test_reused_renderer_does_not_rewrap_filters_per_record() -> None:
+    pytest.importorskip("data_designer")
+    from core.data_recipe.service import _apply_data_designer_prompt_blank_patch
+    from data_designer.engine.column_generators.utils.prompt_renderer import (
+        PromptType,
+        RecordBasedPromptRenderer,
+    )
+    from data_designer.engine.models.recipes.response_recipes import TextResponseRecipe
+
+    _apply_data_designer_prompt_blank_patch()
+    renderer = RecordBasedPromptRenderer(TextResponseRecipe())
+    for _ in range(1500):
+        rendered = renderer.render(
+            prompt_template = "{{ a | lower }}",
+            record = {"a": None},
+            prompt_type = PromptType.USER_PROMPT,
+        )
+    assert rendered == ""

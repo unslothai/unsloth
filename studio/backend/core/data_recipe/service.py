@@ -202,7 +202,11 @@ def _apply_data_designer_prompt_blank_patch() -> None:
     original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
 
     def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
+        # render() prepares on every record; only patch the env this call creates, else filter wrappers nest per row.
+        already_prepared = self._template_prepared_in_multi_template_renderer(template_name)
         original_prepare(self, template_name, *args, **kwargs)
+        if already_prepared:
+            return
         env = self._render_func_registry[template_name].func.__self__
         env.finalize = _blank_missing_prompt_value
         env._assert_rendered_text_not_empty = _allow_empty_prompt
