@@ -399,12 +399,12 @@ def exercise_permission_mode_controls(page, shoot):
     #
     # So: wait for the level to actually be ON the installation before reloading and asserting on it. Assert what was
     # achieved, not what was commanded.
-    def expect_server_mode(expected, timeout_ms = 15_000):
+    def expect_server_mode(expected, timeout_ms = 15_000, key = "permissionMode"):
         deadline = time.monotonic() + timeout_ms / 1000.0
         seen = "<never read>"
         while True:
             seen = page.evaluate(
-                """async () => {
+                """async (key) => {
                     const token = localStorage.getItem("unsloth_auth_token");
                     const res = await fetch("/api/chat/settings", {
                         headers: token ? { Authorization: "Bearer " + token } : {},
@@ -412,8 +412,9 @@ def exercise_permission_mode_controls(page, shoot):
                     });
                     if (!res.ok) return "<http " + res.status + ">";
                     const body = await res.json();
-                    return (body && body.settings && body.settings.permissionMode) ?? null;
-                }"""
+                    return (body && body.settings && body.settings[key]) ?? null;
+                }""",
+                key,
             )
             if seen == expected:
                 return
@@ -422,7 +423,7 @@ def exercise_permission_mode_controls(page, shoot):
             page.wait_for_timeout(100)
         fail(
             f"permission level never reached the installation: /api/chat/settings "
-            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"reports {key}={seen!r} after {timeout_ms}ms, expected "
             f"{expected!r} -- the debounced mirror never landed"
         )
 
@@ -554,6 +555,8 @@ def exercise_permission_mode_controls(page, shoot):
     if page.get_by_role("alertdialog").count() != 0:
         fail("picking Run automatically without a sandbox opened a dialog")
     # Reopening the menu straight after a pick races its close; a reload also proves the level persisted.
+    # Landed on the install first, or the reload hydrates the previous "auto" back.
+    expect_server_mode("off")
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
     menu = open_menu()
@@ -577,6 +580,7 @@ def exercise_permission_mode_controls(page, shoot):
     if level != "low":
         fail(f"Use Low sandbox stored {level!r}, expected 'low'")
     expect_mode("Run automatically")
+    expect_server_mode("low", key = "sandboxLevel")
     sandbox_answer["ready"] = True
     reload_and_wait_for_pill()
     # With a working sandbox the switch turns High again, and stays High for the next browser's run.
@@ -585,6 +589,7 @@ def exercise_permission_mode_controls(page, shoot):
     switch.click()
     page.wait_for_function("() => localStorage.getItem('unsloth_chat_sandbox_level') === 'high'")
     page.keyboard.press("Escape")
+    expect_server_mode("high", key = "sandboxLevel")
 
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
