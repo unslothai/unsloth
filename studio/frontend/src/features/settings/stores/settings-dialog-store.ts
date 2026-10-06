@@ -35,7 +35,7 @@ export type SettingsScrollTarget =
   | "api-keys-decision-api"
   | "appearance-sidebar-nav"
   | "chat-composer"
-  | "chat-canvas-network"
+  | "browser-html-network"
   | "general-hub"
   | "general-permissions"
   | "library-storage"
@@ -138,7 +138,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "about-updates": "about",
   "api-keys-decision-api": "api-keys",
   "appearance-sidebar-nav": "appearance",
-  "chat-canvas-network": "chat",
+  "browser-html-network": "browser",
   "general-hub": "general",
   "general-permissions": "general",
   "library-storage": "library",

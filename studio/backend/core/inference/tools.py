@@ -5204,8 +5204,6 @@ _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
 # Each pass doubles resolved alias hops; leftover work after the cap fails closed.
 _MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
-# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
-_GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
 _TREE_NODES_ATTR = "_unsloth_walk_nodes"
 
@@ -7448,9 +7446,6 @@ _OPENSSL_NETWORK_RE = re.compile(
 # -c/eval it runs an unscreened payload. Paired with the var-executed-as-command test so `echo "${a[@]}"` is left
 # alone.
 _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
-# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that precedes the real command, so it is
-# not mistaken for the command itself.
-_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # Non-shell interpreters running an inline program (python -c, node -e, php -r): the terminal path never screens that
 # program the way the python tool does. sh/bash -c are omitted, the hard-block already recursing into their payloads.
 _INLINE_CODE_INTERPRETERS = frozenset(
@@ -12140,7 +12135,9 @@ def _edit_file_write(
                     "was being prepared; nothing was written. Read it again and "
                     "redo the edit against the current contents."
                 )
-        os.replace(tmp, path)
+        from core import library
+
+        library.replace_file(tmp, path)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"

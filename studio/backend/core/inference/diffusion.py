@@ -69,6 +69,8 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    transformer_config_overrides_for,
+    transformer_variant_differs_from_base,
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
@@ -269,6 +271,12 @@ from .diffusion_denoiser_prequant import (
     denoiser_prequant_source,
     pipeline_seed_supported,
     prequant_artifact_label,
+)
+from .diffusion_comfy_quant import (
+    comfy_int8_backend,
+    comfy_torchao_quantized,
+    load_comfy_quant_transformer,
+    refuse_comfy_quant,
 )
 from .diffusion_prequant import (
     hosted_fast_accum_conflict,
@@ -2586,6 +2594,14 @@ class DiffusionBackend:
         speed = kwargs.get("speed_mode")
         if speed is not None and str(speed).strip().lower() == SPEED_OFF:
             return False
+        if transformer_variant_differs_from_base(
+            fam,
+            kwargs.get("base_repo"),
+            kwargs.get("gguf_filename"),
+            kwargs.get("repo_id"),
+            kwargs.get("display_repo_id"),
+        ):
+            return False
         try:
             # A definite-offload policy skips the dense build, so widening wastes a multi-GB pull with no GGUF
             # fallback.
@@ -4364,7 +4380,13 @@ class DiffusionBackend:
                 (
                     lambda companions, transformer_files: self._dense_quant_prefetch_needed(
                         fam,
-                        {**load_kwargs, "base_repo": base, "hf_token": hf_token},
+                        {
+                            **load_kwargs,
+                            "repo_id": repo_id,
+                            "gguf_filename": gguf_filename,
+                            "base_repo": base,
+                            "hf_token": hf_token,
+                        },
                         companion_files = companions,
                         transformer_files = transformer_files,
                     )
@@ -5508,6 +5530,11 @@ class DiffusionBackend:
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
+                # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
+                # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
+                comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
+                # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
+                comfy_compile = False
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
@@ -5715,6 +5742,25 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # 2509 / original Edit GGUFs resolve to the 2511 base, whose transformer/ is another model.
+                if (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and transformer_variant_differs_from_base(
+                        fam, base, gguf_filename, repo_id, display_repo_id
+                    )
+                ):
+                    dense_declined = True
+                    if transformer_quant_decline is None:
+                        transformer_quant_decline = (
+                            f"{base} has a different transformer than this GGUF, so only the GGUF "
+                            "itself can run it"
+                        )
+                    # Baking adapters needs the dense build; staying on auto lets the load fail loudly below.
+                    if transformer_quant_pinned is None and not _has_active_lora(loras):
+                        transformer_quant = "off"
+                    else:
+                        transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
                 gguf_offload_placement: Optional[Any] = None
                 gguf_offload_scheme: Optional[str] = None
@@ -6650,6 +6696,11 @@ class DiffusionBackend:
                             }
                             if hf_token:
                                 sf_pipe_kwargs["token"] = hf_token
+                            if comfy_scan is not None:
+                                raise ValueError(
+                                    "A ComfyUI-quantized checkpoint holds only a denoiser; this family's single "
+                                    "file is a whole pipeline, so it cannot be loaded here."
+                                )
                             pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
@@ -6663,6 +6714,10 @@ class DiffusionBackend:
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
+                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
+                                **transformer_config_overrides_for(
+                                    fam, gguf_filename, repo_id, display_repo_id, base
+                                ),
                             }
                             # Before the prefix shim below, which wraps whatever entry it finds and
                             # finds nothing for a class that is not registered yet.
@@ -6676,12 +6731,31 @@ class DiffusionBackend:
                                 # choke.
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
-                            # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
-                            transformer = transformer_cls.from_single_file(
-                                single_file_path, **sf_kwargs
-                            )
-                            if kind == "gguf":
-                                _dequantize_gguf_outside_linears(transformer, dtype, logger)
+                            if comfy_scan is not None:
+                                # int8 codes and scales go to the int8 runtime unchanged where it runs; the rest dequantize.
+                                transformer = load_comfy_quant_transformer(
+                                    transformer_cls,
+                                    single_file_path,
+                                    comfy_scan,
+                                    sf_kwargs,
+                                    int8_backend = comfy_int8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = not plan_keeps_transformer_resident(plan),
+                                    ),
+                                    family = fam.name,
+                                    target = target,
+                                    logger = logger,
+                                )
+                                comfy_compile = comfy_torchao_quantized(transformer)
+                            else:
+                                # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
+                                transformer = transformer_cls.from_single_file(
+                                    single_file_path, **sf_kwargs
+                                )
+                                if kind == "gguf":
+                                    _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
 
                             if fam.name == KREA2_FAMILY_NAME:
@@ -7011,7 +7085,7 @@ class DiffusionBackend:
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
                     if (
-                        transformer_quant_engaged is not None
+                        (transformer_quant_engaged is not None or comfy_compile)
                         and native_scheme is None
                         and effective_speed == SPEED_OFF
                     ):
@@ -7026,6 +7100,7 @@ class DiffusionBackend:
                         speed_mode is None
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
+                        and not comfy_compile
                         and compile_eligible(target, is_gguf = False, family = fam)
                         and not fp16_compile_explicit_only(target)
                     )
@@ -7230,7 +7305,9 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
-                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                        pipe,
+                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        logger,
                     )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:
@@ -7429,7 +7506,7 @@ class DiffusionBackend:
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
-                                if transformer_quant_engaged is not None
+                                if (transformer_quant_engaged is not None or comfy_compile)
                                 and native_scheme is None
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
                                 else "auto: exact eager for the first two images; "
