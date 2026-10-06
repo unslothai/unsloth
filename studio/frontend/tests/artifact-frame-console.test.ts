@@ -279,7 +279,7 @@ test("the staged prompt goes to the composer on screen, in either mode", () => {
     fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
     "utf8",
   );
-  assert.match(pageSource, /if \(!pendingFixPrompt \|\| !chatActive\) return;/);
+  assert.match(pageSource, /if \(!pendingFixPrompt \|\| !active\) return;/);
   const composerSource = readFileSync(
     fileURLToPath(
       new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
