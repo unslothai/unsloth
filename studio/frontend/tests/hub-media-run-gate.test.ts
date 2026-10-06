@@ -186,3 +186,34 @@ test("an audio model the Audio page runs opens there, the rest keep their chat R
     false,
   );
 });
+
+test("a cached separation GGUF opens Separate: its audio type reaches the gate", () => {
+  const model: SelectedModelView = {
+    ...mediaModel(undefined, "cache"),
+    id: "x/HTDemucs-GGUF",
+    hubRepoId: "x/HTDemucs-GGUF",
+    isGguf: true,
+    runtimeCanChat: true,
+    task: "audio-to-audio",
+    audioType: "audiocpp_sep",
+  };
+  const task = taskForMediaPick(model.pipelineTag, model.task);
+  assert.equal(hubModelRunsOnAudioPage(model, task), true);
+  // Any other audio-to-audio row (enhancers, codecs) still keeps its chat Run.
+  assert.equal(
+    hubModelRunsOnAudioPage({ ...model, audioType: null }, task),
+    false,
+  );
+});
+
+test("the Hub forwards the row's audio type into the Audio handoff", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/features/hub/hub-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /audioPickSearch\([\s\S]{0,400}audioType: selectedModel\.audioType/,
+  );
+});

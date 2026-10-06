@@ -1534,6 +1534,7 @@ export function ModelsPage() {
                     selectedModel.pipelineTag,
                     selectedModel.task,
                   ),
+                  audioType: selectedModel.audioType,
                   loadId: selectedModel.loadId,
                 })
               : diffusionRouteSearch(selectedModel.hubRepoId, selection),

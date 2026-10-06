@@ -125,7 +125,8 @@ export function hubModelRunsOnAudioPage(
   if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
   // The shared GGUF audio repo holds many models; the Audio page lists them one by one.
   if (id.toLowerCase() === AUDIO_CPP_REPO.toLowerCase()) return false;
-  if (audioWorkflowForPick({ id, task }) === null) return false;
+  const audioType = model.audioType ?? null;
+  if (audioWorkflowForPick({ id, task, audioType }) === null) return false;
   return audioPickIsRoutable({
     id,
     task,
@@ -136,6 +137,7 @@ export function hubModelRunsOnAudioPage(
     baseModel: model.baseModel,
     tags: model.tags,
     libraryName: model.libraryName,
+    audioType,
   });
 }
 
