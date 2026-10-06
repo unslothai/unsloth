@@ -9,9 +9,7 @@ import {
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 
-/** Desktop saves through its dialog (it drops a plain anchor download); the web downloads as before.
- *  `url` is audio already on the page (blob: or data:), `load` reads the bytes again. The dialog needs
- *  the bytes and the page CSP refuses fetch() on blob: URLs, so on desktop a blob: URL is loaded again. */
+/** desktop reloads blob: URLs because the page CSP blocks fetch() and the native save dialog needs bytes. */
 export async function saveAudio(
   filename: string,
   url: string | null,

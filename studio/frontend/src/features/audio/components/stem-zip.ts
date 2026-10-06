@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stored (uncompressed) zip: WAV barely compresses. Free of app imports for the node test runner.
+// stored zip avoids wasted compression because WAV barely compresses.
 
 import { Zip, ZipPassThrough } from "fflate";
 import { AUDIO_WORKFLOWS, clipWorkflow } from "../workflows";
 
 const INVALID_CHARS = new Set('<>:"/\\|?*');
 const MAX_TITLE_CHARS = 120;
-// A spoken prompt can run for paragraphs; 60 characters keeps even CJK or emoji names under 255 bytes.
+// prompts can span paragraphs; 60 characters keeps CJK and emoji names under 255 bytes.
 const MAX_CLIP_TITLE_CHARS = 60;
 const FALLBACK_TITLE = "Separated track";
 
@@ -34,13 +34,13 @@ function shortTitle(title: string, max: number, fallback: string): string {
   return safe || fallback;
 }
 
-/** The title is kept short so the stem label always survives. */
+/** the title is capped so the stem label always survives. */
 export function stemFileName(title: string, label: string): string {
   const safeLabel = sanitizeFileNamePart(label, "Stem");
   return `${shortTitle(title, MAX_TITLE_CHARS, FALLBACK_TITLE)} - ${safeLabel}.wav`;
 }
 
-/** "<prompt> - <Workflow>.wav", e.g. "Hello there - Speak.wav". Gallery clips are always WAV. */
+/** gallery clips are always WAV. */
 export function clipFileName(clip: {
   prompt?: string | null;
   workflow?: string | null;

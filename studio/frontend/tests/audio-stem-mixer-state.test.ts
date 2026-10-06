@@ -123,7 +123,7 @@ test("clip file names read '<prompt> - <Workflow>.wav' instead of the clip id", 
       { prompt: "song.wav → Alice", workflow: "convert" },
       "song.wav → Alice - Convert.wav",
     ],
-    // Older clips have no workflow; the audio type decides, as in the history.
+    // older clips lack workflow metadata, so audio_type determines the history label.
     [{ prompt: "Hi", audio_type: "orpheus" }, "Hi - Speak.wav"],
     [
       { prompt: "Line one\n\n  line two", workflow: "clone" },

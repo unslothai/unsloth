@@ -42,7 +42,7 @@ import { saveAudio } from "../save-audio";
 import { clipWorkflow } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 
-// Module scope so a tab switch re-renders the gallery instantly.
+// module scope preserves instant gallery rendering across tab switches.
 export const galleryCache: {
   clips: AudioGalleryClip[];
   hasMore: boolean;
@@ -64,7 +64,7 @@ export function useAudioGallery({
 }: Pick<AudioHostState, "active">) {
   const [fallbackClip, setFallbackClip] = useState<{
     url: string;
-    /** The bytes behind a blob: `url`, for the desktop save. */
+    /** bytes for desktop saves when `url` is a blob URL. */
     blob?: Blob;
     prompt: string;
     model: string;
@@ -75,7 +75,7 @@ export function useAudioGallery({
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
-  // Pins and moves in flight. A refresh that overlaps one read the old order, so it is dropped and rerun after.
+  // overlapping refreshes read stale order, so defer and rerun them after order writes finish.
   const orderWrites = useRef({ inFlight: 0, epoch: 0, deferred: false });
   const [clips, setClips] = useState<AudioGalleryClip[]>(galleryCache.clips);
   const [hasMore, setHasMore] = useState(galleryCache.hasMore);

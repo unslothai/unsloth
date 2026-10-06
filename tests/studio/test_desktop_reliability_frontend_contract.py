@@ -315,12 +315,12 @@ def test_media_galleries_save_natively_with_feedback():
 def test_audio_clips_and_stems_save_natively():
     save_audio = _ui_source(FRONTEND / "features/audio/save-audio.ts")
 
-    # The page CSP refuses fetch() on blob: URLs, so desktop re-reads the bytes instead.
+    # desktop re-reads blob URLs because the page CSP blocks fetch()
     assert 'isTauri && url.startsWith("blob:")' in save_audio
     assert "await downloadFile(blob, filename" in save_audio
     assert "await downloadUrl(url, filename);" in save_audio
     assert "if (isDownloadCancelled(error)) return;" in save_audio
-    # Raw anchors under features/audio are refused by tests/audio-stem-mixer-state.test.ts.
+    # tests/audio-stem-mixer-state.test.ts forbids raw anchors in features/audio
     for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
         assert "saveAudio(" in _ui_source(FRONTEND / "features/audio" / page)
 
@@ -339,7 +339,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    # #12122 moved chat export into the Library and project menu
     chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
     project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
     for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
