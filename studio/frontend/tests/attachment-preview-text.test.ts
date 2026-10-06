@@ -1447,6 +1447,7 @@ test("a Word file keeps its line breaks and which boxes are ticked", async () =>
     `<w:document ${ns}><w:body>` +
       '<w:p><w:r><w:t>Jane Doe</w:t><w:br/><w:t>42 Elm Street</w:t></w:r><w:r><w:br w:type="textWrapping"/></w:r>' +
       `${run("Springfield, IL 62704")}</w:p>` +
+      '<w:p><w:r><w:t>Summary</w:t><w:br w:type="page"/><w:t>Details</w:t></w:r></w:p>' +
       `<w:tbl><w:tr><w:tc><w:p>${run("Built APIs")}<w:r><w:cr/><w:t>Led team of 5</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
       box("1", "☒", " Smoker") +
       box("0", "☐", " Diabetic") +
@@ -1466,6 +1467,7 @@ test("a Word file keeps its line breaks and which boxes are ticked", async () =>
     assert.equal(
       value,
       "Jane Doe\n42 Elm Street\nSpringfield, IL 62704\n\n" +
+        "Summary\nDetails\n\n" +
         "Built APIs\nLed team of 5\n\n" +
         "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\n",
     );

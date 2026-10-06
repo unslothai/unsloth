@@ -957,10 +957,9 @@ export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
       run.appendChild(text(checked ? "☒" : "☐"));
       anchor.parentNode?.insertBefore(run, anchor);
     }
+    // Page and column breaks too: mammoth's raw text drops every break, gluing the words either side.
     const breaks = [
-      ...Array.from(doc.getElementsByTagNameNS(w, "br")).filter(
-        (br) => (br.getAttributeNS(w, "type") || "textWrapping") === "textWrapping",
-      ),
+      ...Array.from(doc.getElementsByTagNameNS(w, "br")),
       ...Array.from(doc.getElementsByTagNameNS(w, "cr")),
     ];
     for (const br of breaks) br.parentNode?.replaceChild(text("\n"), br);
