@@ -40,10 +40,12 @@ import {
   REFERENCE_EXPIRED_MESSAGE,
 } from "../hooks/audio-source-state";
 import { recordingSupported, useAudioSource } from "../hooks/use-audio-source";
+import { clipWorkflow } from "../workflows";
 import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 
+/** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
 // False while the persistently mounted Audio page is hidden, so no card keeps the mic.
@@ -60,6 +62,13 @@ const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
   clip: "From history",
   voice: "Saved voice",
 };
+
+export interface AudioSourcePreviewView {
+  peaks: number[] | null;
+  durationS: number | null;
+  src: string | null;
+  label: string;
+}
 
 export interface AudioSourceInputHandle {
   focus: () => void;
@@ -93,6 +102,7 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  renderWaveform,
   maxRecordSeconds,
   expiredMessage = REFERENCE_EXPIRED_MESSAGE,
   usesFirstSeconds = REFERENCE_MAX_SECONDS,
@@ -108,6 +118,7 @@ export function AudioSourceInput({
   allowSavedVoice?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
   onStatusChange?: (status: AudioSourceStatus) => void;
+  renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
   maxRecordSeconds?: number;
   /** The card's copy defaults to a clone reference; other pages pass their own. */
   expiredMessage?: string;
@@ -273,12 +284,21 @@ export function AudioSourceInput({
               </span>
             ) : null}
           </div>
-          <Waveform
-            peaks={preview.peaks}
-            durationS={durationS}
-            src={preview.url}
-            label={name || label}
-          />
+          {renderWaveform ? (
+            renderWaveform({
+              peaks: preview.peaks,
+              durationS,
+              src: preview.url,
+              label: name || label,
+            })
+          ) : (
+            <Waveform
+              peaks={preview.peaks}
+              durationS={durationS}
+              src={preview.url}
+              label={name || label}
+            />
+          )}
           {status.phase === "uploading" ? (
             <div className="grid gap-1">
               <Progress
@@ -306,7 +326,9 @@ export function AudioSourceInput({
             durationS !== null &&
             durationS > usesFirstSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              Uses the first {usesFirstSeconds} s.
+              {usesFirstSeconds % 60 === 0 && usesFirstSeconds >= 60
+                ? `Uses the first ${usesFirstSeconds / 60} min.`
+                : `Uses the first ${usesFirstSeconds} s.`}
             </p>
           ) : null}
         </div>
@@ -409,7 +431,9 @@ export function AudioSourceInput({
                     <button
                       type="button"
                       disabled={disabled}
-                      onClick={() => onChange(clipReference(clip))}
+                      onClick={() =>
+                        onChange(clipReference({ ...clip, workflow: clipWorkflow(clip) }))
+                      }
                       className="flex w-full min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <span className="min-w-0 flex-1 truncate">

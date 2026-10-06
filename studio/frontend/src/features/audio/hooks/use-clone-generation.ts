@@ -55,13 +55,16 @@ export async function showRunResult({
 }: {
   response: AudioRunResponse;
   text: string;
-  workflow: "speak" | "clone";
+  workflow: "speak" | "clone" | "edit" | "convert" | "music" | "separate";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
 >): Promise<void> {
+  // An edit whose output was not saved returns only its source clip: play the inline audio.
+  // Other runs name their clips by role (variation, edit, a stem): the first one is the result.
   const clip =
-    response.clips.find((item) => item.role === "output") ?? response.clips[0];
+    response.clips.find((item) => item.role === "output") ??
+    (workflow === "edit" ? undefined : response.clips[0]);
   const refreshed = await refreshGallery();
   if (clip) {
     const listed = persistedClipForGeneration(clip.id, refreshed);
@@ -364,6 +367,8 @@ export function useCloneGeneration({
         setFallbackClip,
         setSelectedId,
       });
+      // The run can restart audio.cpp under another task (Chatterbox: clon after vc).
+      await refreshStatus();
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
@@ -385,8 +390,9 @@ export function useCloneGeneration({
         // Kept under Generate so the reason outlives the toast; expiry is already on the card.
         setGenerationError(message);
         if (!expired) toast.error(message);
-        await refreshStatus();
       }
+      // Also after Stop: the run may already have restarted audio.cpp under another task.
+      await refreshStatus();
     } finally {
       generateAbort.current = null;
       updateGenerationPhase(null);

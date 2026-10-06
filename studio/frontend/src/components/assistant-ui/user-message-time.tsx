@@ -33,7 +33,7 @@ export const UserMessageTime: FC = () => {
         <button
           type="button"
           aria-label={fullDate}
-          className="aui-user-message-time-trigger mr-2 h-8 min-w-8 flex-1 cursor-default! self-center rounded-sm text-right text-ui-13 text-muted-foreground tabular-nums"
+          className="aui-user-message-time-trigger mr-2 h-8 min-w-8 flex-1 cursor-default! self-center rounded-sm text-right text-ui-11p5 text-muted-foreground tabular-nums"
         >
           <time
             dateTime={date.toISOString()}

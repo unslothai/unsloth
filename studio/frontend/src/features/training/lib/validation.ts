@@ -64,12 +64,8 @@ export function hasIncompatibleTrainingModalities(
 export function validateS3Source(
   config: TrainingConfigState,
 ): StartValidationResult {
-  if (
-    config.modelType === "vision" ||
-    config.modelType === "audio" ||
-    config.isVisionModel ||
-    config.isAudioModel
-  ) {
+  // Audio manifests are rewritten to downloaded paths (#4539); image references are not.
+  if (config.modelType === "vision" || config.isVisionModel) {
     return {
       ok: false,
       errorKey: "studio.training.validation.s3MultimodalUnsupported",

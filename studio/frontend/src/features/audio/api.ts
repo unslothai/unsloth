@@ -108,6 +108,22 @@ export interface AudioGalleryClip {
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
   reference_name?: string | null;
+  /** The history clip an edit changed or a conversion started from. */
+  source_clip_id?: string | null;
+  source_input_id?: string | null;
+  voice_id?: string | null;
+  /** Served at /audio/gallery/{id}/source/file. */
+  source_saved?: boolean;
+  source_name?: string | null;
+  target_builtin?: string | null;
+  target_clip_id?: string | null;
+  target_input_id?: string | null;
+  /** Clips one run made together share it (a separation's stems, music takes); null for one clip. */
+  group_id?: string | null;
+  /** A stem's name (vocals, drums, ...) or an edit's run part ("output" or "source"). */
+  role?: string | null;
+  /** The run's settings, e.g. a separation's stem list. */
+  settings?: Record<string, unknown> | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -212,7 +228,7 @@ export async function deleteAudioClip(id: string): Promise<void> {
 }
 
 export async function clearAudioGallery(
-  workflow?: "speak" | "clone" | "music",
+  workflow?: "speak" | "clone" | "edit" | "convert" | "music" | "separate",
 ): Promise<number> {
   const query = workflow ? `?workflow=${workflow}` : "";
   const response = await authFetch(`/api/inference/audio/gallery${query}`, {
@@ -233,42 +249,6 @@ export async function fetchClipObjectUrl(
 ): Promise<{ url: string; bytes: number; blob: Blob }> {
   const blob = await fetchClipBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size, blob };
-}
-
-export async function transcribeWithProgress(
-  blob: Blob,
-  title: string,
-  options: {
-    model: string;
-    engine: string;
-    device: string;
-    signal: AbortSignal;
-  },
-  onProgress: (
-    progress: import("./transcript-stream").TranscriptProgress,
-  ) => void,
-): Promise<import("./transcript-stream").TranscriptResult> {
-  const { readTranscriptStream } = await import("./transcript-stream");
-  const params = new URLSearchParams({
-    model: options.model,
-    engine: options.engine,
-    device: options.device,
-    fast: "true",
-    stream: "true",
-    title: title.slice(0, 255),
-  });
-  const response = await authFetch(
-    `/api/inference/audio/transcribe/raw?${params}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": blob.type || "application/octet-stream" },
-      body: blob,
-      signal: options.signal,
-    },
-  );
-  if (!response.ok) throw new Error(await readFastApiError(response));
-  if (!response.body) throw new Error("The transcription response was empty.");
-  return readTranscriptStream(response.body, onProgress);
 }
 
 export async function listTranscripts(
@@ -416,6 +396,21 @@ export async function uploadAudioInput(
   return parseAudioJson<AudioInputRecord>(response);
 }
 
+/** Whether an upload is still on the server; anything but a 404 counts as alive.
+ * GET, not HEAD: the FastAPI route answers HEAD with 405, which would read as alive. */
+export async function audioInputAlive(inputId: string): Promise<boolean> {
+  try {
+    const response = await authFetch(
+      `/api/inference/audio/inputs/${encodeURIComponent(inputId)}/file`,
+      { headers: { Range: "bytes=0-0" } },
+    );
+    void response.body?.cancel().catch(() => undefined);
+    return response.status !== 404;
+  } catch {
+    return true;
+  }
+}
+
 export async function fetchAudioBlob(
   url: string,
   signal?: AbortSignal,
@@ -435,7 +430,13 @@ interface TranscribeInputResponse {
 
 export async function transcribeAudioInput(
   ref: AudioSourceRef,
-  body: { model: string; engine?: string; device?: string; language?: string },
+  body: {
+    model: string;
+    engine?: string;
+    device?: string;
+    language?: string;
+    purpose?: "reference" | "convert";
+  },
   signal?: AbortSignal,
 ): Promise<TranscribeInputResponse> {
   const response = await authFetch(transcribeUrl(ref), {
@@ -456,6 +457,8 @@ export interface AudioRunResponse {
     duration_s: number;
     workflow: string;
   }[];
+  /** One separation's stems share it; null for a single clip. */
+  group_id: string | null;
   model: string;
   audio: GeneratedAudio | null;
 }

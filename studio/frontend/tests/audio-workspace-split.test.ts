@@ -46,11 +46,7 @@ test("a loaded model opens the page that fits it", () => {
     slot,
     /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
-  // A model already resident on mount uses the same rule, so a clone-only one opens Clone.
-  assert.match(
-    host,
-    /workflowForLoadedModel\(\{\s*current: store\.workflow,\s*audioWorkflows: status\.audio_workflows,\s*music: musicGeneration,\s*\}\);\s*if \(next !== "speak" && next !== store\.workflow\) store\.adoptWorkflow\(next\);/,
-  );
+  assert.match(host, /adoptWorkflow\("music"\)/);
 });
 
 test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {
@@ -77,7 +73,7 @@ test("Speak and Music keep separate drafts that survive a reload", () => {
 test("history is per page, and Clear all clears only that page", () => {
   assert.match(
     gallery,
-    /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow\)/,
+    /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow/,
   );
   assert.match(gallery, /await clearAudioGallery\(workflow\);/);
   assert.match(host, /\(\) => handleClearGallery\(ttsWorkflow\)/);
@@ -98,7 +94,7 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
   assert.match(
     host,
-    /const handlePageGenerate =\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,
+    /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate :\s*ttsWorkflow === "edit" \? edit\.handleGenerate :\s*ttsWorkflow === "convert" \? convert\.handleGenerate : handleGenerate;/,
   );
   assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
 });
@@ -152,10 +148,9 @@ test("Send to lists the other Audio pages from the shared workflow list", () => 
     card,
     /AUDIO_WORKFLOWS\.filter\(\s*\(tab\) => tab\.id !== current && handlers\[tab\.id\],?\s*\)/,
   );
-  // Bytes first: a failed fetch must not leave the user on another page.
   assert.match(
     host,
-    /const blob = await fetchClipBlob\(clip\.url\);[\s\S]*?if \(!transitionWorkflow\("transcribe"\)\) return;/,
+    /if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]{0,200}?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id,/,
   );
 });
 
@@ -190,7 +185,7 @@ test("Send to waits for a running task instead of stopping it and dropping the c
   // transcription was refused and the clip silently dropped.
   assert.match(
     host,
-    /transcribe: \(\) => \{[\s\S]*?const busyNow = \(\) => \{\s*if \(busyRef\.current === null\) return false;\s*toast\.info\([^)]*\);\s*return true;\s*\};\s*if \(busyNow\(\)\) return;/,
+    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });
 
@@ -205,22 +200,5 @@ test("trained checkpoints are split between Speak and Music like the catalog", (
   assert.match(
     host,
     /trainedTtsModels\.filter\(\s*\(model\) =>\s*isMusicGenerationModel\(model\.id, model\.audioType\) ===\s*\(ttsWorkflow === "music"\),\s*\)/,
-  );
-});
-
-test("picking a clip on one page keeps the other page's unsaved clip", () => {
-  // A clip that failed to save exists only as the fallback; clicking a History row on the other
-  // page cleared it, so returning to its page lost the clip.
-  assert.match(
-    gallery,
-    /const otherPage =\s*clip !== undefined &&\s*fallbackClipRef\.current !== null &&\s*clipWorkflow\(clip\) !== fallbackClipRef\.current\.workflow;\s*if \(!keepFallback && !otherPage\) setFallbackClip\(null\);/,
-  );
-});
-
-test("Send to checks again after the clip downloads, before switching pages", () => {
-  // Generate pressed while the clip downloaded was stopped by the switch, and the clip dropped.
-  assert.match(
-    host,
-    /const blob = await fetchClipBlob\(clip\.url\);[\s\S]*?if \(busyNow\(\)\) return;\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });

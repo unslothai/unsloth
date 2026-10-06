@@ -63,7 +63,9 @@ export const ContextUsageBar: FC<
   const state = deriveContextUsageBar(input);
   if (!state) return null;
 
-  const { cached, cacheWrites, promptTokens, completionTokens } = input;
+  const { cached, cacheWrites, promptTokens, completionTokens } = input.estimated
+    ? {}
+    : input;
   const { percent, advice, face, compactFace } = state;
   const severity = getSeverityColor(percent ?? 0);
   // Mono text, so widths are exact in ch. Full: padding, face, and the gap and bar. Compact: an icon button.
@@ -142,8 +144,11 @@ export const ContextUsageBar: FC<
         <div className="grid min-w-44 gap-1.5 text-xs">
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
-              <span className="text-muted-foreground">Context usage</span>
+              <span className="text-muted-foreground">
+                {input.estimated ? "Estimated context usage" : "Context usage"}
+              </span>
               <span className={cn("font-mono tabular-nums font-medium", severity.text)}>
+                {input.estimated ? "~" : ""}
                 {percent.toFixed(1)}%
               </span>
             </div>
@@ -187,6 +192,12 @@ export const ContextUsageBar: FC<
             <span className="text-muted-foreground">{state.totalRowName}</span>
             <span className="font-mono tabular-nums">{state.totalRowValue}</span>
           </div>
+          {input.estimated ? (
+            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
+              Estimated from the chat&apos;s text, without attachments. A
+              loaded model replaces it with an exact count.
+            </div>
+          ) : null}
           {advice !== "none" ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
               {advice === "mlx-past-limit" ? (

@@ -14,6 +14,7 @@ export const SETTINGS_TABS = [
   "appearance",
   "resources",
   "chat",
+  "sandbox",
   "voice",
   "connections",
   "library",
@@ -22,6 +23,7 @@ export const SETTINGS_TABS = [
   "remote-lan",
   "agents",
   "keyboard-shortcuts",
+  "browser",
   "debugging",
   "about",
 ] as const;

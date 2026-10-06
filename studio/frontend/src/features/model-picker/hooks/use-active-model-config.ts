@@ -32,6 +32,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
+  const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -55,7 +56,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const loadMode = useChatRuntimeStore((s) => s.loadMode);
   const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
-  const llamaCppConfig = useChatRuntimeStore((s) => s.loadedLlamaCppConfig);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
@@ -90,6 +90,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
+  const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -99,7 +100,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       engine,
       enginePrecision,
       engineParallelism,
-      llamaCppConfig: isGguf ? llamaCppConfig ?? undefined : undefined,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
@@ -107,6 +107,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
+      mlxInt8Prefill: effectiveMlxInt8Prefill,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
@@ -151,6 +152,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,
+    effectiveMlxInt8Prefill,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -162,7 +164,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     loadMode,
     ctxCheckpoints,
     cacheRam,
-    llamaCppConfig,
     tensorParallel,
     disableVision,
     chatTemplateOverride,
