@@ -43,8 +43,18 @@ def _fast_enabled() -> bool:
 _COMPILED = {}
 
 
-def _compile_supported(device) -> bool:
-    if os.environ.get("UNSLOTH_CLEF_COMPILE", "1") == "0" or device.type != "cuda":
+# A cold compile of the head costs minutes; it pays off only over a long enough run.
+# Measured in temp/clef_compile_ab (see CLEF_COMPILE_MIN_FORWARDS's derivation in the PR).
+CLEF_COMPILE_MIN_FORWARDS = 2000
+
+
+def _compile_supported(device, head = None) -> bool:
+    # UNSLOTH_CLEF_COMPILE: "1" always, "0" never, unset / "auto" when DecisionTrainer judged the
+    # run long enough (head._unsloth_compile_run); a training loop of its own always compiles.
+    choice = os.environ.get("UNSLOTH_CLEF_COMPILE", "auto")
+    if choice == "0" or device.type != "cuda":
+        return False
+    if choice != "1" and getattr(head, "_unsloth_compile_run", None) is False:
         return False
     try:
         from torch.utils._triton import has_triton
@@ -53,9 +63,9 @@ def _compile_supported(device) -> bool:
     return has_triton()
 
 
-def _compiled_logits(device):
+def _compiled_logits(device, head = None):
     # Training only: one fullgraph compile with dynamic shapes; inference stays eager.
-    if not _compile_supported(device):
+    if not _compile_supported(device, head):
         return None
     if "function" not in _COMPILED:
         _COMPILED["function"] = torch.compile(batched_logits, fullgraph = True, dynamic = True)
@@ -496,7 +506,7 @@ class JointSchemaHead(ReferenceJointSchemaHead):
         training = self.training and torch.is_grad_enabled()
         checkpoint = training and os.environ.get("UNSLOTH_CLEF_CHECKPOINT", "1") != "0"
         chunk = int(os.environ.get("UNSLOTH_CLEF_CHUNK", "2048"))
-        function = _compiled_logits(hidden_states.device) if training else None
+        function = _compiled_logits(hidden_states.device, self) if training else None
         args = (self, hidden_states, output_embedding_weight, layout, checkpoint, chunk)
         with _torch_checkpoint(checkpoint):
             if function is not None:

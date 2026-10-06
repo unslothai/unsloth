@@ -91,6 +91,43 @@ def _train(
     return losses.losses
 
 
+_MODEL_FILES = (
+    "config.json",
+    "generation_config.json",
+    "model.safetensors",
+    "model.safetensors-*-of-*.safetensors",
+    "model-*-of-*.safetensors",
+    "model.safetensors.index.json",
+    "adapter_config.json",
+    "adapter_model.safetensors",
+    "joint_head.safetensors",
+    "joint_head_config.json",
+    "unsloth_decision_config.json",
+    "joint_schema_model.py",
+    "LICENSE",
+    "README.md",
+    "chat_template.jinja",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "merges.txt",
+    "processor_config.json",
+    "preprocessor_config.json",
+    "video_preprocessor_config.json",
+)
+
+
+def _assert_only_model_files(folder):
+    # Nothing else: no download cache (.cache/huggingface), locks, staging or partial files.
+    import fnmatch
+
+    names = sorted(path.name for path in folder.iterdir())
+    stray = [n for n in names if not any(fnmatch.fnmatch(n, p) for p in _MODEL_FILES)]
+    assert not stray, (stray, names)
+
+
 def test_default_head_config_scales_with_the_backbone():
     assert default_head_config(4096)["width"] == 1024
     assert default_head_config(2048)["width"] == 512
@@ -195,6 +232,7 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
 
     out = tmp_path / "out"
     model.save_pretrained_merged(str(out))
+    _assert_only_model_files(out)
     # Saving adapters over a merged folder (or the reverse) leaves no stale weights behind.
     model.save_pretrained(str(out / "swap"))
     model.save_pretrained_merged(str(out / "swap"))
@@ -382,7 +420,7 @@ def test_the_decision_notebook_runs_unchanged_on_a_plain_qwen3_5(tmp_path, monke
     )
     dataset = Dataset.from_list(_typed_decision_rows(40))
     items, report = FastDecisionModel.build_dataset(dataset, tokenizer, model)
-    assert report["skipped"] == 0 and report["total"] == 120
+    assert report["skipped"] == 0 and report["total"] == 120 and report["truncated"] == 0
     train_items, eval_items = FastDecisionModel.split_holdout(items, seed = 3407)
     assert train_items and eval_items
     FastDecisionModel.evaluate(model, tokenizer, eval_items)
@@ -468,5 +506,40 @@ def test_the_decision_notebook_runs_unchanged_on_a_plain_qwen3_5(tmp_path, monke
         for key, value in answers[name]["probabilities"].items():
             assert again[name]["probabilities"][key] == pytest.approx(value, abs = 0.05)
     model.save_pretrained_merged("decision_model_16bit", tokenizer, save_method = "merged_16bit")
+    _assert_only_model_files(tmp_path / "decision_model_16bit")
+    _assert_only_model_files(tmp_path / "decision_model")
     assert (tmp_path / "decision_model_16bit" / "config.json").is_file()
     assert (tmp_path / "decision_model_16bit" / "joint_head.safetensors").is_file()
+
+
+def test_long_states_are_cut_in_training_but_read_in_full_by_predict(monkeypatch):
+    # A state past max_seq_length keeps its questions and options and loses its end in training;
+    # predict() reads up to CLEF_SERVE_MAX_LEN tokens, as Studio's Decision API does.
+    from unsloth.models import decision
+
+    from transformers import AutoConfig
+
+    hidden = AutoConfig.from_pretrained(TINY_QWEN3).hidden_size
+    model, processor = FastDecisionModel.from_pretrained(
+        TINY_QWEN3,
+        decision_head = "clef",
+        head_config = {**HEAD, "hidden_size": hidden},
+        max_seq_length = 512,
+    )
+    long_row = _rows(1)[0]
+    long_row["state"] = "the server is down again. " * 400
+    items, report = FastDecisionModel.build_dataset([long_row] + _rows(3), processor, model)
+    assert report["skipped"] == 0 and report["truncated"] == 1
+    assert len(items[0]["input_ids"]) == 512
+    seen = {}
+    real = decision._clef_decide
+
+    def spy(*args, **kwargs):
+        seen["max_length"] = kwargs["max_length"]
+        result = real(*args, **kwargs)
+        seen["tokens"] = result["input_tokens"]
+        return result
+
+    monkeypatch.setattr(decision, "_clef_decide", spy)
+    FastDecisionModel.predict(model, processor, long_row["state"], long_row["questions"])
+    assert seen["max_length"] == decision.CLEF_SERVE_MAX_LEN and seen["tokens"] > 512

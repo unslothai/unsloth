@@ -210,6 +210,15 @@ def test_compile_gating(monkeypatch):
     monkeypatch.setattr(triton_utils, "has_triton", lambda: True)
     monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "0")
     assert not clef._compile_supported(torch.device("cuda"))
+    # auto: a run DecisionTrainer judged too short stays eager; "1" compiles it anyway.
+    short, long = torch.nn.Module(), torch.nn.Module()
+    short._unsloth_compile_run, long._unsloth_compile_run = False, True
+    monkeypatch.delenv("UNSLOTH_CLEF_COMPILE")
+    cuda = torch.device("cuda")
+    assert not clef._compile_supported(cuda, short) and clef._compile_supported(cuda, long)
+    assert clef._compile_supported(cuda, torch.nn.Module())
+    monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "1")
+    assert clef._compile_supported(cuda, short)
 
 
 def test_a_failed_compile_falls_back_to_eager(monkeypatch):
@@ -219,7 +228,7 @@ def test_a_failed_compile_falls_back_to_eager(monkeypatch):
     def broken(*args):
         raise RuntimeError("inductor failed")
 
-    monkeypatch.setattr(clef, "_compiled_logits", lambda device: broken)
+    monkeypatch.setattr(clef, "_compiled_logits", lambda device, head = None: broken)
     monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "1")
     head.train()
     with pytest.warns(UserWarning, match = "running it eagerly"):

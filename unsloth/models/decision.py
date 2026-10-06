@@ -57,6 +57,9 @@ _CLEF_EXTRA_FILES = (
     "generation_config.json",
 )
 CLEF_MAX_LEN = 4096
+# predict() and Studio's Decision API read up to this many tokens, whatever the model trained at:
+# one prefill costs little, and cutting a long state at inference drops evidence.
+CLEF_SERVE_MAX_LEN = 16384
 # laya 0.3.5 ships inside Unsloth for Studio's Decision API (studio/backend/vendor/README.md).
 _VENDORED_LAYA = (
     Path(__file__).resolve().parents[2] / "studio" / "backend" / "vendor" / "laya" / "__init__.py"
@@ -1040,6 +1043,9 @@ def _save_clef(self, save_directory, tokenizer) -> None:
         if hasattr(encoder, "save_pretrained_merged"):
             # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
             encoder.save_pretrained_merged(str(staging), tokenizer, save_method = "merged_16bit")
+            # The merge downloads the base's shards with local_dir = the save folder, which leaves
+            # huggingface_hub's .cache/huggingface (locks, metadata) behind: not part of the model.
+            shutil.rmtree(staging / ".cache", ignore_errors = True)
         else:
             if hasattr(encoder, "merge_and_unload"):
                 encoder = copy.deepcopy(encoder).merge_and_unload()
@@ -1326,6 +1332,30 @@ class DecisionTrainer(Trainer):
         if not getattr(self.model, "is_clef", False):
             return super()._load_best_model()
         _load_clef_checkpoint(self.model, Path(self.state.best_model_checkpoint))
+
+    def train(self, *args, **kwargs):
+        head = getattr(self.model, "head", None) if getattr(self.model, "is_clef", False) else None
+        if head is None:
+            return super().train(*args, **kwargs)
+        from .clef import CLEF_COMPILE_MIN_FORWARDS
+
+        # Forward passes this run makes; a short run skips the head's cold compile (minutes).
+        forwards = self.args.max_steps * self.args.gradient_accumulation_steps
+        if forwards <= 0 and self.train_dataset is not None:
+            batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
+            forwards = int(batches * self.args.num_train_epochs)
+        previous = getattr(head, "_unsloth_compile_run", None)
+        head._unsloth_compile_run = forwards >= CLEF_COMPILE_MIN_FORWARDS
+        if not head._unsloth_compile_run and os.environ.get("UNSLOTH_CLEF_COMPILE") != "1":
+            print(
+                f"Unsloth: the Clef head runs eagerly for this run of {forwards:,} forward passes: "
+                f"compiling it pays off from about {CLEF_COMPILE_MIN_FORWARDS:,}. "
+                "UNSLOTH_CLEF_COMPILE=1 compiles it anyway."
+            )
+        try:
+            return super().train(*args, **kwargs)
+        finally:
+            head._unsloth_compile_run = previous
 
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
@@ -1807,7 +1837,7 @@ class FastDecisionModel:
     ) -> tuple:
         max_len = int(model.decision_config.get("max_len", 512))
         head_max_len = int(model.decision_config.get("head_max_len", 192))
-        items, report, skips = [], {"total": 0, "skipped": 0, "reason": None}, {}
+        items, report, skips = [], {"total": 0, "skipped": 0, "reason": None, "truncated": 0}, {}
 
         def skip(
             index,
@@ -1867,6 +1897,15 @@ class FastDecisionModel:
             report["reason"] = (
                 example if count == 1 else f"{example} (and {count - 1:,} more like it)"
             )
+        # A row longer than max_seq_length keeps its questions and options (and, for Clef, the
+        # start of its state); the end of the state is cut. Counted per row (Clef) or decision (Laya).
+        report["truncated"] = sum(len(item["input_ids"]) >= max_len for item in items)
+        if report["truncated"]:
+            print(
+                f"Unsloth: {report['truncated']:,} of {len(items):,} training inputs are longer than "
+                f"max_seq_length = {max_len}, so the end of their state is cut. Raise "
+                "max_seq_length to train on all of it."
+            )
         return items, report
 
     @staticmethod
@@ -1905,7 +1944,14 @@ class FastDecisionModel:
         state = _parsed(state)
         if getattr(model, "is_clef", False):
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
-            return _clef_decide(model, tokenizer, state, questions, predicted = True)["answers"]
+            # Served like Studio's Decision API: a long state is read in full up to
+            # CLEF_SERVE_MAX_LEN tokens, even when training cut it at max_seq_length.
+            max_length = max(
+                int(model.decision_config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN
+            )
+            return _clef_decide(
+                model, tokenizer, state, questions, max_length = max_length, predicted = True
+            )["answers"]
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
 
