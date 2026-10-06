@@ -235,6 +235,7 @@ def _stream(
     threshold = None,
     base_url = "https://api.openai.com/v1",
     fit = None,
+    enabled_tools = None,
 ):
     monkeypatch.setattr(
         ep_mod,
@@ -258,6 +259,7 @@ def _stream(
                 top_p = 0.95,
                 max_tokens = 32,
                 compaction_threshold = threshold,
+                enabled_tools = enabled_tools,
             )
         ]
         await client.close()
@@ -457,3 +459,41 @@ def test_a_tool_round_compaction_item_replaces_the_history_it_covers(monkeypatch
     assert items[0] == {"type": "compaction", "encrypted_content": "gAAAA-opaque"}
     assert "turn 1" not in json.dumps(items)
     assert [item["type"] for item in items[1:]] == ["function_call", "function_call_output"]
+
+
+def test_a_replayed_compaction_item_drops_the_image_chain_it_covers(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200, content = _EMPTY_COMPLETED, headers = {"content-type": "text/event-stream"}
+        )
+
+    _stream(
+        monkeypatch,
+        handler,
+        enabled_tools = ["image_generation"],
+        messages = [
+            {"role": "user", "content": "draw a cat"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "image_generation_call", "id": "ig_1", "response_id": "resp_1"}
+                ],
+            },
+            {"role": "user", "content": "turn 2"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "compaction", "encrypted_content": "gAAAA-opaque"},
+                    {"type": "text", "text": "answer 2"},
+                ],
+            },
+            {"role": "user", "content": "turn 3"},
+        ],
+    )
+    body = captured["body"]
+    assert "previous_response_id" not in body
+    assert body["input"][0] == {"type": "compaction", "encrypted_content": "gAAAA-opaque"}
+    assert "ig_1" not in json.dumps(body["input"])

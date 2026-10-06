@@ -5537,6 +5537,8 @@ class ExternalProviderClient:
                 if replayed:
                     # The item carries everything before it, and resending that would compact it again.
                     input_items = [{"type": "compaction", "encrypted_content": replayed[-1]}]
+                    openai_replay_items = []
+                    previous_response_id = None
                     if not content and not msg.get("tool_calls"):
                         continue
 
