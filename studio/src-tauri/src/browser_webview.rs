@@ -2831,7 +2831,7 @@ mod tests {
         let reserved = HashSet::from([taken.as_path()]);
         assert_eq!(
             download_destination(dir.path(), Path::new("report.pdf"), &reserved),
-            dir.path().join("report (1).pdf")
+            Some(dir.path().join("report (1).pdf"))
         );
     }
 }
