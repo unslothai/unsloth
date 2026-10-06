@@ -168,3 +168,14 @@ def test_the_wrapper_vetoes_configs_whose_layers_cannot_take_sdpa():
     assert not accepts(Qwen3Config(head_dim = 512))
     assert not accepts(Gemma3TextConfig())  # SDPA disabled for Gemma 3
     assert not accepts(Gemma2Config())  # softcap
+
+
+def test_a_class_level_sdpa_opt_out_keeps_the_mask():
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    no_sdpa = type("NoSdpaLlama", (LlamaForCausalLM,), {"_supports_sdpa": False})
+    config = LlamaConfig()
+    U.resolve_attention_implementation(no_sdpa, config)
+    accepts = _flex()._unsloth_maskless_causal_sdpa_accepts
+    assert not accepts(config)
+    assert accepts(LlamaConfig())

@@ -139,6 +139,7 @@ import re
 from dataclasses import dataclass, field
 import functools
 import threading
+import weakref
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
@@ -673,9 +674,24 @@ def _dropped_causal_mask(module, query, key, args, kwargs):
     return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
 
 
+# Configs the resolver loaded without SDPA support (class opt-out or exclusion list); by identity,
+# so nothing is written into a config that may be saved.
+_NO_SDPA_CONFIGS = weakref.WeakValueDictionary()
+
+
+def _remember_no_sdpa_config(config):
+    for attention_config in _iter_attention_configs(config):
+        try:
+            _NO_SDPA_CONFIGS[id(attention_config)] = attention_config
+        except TypeError:
+            pass
+
+
 def _maskless_causal_sdpa_accepts(config):
     """False when some decoder layer could not take the SDPA reroute, so unsloth_zoo keeps the mask."""
-    for attention_config in _text_attention_configs(config):
+    for attention_config in _text_attention_configs(config) + [config]:
+        if _NO_SDPA_CONFIGS.get(id(attention_config)) is attention_config:
+            return False
         if _is_sdpa_excluded(_config_get(attention_config, "model_type", None) or ""):
             return False
         if _config_get(attention_config, "attn_logit_softcapping", None) is not None:
@@ -2378,6 +2394,8 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
+    if not supports_sdpa:
+        _remember_no_sdpa_config(config)
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
