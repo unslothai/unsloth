@@ -2,6 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 import json
+import math
 import sys
 
 import pytest
@@ -214,6 +215,24 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
             )[0]
         for row, z in enumerate(released_logits):
             assert int(z.argmax()) == int(theirs[row, : len(z)].argmax())
+
+
+def test_float32_norms_train_without_a_precision_flag(tmp_path, monkeypatch):
+    from real_accelerator import has_real_cuda
+
+    if not has_real_cuda():
+        pytest.skip("the CPU path loads without Unsloth's layernorm upcast")
+    # Gemma 3 / 4, gpt-oss and Qwen3.5 loads set this, and it stays set for the next load in the
+    # process, so a Qwen3 loaded after a Clef checkpoint gets float32 norms beside bf16 weights.
+    monkeypatch.setenv("UNSLOTH_HIGH_PRECISION_LAYERNORM", "1")
+    model, processor = FastDecisionModel.from_pretrained(
+        TINY_QWEN3, decision_head = "clef", head_config = {**HEAD, "hidden_size": 8}, max_seq_length = 512
+    )
+    norms = {p.dtype for n, p in model.encoder.named_parameters() if n.endswith("norm.weight")}
+    assert torch.float32 in norms, norms
+    items, _ = FastDecisionModel.build_dataset(_rows(16), processor, model)
+    losses = _train(model, processor, items, tmp_path, steps = 2)
+    assert len(losses) == 2 and all(map(math.isfinite, losses)), losses
 
 
 def test_head_init_must_match_the_backbone(tmp_path):
