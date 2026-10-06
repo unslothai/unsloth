@@ -91,7 +91,8 @@ def test_h3_keeps_the_pruned_model_float32_tensors():
         ("minimax_h3_video_vae_int8_convrot.safetensors", False, None),
         ("minimax_h3_fl2va_pruned-Q4_K.gguf", False, None),
         ("wan2.2_ti2v_5B_fp16.safetensors", False, None),
-        ("minimax_h3_fl2va_pruned_bf16.safetensors", False, None),
+        ("minimax_h3_fl2va_pruned_bf16.safetensors", True, "fl2va"),
+        ("minimax_h3_fl2va_pruned_nvfp4.safetensors", False, None),
         ("minimax_h3_fl2va_pruned_w6a8.safetensors", False, None),
     ],
 )

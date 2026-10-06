@@ -7137,12 +7137,11 @@ class VideoBackend:
             from .video_minimax_h3_comfy import h3_comfy_task
 
             comfy_scan = refuse_comfy_quant(comfy_checkpoint)
-            if comfy_scan is None or not comfy_scan.layers:
-                raise ValueError(
-                    f"{Path(comfy_checkpoint).name} is not a ComfyUI-quantized MiniMax-H3 denoiser. Studio "
-                    f"loads H3 single files only as int8_convrot / fp8_scaled denoisers; load "
-                    f"'{fam.base_repo}' for the bfloat16 model."
-                )
+            if comfy_scan is None:
+                # An unquantized ComfyUI denoiser (the pruned bf16 file) loads through the same key map, dense.
+                from .diffusion_comfy_quant import ComfyQuantScan
+
+                comfy_scan = ComfyQuantScan()
             file_task = h3_comfy_task(comfy_checkpoint)
             if h3_task and h3_task != file_task:
                 raise ValueError(
@@ -7187,8 +7186,13 @@ class VideoBackend:
         # A ComfyUI denoiser file IS the precision choice: no hosted checkpoint is picked around it.
         comfy_scheme = None
         if comfy_scan is not None:
+            counts = comfy_scan.counts()
             comfy_scheme = (
-                TQ_INT8 if any(k.startswith("int8") for k in comfy_scan.counts()) else TQ_FP8
+                TQ_INT8
+                if any(k.startswith("int8") for k in counts)
+                else TQ_FP8
+                if counts
+                else None
             )
             scheme = None
         if transformer_quant_is_auto and comfy_scan is None:
@@ -7280,7 +7284,7 @@ class VideoBackend:
             engaged = (
                 TQ_INT8 if comfy_info.get("int8") else TQ_FP8 if comfy_info.get("fp8") else None
             )
-            if engaged is None:
+            if engaged is None and comfy_scheme is not None:
                 del transformer
                 raise RuntimeError(
                     f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
@@ -7295,6 +7299,8 @@ class VideoBackend:
                 f"ComfyUI-quantized denoiser ({Path(comfy_checkpoint).name}): "
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
+                if engaged is not None
+                else f"ComfyUI bfloat16 denoiser ({Path(comfy_checkpoint).name})"
             )
             logger.info("video.transformer_quant: %s", transformer_quant_reason)
         if scheme is not None:

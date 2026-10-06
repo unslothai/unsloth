@@ -60,8 +60,11 @@ def is_h3_comfy_name(filename: Optional[str]) -> bool:
         return False
     if any(token in name for token in ("qwen", "vae", "text_encoder", "controlnet", "lora")):
         return False
-    # The quantized formats Studio runs (int8_convrot, fp8_scaled, ours -INT8 / -FP8); a bf16 or packed w6a8 file is not one.
-    return ("int8" in name or "fp8" in name) and not any(t in name for t in ("w6a8", "w4a", "nvfp4", "mxfp"))
+    # The formats Studio runs: int8_convrot, fp8_scaled (ours -INT8 / -FP8) and the dense bf16 / fp16 file; not the
+    # packed w6a8 / nvfp4 / mxfp ones.
+    return any(t in name for t in ("int8", "fp8", "bf16", "fp16")) and not any(
+        t in name for t in ("w6a8", "w4a", "nvfp4", "mxfp")
+    )
 
 
 def h3_comfy_task(filename: Optional[str]) -> str:
