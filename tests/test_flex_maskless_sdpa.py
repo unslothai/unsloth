@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
+import types
+
 import pytest
 import torch
 
@@ -107,6 +109,7 @@ def test_counters_do_not_mutate_while_compiling(qkv, monkeypatch):
         "head_dim_512",
         "decode",
         "cache",
+        "sdpa_excluded",
     ],
 )
 def test_everything_else_stays_on_flex(qkv, case):
@@ -130,6 +133,8 @@ def test_everything_else_stays_on_flex(qkv, case):
         q = q[:, :, :1]
     if case == "cache":
         q = q[:, :, : T // 2]
+    if case == "sdpa_excluded":
+        module.config = types.SimpleNamespace(model_type = "gemma3_text")
     assert U._maskless_causal_sdpa_forward(module, q, k, v, args, kwargs) is None
 
 
@@ -153,3 +158,13 @@ def test_the_fallback_mask_cache_is_bounded():
     for T in range(128, 128 * 13, 128):
         _softcap_call(T)
     assert 0 < len(U._CAUSAL_BLOCK_MASKS) <= 8
+
+
+def test_the_wrapper_vetoes_configs_whose_layers_cannot_take_sdpa():
+    from transformers import Gemma2Config, Gemma3TextConfig, LlamaConfig, Qwen3Config
+
+    accepts = _flex()._unsloth_maskless_causal_sdpa_accepts
+    assert accepts(LlamaConfig()) and accepts(Qwen3Config(head_dim = 256))
+    assert not accepts(Qwen3Config(head_dim = 512))
+    assert not accepts(Gemma3TextConfig())  # SDPA disabled for Gemma 3
+    assert not accepts(Gemma2Config())  # softcap

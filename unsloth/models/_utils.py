@@ -673,9 +673,22 @@ def _dropped_causal_mask(module, query, key, args, kwargs):
     return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
 
 
+def _maskless_causal_sdpa_accepts(config):
+    """False when some decoder layer could not take the SDPA reroute, so unsloth_zoo keeps the mask."""
+    for attention_config in _text_attention_configs(config):
+        if _is_sdpa_excluded(_config_get(attention_config, "model_type", None) or ""):
+            return False
+        if _config_get(attention_config, "attn_logit_softcapping", None) is not None:
+            return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is None or head_dim <= 256
+
+
 def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
     """SDPA is_causal output for a dropped causal mask, else None (the call stays on flex)."""
     if not _dropped_causal_mask(module, query, key, args, kwargs):
+        return None
+    if _is_sdpa_excluded(_config_get(getattr(module, "config", None), "model_type", None) or ""):
         return None
     # flex positional order: attention_mask, scaling, softcap, s_aux.
     if any(arg is not None for arg in args[2:]):
@@ -785,6 +798,9 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
     unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa = _FLEX_MASKLESS_SDPA_ENABLED
+    unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa_accepts = (
+        _maskless_causal_sdpa_accepts
+    )
     unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
     return unsloth_flex_attention_forward
 
