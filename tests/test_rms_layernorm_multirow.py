@@ -208,6 +208,19 @@ def test_multirow_launch_failure_falls_back(multirow, kernel):
     _assert_bits(one_row, got)
 
 
+def test_multirow_self_check_failure_under_compile_falls_back(multirow):
+    """The first call's self-check launches re-raise while tracing; it must not escape."""
+    X, W, dY, one_row = _narrow_case(multirow)
+    multirow.setattr(
+        rms_layernorm, "_rms_layernorm_forward_rows", _Raising(RuntimeError("PTX JIT compilation failed"))
+    )
+    multirow.setattr(torch.compiler, "is_compiling", lambda: True)
+    with pytest.warns(UserWarning, match = "self-check failed"):
+        Y, r = rms_layernorm._rms_forward(X, W, 1e-6, False, _eager)
+    assert not rms_layernorm._MULTIROW
+    assert torch.equal(_bits(one_row[0]), _bits(Y))
+
+
 @pytest.mark.parametrize(
     "error",
     [

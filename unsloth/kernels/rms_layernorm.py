@@ -359,10 +359,17 @@ def _multirow_checked(X, W, eps, gemma):
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
             return None  # check on a later uncaptured call
-        verdict = _multirow_self_check(X.device, X.dtype, W.dtype, n_cols, eps, gemma, multirow)
+        try:
+            verdict = _multirow_self_check(X.device, X.dtype, W.dtype, n_cols, eps, gemma, multirow)
+            reason = f"self-check mismatch for {key}"
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except Exception as error:
+            # Its launches re-raise while torch.compile traces; this call then runs one row.
+            verdict, reason = False, f"self-check failed for {key}: {error!r}"
         _MULTIROW_CHECKED[key] = verdict
         if not verdict:
-            _multirow_disable(f"self-check mismatch for {key}")
+            _multirow_disable(reason)
     return multirow if verdict and _MULTIROW else None
 
 
