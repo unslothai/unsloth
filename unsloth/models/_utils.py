@@ -660,10 +660,22 @@ _FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") 
 FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
 
 
-def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
-    """SDPA is_causal output for a flex call whose mask unsloth_zoo dropped, else None."""
+def _dropped_causal_mask(module, query, key, args, kwargs):
+    """A flex call whose causal mask unsloth_zoo dropped (stock flex reads None as bidirectional)."""
     attention_mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
     if attention_mask is not None:
+        return False
+    # Vision callers pass None meaning bidirectional, and is_causal=False is a per-call override.
+    if getattr(module, "is_causal", None) is not True or kwargs.get("is_causal", None) is False:
+        return False
+    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
+        return False
+    return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
+
+
+def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
+    """SDPA is_causal output for a dropped causal mask, else None (the call stays on flex)."""
+    if not _dropped_causal_mask(module, query, key, args, kwargs):
         return None
     # flex positional order: attention_mask, scaling, softcap, s_aux.
     if any(arg is not None for arg in args[2:]):
@@ -672,12 +684,8 @@ def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
         return None
     if kwargs.get("position_bias", None) is not None:
         return None
-    # Vision callers pass None meaning bidirectional: reroute only modules declaring is_causal.
-    if getattr(module, "is_causal", None) is not True:
-        return None
-    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
-        return None
-    if query.shape[2] < 2 or query.shape[2] != key.shape[2]:
+    # SDPA has flash / cuDNN kernels only up to head_dim 256; above that flex is faster.
+    if query.shape[-1] > 256:
         return None
     try:
         from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -685,7 +693,6 @@ def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
     except Exception:
         return None
     scaling = args[1] if len(args) > 1 else kwargs.get("scaling", None)
-    FLEX_MASKLESS_SDPA_STATS["sdpa"] += 1
     return sdpa_forward(
         module,
         query,
@@ -698,6 +705,29 @@ def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
     )
 
 
+_CAUSAL_BLOCK_MASKS = {}
+
+
+def _causal_block_mask(query, key):
+    """The causal BlockMask unsloth_zoo dropped, for calls that cannot go to SDPA."""
+    cache_key = (query.shape[2], key.shape[2], query.device)
+    block_mask = _CAUSAL_BLOCK_MASKS.get(cache_key)
+    if block_mask is None:
+        from torch.nn.attention.flex_attention import create_block_mask
+        block_mask = create_block_mask(
+            lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
+            None, None, query.shape[2], key.shape[2], device = query.device,
+        )
+        _CAUSAL_BLOCK_MASKS[cache_key] = block_mask
+    return block_mask
+
+
+def _count_flex_reroute(path):
+    # A Python counter mutated inside a compiled region makes Dynamo recompile every call.
+    if not torch.compiler.is_compiling():
+        FLEX_MASKLESS_SDPA_STATS[path] += 1
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
     """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
     256, and the main flex kernel for calls that need a backward."""
@@ -706,11 +736,19 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
-        if _FLEX_MASKLESS_SDPA_ENABLED:
+        if _FLEX_MASKLESS_SDPA_ENABLED and _dropped_causal_mask(module, query, key, args, kwargs):
             output = _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs)
             if output is not None:
+                _count_flex_reroute("sdpa")
                 return output
-            FLEX_MASKLESS_SDPA_STATS["flex"] += 1
+            # Softcap, sinks or head_dim > 256: stay on flex, but never with a None mask.
+            _count_flex_reroute("flex")
+            if len(args) > 0:
+                args = (_causal_block_mask(query, key),) + tuple(args[1:])
+            else:
+                kwargs["attention_mask"] = _causal_block_mask(query, key)
+        elif _FLEX_MASKLESS_SDPA_ENABLED:
+            _count_flex_reroute("flex")
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
