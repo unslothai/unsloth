@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """unsloth_zoo compiles create_causal_mask; for flex_attention models it must trace without graph
 breaks and build the same mask as eager."""
@@ -8,7 +8,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 masking_utils = pytest.importorskip("transformers.masking_utils")
-qwen3_5 = pytest.importorskip("transformers.models.qwen3_5.configuration_qwen3_5")
+qwen3 = pytest.importorskip("transformers.models.qwen3.configuration_qwen3")
 
 from unsloth.import_fixes import (  # noqa: E402
     _FLEX_MASK_PATCH_FLAG,
@@ -16,13 +16,19 @@ from unsloth.import_fixes import (  # noqa: E402
     fix_transformers_flex_mask_graph_breaks,
 )
 
+import inspect  # noqa: E402
+
+# transformers before 5.0 builds flex masks from cache_position and never reads the padding values.
+NEW_SIGNATURE = "q_length" in inspect.signature(masking_utils.flex_attention_mask).parameters
+needs_new_signature = pytest.mark.skipif(not NEW_SIGNATURE, reason = "old flex mask signature")
+
 create_causal_mask = getattr(
     masking_utils, "_unsloth_original_create_causal_mask", masking_utils.create_causal_mask
 )
 
 
 def _config():
-    config = qwen3_5.Qwen3_5TextConfig(
+    config = qwen3.Qwen3Config(
         hidden_size = 16,
         num_attention_heads = 2,
         num_key_value_heads = 1,
@@ -56,6 +62,7 @@ def _elements(block_mask, length):
     )
 
 
+@needs_new_signature
 def test_compiled_flex_mask_has_no_graph_breaks_and_matches_eager():
     fix_transformers_flex_mask_graph_breaks()
     fix_transformers_flex_mask_graph_breaks()
@@ -107,6 +114,7 @@ def test_probe_reads_only_value_branching_builders():
     assert masking_utils.create_block_mask is builder
 
 
+@needs_new_signature
 def test_eager_calls_reach_the_original():
     fix_transformers_flex_mask_graph_breaks()
     patched = masking_utils.ALL_MASK_ATTENTION_FUNCTIONS["flex_attention"]
@@ -121,3 +129,10 @@ def test_eager_calls_reach_the_original():
         assert calls[0].keys() == calls[1].keys()
     finally:
         masking_utils.create_block_mask = builder
+
+
+@pytest.mark.skipif(NEW_SIGNATURE, reason = "new flex mask signature")
+def test_old_flex_mask_builder_is_left_alone():
+    original = masking_utils.ALL_MASK_ATTENTION_FUNCTIONS["flex_attention"]
+    fix_transformers_flex_mask_graph_breaks()
+    assert masking_utils.ALL_MASK_ATTENTION_FUNCTIONS["flex_attention"] is original
