@@ -184,7 +184,7 @@ test("selected and fallback clip actions remain named and downloadable", () => {
   assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
   assert.match(
     source,
-    /const handleDownloadFallbackClip[\s\S]*anchor\.download = "generated-audio\.wav"/,
+    /const handleDownloadFallbackClip[\s\S]*saveAudio\(\s*clipFileName\(fallbackClip\),\s*fallbackClip\.url,/,
   );
   assert.match(source, /onDownload=\{handleDownloadFallbackClip\}/);
 });

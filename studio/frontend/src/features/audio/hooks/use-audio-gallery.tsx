@@ -24,6 +24,7 @@ import {
   type AudioGalleryCursor,
   clearAudioGallery,
   deleteAudioClip,
+  fetchClipBlob,
   fetchClipObjectUrl,
   listAudioGallery,
   moveAudioClip,
@@ -35,7 +36,9 @@ import {
   MAX_PAGE_SIZE,
   PAGE_SIZE,
 } from "../audio-workspace-constants";
+import { clipFileName } from "../components/stem-zip";
 import { decodePeaks } from "../components/waveform-decode";
+import { saveAudio } from "../save-audio";
 import { clipWorkflow } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 
@@ -61,6 +64,8 @@ export function useAudioGallery({
 }: Pick<AudioHostState, "active">) {
   const [fallbackClip, setFallbackClip] = useState<{
     url: string;
+    /** The bytes behind a blob: `url`, for the desktop save. */
+    blob?: Blob;
     prompt: string;
     model: string;
     saved: boolean;
@@ -466,44 +471,30 @@ export function useAudioGallery({
     (clip: AudioGalleryClip) => {
       const src = srcById[clip.id];
       if (!src) return;
-      const anchor = document.createElement("a");
-      anchor.href = src;
-      anchor.download = `${clip.id}.wav`;
-      anchor.click();
+      void saveAudio(clipFileName(clip), src, () => fetchClipBlob(clip.url));
     },
     [srcById],
   );
 
   const handleDownloadFallbackClip = useCallback(() => {
     if (!fallbackClip) return;
-    const anchor = document.createElement("a");
-    anchor.href = fallbackClip.url;
-    anchor.download = "generated-audio.wav";
-    anchor.click();
+    const { blob } = fallbackClip;
+    void saveAudio(
+      clipFileName(fallbackClip),
+      fallbackClip.url,
+      blob ? () => Promise.resolve(blob) : null,
+    );
   }, [fallbackClip]);
 
-  const handleDownloadClipById = useCallback(async (clip: AudioGalleryClip) => {
-    let temporaryUrl: string | null = null;
-    try {
-      let src = galleryCache.srcById.get(clip.id);
-      if (!src) {
-        const fetched = await fetchClipObjectUrl(clip.url);
-        src = fetched.url;
-        temporaryUrl = fetched.url;
-      }
-      const anchor = document.createElement("a");
-      anchor.href = src;
-      anchor.download = `${clip.id}.wav`;
-      anchor.click();
-    } catch {
-      toast.error("Could not download the clip.");
-    } finally {
-      if (temporaryUrl) {
-        const url = temporaryUrl;
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      }
-    }
-  }, []);
+  const handleDownloadClipById = useCallback(
+    (clip: AudioGalleryClip) =>
+      saveAudio(
+        clipFileName(clip),
+        galleryCache.srcById.get(clip.id) ?? null,
+        () => fetchClipBlob(clip.url),
+      ),
+    [],
+  );
 
   const handleCopyPrompt = useCallback(async (text: string) => {
     if (await copyToClipboard(text)) {

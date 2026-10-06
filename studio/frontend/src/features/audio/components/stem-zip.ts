@@ -4,9 +4,12 @@
 // Stored (uncompressed) zip: WAV barely compresses. Free of app imports for the node test runner.
 
 import { Zip, ZipPassThrough } from "fflate";
+import { AUDIO_WORKFLOWS, clipWorkflow } from "../workflows";
 
 const INVALID_CHARS = new Set('<>:"/\\|?*');
 const MAX_TITLE_CHARS = 120;
+// A spoken prompt can run for paragraphs; 60 characters keeps even CJK or emoji names under 255 bytes.
+const MAX_CLIP_TITLE_CHARS = 60;
 const FALLBACK_TITLE = "Separated track";
 
 export function sanitizeFileNamePart(part: string, fallback: string): string {
@@ -22,15 +25,32 @@ export function sanitizeFileNamePart(part: string, fallback: string): string {
   return cleaned || fallback;
 }
 
-/** The title is kept short so the stem label always survives. */
-export function stemFileName(title: string, label: string): string {
+function shortTitle(title: string, max: number, fallback: string): string {
   const bare = title.replace(/\.(wav|mp3|flac|ogg|m4a|aac|opus|webm)$/i, "");
-  const safeTitle = [...sanitizeFileNamePart(bare, FALLBACK_TITLE)]
-    .slice(0, MAX_TITLE_CHARS)
+  const safe = [...sanitizeFileNamePart(bare, fallback)]
+    .slice(0, max)
     .join("")
     .trim();
+  return safe || fallback;
+}
+
+/** The title is kept short so the stem label always survives. */
+export function stemFileName(title: string, label: string): string {
   const safeLabel = sanitizeFileNamePart(label, "Stem");
-  return `${safeTitle || FALLBACK_TITLE} - ${safeLabel}.wav`;
+  return `${shortTitle(title, MAX_TITLE_CHARS, FALLBACK_TITLE)} - ${safeLabel}.wav`;
+}
+
+/** "<prompt> - <Workflow>.wav", e.g. "Hello there - Speak.wav". Gallery clips are always WAV. */
+export function clipFileName(clip: {
+  prompt?: string | null;
+  workflow?: string | null;
+  audio_type?: string | null;
+}): string {
+  const workflow = clipWorkflow(clip);
+  const label =
+    AUDIO_WORKFLOWS.find((item) => item.id === workflow)?.label ?? "Audio";
+  const prompt = (clip.prompt ?? "").replace(/\s+/g, " ");
+  return `${shortTitle(prompt, MAX_CLIP_TITLE_CHARS, "Audio")} - ${label}.wav`;
 }
 
 export function stemZipName(title: string): string {

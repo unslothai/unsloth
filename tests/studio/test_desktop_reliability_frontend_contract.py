@@ -312,6 +312,19 @@ def test_media_galleries_save_natively_with_feedback():
     assert "function saveLink(" not in video_page
 
 
+def test_audio_clips_and_stems_save_natively():
+    save_audio = _ui_source(FRONTEND / "features/audio/save-audio.ts")
+
+    # The page CSP refuses fetch() on blob: URLs, so desktop re-reads the bytes instead.
+    assert 'isTauri && url.startsWith("blob:")' in save_audio
+    assert "await downloadFile(blob, filename" in save_audio
+    assert "await downloadUrl(url, filename);" in save_audio
+    assert "if (isDownloadCancelled(error)) return;" in save_audio
+    # Raw anchors under features/audio are refused by tests/audio-stem-mixer-state.test.ts.
+    for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
+        assert "saveAudio(" in _ui_source(FRONTEND / "features/audio" / page)
+
+
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
