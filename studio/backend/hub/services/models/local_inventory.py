@@ -283,10 +283,15 @@ def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[
     if not rows:
         return rows
     if scan_path.is_file():
-        # A loose split quant: llama-server opens its sibling parts, so a missing one fails the load.
+        # A loose quant, split or not: llama-server opens every part, so a missing or empty one fails the load.
         from utils.models.model_config import colocated_split_shards
-        if colocated_split_shards(scan_path)[1]:
-            return rows
+
+        shards, complete = colocated_split_shards(scan_path)
+        try:
+            if complete and all(shard.stat().st_size > 0 for shard in shards):
+                return rows
+        except OSError:
+            pass
         return _apply_format_aware_partial(rows, snapshot_partial = False, gguf_partial = True)
     if not scan_path.is_dir():
         return rows

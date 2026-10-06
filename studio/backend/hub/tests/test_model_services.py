@@ -8022,6 +8022,21 @@ def test_a_loose_split_gguf_is_judged_on_its_siblings(tmp_path, parts, under_pub
         assert rows and all(r.partial is (parts < 3) for r in rows)
 
 
+@pytest.mark.parametrize(
+    "names",
+    [["Muse-Q4_K_M.gguf"], ["Muse-Q4-00001-of-00002.gguf", "Muse-Q4-00002-of-00002.gguf"]],
+    ids = ["single", "split"],
+)
+def test_an_empty_loose_gguf_is_partial(tmp_path, names):
+    for name in names:
+        (tmp_path / name).write_bytes(b"quant")
+    (tmp_path / names[-1]).write_bytes(b"")
+
+    for scan in (local_inventory._scan_models_dir, local_inventory._scan_lmstudio_dir):
+        rows = scan(tmp_path)
+        assert rows and all(r.partial for r in rows if r.model_format == "gguf")
+
+
 @pytest.mark.parametrize("suffix", [".ckpt", ".h5", ".msgpack", ".npz"])
 def test_an_empty_checkpoint_of_any_recognised_suffix_is_partial(tmp_path, suffix):
     model_dir = tmp_path / "Legacy"
