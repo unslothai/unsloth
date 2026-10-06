@@ -20,6 +20,8 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":
@@ -238,6 +240,7 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
     case "custom":
       return 1;
     case "lmstudio":
+    case "omlx":
       return 2;
     case "ollama":
       return 3;

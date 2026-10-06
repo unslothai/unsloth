@@ -44,6 +44,7 @@ type NativeEvent =
       size: number | null;
       done: boolean;
       success: boolean;
+      downloadId: string | null;
     };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
@@ -168,7 +169,13 @@ function onNativeEvent(event: NativeEvent): void {
       if (!event.done) {
         toast(t("browser.native.downloading", { name: event.name }));
       } else if (event.success) {
-        history.recordDownload({ name: event.name, url: event.url, size: event.size ?? 0, contentType: "" });
+        history.recordDownload({
+          name: event.name,
+          url: event.url,
+          size: event.size ?? 0,
+          contentType: "",
+          nativeId: event.downloadId ?? undefined,
+        });
         toast.success(t("browser.native.downloaded", { name: event.name }));
       } else {
         toast.error(t("browser.native.downloadFailed", { name: event.name }));

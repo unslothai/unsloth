@@ -248,15 +248,10 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
   },
   {
-    id: "library",
-    labelKey: "shell.navigation.library",
-    icon: LibrariesIcon,
+    id: "browser",
+    labelKey: "browser.settingsTitle",
+    icon: InternetIcon,
     badgeKey: "common.new",
-  },
-  {
-    id: "data",
-    labelKey: "settings.tabs.data",
-    icon: DatabaseSettingIcon,
   },
   {
     id: "keyboard-shortcuts",
@@ -264,9 +259,14 @@ const TABS: TabDef[] = [
     icon: EnergyRectangleIcon,
   },
   {
-    id: "browser",
-    labelKey: "browser.settingsTitle",
-    icon: InternetIcon,
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
   },
   {
     id: "debugging",
@@ -341,7 +341,7 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource)
+      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -358,7 +358,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs, hubSource]);
+  }, [query, t, visibleTabs, hubSource, isOwner]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;

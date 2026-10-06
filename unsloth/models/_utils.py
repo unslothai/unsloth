@@ -654,6 +654,118 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+# unsloth_zoo drops the causal mask of unpadded, cache-free batches; route that None to SDPA is_causal.
+# Kill switch: UNSLOTH_FLEX_MASKLESS_SDPA=0.
+_FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") != "0"
+FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
+
+
+def _dropped_causal_mask(module, query, key, args, kwargs):
+    """A flex call whose causal mask unsloth_zoo dropped (stock flex reads None as bidirectional)."""
+    attention_mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
+    if attention_mask is not None:
+        return False
+    # Vision callers pass None meaning bidirectional, and is_causal=False is a per-call override.
+    if getattr(module, "is_causal", None) is not True or kwargs.get("is_causal", None) is False:
+        return False
+    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
+        return False
+    return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
+
+
+# Model types the resolver loaded without SDPA support (class opt-out or exclusion list). Keyed by
+# model_type, not config identity: from_pretrained deep-copies the config it was given.
+_NO_SDPA_MODEL_TYPES = set()
+
+
+def _remember_no_sdpa_config(config):
+    for attention_config in _iter_attention_configs(config):
+        model_type = _config_get(attention_config, "model_type", None)
+        if isinstance(model_type, str) and model_type:
+            _NO_SDPA_MODEL_TYPES.add(model_type.lower())
+
+
+def _maskless_causal_sdpa_accepts(config):
+    """False when some decoder layer could not take the SDPA reroute, so unsloth_zoo keeps the mask."""
+    for attention_config in _text_attention_configs(config) + [config]:
+        model_type = (_config_get(attention_config, "model_type", None) or "").lower()
+        if model_type in _NO_SDPA_MODEL_TYPES:
+            return False
+        if _is_sdpa_excluded(_config_get(attention_config, "model_type", None) or ""):
+            return False
+        if _config_get(attention_config, "attn_logit_softcapping", None) is not None:
+            return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is None or head_dim <= 256
+
+
+def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
+    """SDPA is_causal output for a dropped causal mask, else None (the call stays on flex)."""
+    if not _dropped_causal_mask(module, query, key, args, kwargs):
+        return None
+    if _is_sdpa_excluded(_config_get(getattr(module, "config", None), "model_type", None) or ""):
+        return None
+    # flex positional order: attention_mask, scaling, softcap, s_aux.
+    if any(arg is not None for arg in args[2:]):
+        return None
+    if kwargs.get("softcap", None) is not None or kwargs.get("s_aux", None) is not None:
+        return None
+    if kwargs.get("position_bias", None) is not None:
+        return None
+    # SDPA has flash / cuDNN kernels only up to head_dim 256; above that flex is faster.
+    if query.shape[-1] > 256:
+        return None
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        sdpa_forward = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    except Exception:
+        return None
+    scaling = args[1] if len(args) > 1 else kwargs.get("scaling", None)
+    return sdpa_forward(
+        module,
+        query,
+        key,
+        value,
+        None,
+        dropout = kwargs.get("dropout", 0.0),
+        scaling = scaling,
+        is_causal = True,
+    )
+
+
+_CAUSAL_BLOCK_MASKS = {}
+
+
+def _causal_block_mask(query, key):
+    """The causal BlockMask unsloth_zoo dropped, for calls that cannot go to SDPA."""
+    cache_key = (query.shape[2], key.shape[2], query.device)
+    block_mask = _CAUSAL_BLOCK_MASKS.get(cache_key)
+    if block_mask is None:
+        from torch.nn.attention.flex_attention import create_block_mask
+
+        # Uncompiled builds materialize Q x KV; inference tensors break a later backward.
+        with torch.inference_mode(False):
+            block_mask = create_block_mask(
+                lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
+                None,
+                None,
+                query.shape[2],
+                key.shape[2],
+                device = query.device,
+                _compile = True,
+            )
+        if len(_CAUSAL_BLOCK_MASKS) >= 8:
+            _CAUSAL_BLOCK_MASKS.pop(next(iter(_CAUSAL_BLOCK_MASKS)))
+        _CAUSAL_BLOCK_MASKS[cache_key] = block_mask
+    return block_mask
+
+
+def _count_flex_reroute(path):
+    # A Python counter mutated inside a compiled region makes Dynamo recompile every call.
+    if not torch.compiler.is_compiling():
+        FLEX_MASKLESS_SDPA_STATS[path] += 1
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
     """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
     256, and the main flex kernel for calls that need a backward."""
@@ -662,6 +774,19 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
+        if _FLEX_MASKLESS_SDPA_ENABLED and _dropped_causal_mask(module, query, key, args, kwargs):
+            output = _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs)
+            if output is not None:
+                _count_flex_reroute("sdpa")
+                return output
+            # Softcap, sinks or head_dim > 256: stay on flex, but never with a None mask.
+            _count_flex_reroute("flex")
+            if len(args) > 0:
+                args = (_causal_block_mask(query, key),) + tuple(args[1:])
+            else:
+                kwargs["attention_mask"] = _causal_block_mask(query, key)
+        elif _FLEX_MASKLESS_SDPA_ENABLED:
+            _count_flex_reroute("flex")
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
@@ -687,6 +812,10 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
 
     unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
+    unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa = _FLEX_MASKLESS_SDPA_ENABLED
+    unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa_accepts = (
+        _maskless_causal_sdpa_accepts
+    )
     unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
     return unsloth_flex_attention_forward
 
@@ -2264,6 +2393,8 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
+    if not supports_sdpa:
+        _remember_no_sdpa_config(config)
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
@@ -3866,9 +3997,6 @@ def has_internet(
         return False
 
 
-import psutil
-
-
 def _get_statistics(statistics = None, force_download = True):
     # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
     n_cpus = psutil.cpu_count(logical = False)
@@ -4812,6 +4940,28 @@ def patch_fla_autotuner_fast_path():
     CachedAutotuner.run = run
 
 
+def _is_seq2seq_lm_config(config):
+    # Both halves: Voxtral / Qwen2-Audio are Seq2SeqLM-mapped but decoder-only, Whisper is encoder-decoder but SpeechSeq2Seq.
+    if config is None or not getattr(config, "is_encoder_decoder", False):
+        return False
+    try:
+        from transformers import AutoModelForSeq2SeqLM
+        return type(config) in AutoModelForSeq2SeqLM._model_mapping
+    except Exception:
+        return False
+
+
+def _make_seq2seq_aware_get_batch_samples(original):
+    def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
+        # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
+        if _is_seq2seq_lm_config(getattr(self.model, "config", None)):
+            return original(self, *args, **kwargs)
+        return _unsloth_get_batch_samples(self, *args, **kwargs)
+
+    _unsloth_get_batch_samples_dispatch.__name__ = "_unsloth_get_batch_samples"
+    return _unsloth_get_batch_samples_dispatch
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -4833,7 +4983,9 @@ def patch_gradient_accumulation_fix(Trainer):
             raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
-                Trainer.get_batch_samples = _unsloth_get_batch_samples
+                Trainer.get_batch_samples = _make_seq2seq_aware_get_batch_samples(
+                    Trainer.get_batch_samples
+                )
 
             if not hasattr(Trainer, "_old_compute_loss"):
                 # Fix transformers 4.57.0 raising "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace".

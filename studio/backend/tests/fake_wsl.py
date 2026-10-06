@@ -39,9 +39,9 @@ def main(argv):
         return int(os.environ.get("FAKE_WSL_UNREGISTER", "0"))
     if argv[:1] in (["--import"], ["--terminate"]):
         return 0
-    if "--" not in argv:
+    if "--exec" not in argv:
         return 2
-    command = argv[argv.index("--") + 1 :]
+    command = argv[argv.index("--exec") + 1 :]
     return subprocess.call(command)
 
 

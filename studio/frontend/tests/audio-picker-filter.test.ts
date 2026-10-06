@@ -14,9 +14,8 @@ const { audioModelsForTask, isMusicGenerationModel } = await import(
   "../src/features/audio/catalog.ts"
 );
 
-const { audioCppModelSpeaks } = await import(
-  "../src/features/audio/audio-cpp-catalog.ts"
-);
+const { AUDIO_CPP_MODELS, audioCppModelSpeaks, audioCppWorkflowsFor } =
+  await import("../src/features/audio/audio-cpp-catalog.ts");
 
 type Workflow = "speak" | "clone" | "edit" | "convert" | "music" | "transcribe";
 const WORKFLOWS: Workflow[] = [
@@ -318,4 +317,31 @@ test("a Fish Audio Hub row lists on both Speak and Clone before download", () =>
   assert.equal(audioRowMatchesWorkflow(row, "speak"), true);
   assert.equal(audioRowMatchesWorkflow(row, "clone"), true);
   assert.equal(audioRowMatchesWorkflow(row, "music"), false);
+});
+
+test("every seeded audio GGUF lists on exactly the pages it runs on", () => {
+  const pages = [...WORKFLOWS.slice(0, 5), "separate", "transcribe"] as const;
+  const hubTask = {
+    tts: "text-to-speech",
+    music: "text-to-audio",
+    asr: "automatic-speech-recognition",
+    sep: null,
+  };
+  const listed = (id: string) => {
+    const model = AUDIO_CPP_MODELS.find((entry) => entry.id.endsWith(`/${id}`));
+    assert.ok(model, id);
+    const row = { id: model.id, task: hubTask[model.task] };
+    return pages.filter((page) => audioRowMatchesWorkflow(row, page));
+  };
+  for (const model of AUDIO_CPP_MODELS) {
+    const workflows = audioCppWorkflowsFor(model);
+    assert.deepEqual(listed(model.id.split("/").pop() ?? ""), workflows, model.id);
+    assert.equal(audioCppModelSpeaks(model.id), workflows.includes("speak"), model.id);
+  }
+  assert.deepEqual(listed("Fish-Audio-S2-Pro-GGUF"), ["speak", "clone"]);
+  assert.deepEqual(listed("MioTTS-1.7B-GGUF"), ["clone"]);
+  assert.deepEqual(listed("FireRedTTS3-Instruct-GGUF"), ["clone"]);
+  assert.deepEqual(listed("MOSS-VoiceGenerator-GGUF"), ["speak"]);
+  assert.deepEqual(listed("HeartMuLa-GGUF"), ["music"]);
+  assert.deepEqual(listed("Niagara-ASR-GGUF"), ["transcribe"]);
 });
