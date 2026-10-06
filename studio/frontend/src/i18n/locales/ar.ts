@@ -1580,6 +1580,8 @@ export const ar = {
         showWhisperUpdates: "إشعارات تحديث whisper.cpp",
         showWhisperUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
+        showUnslothUpdates: "عمليات التحقق التلقائي من التحديثات",
+        showUnslothUpdatesDescription: "التحقق تلقائيًا من وجود إصدارات أحدث من تطبيق Unsloth وخدمته الخلفية. يظل التحقق اليدوي متاحًا من صفحة حول.",
       },
       startup: {
         sectionTitle: "بدء التشغيل",

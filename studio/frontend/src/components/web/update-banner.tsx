@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import { type DeviceType, usePlatformStore } from "@/config/env";
+import { useShowUnslothUpdateBanner } from "@/hooks/use-unsloth-update-pref";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -36,7 +37,10 @@ export function WebUpdateBanner({
   enabled = true,
   positioned = true,
 }: WebUpdateBannerProps): ReactElement | null {
-  const { status, dismiss, snooze } = useWebUpdateCheck({ enabled });
+  const autoChecksEnabled = useShowUnslothUpdateBanner();
+  const { status, dismiss, snooze } = useWebUpdateCheck({
+    enabled: enabled && autoChecksEnabled,
+  });
   const deviceType = usePlatformStore((s) => s.deviceType);
   const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
@@ -107,7 +111,6 @@ export function WebUpdateBanner({
               it is measured rather than guessed and it holds at every type
               size. */}
           <div className="relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
-
             <button
               type="button"
               onClick={dismiss}
