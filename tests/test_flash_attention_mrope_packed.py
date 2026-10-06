@@ -13,6 +13,8 @@ import pytest
 torch = pytest.importorskip("torch")
 fa_utils = pytest.importorskip("transformers.modeling_flash_attention_utils")
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 from unsloth.import_fixes import (  # noqa: E402
     _mrope_position_ids_read_as_packed,
     fix_transformers_flash_attention_mrope_packed_sequence,
@@ -57,7 +59,7 @@ def test_idempotent(patched):
     assert fa_utils._is_packed_sequence is patched
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "flash-attn needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "flash-attn needs CUDA")
 def test_flash_attention_forward_keeps_one_row_unpacked(patched, monkeypatch):
     pytest.importorskip("flash_attn")
     calls = []
