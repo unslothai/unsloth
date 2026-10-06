@@ -7227,6 +7227,8 @@ class VideoBackend:
             comfy_scheme = (
                 TQ_INT8 if any(k.startswith("int8") for k in counts) else TQ_FP8 if counts else None
             )
+            if _h3_precision_pinned_dense(transformer_quant):
+                comfy_scheme = None
             scheme = None
         if transformer_quant_is_auto and comfy_scan is None:
             # Already settled if the download planner acted on it -- the dense denoiser shards are not on disk, so
@@ -7294,14 +7296,23 @@ class VideoBackend:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
 
             # torchao only: H3's pin / stream / residency path is built on torchao weights, like the hosted ones.
-            h3_int8 = (
-                "torchao" if comfy_int8_backend(umem_target, fam.name, base) == "torchao" else None
-            )
-            h3_fp8 = (
-                "torchao" if comfy_fp8_backend(umem_target, fam.name, base) == "torchao" else None
-            )
+            # Precision Off asks for the bf16 denoiser, so the file dequantizes.
+            dense_pin = _h3_precision_pinned_dense(transformer_quant_requested)
+            h3_int8 = h3_fp8 = None
+            if not dense_pin:
+                h3_int8 = (
+                    "torchao"
+                    if comfy_int8_backend(umem_target, fam.name, base) == "torchao"
+                    else None
+                )
+                h3_fp8 = (
+                    "torchao"
+                    if comfy_fp8_backend(umem_target, fam.name, base) == "torchao"
+                    else None
+                )
             if (
                 comfy_scheme is not None
+                and not dense_pin
                 and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
             ):
                 # Refused before the load: dequantized, the denoiser would be the 40 GB bfloat16 model.
@@ -7329,7 +7340,7 @@ class VideoBackend:
             engaged = (
                 TQ_INT8 if comfy_info.get("int8") else TQ_FP8 if comfy_info.get("fp8") else None
             )
-            if engaged is None and comfy_scheme is not None:
+            if engaged is None and comfy_scheme is not None and not dense_pin:
                 del transformer
                 raise RuntimeError(
                     f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
@@ -7345,7 +7356,7 @@ class VideoBackend:
                 f"{comfy_info.get('int8', 0)} int8 / {comfy_info.get('fp8', 0)} fp8 layers kept, "
                 f"{comfy_info.get('dequantized', 0)} dequantized"
                 if engaged is not None
-                else f"ComfyUI bfloat16 denoiser ({Path(comfy_checkpoint).name})"
+                else f"ComfyUI denoiser ({Path(comfy_checkpoint).name}) at bfloat16"
             )
             logger.info("video.transformer_quant: %s", transformer_quant_reason)
         if scheme is not None:

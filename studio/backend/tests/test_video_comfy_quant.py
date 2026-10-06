@@ -634,3 +634,28 @@ def test_resident_mib_prices_layers_the_runtime_filter_skips_at_bf16(tmp_path):
     extra = 2048 * 64 + 2048 * 1000  # i_small and f_ragged: stored 1 B, priced 2 B
     assert strict * 1024 * 1024 - loose * 1024 * 1024 >= extra - 1024 * 1024
     assert strict > loose
+
+
+def test_a_checkpoint_buffer_keeps_its_keep_dtype(h3like_file, tmp_path):
+    path, _dense, tensors = h3like_file
+    table = torch.randn(9, 4, dtype = torch.float64)
+    path = _save(tmp_path / "h3like_table.safetensors", {**tensors, "table": table.half()})
+
+    def add_table(model):
+        model.register_buffer("table", torch.empty(9, 4, dtype = torch.float32))
+
+    model = cq.load_comfy_quant_transformer(
+        _H3Like,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+        family = "minimax-h3",
+        key_map = _h3like_map,
+        prepare_model = add_table,
+        keep_dtype = lambda key: torch.float32
+        if key in ("table",) or key.startswith("head.")
+        else None,
+        int8_backend = None,
+    )
+    assert model.table.dtype is torch.float32
+    assert torch.equal(model.table, table.half().float())
