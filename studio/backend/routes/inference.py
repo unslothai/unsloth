@@ -23809,6 +23809,11 @@ async def openai_audio_speech(
     it is off, the shared switch guard rejects a different recognized local model.
     A saved voice (``voice``) or ``reference`` clones; history keeps the clip as WAV."""
     fmt = (body.response_format or "wav").strip().lower()
+    # Neither path streams, a saved connection included.
+    if body.stream_format == "sse":
+        _raise_unsupported_openai_parameter(
+            "stream_format", "stream_format 'sse' is not supported. Use 'audio'."
+        )
     if body.provider_id:
         if fmt != "wav":
             raise HTTPException(
@@ -23841,10 +23846,6 @@ async def openai_audio_speech(
         _raise_unsupported_openai_parameter(
             "response_format",
             f"Unsupported response_format '{body.response_format}'. Use {', '.join(formats)}.",
-        )
-    if body.stream_format == "sse":
-        _raise_unsupported_openai_parameter(
-            "stream_format", "stream_format 'sse' is not supported. Use 'audio'."
         )
     voice = body.voice
     voice_id = voice.id if isinstance(voice, AudioSpeechVoice) else None
@@ -24097,6 +24098,12 @@ async def openai_audio_transcriptions(
     engine = _stt_engine_for_model(sidecar_model)
     # isinstance because a direct call passes the raw Form default.
     granularities = timestamp_granularities if isinstance(timestamp_granularities, list) else []
+    if granularities and fmt != "verbose_json":
+        # OpenAI's contract; also spares an aligner download whose timings would be dropped.
+        _raise_unsupported_openai_parameter(
+            "timestamp_granularities",
+            "timestamp_granularities needs response_format 'verbose_json'.",
+        )
     has_language = isinstance(language, str) and language.strip()
     serving_engine = _resolve_serving_stt_engine(engine)
     timed = serving_engine == "audiocpp" and (
