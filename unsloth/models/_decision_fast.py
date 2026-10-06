@@ -85,14 +85,6 @@ def compiled_encoder(
     # Unsloth's reentrant offloaded checkpoint gives compiled bf16 layers wrong gradients (cosine 0.68
     # to eager, 0.30 full fine-tune), so compiled runs checkpoint with torch's own.
     swapped = {}
-    for layer in layers:
-        func = getattr(layer, "_gradient_checkpointing_func", None)
-        if func is not None and getattr(func, "func", func) is not _torch_checkpoint:
-            swapped[layer] = func
-            layer._gradient_checkpointing_func = functools.partial(
-                _torch_checkpoint, use_reentrant = False
-            )
-        layer.compile(dynamic = True)
 
     def restore():
         for layer in layers:
@@ -102,6 +94,14 @@ def compiled_encoder(
 
     if layers:
         try:
+            for layer in layers:
+                func = getattr(layer, "_gradient_checkpointing_func", None)
+                if func is not None and getattr(func, "func", func) is not _torch_checkpoint:
+                    swapped[layer] = func
+                    layer._gradient_checkpointing_func = functools.partial(
+                        _torch_checkpoint, use_reentrant = False
+                    )
+                layer.compile(dynamic = True)
             _warm_up(model, amp_dtype)
         except Exception as error:
             restore()

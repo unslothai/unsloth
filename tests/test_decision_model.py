@@ -529,6 +529,19 @@ def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
         assert not compiled
         assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
 
+    # torch.compile itself can refuse (an unsupported Python): the second layer raises here.
+    def refuse(self, **kwargs):
+        if self is layers[1]:
+            raise RuntimeError("Dynamo is not supported on this Python")
+        self._compiled_call_impl = lambda *a, **k: None
+
+    monkeypatch.setattr(torch.nn.Module, "compile", refuse)
+    monkeypatch.setattr(fast, "_warm_up", lambda model, amp_dtype: None)
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert not compiled
+        assert all(layer._compiled_call_impl is None for layer in layers)
+        assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
