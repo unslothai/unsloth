@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNNER_PATH = REPO_ROOT / "docker" / "unsloth_run.py"
+
+NOTEBOOK = {
+    "cells": [{"cell_type": "code", "source": ["print(1)\n"], "metadata": {}, "outputs": []}],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+EXECUTED = {**NOTEBOOK, "metadata": {"executed": True}}
+
+
+@pytest.fixture()
+def runner(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_NB_TF_MARKER", str(tmp_path / "marker"))
+    spec = importlib.util.spec_from_file_location("unsloth_run_url_under_test", RUNNER_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "_load", lambda *_a, **_k: json.loads(json.dumps(NOTEBOOK)))
+    return mod
+
+
+@pytest.fixture()
+def cwd(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    return work
+
+
+def _run(
+    runner,
+    monkeypatch,
+    argv,
+    rc = 0,
+):
+    seen = {}
+
+    def nbconvert(cmd, env = None):
+        src = cmd[cmd.index("--output") - 1]
+        seen["input"] = src
+        kernel_cwd = os.path.dirname(os.path.abspath(src))
+        os.makedirs(os.path.join(kernel_cwd, "lora_model"), exist_ok = True)
+        Path(kernel_cwd, "lora_model", "adapter_model.safetensors").write_bytes(b"w")
+        if rc == 0:
+            name = cmd[cmd.index("--output") + 1]
+            if not name.endswith(".ipynb"):
+                name += ".ipynb"
+            out = Path(cmd[cmd.index("--output-dir") + 1], name)
+            out.write_text(json.dumps(EXECUTED), encoding = "utf-8")
+            seen["output"] = out
+        return rc
+
+    monkeypatch.setattr(runner.subprocess, "call", nbconvert)
+    monkeypatch.setattr(runner.sys, "argv", ["unsloth-run", *argv])
+    with pytest.raises(SystemExit) as exc:
+        runner.main()
+    assert exc.value.code == rc
+    return seen
+
+
+def test_a_url_run_keeps_the_executed_notebook_and_its_saves(runner, monkeypatch, cwd):
+    seen = _run(runner, monkeypatch, ["https://example.invalid/nb/Llama.ipynb"])
+
+    assert Path(seen["input"]).parent == cwd
+    assert (cwd / "lora_model" / "adapter_model.safetensors").is_file()
+    assert json.loads((cwd / "Llama.ipynb").read_text(encoding = "utf-8")) == EXECUTED
+
+
+def test_a_url_run_does_not_overwrite_a_notebook_already_in_cwd(runner, monkeypatch, cwd):
+    (cwd / "Llama.ipynb").write_text("mine", encoding = "utf-8")
+
+    _run(runner, monkeypatch, ["https://example.invalid/nb/Llama.ipynb"])
+
+    assert (cwd / "Llama.ipynb").read_text(encoding = "utf-8") == "mine"
+    assert json.loads((cwd / "Llama-1.ipynb").read_text(encoding = "utf-8")) == EXECUTED
+
+
+@pytest.mark.parametrize(
+    "url, name",
+    [
+        (
+            "https://example.invalid/nb/Llama3.2_%281B%29-Chat.ipynb?raw=true#scrollTo=x",
+            "Llama3.2_(1B)-Chat.ipynb",
+        ),
+        ("https://example.invalid/get?nb=Llama.ipynb", "get.ipynb"),
+        ("https://example.invalid/", "notebook.ipynb"),
+    ],
+)
+def test_a_url_run_names_the_notebook_after_the_url_path(runner, monkeypatch, cwd, url, name):
+    seen = _run(runner, monkeypatch, [url])
+
+    assert seen["output"] == cwd / name
+    assert sorted(p.name for p in cwd.iterdir()) == sorted(["lora_model", name])
+
+
+def test_a_failed_url_run_keeps_what_it_saved(runner, monkeypatch, cwd):
+    _run(runner, monkeypatch, ["https://example.invalid/nb/Llama.ipynb"], rc = 1)
+
+    assert (cwd / "lora_model" / "adapter_model.safetensors").is_file()
+    assert json.loads((cwd / "Llama.ipynb").read_text(encoding = "utf-8")) == NOTEBOOK
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
