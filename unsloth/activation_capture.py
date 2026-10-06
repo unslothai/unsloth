@@ -239,9 +239,7 @@ class ActivationCapture:
         n_total = self._hidden_size or config.max_channels
         rng = random.Random(config.seed)
         if n_total > config.max_channels:
-            self._sampled_channels = sorted(
-                rng.sample(range(n_total), config.max_channels)
-            )
+            self._sampled_channels = sorted(rng.sample(range(n_total), config.max_channels))
         else:
             self._sampled_channels = list(range(n_total))
 
@@ -378,9 +376,7 @@ class ActivationCapture:
             if self.config.capture_mlp_out:
                 mlp = getattr(layer, "mlp", None)
                 if mlp is not None:
-                    h2 = mlp.register_forward_hook(
-                        self._make_layer_hook(idx, kind = "mlp")
-                    )
+                    h2 = mlp.register_forward_hook(self._make_layer_hook(idx, kind = "mlp"))
                     self._hooks.append(h2)
 
             # Register backward hook for gradient capture
@@ -477,7 +473,11 @@ class ActivationCapture:
     # Capture control
     # ------------------------------------------------------------------
 
-    def mark_capture(self, step: int, loss: Optional[float] = None):
+    def mark_capture(
+        self,
+        step: int,
+        loss: Optional[float] = None,
+    ):
         """Arm the hooks to capture on the next forward pass.
 
         Called by :class:`ActivationCaptureCallback` before each scheduled step.
@@ -561,22 +561,14 @@ class ActivationCaptureCallback(TrainerCallback):
         self.capture = capture
 
     def on_train_begin(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
         self.capture.attach()
         # Arm capture for step 0 so the pre-finetune baseline is recorded.
         self.capture.mark_capture(step = 0, loss = None)
 
     def on_step_begin(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
         step = state.global_step
         interval = self.capture.config.capture_interval
@@ -588,20 +580,12 @@ class ActivationCaptureCallback(TrainerCallback):
             self.capture.mark_capture(step = step, loss = loss)
 
     def on_step_end(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
         self.capture.flush()
 
     def on_train_end(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
+        self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs
     ):
         # Final flush in case the very last step was on an interval boundary
         # and the callback had armed capture but training ended atomically.

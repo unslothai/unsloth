@@ -214,7 +214,6 @@ def run(args):
             ActivationCapture,
             ActivationCaptureCallback,
         )
-
         _capture_cfg = ActivationCaptureConfig(
             output_dir = args.capture_output_dir,
             capture_interval = args.capture_interval,

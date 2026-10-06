@@ -4748,12 +4748,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                     "model_name": getattr(self, "_model_name", None),
                                     "num_layers": len(getattr(self, "_layers", [])),
                                     "hidden_size": getattr(self, "_hidden_size", None),
-                                    "intermediate_size": getattr(
-                                        self, "_intermediate_size", None
-                                    ),
-                                    "captured_channels": getattr(
-                                        self, "_sampled_channels", []
-                                    ),
+                                    "intermediate_size": getattr(self, "_intermediate_size", None),
+                                    "captured_channels": getattr(self, "_sampled_channels", []),
                                     "capture_interval": cfg.capture_interval,
                                     "max_channels": cfg.max_channels,
                                     "capture_mlp_out": cfg.capture_mlp_out,
@@ -4763,9 +4759,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                 }
                                 upsert_activation_metadata(job_id, _meta)
                             except Exception as _e:
-                                logger.warning(
-                                    "DB activation metadata write failed: %s", _e
-                                )
+                                logger.warning("DB activation metadata write failed: %s", _e)
 
                     def flush(self):
                         """Write to SQLite DB only — no JSONL file I/O."""
@@ -4809,15 +4803,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                                     _lora_norms,
                                 )
                             except Exception as _e:
-                                logger.warning(
-                                    "DB activation record write failed: %s", _e
-                                )
+                                logger.warning("DB activation record write failed: %s", _e)
 
                 # Target ~30 replay frames; fall back to every step when total unknown
                 _cfg_max_steps = config.get("max_steps", 0) or 0
-                _act_interval = (
-                    max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
-                )
+                _act_interval = max(1, _cfg_max_steps // 30) if _cfg_max_steps > 0 else 20
                 import tempfile as _tempfile
 
                 _act_config = ActivationCaptureConfig(
@@ -4826,9 +4816,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     output_dir = _tempfile.mkdtemp(prefix = "unsloth_act_"),
                     capture_interval = _act_interval,
                 )
-                _act_capture = _StudioActivationCapture(
-                    trainer.model, _act_config, _job_id
-                )
+                _act_capture = _StudioActivationCapture(trainer.model, _act_config, _job_id)
                 _act_cb = ActivationCaptureCallback(_act_capture)
                 trainer.extra_hf_callbacks = [_act_cb]
                 logger.info("ActivationCaptureCallback registered for %s\n", output_dir)
