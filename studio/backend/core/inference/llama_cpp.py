@@ -12452,9 +12452,14 @@ class LlamaCppBackend:
         try:
             return set(int(x.strip()) for x in raw.split(",") if x.strip())
         except ValueError:
-            if env_name != "CUDA_VISIBLE_DEVICES":
+            if (
+                env_name != "CUDA_VISIBLE_DEVICES"
+                or os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+            ):
                 return None
-        ids = LlamaCppBackend._resolve_visible_physical_ids()
+        from utils.hardware import nvidia
+
+        ids = nvidia.resolve_uuid_mask(raw.strip())
         return set(ids) if ids is not None else None
 
     @staticmethod
