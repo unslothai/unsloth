@@ -49,7 +49,6 @@ def _cos(a, b) -> float:
     ).item()
 
 
-# ------------------------------------------------------------------------------ MiniMax-H3 key map
 def test_h3_key_map_renames_and_splits_rows_only():
     m = h3c.h3_comfy_key_map
     assert m("rope.inv_freq", (16,)) == []
@@ -116,7 +115,6 @@ def test_h3_curve_metadata_comes_from_the_table_shape(tmp_path):
     assert h3c.h3_comfy_curve_metadata(dense) is None
 
 
-# ------------------------------------------------------------------------------ key_map loader path
 class _Attn(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -256,7 +254,6 @@ def test_a_key_map_row_selection_outside_the_tensor_is_refused(h3like_file):
         )
 
 
-# ------------------------------------------------------------------------------ keep_key / pre_convert
 def test_keep_key_reads_only_the_denoiser_and_refuses_quantized_companions(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cq,
@@ -340,7 +337,6 @@ def test_ltx23_pre_convert_strips_the_prefix_and_renames_23_keys():
     assert not ltx23_is_dit_or_connector_key("vocoder.conv.weight")
 
 
-# ------------------------------------------------------------------------------ planning size
 def test_resident_mib_prices_kept_layers_as_stored_and_the_rest_at_bf16(tmp_path):
     rows, cols = 2048, 1024
     q = torch.zeros(rows, cols, dtype = torch.int8)
@@ -383,7 +379,6 @@ def test_resident_mib_prices_kept_layers_as_stored_and_the_rest_at_bf16(tmp_path
     )
 
 
-# ------------------------------------------------------------------------------ video.py policy
 def _plan(resident: bool):
     return types.SimpleNamespace(resident = resident)
 
@@ -424,7 +419,6 @@ def test_video_backends_follow_studio_rules(monkeypatch):
         "int8_backend": "native",
         "fp8_backend": None,
     }
-    # Precision "Off": the user asked for the bf16 DiT
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
@@ -448,7 +442,6 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
         vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
     )  # 1 MiB of codes + scale + config
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
-    # dequantized on load: twice the file
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
     assert n == 2**20
@@ -478,7 +471,6 @@ def test_h3_single_file_validation_accepts_a_comfy_denoiser_and_refuses_the_rest
         assert "single .safetensors checkpoint" not in str(exc)
 
 
-# ------------------------------------------------------------------------------ HunyuanVideo-1.5 key map
 def test_hv15_key_map_renames_splits_and_swaps_rows_only():
     from core.inference.video_hv15_comfy import hv15_comfy_key_map as m
 
@@ -512,7 +504,6 @@ def test_hv15_key_map_renames_splits_and_swaps_rows_only():
     assert m("vision_in.proj.3.weight", (2048, 1152)) == [("image_embedder.linear_2.weight", None)]
     assert m("img_in.proj.weight", (2048, 65, 1, 1, 1)) == [("x_embedder.proj.weight", None)]
     assert m("cond_type_embedding.weight", (3, 2048)) == [("cond_type_embed.weight", None)]
-    # already diffusers-named keys pass through
     assert m("transformer_blocks.0.attn.to_q.weight", (2048, 2048)) == [
         ("transformer_blocks.0.attn.to_q.weight", None)
     ]

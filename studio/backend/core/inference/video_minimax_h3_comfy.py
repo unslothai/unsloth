@@ -1,22 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 denoisers stored in ComfyUI's layout, for ``diffusion_comfy_quant.load_comfy_quant_transformer``.
-
-ComfyUI ships the H3 DiT under the reference model's names (``blocks.N.attn.qkv_proj``, ``mlp.fc1``, ...) and
-diffusers has no single-file converter for it, so this module supplies the mapping the loader needs:
-
-- a rename onto ``MiniMaxH3Transformer3DModel``'s names,
-- two row-only reshapes: the fused ``qkv_proj`` splits into ``to_q`` / ``to_k`` / ``to_v`` by contiguous thirds, and
-  ``mlp.fc1`` (``[gate; value]``) becomes ``ff.net.0.proj`` (``[value; gate]``, what diffusers' SwiGLU reads). Rows
-  move whole, so int8 / fp8 codes and their per-row scales stay exact,
-- the pruned (curve-form) adaLN: ``adaln_t_table`` is the curve table Studio's hosted checkpoints call
-  ``time_embedder.table``, and its shape gives the curve rank and grid ``apply_h3_adaln_curve`` needs,
-- the float32 tensors the pruned model keeps (adaLN, patch projections, output heads), as the hosted files do.
-
-Which workflow partition a file holds (fl2va keyframe / text, ref2va reference) is not visible in the tensors, so it
-is read from the file name. Torch-free apart from what the loader passes in.
-"""
+"""MiniMax-H3 denoisers in ComfyUI's layout for ``load_comfy_quant_transformer``: key map (fused qkv split by thirds,
+``mlp.fc1`` ``[gate; value]`` -> SwiGLU ``[value; gate]``, rows move whole so codes and scales stay exact), the pruned
+curve adaLN from ``adaln_t_table``'s shape, and the float32 tensors the pruned model keeps. The partition (fl2va /
+ref2va) is not in the tensors, so it comes from the file name."""
 
 from __future__ import annotations
 
@@ -60,8 +48,7 @@ def is_h3_comfy_name(filename: Optional[str]) -> bool:
         return False
     if any(token in name for token in ("qwen", "vae", "text_encoder", "controlnet", "lora")):
         return False
-    # The formats Studio runs: int8_convrot, fp8_scaled (ours -INT8 / -FP8) and the dense bf16 / fp16 file; not the
-    # packed w6a8 / nvfp4 / mxfp ones.
+    # Packed w6a8 / nvfp4 / mxfp files have no Studio runtime.
     return any(t in name for t in ("int8", "fp8", "bf16", "fp16")) and not any(
         t in name for t in ("w6a8", "w4a", "nvfp4", "mxfp")
     )

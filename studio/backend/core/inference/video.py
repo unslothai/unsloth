@@ -5698,7 +5698,6 @@ class VideoBackend:
                 )
             comfy_checkpoint = None
             if kind == "single_file":
-                # A ComfyUI-quantized denoiser file: everything else comes from the base repo, as for a hosted one.
                 comfy_checkpoint = str(
                     self._resolve_checkpoint_path(
                         repo_id, gguf_filename, hf_token, local_files_only = local_files_only
@@ -5767,10 +5766,8 @@ class VideoBackend:
             base = repo_id if kind == "pipeline" else base,
         )
         transformer_mib: Optional[int] = None
-        # A ComfyUI-quantized single file: read from its header before a weight byte loads, and refused here, by
-        # format name, when Studio cannot run it faithfully.
         comfy_scan = None
-        # Whether its quantized layers keep their codes (False: the user asked for the bf16 DiT, so they dequantize).
+        # False: the user pinned the bf16 DiT, so quantized layers dequantize.
         comfy_keep = (
             transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
         )
@@ -5782,8 +5779,7 @@ class VideoBackend:
             if kind == "single_file":
                 comfy_scan = refuse_comfy_quant(str(checkpoint_path))
                 if comfy_scan is None and _video_comfy_key_map(fam) is not None:
-                    # No diffusers converter for this family: even an unquantized original-layout file loads
-                    # through the same key map, with nothing to keep quantized.
+                    # No diffusers converter: an unquantized original-layout file goes through the key map too.
                     from .diffusion_comfy_quant import ComfyQuantScan
                     comfy_scan = ComfyQuantScan()
             if kind == "gguf":
@@ -6168,8 +6164,7 @@ class VideoBackend:
                 ltx23_scheme = normalize_transformer_quant(transformer_quant)
                 seeded = None
                 if comfy_scan is not None:
-                    # A ComfyUI-quantized 2.3 file: its DiT keeps its int8 / fp8 codes and goes in as the override;
-                    # the assembly reads the connectors, VAEs and vocoder from the same file (or the extras).
+                    # The DiT goes in as the override; the assembly reads the rest from the same file (or extras).
                     from .video_ltx2 import load_ltx23_comfy_transformer
                     ltx23_override = load_ltx23_comfy_transformer(
                         checkpoint_path,
@@ -6268,8 +6263,6 @@ class VideoBackend:
                 )
             else:
                 if comfy_scan is not None:
-                    # int8 codes go to Studio's int8 runtime (torchao resident, the torchao-free twin under
-                    # offload) and fp8 codes to its fp8 GEMM when resident, by the rules Studio's own quant follows.
                     transformer = load_comfy_quant_transformer(
                         transformer_cls,
                         str(checkpoint_path),
@@ -6327,7 +6320,6 @@ class VideoBackend:
         transformer_quant_source: Optional[str] = None
         # Text encoders streaming around a resident DiT do not move its weights, so torchao stays valid.
         video_offload = not plan_keeps_transformer_resident(plan)
-        # A ComfyUI-quantized single file that kept its codes runs the scheme it carries, like a seeded checkpoint.
         comfy_info = (
             getattr(getattr(pipe, "transformer", None), "_unsloth_comfy_quant", None)
             if comfy_scan is not None
@@ -7148,7 +7140,6 @@ class VideoBackend:
 
             comfy_scan = refuse_comfy_quant(comfy_checkpoint)
             if comfy_scan is None:
-                # An unquantized ComfyUI denoiser (the pruned bf16 file) loads through the same key map, dense.
                 from .diffusion_comfy_quant import ComfyQuantScan
                 comfy_scan = ComfyQuantScan()
             file_task = h3_comfy_task(comfy_checkpoint)

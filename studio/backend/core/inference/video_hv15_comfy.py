@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HunyuanVideo-1.5 denoisers stored in the original (ComfyUI) layout, for ``load_comfy_quant_transformer``.
-
-diffusers registers no single-file converter for ``HunyuanVideo15Transformer3DModel``, so a ComfyUI file of it
-(``double_blocks.N.img_attn_qkv``, ``txt_in.individual_token_refiner``, ...) cannot go through ``from_single_file``
-at all, quantized or not. This is the mapping onto the diffusers names: renames, plus three row-only reshapes that
-keep int8 / fp8 codes and their per-row scales exact:
-
-- the fused attention projections (``img_attn_qkv``, ``txt_attn_qkv``, the refiner's ``self_attn_qkv``) split into
-  q / k / v by contiguous thirds, weights and biases alike,
-- ``final_layer.adaLN_modulation.1`` swaps its halves (``[shift; scale]`` to diffusers' ``[scale; shift]``).
-
-Torch-free.
-"""
+"""HunyuanVideo-1.5 original (ComfyUI) layout -> diffusers names, for ``load_comfy_quant_transformer`` (diffusers has
+no single-file converter for it). Row-only reshapes keep int8 / fp8 codes and per-row scales exact: fused qkv
+projections split by thirds, ``final_layer.adaLN_modulation.1`` swaps ``[shift; scale]`` to ``[scale; shift]``.
+Torch-free."""
 
 from __future__ import annotations
 

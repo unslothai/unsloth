@@ -502,9 +502,7 @@ def _decode_rows(
     return segments
 
 
-# Denoiser classes diffusers has no single-file converter for, mapped to the module describing their original
-# (ComfyUI) layout through ``comfy_layout(path) -> {"key_map", "prepare_model", "keep_dtype"}``. Imported on demand, so
-# every caller of ``load_comfy_quant_transformer`` (single file or a hosted ComfyUI-format twin) gets them.
+# Classes with no diffusers single-file converter -> module whose ``comfy_layout(path)`` gives their key map.
 _ORIGINAL_LAYOUTS = {
     "HunyuanVideo15Transformer3DModel": "video_hv15_comfy",
     "MiniMaxH3Transformer3DModel": "video_minimax_h3_comfy",
@@ -934,8 +932,7 @@ def load_comfy_quant_transformer(
                     )
     else:
         try:
-            # Narrow tags first (full width costs tens of seconds on a large DiT); anything unproven reruns at full
-            # width.
+            # Narrow tags first (full width is slow on a large DiT); anything unproven reruns at full width.
             converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
         except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
             converted = _convert_tagged(None)
