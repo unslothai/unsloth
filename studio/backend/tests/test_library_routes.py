@@ -429,6 +429,45 @@ def test_a_sandbox_file_the_model_edits_keeps_its_name_star_and_folder(
     assert _favorites(client) == [_SANDBOX_ID]
 
 
+def test_a_listing_during_an_edit_does_not_drop_the_files_name_star_and_folder(
+    client, signed_in, monkeypatch
+):
+    import contextvars
+    import threading
+
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    carry = library_db.carry_fingerprint
+    listings = []
+
+    def list_then_carry(*args):
+        # A Library refresh landing after the swap exposed the new inode, before the carry.
+        library.invalidate_listing()
+        listing = threading.Thread(
+            target = contextvars.copy_context().run, args = (library.list_items,)
+        )
+        listing.start()
+        listing.join(timeout = 1)
+        listings.append(listing)
+        carry(*args)
+
+    monkeypatch.setattr(library_db, "carry_fingerprint", list_then_carry)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    for listing in listings:
+        listing.join(timeout = 10)
+    assert Path(path).read_bytes() == b"the report\n"
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("Q3 report", True)
+
+
 def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")

@@ -12140,8 +12140,9 @@ def _edit_file_write(
                     "was being prepared; nothing was written. Read it again and "
                     "redo the edit against the current contents."
                 )
-        before = os.stat(path)
-        os.replace(tmp, path)
+        from core import library
+
+        library.replace_file(tmp, path)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
@@ -12149,9 +12150,6 @@ def _edit_file_write(
         if tmp:
             with contextlib.suppress(OSError):
                 os.remove(tmp)
-    from core import library
-
-    library.file_replaced(path, before)
     return ""
 
 
