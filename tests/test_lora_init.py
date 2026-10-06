@@ -222,3 +222,35 @@ def test_fast_pissa_saves_record_their_algorithm(tmp_path):
     for sub in ("", "second"):
         assert json.loads((tmp_path / sub / lora_init.SIDECAR).read_text())["pissa"]
     assert lora_init.adapter_used_fast_pissa(str(tmp_path))
+
+
+def test_sketch_ignores_default_dtype():
+    previous = torch.get_default_dtype()
+    lora_init._sketch.cache_clear()
+    try:
+        torch.set_default_dtype(torch.float64)
+        U, S, Vh = lora_init.randomized_svd(_weight(96, 48).float(), 8)
+    finally:
+        torch.set_default_dtype(previous)
+        lora_init._sketch.cache_clear()
+    assert U.dtype == S.dtype == Vh.dtype == torch.float32
+
+
+def test_other_threads_keep_peft_init(monkeypatch):
+    import threading
+
+    calls = []
+    with lora_init.fast_lora_init(force = True):
+        monkeypatch.setitem(lora_init._ORIGINAL_ANY, "pissa_init", lambda *args: calls.append(args))
+        thread = threading.Thread(target = lora_init._pissa_init, args = (None, "a", "pissa"))
+        thread.start()
+        thread.join()
+    assert calls == [(None, "a", "pissa")]
+
+
+def test_packed_quantized_base_is_refused():
+    layer = torch.nn.Linear(16, 16)
+    Params4bit = type("Params4bit", (torch.nn.Parameter,), {})
+    layer.weight = Params4bit(layer.weight.data.to(torch.bfloat16), requires_grad = False)
+    with pytest.raises(TypeError, match = "load_in_4bit = False"):
+        lora_init._check_float_weight(layer.weight, "pissa")

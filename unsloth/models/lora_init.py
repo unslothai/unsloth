@@ -60,7 +60,7 @@ def _orthonormalize_(Y, shift, failures, householder):
 def _sketch(N, q):
     # One seeded CPU draw per shape: a reloaded adapter re-runs this init (PEFT's from_pretrained) and must
     # rebuild the same residual on any device; LLM spectra decay too slowly for the sketch not to matter.
-    return torch.randn(N, q, generator = torch.Generator().manual_seed(3407))
+    return torch.randn(N, q, dtype = torch.float32, generator = torch.Generator().manual_seed(3407))
 
 
 @torch.no_grad()
@@ -92,7 +92,7 @@ def randomized_svd(
     rank = min(rank, N)
     q = min(rank + (max(rank, 10) if n_oversamples is None else n_oversamples), N)
     if generator is None:
-        Z = _sketch(N, q).to(A.device, copy = True)
+        Z = _sketch(N, q).to(A.device, A.dtype, copy = True)
     else:
         Z = torch.randn(N, q, device = A.device, dtype = A.dtype, generator = generator)
     failures = []
@@ -190,10 +190,32 @@ def mica_basis(W, r):
     return U.float().contiguous()
 
 
+def _routed(base):
+    # Routed compressed-tensors linears: loader_utils' wrapper (the saved original) densifies them first.
+    return type(base).__name__ == "_UnslothNVFP4Linear" or getattr(
+        base, "_unsloth_compressed_tensors_fp8", False
+    )
+
+
+def _check_float_weight(weight, init):
+    # FSDP-QLoRA packs Params4bit into a float quant_storage: its dtype alone looks dense.
+    if type(weight).__name__ in ("Params4bit", "Int8Params") or hasattr(weight, "quant_state"):
+        raise TypeError(
+            f"Unsloth: `init_lora_weights = {init!r}` re-runs on the base weights when an adapter is created "
+            "or loaded, and they are quantized here. Load the model with `load_in_4bit = False` and "
+            "`load_in_8bit = False`."
+        )
+
+
 def _pissa_init(self, adapter_name, init_lora_weights):
     from peft.tuners.lora.layer import transpose
 
+    if _OWNER.get("thread") != threading.get_ident():
+        return _ORIGINAL_ANY["pissa_init"](self, adapter_name, init_lora_weights)
+    if _routed(self.get_base_layer()):
+        return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
     weight = self.get_base_layer().weight
+    _check_float_weight(weight, init_lora_weights)
     dtype = weight.dtype
     r = self.r[adapter_name]
     if (
@@ -231,7 +253,12 @@ def _pissa_init(self, adapter_name, init_lora_weights):
 def _mica_init(self, adapter_name):
     from peft.tuners.lora.layer import transpose
 
+    if _OWNER.get("thread") != threading.get_ident():
+        return _ORIGINAL_ANY["mica_init"](self, adapter_name)
+    if _routed(self.get_base_layer()):
+        return _ORIGINAL["mica_init"](self, adapter_name)
     weight = self.get_base_layer().weight
+    _check_float_weight(weight, "mica")
     r = self.r[adapter_name]
     if (
         self.lora_B[adapter_name].weight.device.type == "meta"
@@ -249,6 +276,9 @@ def _mica_init(self, adapter_name):
 
 
 _ORIGINAL = {}
+# PEFT's own methods, kept past the swap: another thread calling PEFT directly must not get ours.
+_ORIGINAL_ANY = {}
+_OWNER = {}
 _STATE = {"pissa": False}
 # One owner at a time: the swap is process-wide, so a second thread must not build layers mid-restore.
 _LOCK = threading.RLock()
@@ -274,13 +304,15 @@ def fast_lora_init(force = False):
             original = LoraLayer.__dict__.get(name)
             if original is None:
                 continue
-            _ORIGINAL[name] = original
+            _ORIGINAL[name] = _ORIGINAL_ANY[name] = original
             setattr(LoraLayer, name, fn)
             swapped.append((name, original))
         _STATE["pissa"] = False
+        _OWNER["thread"] = threading.get_ident()
         try:
             yield _STATE
         finally:
+            _OWNER.clear()
             for name, original in swapped:
                 setattr(LoraLayer, name, original)
             _ORIGINAL.clear()
