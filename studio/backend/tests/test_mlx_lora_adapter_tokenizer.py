@@ -32,7 +32,11 @@ CHATML = (
 SPECIAL = ["<|endoftext|>", "<|im_start|>", "<|im_end|>"]
 
 
-def _tokenizer(specials, eos_token, chat_template = None):
+def _tokenizer(
+    specials,
+    eos_token,
+    chat_template = None,
+):
     vocab = {"<unk>": 0, **{token: i + 1 for i, token in enumerate(specials)}}
     for word in ("user", "assistant", "Hi", "Hello!", "\n"):
         vocab[word] = len(vocab)
@@ -101,7 +105,9 @@ def test_mlx_chat_uses_the_tokenizer_a_base_model_lora_was_trained_with(
 
 def _export_backend(monkeypatch, base_tokenizer):
     monkeypatch.setitem(sys.modules, "utils.models.model_config", model_config)
-    mod = _load_module("test_core_export_mlx_adapter_tokenizer", "core/export/export.py", monkeypatch)
+    mod = _load_module(
+        "test_core_export_mlx_adapter_tokenizer", "core/export/export.py", monkeypatch
+    )
     loader = SimpleNamespace(from_pretrained = lambda **k: (SimpleNamespace(), base_tokenizer))
     monkeypatch.setattr(mod, "FastLanguageModel", loader)
     monkeypatch.setattr(mod, "_IS_MLX", True)
