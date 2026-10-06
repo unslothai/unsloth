@@ -1223,7 +1223,9 @@ def _cache_module(key: tuple[str, str, bool], code: Optional[str]) -> None:
             _module_cache_chars -= len(old[1] or "")
         _MODULE_CACHE[key] = (time.monotonic(), code)
         _module_cache_chars += size
-        while len(_MODULE_CACHE) > _MODULE_CACHE_ENTRIES or _module_cache_chars > _MODULE_CACHE_CHARS:
+        while (
+            len(_MODULE_CACHE) > _MODULE_CACHE_ENTRIES or _module_cache_chars > _MODULE_CACHE_CHARS
+        ):
             _, (_, dropped) = _MODULE_CACHE.popitem(last = False)
             _module_cache_chars -= len(dropped or "")
 

@@ -351,7 +351,11 @@ def _empty_module_cache(monkeypatch):
     monkeypatch.setattr(browser_mod, "_module_cache_chars", 0)
 
 
-def _modules(monkeypatch, scripts, allow_origin = None):
+def _modules(
+    monkeypatch,
+    scripts,
+    allow_origin = None,
+):
     """Serve each URL in `scripts` as (error, body, content_type); return the URLs fetched."""
     fetched = []
 
@@ -432,7 +436,6 @@ def test_a_fetched_page_gets_its_modules_inlined(monkeypatch):
 def _sri(algorithm, body):
     import base64
     import hashlib
-
     return f"{algorithm}-" + base64.b64encode(hashlib.new(algorithm, body).digest()).decode()
 
 
@@ -482,7 +485,12 @@ def test_inlined_modules_stay_within_the_page_limit(monkeypatch):
     page = '<script type="module" src="/a.js"></script><script type="module" src="/b.js"></script>'
     monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", len(page) + 50)
     out = browser_mod._inline_module_scripts(page, "https://example.com/")
-    assert out == '<script type="module" src="/a.js"></script><script type="module">' + "b" * 30 + "</script>"
+    assert (
+        out
+        == '<script type="module" src="/a.js"></script><script type="module">'
+        + "b" * 30
+        + "</script>"
+    )
 
 
 def test_a_module_fetch_that_raises_leaves_the_page_alone(monkeypatch):
