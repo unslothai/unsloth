@@ -76,17 +76,29 @@ def _patch_backends(
     inf,
     llama,
     voice = None,
+    voice_loading = None,
 ):
     """Stub core.inference + routes.inference modules so the lazy imports inside
     training_vram resolve to fakes (avoids importing torch-heavy backends).
-    ``voice`` is the voice-slot llama-server; empty unless a test loads one."""
+    ``voice`` is the voice-slot llama-server; empty unless a test loads one.
+    ``voice_loading`` is a MagicMock cancel_voice_loads standing for a voice load in flight."""
     core_inf = types.ModuleType("core.inference")
     core_inf.get_inference_backend = lambda: inf
+    llama_mod = types.ModuleType("core.inference.llama_cpp")
+    llama_mod.voice_load_active = lambda: voice_loading is not None
+    llama_mod.cancel_voice_loads = voice_loading or (lambda: 0)
     routes_inf = types.ModuleType("routes.inference")
     routes_inf.get_llama_cpp_backend = lambda: llama
     voice = voice if voice is not None else _fake_llama_backend(active = False)
     routes_inf.get_voice_llama_backend = lambda: voice
-    return patch.dict(sys.modules, {"core.inference": core_inf, "routes.inference": routes_inf})
+    return patch.dict(
+        sys.modules,
+        {
+            "core.inference": core_inf,
+            "core.inference.llama_cpp": llama_mod,
+            "routes.inference": routes_inf,
+        },
+    )
 
 
 def _fake_stt_sidecar(
@@ -590,6 +602,19 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
         llama.unload_model.assert_called_once()
         voice.unload_model.assert_called_once()
         self.assertEqual(freed, ["gguf:gemma.gguf", "voice:orpheus.gguf"])
+
+    def test_cancels_a_voice_load_that_has_not_spawned_yet(self):
+        # Past its training guard with no process yet: left alone it launches its
+        # llama-server beside the trainer.
+        inf = _fake_inference_backend()
+        llama = _fake_llama_backend(active = False)
+        voice = _fake_llama_backend(active = False, identifier = "orpheus.gguf")
+        cancel = MagicMock(return_value = 1)
+        with _patch_backends(inf, llama, voice = voice, voice_loading = cancel):
+            freed = tv.free_chat_models_for_training(reason = "test")
+        voice.unload_model.assert_called_once()
+        cancel.assert_called_once()
+        self.assertEqual(freed, ["voice:orpheus.gguf"])
 
     def test_unloads_voice_slot_alone(self):
         inf = _fake_inference_backend()

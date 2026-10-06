@@ -2571,10 +2571,16 @@ export function ChatPage({
         // backend and the voice it was loading comes up under a store that says
         // browser voice; and only if this is still the pick once it settles.
         const inflight = voiceLoadInflightRef.current;
-        void (inflight ? inflight.catch(() => {}) : Promise.resolve()).then(() => {
-          if (!current()) return;
-          return authFetch("/api/inference/voice/unload", { method: "POST" });
-        });
+        void (inflight ? inflight.catch(() => {}) : Promise.resolve())
+          .then(() => {
+            if (!current()) return;
+            return authFetch("/api/inference/voice/unload", { method: "POST" });
+          })
+          .catch(() => {})
+          .finally(() => {
+            // The superseded load's finally skipped its clear, so this pick owns the flag now.
+            if (current()) setVoiceSlotLoading(false);
+          });
         return;
       }
 

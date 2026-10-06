@@ -527,10 +527,15 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
     try:
+        from core.inference.llama_cpp import cancel_voice_loads, voice_load_active
         from routes.inference import get_voice_llama_backend
         voice = get_voice_llama_backend()
-        # The voice slot is its own llama-server; same CPU-only exemption as above.
-        if voice.is_active and getattr(voice, "_gpu_offload_active", None) is not False:
+        # The voice slot is its own llama-server; same CPU-only exemption as above. A load
+        # past its training guard but not yet spawned has no process, so cancel it too, or
+        # it launches beside the trainer (same as the arbiter's _evict_chat).
+        if (
+            voice.is_active and getattr(voice, "_gpu_offload_active", None) is not False
+        ) or voice_load_active():
             name = voice.model_identifier or "voice"
             logger.info(
                 "Unloading GGUF voice model '%s' to free GPU memory for training (%s)",
@@ -538,6 +543,7 @@ def free_chat_models_for_training(reason: str) -> List[str]:
                 reason,
             )
             voice.unload_model()
+            cancel_voice_loads()
             freed.append(f"voice:{name}")
     except Exception as e:
         logger.warning("Could not unload GGUF voice model: %s", e)
