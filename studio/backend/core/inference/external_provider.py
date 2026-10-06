@@ -32,6 +32,10 @@ from core.inference.openai_responses_shared import (
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
+from models.providers import (
+    normalize_provider_reasoning_config,
+    validate_provider_reasoning_contract,
+)
 
 # Local servers, not hosted APIs: each applies the model's own chat template on the way in, so a prompt built here is
 # templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
@@ -1407,6 +1411,35 @@ def _build_kimi_tool_end(
     )
 
 
+def _apply_custom_reasoning_controls(
+    body: dict[str, Any],
+    config: Optional[dict],
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+) -> None:
+    """Emit exactly one explicitly configured dialect. Disabled/corrupt config emits nothing."""
+    if not config or not config["enabled"]:
+        return
+    off = enable_thinking is False or reasoning_effort == "none"
+    # Explicit off must still reach the server when a previous model left a wider effort level.
+    if (
+        not off
+        and reasoning_effort is not None
+        and reasoning_effort not in {"low", "medium", "high"}
+    ):
+        return
+    effort = "none" if off else (reasoning_effort or "medium")
+    style = config["style"]
+    if style == "reasoning_effort":
+        body["reasoning_effort"] = effort
+    elif style == "reasoning":
+        body["reasoning"] = {"enabled": False} if off else {"effort": effort}
+    elif style == "thinking":
+        body["thinking"] = {"type": "disabled" if off else "enabled"}
+    elif style == "chat_template_kwargs.enable_thinking":
+        body["chat_template_kwargs"] = {"enable_thinking": not off}
+
+
 class ExternalProviderClient:
     """Async proxy for OpenAI-compatible external APIs."""
 
@@ -1418,10 +1451,17 @@ class ExternalProviderClient:
         timeout: float = 120.0,
         *,
         api_type: str = "chat_completions",
+        reasoning_config: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
+        self.reasoning_config = (
+            normalize_provider_reasoning_config(reasoning_config)
+            if provider_type == "custom"
+            else None
+        )
+        validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
@@ -1738,6 +1778,10 @@ class ExternalProviderClient:
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
         elif self.provider_type == "lemonade":
             _apply_fastflowlm_reasoning_controls(body, enable_thinking, reasoning_effort)
+        elif self.provider_type == "custom":
+            _apply_custom_reasoning_controls(
+                body, self.reasoning_config, enable_thinking, reasoning_effort
+            )
 
         # OpenRouter's unified `reasoning` field gates per-model thinking. Some routes
         # (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.

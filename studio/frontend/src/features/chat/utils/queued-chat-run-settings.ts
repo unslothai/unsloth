@@ -19,7 +19,6 @@ const QUEUED_SETTING_KEYS = [
   "codeToolsEnabled",
   "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "bypassPermissions",

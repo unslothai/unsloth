@@ -52,6 +52,8 @@ import type {
   LocalModelInfo,
 } from "@/features/chat";
 import type { ProviderApiType } from "@/features/chat/api/providers-api";
+// eslint-disable-next-line no-restricted-imports -- Connection contract has no React dependencies.
+import type { CustomReasoningConfig } from "@/features/chat/custom-reasoning";
 import { normalizeGgufVisionCapability } from "@/features/chat/utils/model-vision-capability";
 import {
   DotTag,
@@ -2685,8 +2687,14 @@ function mediaPageForTask(
 // task itself must stay, since FLUX.2-klein carries it too.
 const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
 // Editing families the backend now SUPPORTS: not hidden despite the edit keyword. Mirrors the
-// backend's qwen-image-edit family.
-const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
+// backend's qwen-image-edit, flux.1-kontext and qwen-image-layered families.
+const SUPPORTED_EDIT_KEYWORDS = [
+  "qwen-image-edit",
+  "kontext",
+  "qwen-image-layered",
+  "qwen_image_layered",
+  "qwenimagelayered",
+] as const;
 // Match a keyword as a whole path/name segment, not a raw substring, so "edit" does not hide
 // ".../edited/...". Keywords are [a-z-] literals, so no escaping. Mirrors _token_in_needle.
 function idHasSegment(id: string, keyword: string): boolean {
@@ -4841,6 +4849,18 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
+  const externalReasoningConfigById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [
+          provider.id,
+          provider.backendProviderType === "custom" && !provider.decisionsOnly
+            ? provider.reasoningConfig
+            : undefined,
+        ]),
+      ),
+    [externalProviders],
+  );
   // A provider catalogue arrives after first paint and decides most of the marks, so re-read it.
   const catalogVersion = useSyncExternalStore(
     subscribeModelCatalog,
@@ -4870,6 +4890,7 @@ export function HubModelPicker({
     apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    reasoningConfig?: CustomReasoningConfig;
   } | null>(null);
   const [settingsModel, setSettingsModel] = useState<{
     model: ExternalModelOption;
@@ -4877,6 +4898,7 @@ export function HubModelPicker({
     apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    reasoningConfig?: CustomReasoningConfig;
     connectionMaxOutputTokens: number | null;
   } | null>(null);
 
@@ -6161,6 +6183,7 @@ export function HubModelPicker({
                 baseUrl,
                 isReasoningProvider:
                   externalReasoningFlagById.get(model.providerId) === true,
+                reasoningConfig: externalReasoningConfigById.get(model.providerId),
                 connectionMaxOutputTokens:
                   externalMaxOutputById.get(model.providerId) ?? null,
               })
@@ -6193,6 +6216,7 @@ export function HubModelPicker({
                     baseUrl,
                     isReasoningProvider:
                       externalReasoningFlagById.get(model.providerId) === true,
+                    reasoningConfig: externalReasoningConfigById.get(model.providerId),
                   }),
               },
               {
@@ -6947,7 +6971,7 @@ export function HubModelPicker({
                   : "Search Unsloth models"
               }
               data-model-picker-search-input={true}
-              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8"
+              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
             />
             {isLoading && (
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -8462,7 +8486,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
@@ -8490,6 +8514,7 @@ export function HubModelPicker({
           apiType={settingsModel.apiType}
           baseUrl={settingsModel.baseUrl}
           isReasoningProvider={settingsModel.isReasoningProvider}
+          reasoningConfig={settingsModel.reasoningConfig}
           connectionMaxOutputTokens={settingsModel.connectionMaxOutputTokens}
         />
       ) : null}
@@ -8506,6 +8531,7 @@ export function HubModelPicker({
           apiType={infoModel.apiType}
           baseUrl={infoModel.baseUrl}
           isReasoningProvider={infoModel.isReasoningProvider}
+          reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
     </CapabilityScope.Provider>

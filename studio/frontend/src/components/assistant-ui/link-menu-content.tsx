@@ -19,7 +19,6 @@ import {
   saveLinkAs,
   textFileKind,
   useBrowserPrefsStore,
-  useBrowserStore,
 } from "@/features/browser";
 import { startLibraryChat } from "@/features/library";
 import { useT } from "@/i18n";
@@ -38,7 +37,6 @@ import {
   InternetIcon,
   Link01Icon,
   LinkSquare02Icon,
-  PaintBoardIcon,
   SquareArrowUpRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -153,7 +151,6 @@ async function sandboxAbsolutePath(sessionId: string, file: string): Promise<str
 export function FileMenuContent({ file }: { file: ContextFile }) {
   const t = useT();
   const navigate = useNavigate();
-  const openInCanvas = useBrowserStore((state) => state.openInCanvas);
   const contentType = file.contentType ?? "";
   const kind = textFileKind(file.name, contentType);
   // Spreadsheet text (CSV/TSV) previews as a sheet but copies as the text it is.
@@ -181,12 +178,6 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
       .then((blob) =>
         startLibraryChat(navigate, { files: [new File([blob], file.name, { type: contentType || blob.type })] }),
       )
-      .catch(failed("linkMenu.openFailed"));
-  const openCanvas = () =>
-    void file
-      .load()
-      .then((blob) => blob.text())
-      .then((code) => openInCanvas?.({ title: file.name.replace(/\.[^.]+$/, ""), code }))
       .catch(failed("linkMenu.openFailed"));
   // A tab in the user's own browser; text is retyped so it shows as text rather than runs.
   const tabType = browserTabType(file.name, contentType);
@@ -240,12 +231,6 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
             <ContextMenuItem onSelect={openInBrowser}>
               <ItemIcon icon={InternetIcon} />
               {t("linkMenu.unslothBrowser")}
-            </ContextMenuItem>
-          ) : null}
-          {kind === "html" && openInCanvas ? (
-            <ContextMenuItem onSelect={openCanvas}>
-              <ItemIcon icon={PaintBoardIcon} />
-              {t("linkMenu.canvas")}
             </ContextMenuItem>
           ) : null}
           <ContextMenuItem onSelect={openInNewChat}>
