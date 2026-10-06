@@ -744,14 +744,89 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
 
 
 def test_map_guidance_flux_uses_distilled_guidance():
-    cfg, g = _map_guidance(detect_family("flux.1"), 3.5)
-    assert cfg is None and g == 3.5
+    # cfg must be explicit: unset, sd.cpp applies its default 7.0 and FLUX.1 renders dark or burnt.
+    assert _map_guidance(detect_family("flux.1"), 3.5) == (1.0, 3.5)
+    assert _map_guidance(detect_family("flux.1"), 0.0) == (1.0, 0.0)
+    assert _map_guidance(detect_family("flux.1-kontext"), 2.5) == (1.0, 2.5)
+    assert _map_guidance(detect_family("flux.2-dev"), 4.0) == (1.0, 4.0)
+    assert _map_guidance(detect_family("flux.1"), None) == (1.0, None)
+
+
+def test_map_guidance_flux2_klein_distilled_off_base_real_cfg():
+    assert _map_guidance(detect_family("flux.2-klein"), 1.0) == (1.0, None)
+    assert _map_guidance(detect_family("flux.2-klein"), 5.0) == (5.0, None)
+    assert _map_guidance(detect_family("flux.2-klein"), None) == (1.0, None)
+
+
+# (repo, family, cfg, embedded guidance) at Studio's per-model default guidance.
+_FLUX_DEFAULT_GUIDANCE_CASES = [
+    ("unsloth/FLUX.1-dev-GGUF", "flux.1", 1.0, 3.5),
+    ("unsloth/FLUX.1-schnell-GGUF", "flux.1", 1.0, 0.0),
+    ("unsloth/FLUX.1-Kontext-dev-GGUF", "flux.1-kontext", 1.0, 2.5),
+    ("unsloth/FLUX.2-dev-GGUF", "flux.2-dev", 1.0, 4.0),
+    ("unsloth/FLUX.2-klein-4B-GGUF", "flux.2-klein", 1.0, None),
+    ("unsloth/FLUX.2-klein-9B-GGUF", "flux.2-klein", 1.0, None),
+    ("unsloth/FLUX.2-klein-base-4B-GGUF", "flux.2-klein", 5.0, None),
+    ("unsloth/FLUX.2-klein-base-9B-GGUF", "flux.2-klein", 5.0, None),
+]
+
+
+def _edit_source(fam_name):
+    """Kontext is edit-only on both engines: it renders from a source image, never from text alone."""
+    if detect_family(fam_name).edit:
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), (10, 20, 30)).save(buf, format = "PNG")
+        return {"init_image": base64.b64encode(buf.getvalue()).decode()}
+    return {}
+
+
+@pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
+def test_flux_oneshot_argv_sends_explicit_cfg(repo_id, fam_name, cfg, distilled):
+    from core.inference.diffusion_families import default_generation_params
+    from core.inference.sd_cpp_args import build_sd_cpp_command
+
+    steps, guidance = default_generation_params(repo_id)
+    eng = _FakeEngine()
+    b = _loaded_backend(fam_name, engine = eng)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
+    files, params, out, _kw = eng.calls[-1]
+    argv = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = str(out))
+    assert float(argv[argv.index("--cfg-scale") + 1]) == cfg
+    if distilled is None:
+        assert "--guidance" not in argv
+    else:
+        assert float(argv[argv.index("--guidance") + 1]) == distilled
+
+
+@pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
+def test_flux_server_request_sends_txt_cfg(repo_id, fam_name, cfg, distilled):
+    import dataclasses
+
+    from core.inference.diffusion_families import default_generation_params
+
+    steps, guidance = default_generation_params(repo_id)
+    b = _loaded_backend(fam_name)
+    server = _FakeServer("/bin/sd-server")
+    b._state = dataclasses.replace(b._state, mode = "server", server = server)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
+    g = server.payloads[-1]["sample_params"]["guidance"]
+    assert g["txt_cfg"] == cfg
+    assert g.get("distilled_guidance") == distilled
 
 
 def test_map_guidance_cfg_family_off_when_distilled():
     # qwen-image uses real CFG; a distilled 0 -> CFG off (1.0), a >1 value passes through.
     assert _map_guidance(detect_family("qwen-image"), 0.0) == (1.0, None)
     assert _map_guidance(detect_family("qwen-image"), 4.0) == (4.0, None)
+
+
+def test_map_guidance_z_image_converts_diffusers_g_to_standard_cfg():
+    # The shared default is diffusers' g = 3 (ComfyUI cfg 4); sd.cpp's standard CFG must get 4, Turbo's 0 stays off.
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image"), 3.0) == (4.0, None)
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image-Turbo"), 0.0) == (1.0, None)
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -2250,6 +2325,8 @@ def test_generate_reports_the_build_the_recipe_persists():
     assert out["offload_policy"] == b.status()["offload_policy"]
     assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
     assert out["memory_mode"] is None
+    assert out["cpu_offload"] is True and out["cpu_offload"] == b.status()["cpu_offload"]
+    assert out["speed_mode"] == b.status()["speed_mode"]
 
 
 def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):

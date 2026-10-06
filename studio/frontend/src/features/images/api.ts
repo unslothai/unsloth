@@ -23,6 +23,8 @@ export interface DiffusionResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
+  // "gguf:<file>" the `artifact` replaced.
+  replaced?: string | null;
 }
 
 export interface DiffusionStatus {
@@ -96,8 +98,11 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise".
-  phase?: "denoise" | "decode" | null;
+  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts.
+  phase?: "encode" | "denoise" | "decode" | null;
+  // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
+  preview?: string | null;
+  preview_seq?: number;
 }
 
 export interface DiffusionLoadProgress {
@@ -159,6 +164,8 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
+  // Stream a live preview on generate-progress; omitted = the server default (on).
+  live_preview?: boolean;
   negative_prompt?: string;
   width?: number;
   height?: number;
@@ -176,7 +183,7 @@ export interface DiffusionGenerateRequest {
   allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
-  workflow?: "edit" | "reference";
+  workflow?: "edit" | "reference" | "outpaint";
   reference_resolution?: number;
   // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
   localized_edit?: { mode: LocalizedEditMode; image: string };
@@ -251,6 +258,11 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  speed_mode?: string | null;
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  cpu_offload?: boolean | null;
+  schema_version?: number | null;
   baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;

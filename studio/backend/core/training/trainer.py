@@ -2761,6 +2761,8 @@ class UnslothTrainer:
             def _raw_mode_label() -> str:
                 return "CPT" if is_cpt else "raw text"
 
+            raw_text_column = {}
+
             def _apply_raw_text_prep(ds: Dataset, split_name: str) -> Dataset:
                 try:
                     result = prepare_raw_text_dataset(
@@ -2769,6 +2771,7 @@ class UnslothTrainer:
                         split_name = split_name,
                         eos_token = getattr(self.tokenizer, "eos_token", None),
                         append_eos = True,
+                        text_column = raw_text_column.get("train"),
                     )
                 except ValueError as exc:
                     error_msg = str(exc)
@@ -2778,12 +2781,14 @@ class UnslothTrainer:
 
                 for notice in result.notices:
                     if notice.level == "warning":
-                        logger.warning(notice.message)
                         if notice.update_status:
-                            self._update_progress(status_message = notice.message)
+                            self._record_warning(notice.message)
+                        else:
+                            logger.warning(notice.message)
                     else:
                         logger.info(f"{notice.message}\n")
 
+                raw_text_column.setdefault(split_name, result.source_column)
                 return result.dataset
 
             # S3 datasets download to a local temp dir, then use the local-file path below.
@@ -4050,11 +4055,12 @@ class UnslothTrainer:
             if is_deepseek_ocr:
                 logger.info("Detected DeepSeek OCR model\n")
                 if not _ensure_deepseek_ocr_installed():
+                    # No manual snapshot_download instruction: it told the user to create
+                    # a deepseek_ocr directory in the working directory, which is exactly
+                    # the directory the loader must not pick up over the pinned source.
                     error_msg = (
-                        "Failed to install DeepSeek OCR module. "
-                        "Please install manually: "
-                        "from huggingface_hub import snapshot_download; "
-                        "snapshot_download('unsloth/DeepSeek-OCR', local_dir='deepseek_ocr')"
+                        "Could not prepare the DeepSeek OCR module. "
+                        "Check network access to huggingface.co and try again."
                     )
                     logger.error(error_msg)
                     self._update_progress(error = error_msg, is_training = False)
@@ -4670,37 +4676,26 @@ class UnslothTrainer:
 
 
 def _ensure_deepseek_ocr_installed():
-    """Auto-install the DeepSeek OCR module from HF hub if missing. Returns True if available
-    (already installed or just installed)."""
+    """Install the pinned DeepSeek OCR module if needed. Returns True if available.
+
+    Routed through the pinned-source machinery the other Hub-published sources use, so
+    the fetch is at a fixed revision and the import is checked to have come from it.
+    The old version decided "already available" with a bare
+    `from deepseek_ocr... import`, which any `deepseek_ocr` directory anywhere on
+    `sys.path` satisfied: that directory got imported and the real download was skipped.
+    """
     try:
-        from deepseek_ocr.modeling_deepseekocr import format_messages
-        logger.info("DeepSeek OCR module already available")
-        return True
-    except ImportError:
-        pass
+        logger.info("Preparing the DeepSeek OCR module...")
 
-    try:
-        logger.info("DeepSeek OCR module not found. Auto-installing from HuggingFace...")
-        logger.info("\n Downloading DeepSeek OCR module from HuggingFace...\n")
+        from utils.third_party_source import (
+            ensure_deepseek_ocr_source,
+            import_deepseek_ocr_module,
+        )
 
-        from huggingface_hub import snapshot_download
-        import sys
-        import os
+        source = ensure_deepseek_ocr_source()
+        import_deepseek_ocr_module("deepseek_ocr.modeling_deepseekocr", source)
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(script_dir)
-
-        local_dir = os.path.join(parent_dir, "deepseek_ocr")
-
-        snapshot_download("unsloth/DeepSeek-OCR", local_dir = local_dir, local_dir_use_symlinks = False)
-
-        if parent_dir not in sys.path:
-            sys.path.insert(0, parent_dir)
-
-        from deepseek_ocr.modeling_deepseekocr import format_messages
-
-        logger.info("DeepSeek OCR module installed successfully")
-        logger.info("DeepSeek OCR module installed successfully!\n")
+        logger.info("DeepSeek OCR module ready")
         return True
 
     except Exception as e:

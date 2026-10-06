@@ -20,6 +20,7 @@ on:
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
@@ -59,6 +60,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
@@ -446,6 +448,11 @@ jobs:
         timeout-minutes: 3
         run: python3 tests/studio/playwright_composer_icons.py chromium
 
+      - name: Titlebar modal blur and window controls (Chromium)
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_titlebar_blur.py
+
       # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
       # wrapper and killing it orphans the node child.
       - name: Browser smoke for chat autoscroll
@@ -501,7 +508,7 @@ jobs:
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
 
-      # A failure means dismissal triggered an unconfirmed delete.
+      # A failure means the click that dismissed a menu also reached the control under it.
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium

@@ -63,6 +63,15 @@ export interface SystemInfoResponse {
   nvfp4_diffusion?: boolean;
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
+  /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */
+  diffusers_offload_tiers?: Record<
+    string,
+    Array<{
+      gpu_gb: number;
+      system_ram_gb: number;
+      requires_quantised_streaming?: boolean;
+    }>
+  >;
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;
@@ -81,6 +90,12 @@ export interface SystemInfoResponse {
     free_gb: number;
     percent_used: number;
   };
+  /** The models (HF cache) volume; null or absent when it is the system disk. */
+  models_disk?: {
+    total_gb: number;
+    free_gb: number;
+    percent_used: number;
+  } | null;
   gpu: SystemGpuInfo;
   /** Devices available to GGUF inference; differs when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;

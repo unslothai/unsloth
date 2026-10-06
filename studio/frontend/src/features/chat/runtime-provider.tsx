@@ -3,6 +3,8 @@
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
+import { isMcpToolOnly, mcpImageMappingsEnabled } from "./api/mcp-image";
+import { listMcpServers } from "./api/mcp-servers-api";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -35,6 +37,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
 } from "react";
@@ -93,6 +96,7 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  externalModelSupportsStudioTools,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
@@ -142,6 +146,10 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsCorroboratedLive,
+  generationIsSettled,
+  generationReplayMetadata,
+  createRecoveryPublishSchedule,
+  registerRecoveredRunStop,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
   requestParsesThinkTags,
@@ -159,7 +167,13 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import {
+  beginSavedHistoryReconciliation,
+  isSavedHistoryReconciliationSuperseded,
+  reconcileOrdinarySavedMessagesInView,
+} from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
+import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
@@ -173,6 +187,7 @@ import {
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { createParentResolver } from "./utils/message-order";
+import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -182,8 +197,10 @@ import {
   getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
+  readStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
+  registerNewThreadIdSource,
   saveStoredChatMessage,
   saveStoredChatThread,
   syncStoredChatMessages,
@@ -210,6 +227,10 @@ import {
   isPastedTextFile,
 } from "./utils/pasted-text";
 import {
+  annotationsContentText,
+  annotationsOfFile,
+} from "./utils/document-annotations";
+import {
   adoptPreStreamRunReservation,
   claimPreStreamRunReservation,
   findPreStreamRunReservation,
@@ -227,6 +248,7 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import {
+  RUN_CHECKPOINT_INTERVAL_MS,
   type RunCheckpointScheduler,
   createRunCheckpointScheduler,
 } from "./utils/run-checkpoint-scheduler";
@@ -311,9 +333,36 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+const MCP_TOOL_IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp"];
+
+const MCP_LOOKUP_FAILED =
+  "Could not read your MCP servers, so the image was not attached. Try again.";
+
+/** Whether images go to mapped MCP tool fields instead of the model; null when the server list could not be read. */
+async function mcpToolOnlyEnabled(): Promise<boolean | null> {
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  const toolsSupported = parseExternalModelId(checkpoint)
+    ? externalModelSupportsStudioTools(checkpoint)
+    : state.supportsTools ||
+      !chatModelLoaded({
+        checkpoint,
+        modelLoading: state.modelLoading,
+        isExternalModel: false,
+        residentCheckpoint: state.residentCheckpoint,
+      });
+  if (!toolsSupported || !state.mcpEnabledForChat) return false;
+  try {
+    return mcpImageMappingsEnabled(await listMcpServers());
+  } catch {
+    return null;
+  }
+}
+
 class VisionImageAdapter implements AttachmentAdapter {
   accept = CHAT_IMAGE_ACCEPT;
   private readonly converted = new Map<string, Promise<File | null>>();
+  private readonly toolOnlyIds = new Set<string>();
 
   async *add({
     file: picked,
@@ -357,9 +406,33 @@ class VisionImageAdapter implements AttachmentAdapter {
           visionDisabledByUser: state.loadedVisionDisabledByUser,
           mmprojFallbackReason: state.mmprojFallbackReason,
         });
-    if (unavailableReason) {
+    const mcpToolOnlyState = await mcpToolOnlyEnabled();
+    // Fail closed: a configured mapping may be what this read missed.
+    if (mcpToolOnlyState === null) {
+      toast.error(MCP_LOOKUP_FAILED);
+      throw new Error(MCP_LOOKUP_FAILED);
+    }
+    const mcpToolOnly = mcpToolOnlyState;
+    if (unavailableReason && !mcpToolOnly) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
+    }
+    if (
+      mcpToolOnly &&
+      (picked.size > 10 * 1024 * 1024 ||
+        (!MCP_TOOL_IMAGE_MIMES.includes(picked.type) &&
+          convertedImageType(picked) === null))
+    ) {
+      const reason =
+        "Images for MCP tools must be PNG, JPEG or WebP and at most 10 MB.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+
+    if (mcpToolOnly && this.toolOnlyIds.size > 0) {
+      const reason = "Only one image per message can go to MCP tools.";
+      toast.error(reason);
+      throw new Error(reason);
     }
 
     const maxSize = 20 * 1024 * 1024;
@@ -372,8 +445,10 @@ class VisionImageAdapter implements AttachmentAdapter {
       name: picked.name,
       contentType: picked.type,
       file: picked,
+      ...(mcpToolOnly ? { mcpToolOnly: true } : {}),
       status: { type: "requires-action", reason: "composer-send" },
-    } satisfies PendingAttachment;
+    } satisfies PendingAttachment & { mcpToolOnly?: boolean };
+    if (mcpToolOnly) this.toolOnlyIds.add(attachment.id);
     if (convertedImageType(picked) === null) {
       yield attachment;
       return;
@@ -395,7 +470,15 @@ class VisionImageAdapter implements AttachmentAdapter {
         return;
       }
       toast.error(error instanceof Error ? error.message : String(error));
+      this.toolOnlyIds.delete(attachment.id);
       throw error;
+    }
+    if (mcpToolOnly && file.size > 10 * 1024 * 1024) {
+      const reason =
+        "The converted image is over the 10 MB limit for MCP tools.";
+      this.toolOnlyIds.delete(attachment.id);
+      toast.error(reason);
+      throw new Error(reason);
     }
     // Removed while converting: yielding again would put it back.
     if (!this.converted.has(attachment.id)) {
@@ -407,14 +490,34 @@ class VisionImageAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const conversion = this.converted.get(attachment.id);
     this.converted.delete(attachment.id);
+    this.toolOnlyIds.delete(attachment.id);
     const file = conversion ? await conversion : attachment.file;
+    const current = await mcpToolOnlyEnabled();
+    if (current !== isMcpToolOnly(attachment)) {
+      // Otherwise the image reaches neither the tool nor the model, or the model unasked.
+      const reason =
+        current === null
+          ? MCP_LOOKUP_FAILED
+          : "MCP image settings changed since this image was attached. Remove it and attach it again.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    // Flagged on the part too: modelVisibleMessage drops it from what the model receives.
+    const toolOnly = isMcpToolOnly(attachment) ? { mcpToolOnly: true } : {};
     return {
       id: attachment.id,
       type: "image",
+      ...toolOnly,
       name: file?.name ?? attachment.name,
       contentType: file?.type ?? attachment.contentType,
       content: file
-        ? [{ type: "image", image: await this.fileToBase64DataURL(file) }]
+        ? [
+            {
+              type: "image",
+              image: await this.fileToBase64DataURL(file),
+              ...toolOnly,
+            },
+          ]
         : [],
       status: { type: "complete" },
     };
@@ -422,6 +525,7 @@ class VisionImageAdapter implements AttachmentAdapter {
 
   async remove(attachment: { id: string }): Promise<void> {
     this.converted.delete(attachment.id);
+    this.toolOnlyIds.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
@@ -574,7 +678,8 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await readTextAttachmentOnce(attachment.file);
+    const annotations = annotationsOfFile(attachment.file);
+    const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -584,12 +689,15 @@ class TextAttachmentAdapter implements AttachmentAdapter {
         {
           type: "text",
           // A pasted file gets its own tag and size, the markers that outlive the File once the message is stored.
-          text: attachmentContentText(
-            attachment.name,
-            text,
-            isPastedTextFile(attachment.file),
-            attachment.file.size,
-          ),
+          // Annotations carry their own tag, which the chip reads back once the File is gone.
+          text: annotations
+            ? annotationsContentText(annotations)
+            : attachmentContentText(
+                attachment.name,
+                text,
+                isPastedTextFile(attachment.file),
+                attachment.file.size,
+              ),
         },
       ],
       status: { type: "complete" },
@@ -1229,6 +1337,7 @@ function scheduleGenerationRecovery(
     };
     const runtime = useChatRuntimeStore.getState();
     runtime.registerThreadServerCancel(threadId, serverCancel);
+    const unregisterStop = registerRecoveredRunStop(threadId, serverCancel);
     runtime.setThreadRunning(threadId, true, {
       local: true,
       owner: serverCancel,
@@ -1257,21 +1366,23 @@ function scheduleGenerationRecovery(
     const commit = async (
       nextMetadata: Record<string, unknown>,
       running: boolean,
+      save = true,
     ) => {
       currentMetadata = nextMetadata;
       const content = rebuild();
-      await saveStoredChatMessage({
-        id: storedMessage.id,
-        threadId,
-        parentId: storedMessage.parentId ?? null,
-        role: "assistant",
-        content,
-        metadata: nextMetadata,
-        createdAt: storedMessage.createdAt,
-      }).catch(() => {
-        // The producer may have committed a newer status between the event and this write. Keep
-        // following; the terminal publish carries all content.
-      });
+      if (save) {
+        await saveStoredChatMessage({
+          id: storedMessage.id,
+          threadId,
+          parentId: storedMessage.parentId ?? null,
+          role: "assistant",
+          content,
+          metadata: nextMetadata,
+          createdAt: storedMessage.createdAt,
+        }).catch(() => {
+          // A newer server status can reject this save; settlement retries with full content.
+        });
+      }
 
       for (const view of views) {
         if (view.threadListItem().getState().remoteId !== threadId) continue;
@@ -1307,6 +1418,7 @@ function scheduleGenerationRecovery(
       }
     };
 
+    const schedule = createRecoveryPublishSchedule(RUN_CHECKPOINT_INTERVAL_MS);
     const publish = async (run: ChatGenerationRun) => {
       const status = run.status;
       const runModel = useChatRuntimeStore
@@ -1343,8 +1455,18 @@ function scheduleGenerationRecovery(
           toolCalls: toolNames(rebuild()),
         });
       }
-      await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
+      const settled = nextMetadata.generationSettled === true;
+      await commit(
+        nextMetadata,
+        generationNeedsRecovery(nextMetadata),
+        schedule.takeSave(settled),
+      );
     };
+    const caughtUp = (run: ChatGenerationRun) =>
+      schedule.shouldPublish(
+        cursor,
+        generationIsSettled(run.status, cursor, run.lastEventSeq),
+      );
 
     try {
       let lastPublishedStatus = "";
@@ -1413,12 +1535,16 @@ function scheduleGenerationRecovery(
                 parseThinkTags: parseThink,
               };
             }
+            schedule.attach(update.run.lastEventSeq);
             identityValidated = true;
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
           let advanced = false;
+          let recoveredProviderCompaction: ReturnType<
+            typeof toolRecovery.apply
+          >;
           if (update.event?.type === "chunk") {
-            toolRecovery.apply(
+            recoveredProviderCompaction = toolRecovery.apply(
               update.event.payload,
               raw.length,
               update.event.seq,
@@ -1454,8 +1580,10 @@ function scheduleGenerationRecovery(
                   currentMetadata,
                   chunk._reasoningDurationMs,
                 );
-                lastPublishedStatus = update.run.status;
-                await publish(update.run);
+                if (caughtUp(update.run)) {
+                  lastPublishedStatus = update.run.status;
+                  await publish(update.run);
+                }
                 continue;
               }
               if (generationChunkCountsTowardTiming(chunk)) {
@@ -1471,6 +1599,30 @@ function scheduleGenerationRecovery(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
                   ),
+                };
+              }
+              if (recoveredProviderCompaction) {
+                const sourceProviderType = update.run.requestPayload.provider_type;
+                const sourceModelId =
+                  update.run.requestPayload.external_model ??
+                  update.run.requestPayload.model;
+                currentMetadata = {
+                  ...currentMetadata,
+                  ...recoveredProviderCompaction,
+                  providerCompactionProviderType:
+                    typeof sourceProviderType === "string"
+                      ? sourceProviderType
+                      : undefined,
+                  providerCompactionModelId:
+                    typeof sourceModelId === "string"
+                      ? sourceModelId
+                      : undefined,
+                  providerCompactionConnectionKey:
+                    providerCompactionConnectionKey(
+                      update.run.requestPayload.provider_id,
+                      update.run.requestPayload.provider_base_url,
+                      update.run.requestPayload.provider_api_type,
+                    ),
                 };
               }
               if (chunk.quote_cut === true) quoteCut = true;
@@ -1504,10 +1656,14 @@ function scheduleGenerationRecovery(
             }
           }
           const shouldPublish =
-            (update.event?.type === "chunk" && advanced) ||
-            update.run.status !== lastPublishedStatus ||
-            (["cancelled", "completed", "failed"].includes(update.run.status) &&
-              cursor >= update.run.lastEventSeq);
+            caughtUp(update.run) &&
+            ((update.event?.type === "chunk" && advanced) ||
+              update.run.status !== lastPublishedStatus ||
+              generationIsSettled(
+                update.run.status,
+                cursor,
+                update.run.lastEventSeq,
+              ));
           if (shouldPublish) {
             lastPublishedStatus = update.run.status;
             await publish(update.run);
@@ -1537,6 +1693,14 @@ function scheduleGenerationRecovery(
         await commit(
           {
             ...currentMetadata,
+            // Catch-up can advance content past the last published cursor.
+            ...generationReplayMetadata({
+              cursor,
+              firstChunkAt,
+              totalChunks,
+              usage: recoveryUsage,
+              timings: recoveryTimings,
+            }),
             incomplete: { reason: "interrupted" as const },
             // The run row may still be non-terminal, so without this marker generationNeedsRecovery stays
             // true and the next trigger starts another follower. history.load clears it if
@@ -1553,6 +1717,7 @@ function scheduleGenerationRecovery(
       // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
       // Joined first because the arming is no longer awaited at its call site, so without this a
       // late arm lands after the disarm and leaves the card up on a finished run.
+      unregisterStop();
       if (seededApprovals) await seededApprovals.catch(() => {});
       toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
@@ -2143,8 +2308,25 @@ function useStudioRuntimeAdapters(
     const recoverCurrentThread = () => {
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
-      void listStoredChatMessages(remoteId)
-        .then((messages) => {
+      const generation = beginSavedHistoryReconciliation(remoteId);
+      void readStoredChatMessages(remoteId)
+        .then(({ messages, fromBackend }) => {
+          if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
+            return;
+          }
+          if (aui.threadListItem().getState().remoteId !== remoteId) {
+            return;
+          }
+          // A legacy browser copy served during an outage is older, not an external update.
+          if (fromBackend) {
+            reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
+              editingMessageId:
+                useChatRuntimeStore.getState().editingMessageId ?? null,
+            });
+          }
+          if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
+            return;
+          }
           for (const message of messages) {
             if (
               message.role === "assistant" &&
@@ -2540,12 +2722,13 @@ function useStudioRuntimeAdapters(
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        if (restoredUsage) {
+        const shownUsage = restoredUsage ?? estimateContextUsage(msgs);
+        if (shownUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves: a switch
           // inside it would file this thread's usage under the incoming one.
-          store.setThreadContextUsage(remoteId, restoredUsage);
+          store.setThreadContextUsage(remoteId, shownUsage);
           if (store.activeThreadId === remoteId) {
-            store.setContextUsage(restoredUsage);
+            store.setContextUsage(shownUsage);
           }
         }
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
@@ -3170,6 +3353,17 @@ function ThreadNewChatSwitch({
   return null;
 }
 
+function NewThreadIdRegistrar(): null {
+  const aui = useAui();
+  // Register before passive effects read storage.
+  useLayoutEffect(
+    () =>
+      registerNewThreadIdSource(() => aui.threads().getState().newThreadId),
+    [aui],
+  );
+  return null;
+}
+
 function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3470,8 +3664,9 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
-    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
-    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    // Only into a blank or estimated bar: restored or completion-written usage is exact.
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
     void refreshContextUsage({ threadId: activeThreadId });
   }, [
     activeThreadId,
@@ -3834,6 +4029,7 @@ export function ChatRuntimeProvider({
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ComparePaneContext.Provider value={Boolean(pairId)}>
+        <NewThreadIdRegistrar />
         <ActiveThreadSync
           enabled={
             modelType === "base" &&

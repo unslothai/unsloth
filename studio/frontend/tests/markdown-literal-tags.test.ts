@@ -7,7 +7,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 
-import { withDataImageSupport } from "../src/lib/markdown-data-images.ts";
+import {
+  withDataImageSupport,
+  withLiteralUnknownTags,
+} from "../src/lib/markdown-data-images.ts";
 
 const ALLOWED_TAGS = { "search-image": ["token"] };
 
@@ -18,6 +21,16 @@ function render(markdown: string, mode: "static" | "streaming" = "static") {
       children: markdown,
       allowedTags: ALLOWED_TAGS,
       rehypePlugins: withDataImageSupport(ALLOWED_TAGS),
+    }),
+  );
+}
+
+function renderDocument(markdown: string) {
+  return renderToStaticMarkup(
+    createElement(Streamdown, {
+      mode: "static",
+      children: markdown,
+      rehypePlugins: withLiteralUnknownTags(),
     }),
   );
 }
@@ -37,6 +50,8 @@ test("placeholders and generic types in prose stay visible", () => {
       "Use Vec<T> here, or List<String> in Java.",
       "Save it to /home/<user>/models/<model-name>/ then restart.",
       "The <script> tag loads JS. More text follows.",
+      "The <small> tag shrinks text, <u> underlines it.",
+      "Wrap the image in a <figure> with a <figcaption>.",
       "For all 0<x and x>1 we have a bound.",
       "<your-api-key>",
       "Use Vec<T> and close </T> here.",
@@ -87,6 +102,87 @@ test("allowed HTML tags still render as elements", () => {
   );
 });
 
+test("documents unwrap formatting tags used as markup", () => {
+  assert.match(
+    renderDocument("MMBench<sub><small>EN-DEV</small></sub> and <U>under</U>"),
+    /<p>MMBench<sub[^>]*>EN-DEV<\/sub> and under<\/p>/,
+  );
+  for (const [block, line] of [
+    ["<figure>\n<figcaption>Caption</figcaption>\n</figure>", "Caption"],
+    ["<center>Use <your-api-key> here</center>", "Use <your-api-key> here"],
+    ["<center>\nCentered text", "Centered text"],
+    ["Intro\n\n<figure>\n<img src=x>", "Intro"],
+    ["<table><tr><td>MMBench<sub><small>EN</td></tr></table>", "MMBench"],
+    [
+      '<div>The <abbr title="x">API</abbr> takes <T></div>',
+      "The API takes <T>",
+    ],
+  ]) {
+    const html = renderDocument(block);
+    assert.ok(html.includes(escaped(line)), html);
+    assert.doesNotMatch(
+      html,
+      /(<|&lt;)\/?(figure|figcaption|center|abbr|small)\b/,
+      html,
+    );
+  }
+  for (const [markdown, expected] of [
+    [
+      "Use <mark>text</mark>, e.g. <mark>.",
+      "<p>Use text, e.g. &lt;mark&gt;.</p>",
+    ],
+    ["The <u> tag, as in <u>x</u>.", "<p>The &lt;u&gt; tag, as in x.</p>"],
+    ["<u>a <u>b</u> c</u> and </u>", "<p>a b c and &lt;/u&gt;</p>"],
+    [
+      "The <small> tag shrinks text.",
+      "<p>The &lt;small&gt; tag shrinks text.</p>",
+    ],
+    [
+      "The <small> tag.\n\nLater: </small> here.",
+      "<p>The &lt;small&gt; tag.</p>\n<p>Later: &lt;/small&gt; here.</p>",
+    ],
+  ]) {
+    const html = renderDocument(markdown);
+    assert.ok(html.includes(expected), html);
+  }
+});
+
+test("chat replies keep formatting tags as text", () => {
+  for (const line of [
+    "Use <cite>Title</cite> for works.",
+    "Open it with <small> and close it with </small>.",
+  ]) {
+    const html = render(line);
+    assert.ok(html.includes(`>${escaped(line)}<`), html);
+  }
+  for (const [block, line] of [
+    [
+      "<div>The <small> tag shrinks text.</div>",
+      "The <small> tag shrinks text.",
+    ],
+    [
+      "<p>Wrap it in <figure> with a <figcaption>.</p>",
+      "Wrap it in <figure> with a <figcaption>.",
+    ],
+  ]) {
+    const html = render(block);
+    assert.ok(html.includes(escaped(line)), html);
+  }
+});
+
+test("withLiteralUnknownTags merges caller tags into the schema", () => {
+  const html = renderToStaticMarkup(
+    createElement(Streamdown, {
+      mode: "static",
+      children:
+        '<video src="https://example.com/v.mp4" controls></video>\n\nPad with <unk> tokens.',
+      rehypePlugins: withLiteralUnknownTags({ video: ["src", "controls"] }),
+    }),
+  );
+  assert.match(html, /<video src="https:\/\/example\.com\/v\.mp4" controls/);
+  assert.match(html, /Pad with &lt;unk&gt; tokens\./);
+});
+
 test("hostile markup never renders as markup", () => {
   for (const markdown of [
     "a <script>alert(1)</script> b",
@@ -119,9 +215,9 @@ test("hostile markup never renders as markup", () => {
 });
 
 test("literal tags keep their source position so streamed blocks re-render", () => {
-  const [plugin, tagNames] = withDataImageSupport(ALLOWED_TAGS)[0] as [
-    (names: string[]) => (tree: unknown) => void,
-    string[],
+  const [plugin, options] = withDataImageSupport(ALLOWED_TAGS)[0] as [
+    (options: unknown) => (tree: unknown) => void,
+    unknown,
   ];
   const position = {
     start: { line: 3, column: 1, offset: 9 },
@@ -143,7 +239,7 @@ test("literal tags keep their source position so streamed blocks re-render", () 
       },
     ],
   };
-  plugin(tagNames)(tree);
+  plugin(options)(tree);
   const [block, paragraph] = tree.children as {
     position?: unknown;
     children: { type: string; position?: unknown }[];

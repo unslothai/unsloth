@@ -13,8 +13,12 @@ from core.inference import diffusion_qwenimage21_rocm as chunks
     [
         ("gfx1151", "auto", True),
         ("gfx1151:sramecc-", "auto", True),
+        ("gfx1201", "auto", True),
+        ("gfx1200", "auto", True),
         ("gfx1100", "auto", False),
+        ("gfx1150", "auto", False),
         ("gfx942", "auto", False),
+        ("gfx1201", "0", False),
         ("gfx1100", "1", True),
         ("gfx1151", "0", False),
     ],

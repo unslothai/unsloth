@@ -2479,7 +2479,7 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
 
-    assert calls == [("web_search", {"query": big_query})]
+    assert calls == [("web_search", {"query": big_query.strip()})]
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     # Empty-args card = provisional open; full-args card = reconciled real start.
     provisional = [e for e in tool_starts if not e.get("arguments")]
@@ -4885,7 +4885,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"query":"' + big + '"}}'
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
@@ -4906,7 +4906,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
     assert calls and calls[0][0] == "web_search"
-    assert len(calls[0][1].get("code", "")) > cap
+    assert len(calls[0][1].get("query", "")) > cap
 
 
 def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):

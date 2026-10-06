@@ -143,7 +143,17 @@ def test_seed_device_scheme_and_kill_switch(monkeypatch):
 def test_denoiser_seed_forwards_the_placement(monkeypatch):
     import core.inference.diffusion_denoiser_prequant as dp
     import core.inference.diffusion_prequant as prequant
-    import diffusers
+    import sys
+    import types
+
+    # Only the class lookup by name is exercised; the CPU runners have no diffusers, so an empty
+    # module stands in when it is absent, as in test_diffusion_memory.py's _top_group_module.
+    if "diffusers" not in sys.modules:
+        try:
+            import diffusers  # noqa: F401
+        except ImportError:
+            monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    diffusers = sys.modules["diffusers"]
 
     seen = {}
 
@@ -173,13 +183,13 @@ def test_denoiser_seed_forwards_the_placement(monkeypatch):
 
 
 def test_loader_materialises_on_the_placement_device():
-    src = (BACKEND / "core/inference/diffusion_prequant.py").read_text()
+    src = (BACKEND / "core/inference/diffusion_prequant.py").read_text(encoding = "utf-8")
     assert "transformer = transformer.to(placement_device or device)" in src
     assert "transformer = transformer.to(device)\n" not in src
 
 
 def test_pipeline_seed_call_passes_the_plan_placement():
-    tree = ast.parse((BACKEND / "core/inference/diffusion.py").read_text())
+    tree = ast.parse((BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8"))
     calls = [
         n
         for n in ast.walk(tree)
@@ -259,7 +269,7 @@ def test_balanced_kill_switch_and_scope(monkeypatch):
 
 
 def test_balanced_refinement_is_wired_before_component_refinement():
-    src = (BACKEND / "core/inference/diffusion.py").read_text()
+    src = (BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8")
     assert (
         "refine_memory_plan_for_components(\n                        pipe, refine_balanced_plan_for_components(pipe, plan)\n"
         in src

@@ -258,6 +258,8 @@ _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 # onto something else.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
+    # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
+    ("test_npu_chat_route.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
     # A 600-second expiry checked against the wall clock.
     # Reading both sides of that gap late by whole seconds still leaves it true, and it only reaches this scan at all

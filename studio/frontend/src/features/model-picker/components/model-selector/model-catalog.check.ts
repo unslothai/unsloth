@@ -8,6 +8,14 @@
 
 import assert from "node:assert/strict";
 
+import {
+  AUDIO_CPP_MODELS,
+  AUDIO_CPP_REPO,
+  AUDIO_CPP_UNOFFERED_FOLDERS,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
+
 import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   AUDIO_CATALOG,
@@ -1487,13 +1495,15 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
-  // One metadata call per repo id, however many artifacts share it.
+  // One metadata call per repo id, however many artifacts share it. A package folder id names a folder
+  // of one shared repo, so every one of them is checked against that repo.
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
-      const bucket = artifactsByRepo.get(artifact.repoId);
+      const hubRepo = isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId;
+      const bucket = artifactsByRepo.get(hubRepo);
       if (bucket) bucket.push(artifact);
-      else artifactsByRepo.set(artifact.repoId, [artifact]);
+      else artifactsByRepo.set(hubRepo, [artifact]);
     }
   }
 
@@ -1536,6 +1546,40 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
       }
     }
 
+    for (const artifact of artifacts) {
+      if (!isAudioCppFolderId(artifact.repoId)) continue;
+      // The package folder is the id's first segment past the repo.
+      const folder = artifact.repoId.slice(AUDIO_CPP_REPO.length + 1).split("/")[0];
+      if (!(repo.siblings ?? []).some((s) => s.rfilename.startsWith(`${folder}/`))) {
+        failures.push(`${artifact.repoId}: ${repoId} has no '${folder}/' folder`);
+      }
+    }
+
+    if (repoId === AUDIO_CPP_REPO) {
+      const folders = new Set(
+        (repo.siblings ?? [])
+          .map((s) => s.rfilename.split("/"))
+          .filter((parts) => parts.length > 1)
+          .map((parts) => parts[0]),
+      );
+      const offered = AUDIO_CPP_MODELS.filter((m) => isAudioCppFolderId(m.id)).map((m) =>
+        audioCppDisplayName(m.id),
+      );
+      const unoffered = Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS);
+      for (const folder of folders) {
+        if (!offered.includes(folder) && !unoffered.includes(folder)) {
+          failures.push(
+            `${repoId}: '${folder}/' is in neither AUDIO_CPP_MODELS nor AUDIO_CPP_UNOFFERED_FOLDERS -- classify it`,
+          );
+        }
+      }
+      for (const folder of unoffered) {
+        if (!folders.has(folder)) {
+          failures.push(`${repoId}: AUDIO_CPP_UNOFFERED_FOLDERS lists '${folder}', which the repo no longer has`);
+        }
+      }
+    }
+
     const declaredFiles = [
       ...new Set(artifacts.map((a) => a.filename).filter((f): f is string => Boolean(f))),
     ];
@@ -1565,7 +1609,9 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
   // Advisory only. A canonicalId is a display/grouping key and 15 are deliberately not repos;
   // but one that is both `unsloth/*`-shaped and dead clears every owner guard in the app.
-  const artifactIds = new Set([...artifactsByRepo.keys()].map((id) => id.toLowerCase()));
+  const artifactIds = new Set(
+    groups.flatMap((g) => g.artifacts.map((a) => a.repoId.toLowerCase())),
+  );
   const orphans = groups
     .map((g) => g.canonicalId)
     .filter((id) => !artifactIds.has(id.toLowerCase()));
@@ -1584,7 +1630,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
 if (process.argv.includes("--network")) {
   console.log("model-catalog check: --network, asking the Hub about every declared artifact...");
-  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG]);
+  const audioCppGroups = AUDIO_CATALOG.filter((group) =>
+    group.artifacts.some((artifact) => isAudioCppFolderId(artifact.repoId)),
+  );
+  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG, audioCppGroups]);
   if (failures.length > 0) {
     for (const failure of failures) console.error(`::error::${failure}`);
     console.error(`model-catalog network check: ${failures.length} problem(s)`);

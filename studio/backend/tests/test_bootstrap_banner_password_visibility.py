@@ -115,6 +115,16 @@ def test_an_api_only_launch_has_no_autofill():
     assert banner_autofill_available(state, {}) is False
 
 
+def test_a_desktop_owned_api_only_launch_autofills_on_loopback(monkeypatch):
+    import main
+
+    state = _State()
+    state.api_only = True
+    monkeypatch.setattr(main, "_DESKTOP_OWNER", {"kind": "tauri", "token_sha256": "x"})
+
+    assert main.banner_autofill_available(state, {}) is True
+
+
 def test_a_suppressed_injection_has_no_autofill():
     from main import banner_autofill_available
 

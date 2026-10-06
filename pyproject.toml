@@ -1,5 +1,10 @@
 [build-system]
-requires = ["setuptools==82.0.1", "setuptools-scm==9.2.2"]
+requires = [
+    # setuptools 83+ needs Python 3.10, and we still support 3.9 source installs.
+    "setuptools==84.0.0; python_version >= '3.10'",
+    "setuptools==82.0.1; python_version < '3.10'",
+    "setuptools-scm==9.2.2",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,7 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "wheel>=0.42.0",
     "packaging",
     # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch2140 leaves ask
@@ -43,14 +48,14 @@ dependencies = [
     "triton>=3.0.0 ; ('linux' in sys_platform)",
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "typer>=0.19.0",
     "rich",
     "pydantic",
@@ -80,6 +85,7 @@ version = {attr = "unsloth._version.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
+"unsloth._vendor.clef" = ["LICENSE", "README.md", "clef_manifest.json"]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
     "*.sh",
@@ -87,6 +93,7 @@ studio = [
     "*.bat",
     "node_prebuilt_pins.json",
     "lemonade_prebuilt_pins.json",
+    "q4nx_converter_pins.json",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
@@ -111,6 +118,7 @@ studio = [
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
+    "systemd/*",
 ]
 
 [tool.setuptools.packages.find]
@@ -188,10 +196,12 @@ studio = [
     "pandas>=3.0,<4 ; sys_platform == 'win32' and platform_machine == 'ARM64' and python_version >= '3.11'",
     "nest_asyncio==1.6.0",
     "datasets==4.3.0",
-    "pyjwt==2.13.0",
+    "pyjwt==2.15.1",
     "huggingface-hub>=1.31.0,<2.0 ; python_version >= '3.10'",
     "huggingface-hub==0.36.2 ; python_version < '3.10'",
-    "urllib3>=2.3.0",
+    "hf-xet>=1.5.2,<2.0 ; python_version >= '3.10' and (platform_machine == 'x86_64' or platform_machine == 'amd64' or platform_machine == 'AMD64' or platform_machine == 'arm64' or platform_machine == 'aarch64' or platform_machine == 'ARM64')",
+    "urllib3>=2.8.0 ; python_version >= '3.10'",
+    "urllib3>=2.3.0 ; python_version < '3.10'",
     "jinja2>=3.1.0",
     "structlog>=24.1.0",
     "diceware==1.0.1",
@@ -233,7 +243,7 @@ triton = [
     "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -243,14 +253,14 @@ huggingface = [
     "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "sentence-transformers",
     "typer>=0.12.0",
     "pydantic",
@@ -274,12 +284,7 @@ huggingfacenotorch = [
     # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
     # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
     # wherever 2026.9.5 or newer is the zoo actually present.
-    #
-    # This does NOT lift the transformers ceiling below. 2026.9.5 still declares
-    # `transformers<=5.5.0` in its own metadata, so the resolver intersects our transformers
-    # range down to 5.5.0 whatever this file says. That one waits on
-    # unslothai/unsloth-zoo#1227 and a later zoo release.
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -288,7 +293,7 @@ huggingfacenotorch = [
     "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
@@ -306,8 +311,10 @@ huggingfacenotorch = [
     # on 3.9 and the whole extra becomes unresolvable.
     "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    # Ceiling = newest release the version matrix ran. Each `!=` was tested and rejected: keep them.
+    # Apple Silicon stays at 5.5.0 via unsloth_zoo's marker-split requirement.
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "sentence-transformers",
 ]
 # What this extra does on this branch is raise the bitsandbytes floor; it does not
@@ -323,7 +330,7 @@ amd = [
     # install.sh and studio/install_python_stack.py.
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
@@ -865,11 +872,11 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
+    "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
@@ -888,7 +895,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "trl>=0.18.2,!=0.19.0,<=1.13.0",
     "peft>=0.18.0",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
@@ -1181,6 +1188,7 @@ extend-exclude = [
     "*mapper.py",
     # Vendored upstream source: reformatting it would break the digest test.
     "studio/backend/vendor/",
+    "unsloth/_vendor/",
 ]
 
 [tool.ruff.lint]

@@ -25,7 +25,10 @@ import remend from "remend";
 import { parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
-import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  IncrementalMarkdownCache,
+  repairStreamingMarkdown,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const processStreamingText = (text: string): string =>
@@ -173,7 +176,7 @@ function assertMatchesFullSplit(
     );
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
-      parseMarkdownIntoBlocks(remend(input)),
+      parseMarkdownIntoBlocks(repairStreamingMarkdown(input)),
       `block mismatch at prefix ${length} of ${name}: ${JSON.stringify(source.slice(0, 200))}`,
     );
   }

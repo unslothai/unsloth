@@ -1023,6 +1023,76 @@ def test_native_int8_under_real_stream_group_offload_leaves_nothing_resident():
     assert {b.device.type for b in model.buffers()} == {"cpu"}
 
 
+def _torchao_int8_blocks(n = 3, features = 256):
+    quant = pytest.importorskip("torchao.quantization")
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList(
+                [torch.nn.Linear(features, features, dtype = torch.bfloat16) for _ in range(n)]
+            )
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return x
+
+    model = Model()
+    quant.quantize_(model, quant.Int8WeightOnlyConfig())
+    return model.requires_grad_(False)
+
+
+def test_unpinned_torchao_host_copy_is_a_distinct_wrapper_over_the_same_data():
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    weight = _torchao_int8_blocks(n = 1).blocks[0].weight
+    copy = go.ModuleGroup._to_cpu(weight, True)
+    assert copy is not weight
+    assert type(copy) is type(weight)
+    assert copy.qdata.data_ptr() == weight.qdata.data_ptr()
+    assert copy.scale.data_ptr() == weight.scale.data_ptr()
+    plain = torch.zeros(4)
+    assert go.ModuleGroup._to_cpu(plain, True).data_ptr() == plain.data_ptr()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "stream group offload needs a CUDA device"
+)
+def test_unpinned_torchao_stream_group_offload_leaves_nothing_resident():
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    model = _torchao_int8_blocks()
+    resident = _torchao_int8_blocks()
+    resident.load_state_dict(model.state_dict(), assign = True)
+    resident.cuda()
+    apply_group_offloading(
+        model,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        low_cpu_mem_usage = True,
+        non_blocking = True,
+        record_stream = True,
+    )
+    x = torch.randn(8, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        expected = resident(x)
+        for _ in range(2):  # Reuse the host copies after offloading.
+            out = model(x)
+            torch.cuda.synchronize()
+            assert {b.weight.qdata.device.type for b in model.blocks} == {"cpu"}
+            assert torch.equal(out, expected)
+
+
 class _GateSeen(Exception):
     pass
 

@@ -62,7 +62,6 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
     "@/components/app-readiness": { AppPortalGate: "AppPortalGate" },
     "@/components/ui/button": { Button: "Button" },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
-    "@/lib/scroll-overflow": { useScrollOverflowRef: () => () => undefined },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
   });

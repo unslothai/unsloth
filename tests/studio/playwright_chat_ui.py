@@ -222,11 +222,41 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+# Slots the shared AlertDialog parts render (studio/frontend/src/components/ui/alert-dialog.tsx).
+FULL_ACCESS_TITLE = '[data-slot="alert-dialog-title"]'
+FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
+FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
     expect(pill).to_be_visible()
+
+    # Stub the sandbox capability so level checks do not depend on the runner's user namespaces.
+    sandbox_answer = {"ready": True}
+
+    def answer_sandbox_capability(route):
+        ready = sandbox_answer["ready"]
+        route.fulfill(
+            status = 200,
+            content_type = "application/json",
+            body = json.dumps(
+                {
+                    "python_os_isolated": ready,
+                    "terminal_os_isolated": ready,
+                    "backend": "bubblewrap",
+                    "platform": "linux",
+                    "reason": "" if ready else "bwrap: setting up uid map: Permission denied",
+                    "setup_action": None,
+                    "manual_command": "" if ready else "apt-get install -y bubblewrap",
+                    "can_run_setup": False,
+                }
+            ),
+        )
+
+    page.route("**/api/sandbox/capability*", answer_sandbox_capability)
 
     def expect_mode(label):
         expect(pill).to_have_attribute("data-pill-label", label)
@@ -243,6 +273,15 @@ def exercise_permission_mode_controls(page, shoot):
         item = menu.get_by_role("menuitem").filter(has_text = label).first
         expect(item).to_be_visible()
         item.click()
+
+    def pick_sandbox_level(menu, current, target):
+        # The "Sandbox <level>" chip in the permission menu opens a level picker beside the menu.
+        chip = menu.get_by_role("menuitem", name = re.compile(r"^Sandbox"))
+        expect(chip).to_contain_text(current)
+        chip.click()
+        picker = page.get_by_role("menu").filter(has_text = "How should code be sandboxed?")
+        expect(picker).to_be_visible()
+        picker.get_by_role("menuitem", name = re.compile(rf"^{target}")).click()
 
     # Every caller reloads straight after this, and the page being left can still write the level
     # back in between: a hydrating GET of its own lands after the clear and caches the installation's
@@ -320,9 +359,41 @@ def exercise_permission_mode_controls(page, shoot):
     # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
     # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
     # pill is the one thing the next assertion needs, and waiting for it is bounded.
+    #
+    # One more reload, only when the app never booted. Seen once on the Windows msedge permissions lane
+    # (#12438's run 36881445186): after the reload the server served /chat and the three boot scripts and
+    # then no /api request at all, the page stayed on "Loading...", and the pill never mounted. That is
+    # the app shell failing to start, not this step's assertion, so it gets one retry with the evidence
+    # logged; a page that booted and still lacks the pill fails at once, and so does a second boot failure.
+    def _boot_state():
+        try:
+            return page.evaluate(
+                """() => ({
+                    url: location.href,
+                    readyState: document.readyState,
+                    composer: !!document.querySelector('textarea[aria-label="Message input"]'),
+                    root: (document.getElementById("root")?.innerText || "").trim().slice(0, 80),
+                })"""
+            )
+        except Exception as exc:
+            return {"evaluate_failed": repr(exc)}
+
     def reload_and_wait_for_pill():
         page.reload(wait_until = "load")
+        try:
+            expect(pill).to_be_visible(timeout = 30_000)
+            return
+        except AssertionError:
+            state = _boot_state()
+            shoot("04-permission-pill-missing")
+            info(f"WARN permission pill missing 30s after reload; page state {state}")
+            if state.get("composer") or state.get("evaluate_failed"):
+                raise
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
+        info(
+            "WARN the app did not boot on the first reload and did on the second; see the state above"
+        )
 
     # choose() only drives THIS tab.
     # The mirror to /api/chat/settings is a 400ms trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts)
@@ -337,12 +408,16 @@ def exercise_permission_mode_controls(page, shoot):
     #
     # So: wait for the level to actually be ON the installation before reloading and asserting on it. Assert what was
     # achieved, not what was commanded.
-    def expect_server_mode(expected, timeout_ms = 15_000):
+    def expect_server_mode(
+        expected,
+        timeout_ms = 15_000,
+        key = "permissionMode",
+    ):
         deadline = time.monotonic() + timeout_ms / 1000.0
         seen = "<never read>"
         while True:
             seen = page.evaluate(
-                """async () => {
+                """async (key) => {
                     const token = localStorage.getItem("unsloth_auth_token");
                     const res = await fetch("/api/chat/settings", {
                         headers: token ? { Authorization: "Bearer " + token } : {},
@@ -350,8 +425,9 @@ def exercise_permission_mode_controls(page, shoot):
                     });
                     if (!res.ok) return "<http " + res.status + ">";
                     const body = await res.json();
-                    return (body && body.settings && body.settings.permissionMode) ?? null;
-                }"""
+                    return (body && body.settings && body.settings[key]) ?? null;
+                }""",
+                key,
             )
             if seen == expected:
                 return
@@ -360,7 +436,7 @@ def exercise_permission_mode_controls(page, shoot):
             page.wait_for_timeout(100)
         fail(
             f"permission level never reached the installation: /api/chat/settings "
-            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"reports {key}={seen!r} after {timeout_ms}ms, expected "
             f"{expected!r} -- the debounced mirror never landed"
         )
 
@@ -444,21 +520,26 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
 
-    # Full access requires explicit consent and never overwrites persistence.
+    # Full access requires explicit consent and never overwrites persistence. The dialog is found by
+    # its alert-dialog slots, not its wording: #12630 rewrote the copy ("Enable Full access?" became
+    # "Turn on Full access?", "I understand" became "Turn on") and the step failed on main with the
+    # consent flow intact. What it still pins is the substance: the title names the mode and the body
+    # warns that the sandbox goes away.
     choose("Full access")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
-    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
-    expect(dialog).to_contain_text("the code sandbox")
-    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog.locator(FULL_ACCESS_TITLE)).to_contain_text("Full access")
+    expect(dialog).to_contain_text("sandbox")
+    dialog.locator(FULL_ACCESS_CANCEL).click()
     expect(dialog).to_be_hidden()
     expect_mode("Run automatically")
 
     choose("Full access")
     expect(dialog).to_be_visible()
-    dialog.get_by_role("button", name = "I understand").click()
+    dialog.locator(FULL_ACCESS_CONFIRM).click()
+    # expect_mode reads the pill's data-pill-label. #12630 dropped the pill's danger styling for Full
+    # access on purpose, so there is no data-variant left to check.
     expect_mode("Full access")
-    expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
     # Read the opacity once the hover transition has finished, not at a fixed delay into it.
@@ -473,10 +554,65 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
+    # Without a sandbox: Run automatically applies at once, the Sandbox chip reads Low, and picking
+    # High in its level picker opens the install popup, whose "Use Low sandbox" keeps Low.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    # Landed on the install first, or the reload hydrates the previous "off" back.
+    expect_server_mode("auto")
+    sandbox_answer["ready"] = False
+    reload_and_wait_for_pill()
+    expect_mode("Approve for me")
+    choose("Run automatically")
+    expect_mode("Run automatically")
+    if page.get_by_role("alertdialog").count() != 0:
+        fail("picking Run automatically without a sandbox opened a dialog")
+    # Reopening the menu straight after a pick races its close; a reload also proves the level persisted.
+    # Landed on the install first, or the reload hydrates the previous "auto" back.
+    expect_server_mode("off")
+    reload_and_wait_for_pill()
+    expect_mode("Run automatically")
+    menu = open_menu()
+    expect(menu.get_by_text("Permissions", exact = True)).to_be_visible()
+    if menu.get_by_text("OS sandbox not available").count() != 0:
+        fail("the Run automatically row still carries the 'OS sandbox not available' hint")
+    pick_sandbox_level(menu, current = "Low", target = "High")
+    setup = page.get_by_role("alertdialog")
+    expect(setup.get_by_role("heading", name = "OS sandbox is not available")).to_be_visible()
+    # The command rides on Copy command (and Settings > Sandbox), not as a block of text in the popup.
+    expect(setup).not_to_contain_text("apt-get install -y bubblewrap")
+    expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    expect(setup.get_by_role("button", name = "Copy command")).to_have_attribute(
+        "title", re.compile(r"apt-get install -y bubblewrap")
+    )
+    expect(setup.get_by_role("button", name = "Learn more")).to_be_visible()
+    if setup.get_by_role("button", name = "Install sandbox").count() != 0:
+        fail("setup popup offered Install sandbox to a request the server did not allow")
+    setup.get_by_role("button", name = "Use Low sandbox").click()
+    expect(setup).to_be_hidden()
+    level = page.evaluate("() => localStorage.getItem('unsloth_chat_sandbox_level')")
+    if level != "low":
+        fail(f"Use Low sandbox stored {level!r}, expected 'low'")
+    expect_mode("Run automatically")
+    expect_server_mode("low", key = "sandboxLevel")
+    sandbox_answer["ready"] = True
+    reload_and_wait_for_pill()
+    # With a working sandbox picking High applies it at once, and it stays High for the next browser's run.
+    pick_sandbox_level(open_menu(), current = "Low", target = "High")
+    if page.get_by_role("alertdialog").count() != 0:
+        fail("picking High with a working sandbox opened the setup popup")
+    page.wait_for_function("() => localStorage.getItem('unsloth_chat_sandbox_level') === 'high'")
+    page.keyboard.press("Escape")
+    expect_server_mode("high", key = "sandboxLevel")
+
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
     expect_mode("Approve for me")
+    expect_server_mode("auto")
     shoot("04-permission-levels")
+    # The stub is for the level checks only. Left in place it intercepts this page for the rest of the run, which
+    # also turns off its HTTP cache, and the later sign-out step wedged on it on Windows.
+    page.unroute("**/api/sandbox/capability*", answer_sandbox_capability)
 
 
 def login_via_api(pw):

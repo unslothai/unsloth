@@ -7061,10 +7061,17 @@ exit 0
     }
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
+    # No usable interpreter: uv provides one once it is installed below, instead of a
+    # system-wide winget / python.org install (#7802). Windows on ARM keeps the system
+    # install, whose x64-vs-ARM64 choice the steps below depend on.
+    $PythonFromUv = (-not $DetectedPython) -and ((Get-HostMachineArch) -ne "arm64")
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
+    } elseif ($PythonFromUv) {
+        step "python" "no Python 3.11-3.13 found; uv will provide Python $PythonVersion"
     }
-    if (-not $DetectedPython) {
+    # Dot-sourced so $DetectedPython lands in this scope; also the fallback when uv cannot.
+    $InstallSystemPython = {
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         $wingetExit = $null
@@ -7128,8 +7135,11 @@ exit 0
             Write-StudioLine "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-StudioLine "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
             Write-StudioLine "        Then re-run this installer." -ForegroundColor Yellow
-            return (Exit-InstallFailure "Python installation failed")
         }
+    }
+    if (-not $DetectedPython -and -not $PythonFromUv) {
+        . $InstallSystemPython
+        if (-not $DetectedPython) { return (Exit-InstallFailure "Python installation failed") }
     }
     # Re-probe for the interpreter actually selected: every native decision is keyed to a cp3XX tag.
     $WoaProbedMinor = $PythonVersion
@@ -7596,6 +7606,51 @@ exit 0
     }
     if (-not $env:UV_HTTP_TIMEOUT) {
         $env:UV_HTTP_TIMEOUT = "180"
+    }
+
+    # --no-bin / --no-registry: only uv's own Python store changes, nothing on PATH or in
+    # the py launcher. --system: `find` otherwise answers with an active venv's python.
+    # $null sends the caller to the system install.
+    function Resolve-UvManagedPython {
+        # A range excluding $PythonSkip, as install.sh's _python_request: a bare "3.13" can
+        # resolve to 3.13.8, and a pinned patch may be newer than this uv knows or a cached one.
+        $request = $PythonVersion
+        $bad = @($PythonSkip | Where-Object { $_ -like "$PythonVersion.*" })
+        if ($bad.Count -gt 0 -and $PythonVersion -match '^(\d+)\.(\d+)$') {
+            $request = ">=$PythonVersion,<$($Matches[1]).$([int]$Matches[2] + 1)" + (($bad | ForEach-Object { ",!=$_" }) -join "")
+        }
+        $installExit = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $request" {
+            & $script:UvExe python install --no-bin --no-registry $request
+        }
+        if ($installExit -ne 0) { return $null }
+        $exe = ""
+        try {
+            $exe = (& $script:UvExe python find --system --managed-python $request 2>$null | Select-Object -First 1)
+        } catch {}
+        $exe = "$exe".Trim()
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
+        # -S: a sitecustomize banner would otherwise be read as the version.
+        $full = ""
+        try {
+            $full = (& $exe -S -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
+        } catch {}
+        $full = "$full".Trim()
+        if ($full -notmatch '^(3\.1[1-3])\.\d+$') { return $null }
+        $minor = $Matches[1]
+        # find answers through uv's per-minor link, which can still name a skipped patch.
+        if ($PythonSkip -contains $full) { return $null }
+        return @{ Version = $minor; Path = $exe; Arch = "" }
+    }
+
+    if ($PythonFromUv) {
+        $DetectedPython = Resolve-UvManagedPython
+        if ($DetectedPython) {
+            step "python" "using uv-managed Python $($DetectedPython.Version)"
+        } else {
+            substep "uv could not provide Python $PythonVersion -- installing it system-wide instead." "Yellow"
+            . $InstallSystemPython
+            if (-not $DetectedPython) { return (Exit-InstallFailure "Python installation failed") }
+        }
     }
 
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
@@ -10003,7 +10058,8 @@ main()
         "gfx1200", "gfx1201"                                                    # RDNA 4
     )
     $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
-    $MultiArchTag = "rocm7.14.1"
+    # Not rocm7.14.1: its Windows wheels ship a mismatched AOTriton runtime, so fused SDPA fails (ROCm/TheRock#7992).
+    $MultiArchTag = "rocm7.14.0"
     $MultiArchTorchVersion = "2.11.0"
     $MultiArchTorchvisionVersion = "0.26.0"
     $MultiArchTorchaudioVersion = "2.11.0"
@@ -10913,7 +10969,7 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.13" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.9.14" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -11303,7 +11359,7 @@ main()
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "
+    $installedPackageVersion = (& $VenvPython -I -c "
 import sys
 try:
     from studio.install_manifest import installed_version_probe
@@ -11550,7 +11606,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($script:WoaNativeCudaTorch) {
         $WoaStudioSetup = $null
         try {
-            $WoaStudioSetup = (& $VenvPython -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
+            $WoaStudioSetup = (& $VenvPython -I -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
         } catch {}
         $WoaStudioAware = $false
         if ($WoaStudioSetup -and (Test-Path -LiteralPath $WoaStudioSetup -PathType Leaf)) {
@@ -12123,10 +12179,13 @@ try {
         }
         $script:WoaResolverEnvSaved = $null
     }
-    foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
-        $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
-        if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
-        else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+    # Guarded like the block above: @($null.Keys) is one $null item, and indexing it would stop this finally before the cleanup below.
+    if ($script:MirrorEnvSaved) {
+        foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
+            $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
+            if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+        }
     }
     # UNSLOTH_KEPT_TORCH is a process-scoped handoff, and the session outlives the installer.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue

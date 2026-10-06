@@ -160,6 +160,8 @@ CORE_FACTORIES = {
     "routes.mcp_servers:POST:/{server_id}/ui-tool-call": Factory(
         "mcp", {"tool_name": "refresh"}, success = 400
     ),
+    # Nothing cached for the seeded server: its own account gets 409, every other account 404.
+    "routes.mcp_servers:GET:/{server_id}/tools": Factory("mcp", success = 409),
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL
     ),

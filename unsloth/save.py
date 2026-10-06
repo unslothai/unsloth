@@ -60,7 +60,6 @@ import subprocess
 import traceback
 import psutil
 import re
-from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
@@ -71,6 +70,7 @@ from .models.loader_utils import (
 from .models._utils import _convert_torchao_model
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .device_type import clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
 
@@ -994,7 +994,7 @@ def unsloth_save_model(
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
@@ -1002,7 +1002,7 @@ def unsloth_save_model(
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
-            '"lora"         ==> This is the fastest and easiet. Just saves LoRA modules.\n'
+            '"lora"         ==> This is the fastest and easiest. Just saves LoRA modules.\n'
             '"merged_16bit" ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
             '"merged_4bit"  ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.'
         )
@@ -1479,17 +1479,17 @@ def unsloth_save_model(
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
         if j % 10 == 0:
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
     state_dict = None
     del state_dict
-    torch.cuda.empty_cache()
+    clean_gpu_cache()
     gc.collect()
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
     for _ in range(3):
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
         gc.collect()
     return save_directory, username
 
@@ -1598,6 +1598,33 @@ def _compressed_quantize_pythonpath():
     return pp or None
 
 
+def llm_compressor_manual_install_command() -> str:
+    import importlib.util
+    if importlib.util.find_spec("pip") is not None:
+        return f"{sys.executable} -m pip install '{_LLM_COMPRESSOR_SPEC}'"
+    return f"uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'"
+
+
+def _llm_compressor_missing_error(*, autoinstall_disabled: bool) -> str:
+    reason = (
+        ", and automatic installation is disabled via UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL"
+        if autoinstall_disabled
+        else ""
+    )
+    message = (
+        "Unsloth: llm-compressor is required for FP8/FP4 compressed export but is not "
+        f"installed{reason}. Install it manually with:\n"
+        f"    {llm_compressor_manual_install_command()}\n"
+        "(pin torch and transformers to your current versions to avoid upgrading them)."
+    )
+    if not autoinstall_disabled:
+        message += (
+            "\nOr drop install_missing_dependencies=False to let Unsloth install the pinned "
+            "package into this interpreter."
+        )
+    return message
+
+
 def _llm_compressor_imports_in_subprocess():
     """True only if a fresh interpreter, launched like the export's quantize runner, imports an llm-compressor inside _LLM_COMPRESSOR_SPEC."""
     # sys.path[0] as `python _compressed_quantize.py` sets it; the caller's cwd is kept so relative PYTHONPATH entries resolve the same way.
@@ -1627,8 +1654,8 @@ def _llm_compressor_imports_in_subprocess():
         return False
 
 
-def install_llm_compressor():
-    """Import llm-compressor, installing a version-pinned copy on first use for FP8/FP4 export and pinning the current torch + transformers so pip does not upgrade them. UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the auto-install. Returns (oneshot, QuantizationModifier)."""
+def install_llm_compressor(install_missing_dependencies: bool = True):
+    """Import llm-compressor for FP8/FP4 export, installing a version-pinned copy on first use (pinning the current torch + transformers so pip does not upgrade them). install_missing_dependencies=False or UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the install and raises with the manual install command instead. Returns (oneshot, QuantizationModifier)."""
     try:
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
@@ -1640,20 +1667,11 @@ def install_llm_compressor():
     if _llm_compressor_imports_in_subprocess():
         return None, None
 
-    # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
-    if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
-        "0",
-        "",
-        "false",
-        "no",
-    ):
-        raise RuntimeError(
-            "Unsloth: llm-compressor is required for FP8/FP4 compressed export but is not "
-            "installed, and automatic installation is disabled via "
-            "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL. Install it manually with:\n"
-            f"    uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'\n"
-            "(pin torch and transformers to your current versions to avoid upgrading them)."
-        )
+    autoinstall_disabled = os.environ.get(
+        "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0"
+    ).lower() not in ("0", "", "false", "no")
+    if autoinstall_disabled or not install_missing_dependencies:
+        raise RuntimeError(_llm_compressor_missing_error(autoinstall_disabled = autoinstall_disabled))
 
     print(
         "Unsloth: Installing llm-compressor for FP8/FP4 export "
@@ -2321,14 +2339,15 @@ def unsloth_save_pretrained_merged(
     calibration_dataset = None,
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
+    install_missing_dependencies: bool = True,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -2336,7 +2355,8 @@ def unsloth_save_pretrained_merged(
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
         16bit merge at `save_directory` and writes the quantized checkpoint to
-        `save_directory + "-<fmt>"`.
+        `save_directory + "-<fmt>"`. A missing llm-compressor is installed on first use; pass
+        ``install_missing_dependencies=False`` to raise with the install command instead.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -2378,6 +2398,7 @@ def unsloth_save_pretrained_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            install_missing_dependencies = install_missing_dependencies,
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -2430,6 +2451,7 @@ def unsloth_save_pretrained_merged(
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
+    del arguments["install_missing_dependencies"]
     unsloth_save_model(**arguments)
     for _ in range(3):
         gc.collect()
@@ -2456,20 +2478,22 @@ def unsloth_push_to_hub_merged(
     calibration_dataset = None,
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
+    install_missing_dependencies: bool = True,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
         Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
+        Pass ``install_missing_dependencies=False`` to never auto-install llm-compressor.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -2502,6 +2526,7 @@ def unsloth_push_to_hub_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            install_missing_dependencies = install_missing_dependencies,
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -2554,6 +2579,7 @@ def unsloth_push_to_hub_merged(
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
+    del arguments["install_missing_dependencies"]
     unsloth_save_model(**arguments)
     for _ in range(3):
         gc.collect()
@@ -4102,8 +4128,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         import gc
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
 
     try:
         model_dtype = dtype_from_config(self.config)
@@ -5129,16 +5154,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import (
-    get_model_name,
-    _resolve_hub_repo_cached_file,
-    _tokenizer_cache_dir,
-    _tokenizer_wants_local_only,
-)
-
 # Imported lazily at the two call sites: an older zoo, before its bitsandbytes import became optional, would otherwise break `import unsloth` on a host without bnb.
 from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
 )
 
@@ -5733,14 +5750,15 @@ def unsloth_generic_save_pretrained_merged(
     calibration_dataset = None,
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
+    install_missing_dependencies: bool = True,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -5750,6 +5768,7 @@ def unsloth_generic_save_pretrained_merged(
         `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
         `save_directory`, then a quantized checkpoint is written to `save_directory + "-<fmt>"`.
         `nvfp4` needs calibration data (defaults to ultrachat; override with `calibration_dataset`).
+        Pass ``install_missing_dependencies=False`` to never auto-install llm-compressor.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -5792,6 +5811,7 @@ def unsloth_generic_save_pretrained_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            install_missing_dependencies = install_missing_dependencies,
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -5842,6 +5862,7 @@ def unsloth_generic_save_pretrained_merged(
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
+    del arguments["install_missing_dependencies"]
     unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
@@ -5868,20 +5889,22 @@ def unsloth_generic_push_to_hub_merged(
     calibration_dataset = None,
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
+    install_missing_dependencies: bool = True,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
         Passing `tokenizer` also writes that tokenizer's files, exactly as the merge
         methods do. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
+        Pass ``install_missing_dependencies=False`` to never auto-install llm-compressor.
 
     `safe_serialization` defaults to safetensors. `None` is stronger than the default `True`: on a host
     with at most two physical CPUs the default downgrades to a pickle, since safetensors is
@@ -5915,6 +5938,7 @@ def unsloth_generic_push_to_hub_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
+            install_missing_dependencies = install_missing_dependencies,
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -5967,6 +5991,7 @@ def unsloth_generic_push_to_hub_merged(
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
+    del arguments["install_missing_dependencies"]
     unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
@@ -6070,10 +6095,7 @@ def _unsloth_save_torchao_with_given_config(
     model_restore = _offload_model_for_quantize_subprocess(model)
     for _ in range(3):
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if hasattr(torch, "xpu") and torch.xpu.is_available():
-            torch.xpu.empty_cache()
+        clean_gpu_cache()
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
@@ -6111,10 +6133,7 @@ def _unsloth_save_torchao_with_given_config(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
 
     if os.path.exists(save_directory):
@@ -6425,6 +6444,7 @@ def _unsloth_save_compressed_tensors(
     calibration_dataset = None,
     num_calibration_samples: int = 512,
     max_seq_length: int = 2048,
+    install_missing_dependencies: bool = True,
     **merge_kwargs,
 ):
     """Export an FP8/FP4 compressed-tensors checkpoint via llm-compressor. Mirrors the torchao PTQ path: LoRA is first merged into the base model at 16bit and written to `save_directory` (which is kept), then quantized with llm-compressor's `QuantizationModifier(scheme)` in a separate process, so Unsloth's transformers monkey-patches do not interfere, and written to `save_directory + "-" + suffix`. The result is intended for vLLM inference."""
@@ -6444,7 +6464,7 @@ def _unsloth_save_compressed_tensors(
     # Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of writing a full 16bit checkpoint first. Under the llm-compressor-main shadow the subprocess validates itself, so the workspace install / ceiling / scheme checks are skipped.
     _shadow_pythonpath = _compressed_quantize_pythonpath()
     if _shadow_pythonpath is None:
-        install_llm_compressor()
+        install_llm_compressor(install_missing_dependencies = install_missing_dependencies)
         # llm-compressor cannot run under a newer transformers than its ceiling: the subprocess dies on a cryptic TORCH_INIT_FUNCTIONS ImportError only AFTER the costly merge.
         _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
         if _exceeds:
@@ -6605,8 +6625,7 @@ def _unsloth_save_compressed_tensors(
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
@@ -6672,8 +6691,7 @@ def _unsloth_save_compressed_tensors(
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def _unsloth_save_torchao(
@@ -6792,14 +6810,10 @@ def _unsloth_save_torchao(
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
         # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards, which a plain .to("cpu") cannot move.
-        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if _has_xpu:
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
@@ -6818,8 +6832,7 @@ def _unsloth_save_torchao(
         del quantized_model
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
@@ -6869,17 +6882,13 @@ def _unsloth_save_torchao(
             traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_gpu_cache()
 
 
 def unsloth_save_pretrained_torchao(

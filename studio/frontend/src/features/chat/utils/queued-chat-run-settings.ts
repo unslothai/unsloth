@@ -19,11 +19,11 @@ const QUEUED_SETTING_KEYS = [
   "codeToolsEnabled",
   "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
@@ -40,6 +40,7 @@ const QUEUED_SETTING_KEYS = [
   // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
+  "loadedIsMlx",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",

@@ -34,14 +34,26 @@ except Exception:
     except Exception:
         _XFormersBlockMask = None
 
+try:
+    from xformers.ops.fmha.attn_bias import BlockDiagonalMask as _XFormersBidirectionalMask
+except Exception:
+    try:
+        from xformers.attn_bias import BlockDiagonalMask as _XFormersBidirectionalMask
+    except Exception:
+        _XFormersBidirectionalMask = None
+
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int], Any] = OrderedDict()
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool], Any] = (
+    OrderedDict()
+)
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
 
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
+
+_SEGMENT_LENGTHS_CACHE: dict = {}
 
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
@@ -103,20 +115,24 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
 
 
 def _get_cached_block_mask(
-    lengths: Tuple[int, ...], sliding_window: Optional[int], device: torch.device
+    lengths: Tuple[int, ...],
+    sliding_window: Optional[int],
+    device: torch.device,
+    is_causal: bool = True,
 ):
-    if _XFormersBlockMask is None:
+    mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
+    if mask_class is None:
         return None
 
     device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    cache_key = (device, lengths, window_key)
+    cache_key = (device, lengths, window_key, is_causal)
     cached = _XFORMERS_MASK_CACHE.get(cache_key)
     if cached is not None:
         _XFORMERS_MASK_CACHE.move_to_end(cache_key)
         return cached
 
-    mask = _XFormersBlockMask.from_seqlens(list(lengths))
+    mask = mask_class.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
         mask = mask.make_local_attention(window_size = window_key)
     mask = move_xformers_attention_bias(mask, device)
@@ -255,18 +271,22 @@ def enable_padding_free_metadata(model, trainer):
 
     def torch_call_with_padding_free_metadata(examples: Sequence[dict]):
         seq_lengths: list[int] = []
+        collated = examples
         if examples and isinstance(examples[0], dict):
-            for example in examples:
+            for index, example in enumerate(examples):
                 lengths = example.get("seq_lengths")
                 if lengths is None:
                     ids = example.get("input_ids")
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    example["seq_lengths"] = lengths
+                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
+                    if collated is examples:
+                        collated = list(examples)
+                    collated[index] = {**example, "seq_lengths": lengths}
                 seq_lengths.extend(lengths)
 
-        batch = original_torch_call(examples)
+        batch = original_torch_call(collated)
         if seq_lengths:
             # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
             # this batch and the zoo's discount of the boundary targets is idempotent.
@@ -632,14 +652,16 @@ def build_xformers_block_causal_mask(
     sliding_window: Optional[int] = None,
     base_mask: Optional[Any] = None,
     total_tokens: Optional[int] = None,
+    is_causal: bool = True,
 ):
-    if _XFormersBlockMask is None:
+    mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
+    if mask_class is None:
         return None
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
         # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
-        params = (sliding_window, total_tokens)
+        params = (sliding_window, total_tokens, is_causal)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
@@ -649,7 +671,7 @@ def build_xformers_block_causal_mask(
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
         lengths = _with_padding_segment(lengths, total_tokens)
-        mask = _get_cached_block_mask(lengths, sliding_window, device)
+        mask = _get_cached_block_mask(lengths, sliding_window, device, is_causal = is_causal)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
             "seq_lengths": seq_lengths,
@@ -669,6 +691,41 @@ def build_xformers_block_causal_mask(
     return mask
 
 
+def packed_block_mask(
+    length: int,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+    sliding_window: Optional[int] = None,
+    is_causal: bool = True,
+) -> torch.Tensor:
+    """Additive (length, length) mask of one packed segment: causal and / or sliding window."""
+    block = torch.zeros((length, length), dtype = dtype, device = device)
+    if is_causal:
+        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
+        block = block.masked_fill(upper, float("-inf"))
+    if sliding_window is not None and sliding_window > 0 and length > sliding_window:
+        idx = torch.arange(length, device = device)
+        dist = idx.unsqueeze(1) - idx.unsqueeze(0)
+        block = block.masked_fill(dist >= sliding_window, float("-inf"))
+    return block
+
+
+def packed_segment_lengths(
+    seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: Optional[int] = None
+) -> Tuple[int, ...]:
+    """Segment lengths of a packed row, the pad tail as its own segment; one D2H sync per batch."""
+    seq_lengths = seq_info[0]
+    entry = _SEGMENT_LENGTHS_CACHE.get(seq_lengths.device)
+    if entry is not None and entry[0] is seq_lengths and entry[1] == total_tokens:
+        return entry[2]
+    lengths = _with_padding_segment(
+        tuple(int(length) for length in seq_lengths.tolist()), total_tokens
+    )
+    _SEGMENT_LENGTHS_CACHE[seq_lengths.device] = (seq_lengths, total_tokens, lengths)
+    return lengths
+
+
 def build_sdpa_packed_attention_mask(
     seq_info: Tuple[torch.Tensor, torch.Tensor, int],
     *,
@@ -676,10 +733,11 @@ def build_sdpa_packed_attention_mask(
     device: torch.device,
     sliding_window: Optional[int] = None,
     total_tokens: Optional[int] = None,
+    is_causal: bool = True,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
 
-    params = (dtype, sliding_window, total_tokens)
+    params = (dtype, sliding_window, total_tokens, is_causal)
     entry = _SDPA_MASK_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
@@ -699,15 +757,13 @@ def build_sdpa_packed_attention_mask(
     for length in lengths:
         if length <= 0:
             continue
-        block = torch.zeros((length, length), dtype = dtype, device = device)
-        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
-        block = block.masked_fill(upper, float("-inf"))
-        if sliding_window is not None and sliding_window > 0 and length > sliding_window:
-            idx = torch.arange(length, device = device)
-            dist = idx.unsqueeze(1) - idx.unsqueeze(0)
-            window_mask = dist >= sliding_window
-            block = block.masked_fill(window_mask, float("-inf"))
-        mask[offset : offset + length, offset : offset + length] = block
+        mask[offset : offset + length, offset : offset + length] = packed_block_mask(
+            length,
+            dtype = dtype,
+            device = device,
+            sliding_window = sliding_window,
+            is_causal = is_causal,
+        )
         offset += length
 
     result = mask.unsqueeze(0).unsqueeze(0)
@@ -803,6 +859,7 @@ def clear_packed_caches():
     _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
+    _SEGMENT_LENGTHS_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
     _PADDED_CU_SEQLENS_CACHE.clear()
 

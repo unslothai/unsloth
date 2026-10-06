@@ -25,6 +25,10 @@ import {
 } from "./document-citation-source";
 import { mergeGoogleNativeParts } from "./google-native-parts";
 import { extractMcpUiEnvelope } from "../mcp-apps/mcp-ui";
+import {
+  providerCompactionPart,
+  providerCompactionReplayToolCallCount,
+} from "./provider-compaction";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -364,12 +368,24 @@ export function createGenerationToolRecovery(
     if (
       event?.type !== "tool_start" &&
       event?.type !== "tool_end" &&
-      event?.type !== "document_citations"
+      event?.type !== "document_citations" &&
+      event?.type !== "compaction_block"
     ) {
       return;
     }
     if (seq <= appliedSeq) return;
     appliedSeq = seq;
+    if (event.type === "compaction_block") {
+      const providerCompaction = providerCompactionPart(event);
+      if (!providerCompaction) return;
+      return {
+        providerCompaction,
+        providerCompactionAfterToolCalls:
+          providerCompactionReplayToolCallCount(
+            carried.map((entry) => entry.part),
+          ),
+      };
+    }
     const backendId =
       typeof event.tool_call_id === "string" ? event.tool_call_id : "";
     if (event.tool_name === "deep_research") {
@@ -458,14 +474,18 @@ export function createGenerationToolRecovery(
       if (!toolName) {
         return;
       }
+      // A save can hold this card past its cursor; minting it again duplicates the part key.
+      const toolCallId = `${backendId || "tool"}:${runId}:${seq}`;
+      entry ??= carried.find(({ part }) => {
+        const card = record(part);
+        return (
+          card?.type === "tool-call" &&
+          (card.toolCallId === toolCallId ||
+            card.generationToolCallId === `${runId}:${seq}`)
+        );
+      });
       if (!entry) {
-        entry = {
-          at,
-          part: {
-            type: "tool-call",
-            toolCallId: `${backendId || "tool"}:${runId}:${seq}`,
-          },
-        };
+        entry = { at, part: { type: "tool-call", toolCallId } };
         carried.push(entry);
       }
       const args = record(event.arguments) ?? {};
