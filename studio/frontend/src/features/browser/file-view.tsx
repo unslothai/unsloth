@@ -14,7 +14,7 @@ import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
+import { canShowFile, mediaKind, textFileKind } from "./file-kind";
 import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 
@@ -213,7 +213,7 @@ export function FileView({
       </div>
     );
   }
-  if (plainText || TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType) {
+  if (plainText || canShowFile(name, contentType)) {
     return (
       <TextFile
         blob={blob}

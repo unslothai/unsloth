@@ -13,6 +13,8 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
+import { saveBrowserDownload } from "./downloads";
+import { canShowFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
@@ -269,6 +271,14 @@ function WebPage({
         cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
+        // Like any browser, a file the panel can't show downloads (after the usual prompt).
+        // Only on a fresh load, so switching back to the tab doesn't ask again.
+        if (page.kind === "raw") {
+          const name = page.fileName ?? fileNameFromUrl(page.url);
+          if (!canShowFile(name, page.contentType)) {
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url });
+          }
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;

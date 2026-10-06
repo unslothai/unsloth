@@ -56,7 +56,7 @@ export function DownloadApprovalDialog() {
 
   return (
     <AlertDialog open={request !== undefined} onOpenChange={(open) => !open && answer(false)}>
-      <AlertDialogContent>
+      <AlertDialogContent onOverlayClick={() => answer(false)}>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("browser.downloadPrompt.title")}</AlertDialogTitle>
           <AlertDialogDescription className="break-words">
