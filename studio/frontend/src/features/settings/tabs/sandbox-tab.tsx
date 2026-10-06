@@ -22,7 +22,9 @@ import {
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { RefreshIcon } from "@hugeicons/core-free-icons";
+import { ShieldIcon } from "@/lib/shield-cog-icon";
+import { cn } from "@/lib/utils";
+import { Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -97,12 +99,32 @@ function ToolRow({
   );
   return (
     <SettingsRow label={label} description={description}>
-      <Badge variant={view.isolated ? "secondary" : "outline"}>
+      <Badge
+        variant="outline"
+        // Grey and sized like the dropdown pills.
+        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+      >
+        {view.isolated ? <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} /> : null}
         {view.isolated
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
       </Badge>
     </SettingsRow>
+  );
+}
+
+const SANDBOX_LEVEL_TEXT = {
+  off: { name: "settings.sandbox.levelOff", detail: "settings.sandbox.levelFullAccessNote" },
+  low: { name: "settings.sandbox.levelLow", detail: "settings.sandbox.levelLowDetail" },
+  high: { name: "settings.sandbox.levelHigh", detail: "settings.sandbox.levelHighDetail" },
+} as const satisfies Record<string, { name: TranslationKey; detail: TranslationKey }>;
+
+/** "Name: detail", so the text clearly describes the selected option. */
+function SelectedOptionDescription({ name, detail }: { name: string; detail: string }) {
+  return (
+    <>
+      <span className="font-medium text-foreground">{name}:</span> {detail}
+    </>
   );
 }
 
@@ -133,11 +155,9 @@ function PermissionsSection() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
-  const levelDescription = disabled
-    ? t("settings.sandbox.levelFullAccessNote")
-    : checked
-      ? t("settings.sandbox.levelHighDescription")
-      : t("settings.sandbox.levelLowDescription");
+  // Full access turns the sandbox off: show Disabled and lock Low and High.
+  const activeLevel = disabled ? "off" : checked ? "high" : "low";
+  const levels = disabled ? (["off", "low", "high"] as const) : (["low", "high"] as const);
 
   return (
     <SettingsSection
@@ -145,33 +165,59 @@ function PermissionsSection() {
       title={t("settings.general.permissions.sectionTitle")}
       description={t("settings.sandbox.permissionsIntro")}
     >
-      {/* The selected level, explained in full. */}
       <SettingsRow
-        label={t(`settings.general.permissions.names.${activePermission.value}`)}
-        description={t(`settings.general.permissions.details.${activePermission.value}`)}
+        label={t("settings.sandbox.permissionLabel")}
+        description={
+          <SelectedOptionDescription
+            name={t(`settings.general.permissions.names.${activePermission.value}`)}
+            detail={t(`settings.general.permissions.details.${activePermission.value}`)}
+          />
+        }
       >
         <PermissionModeDropdown sandboxControls={false} />
       </SettingsRow>
       <SettingsRow
         label={t("settings.sandbox.levelLabel")}
-        description={<span id={levelDescriptionId}>{levelDescription}</span>}
-      >
-        <span className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">
-            {checked ? t("settings.sandbox.levelHigh") : t("settings.sandbox.levelLow")}
+        description={
+          <span id={levelDescriptionId}>
+            <SelectedOptionDescription
+              name={t(SANDBOX_LEVEL_TEXT[activeLevel].name)}
+              detail={t(SANDBOX_LEVEL_TEXT[activeLevel].detail)}
+            />
           </span>
-          <Switch
-            checked={checked}
-            disabled={disabled}
-            aria-label={t("settings.sandbox.levelLabel")}
-            aria-describedby={levelDescriptionId}
-            onCheckedChange={(next) =>
-              void pickSandboxLevel(next ? "high" : "low", setSandboxLevel, () =>
-                setSetupOpen(true),
-              )
-            }
-          />
-        </span>
+        }
+      >
+        {/* Same toggle as Follow-up behavior. */}
+        <div
+          className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+          role="group"
+          aria-label={t("settings.sandbox.levelLabel")}
+          aria-describedby={levelDescriptionId}
+        >
+          {levels.map((level) => {
+            const selected = level === activeLevel;
+            return (
+              <button
+                key={level}
+                type="button"
+                aria-pressed={selected}
+                disabled={disabled && !selected}
+                onClick={() => {
+                  if (selected || level === "off") return;
+                  void pickSandboxLevel(level, setSandboxLevel, () => setSetupOpen(true));
+                }}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                  selected
+                    ? "hub-tab-toggle-pill cursor-default text-foreground"
+                    : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
+                )}
+              >
+                {t(SANDBOX_LEVEL_TEXT[level].name)}
+              </button>
+            );
+          })}
+        </div>
       </SettingsRow>
       {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
       <SandboxSetupDialog
@@ -457,7 +503,29 @@ function OsSandboxSections() {
         </p>
       ) : (
         <>
-          <SettingsSection title={t("settings.sandbox.toolsSection")}>
+          <SettingsSection
+            title={t("settings.sandbox.toolsSection")}
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground"
+                // A read started mid-save can see the old value and would drop the save's answer.
+                disabled={loading || saving}
+                onClick={() => {
+                  setLoading(true);
+                  void refresh(true);
+                }}
+              >
+                {loading ? (
+                  <Spinner />
+                ) : (
+                  <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
+                )}
+                {t("settings.sandbox.refresh")}
+              </Button>
+            }
+          >
             {status ? (
               <>
                 <ToolRow
@@ -564,30 +632,9 @@ function OsSandboxSections() {
                 ) : null}
               </>
             ) : null}
-            <div className="flex items-center justify-end gap-2 py-2">
-              {error ? (
-                <span className={`${NOTE_CLASS} text-destructive`}>
-                  {error}
-                </span>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                // A read started mid-save can see the old value and would drop the save's answer.
-                disabled={loading || saving}
-                onClick={() => {
-                  setLoading(true);
-                  void refresh(true);
-                }}
-              >
-                {loading ? (
-                  <Spinner />
-                ) : (
-                  <HugeiconsIcon strokeWidth={1.75} icon={RefreshIcon} />
-                )}
-                {t("settings.sandbox.refresh")}
-              </Button>
-            </div>
+            {error ? (
+              <p className="pb-2 text-xs text-destructive">{error}</p>
+            ) : null}
           </SettingsSection>
 
           {windows && view ? (

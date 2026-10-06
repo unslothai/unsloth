@@ -25,10 +25,10 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSubContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Switch } from "@/components/ui/switch";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { MenuTickIcon } from "@/lib/tick-icon";
@@ -36,16 +36,13 @@ import { cn } from "@/lib/utils";
 import {
   ComputerTerminal01Icon,
   Folder01Icon,
-  HelpCircleIcon,
   InternetIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type SandboxCapability,
-  cachedSandboxCapability,
   loadSandboxCapability,
   onSandboxCapabilityChange,
-  sandboxReady,
 } from "./api/sandbox-capability";
 import { sandboxSwitchState } from "./sandbox-level";
 import {
@@ -123,7 +120,7 @@ export function permissionModeOption(mode: PermissionMode) {
   );
 }
 
-/** Menu heading. `sandboxControls` adds the Sandbox Low/High switch; Settings shows its own row.
+/** Menu heading. `sandboxControls` adds the Sandbox Low/High picker; Settings shows its own row.
  *  `onOsSandboxMissing` opens the install popup; by default the one at the chat-page root. */
 export function PermissionMenuLabel({
   sandboxControls,
@@ -136,15 +133,24 @@ export function PermissionMenuLabel({
   return (
     <DropdownMenuLabel className="flex items-center justify-between gap-3">
       <span>{t("settings.general.permissions.sectionTitle")}</span>
-      {sandboxControls ? <SandboxLevelMenuSwitch onOsSandboxMissing={onOsSandboxMissing} /> : null}
+      {sandboxControls ? <SandboxLevelMenuPicker onOsSandboxMissing={onOsSandboxMissing} /> : null}
     </DropdownMenuLabel>
   );
 }
 
-/** Switch on = High (OS sandboxing), off = Low (software sandboxing). A checkbox item, so arrow
- *  keys reach it and Enter or Space toggles it. It keeps the menu open, except when High may need
- *  the setup popup, which cannot open over the menu. The question mark next to it opens Settings. */
-function SandboxLevelMenuSwitch({ onOsSandboxMissing }: { onOsSandboxMissing?: () => void }) {
+/** Space between the permission menu and the sandbox picker beside it. */
+const SANDBOX_PICKER_GAP = 8;
+
+/** Sandbox levels, weakest first. Disabled only shows under Full access and is never picked. */
+const SANDBOX_LEVEL_OPTIONS = [
+  { value: "off", labelKey: "settings.sandbox.levelOff", descriptionKey: "settings.sandbox.levelOffShort" },
+  { value: "low", labelKey: "settings.sandbox.levelLow", descriptionKey: "settings.sandbox.levelLowShort" },
+  { value: "high", labelKey: "settings.sandbox.levelHigh", descriptionKey: "settings.sandbox.levelHighShort" },
+] as const;
+
+/** "Sandbox High ›" chip that opens the level picker. High without an OS sandbox reads Low and
+ *  picking it opens the setup popup. Full access shows Disabled and locks Low and High. */
+function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: () => void }) {
   const t = useT();
   const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
   const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
@@ -153,62 +159,101 @@ function SandboxLevelMenuSwitch({ onOsSandboxMissing }: { onOsSandboxMissing?: (
   const { permissionMode } = useAccountPermissionMode();
   const capability = useSandboxCapability(sandboxLevel === "high");
   const { checked, disabled } = sandboxSwitchState(sandboxLevel, permissionMode, capability);
+  const active = disabled ? "off" : checked ? "high" : "low";
+  const options = SANDBOX_LEVEL_OPTIONS.filter((option) => disabled || option.value !== "off");
+  const activeOption = SANDBOX_LEVEL_OPTIONS.find((option) => option.value === active)!;
   const descriptionId = useId();
-  const help = t("settings.sandbox.levelHelp");
+  const chipRef = useRef<HTMLDivElement | null>(null);
+  // Measured on open: puts the picker a small gap right of the menu, tops aligned.
+  const [offsets, setOffsets] = useState({ side: SANDBOX_PICKER_GAP, align: 0 });
   return (
-    <span className="flex shrink-0 items-center gap-1">
-      <DropdownMenuPrimitive.CheckboxItem
-        checked={checked}
-        disabled={disabled}
+    <DropdownMenuPrimitive.Sub
+      onOpenChange={(open) => {
+        const chip = chipRef.current;
+        const menu = chip?.closest<HTMLElement>('[role="menu"]');
+        if (!open || !chip || !menu) return;
+        const chipBox = chip.getBoundingClientRect();
+        const menuBox = menu.getBoundingClientRect();
+        setOffsets({
+          side: menuBox.right - chipBox.right + SANDBOX_PICKER_GAP,
+          align: menuBox.top - chipBox.top,
+        });
+      }}
+    >
+      <DropdownMenuPrimitive.SubTrigger
+        ref={chipRef}
         aria-describedby={descriptionId}
-        onSelect={(event) => {
-          const known = cachedSandboxCapability();
-          if (checked || (known !== null && sandboxReady(known))) event.preventDefault();
-        }}
-        onCheckedChange={(next) => {
-          void pickSandboxLevel(next === true ? "high" : "low", setSandboxLevel, () =>
-            // Deferred past the menu's focus restore.
-            setTimeout(onOsSandboxMissing ?? (() => setSandboxSetupOpen(true)), 0),
-          );
-        }}
-        className="flex shrink-0 cursor-pointer items-center gap-2 rounded-sm font-normal outline-hidden hover:text-foreground focus-visible:text-foreground data-[disabled]:cursor-not-allowed data-[highlighted]:text-foreground"
+        // Opens on click or arrow key, not hover.
+        onPointerMove={(event) => event.preventDefault()}
+        // Negative margins cancel the hover pill's padding so nothing shifts.
+        className="sandbox-level-chip -my-1 -mr-1.5 flex shrink-0 cursor-pointer items-center gap-1 rounded-full border-0 py-1 pr-1.5 pl-2.5 text-ui-12 font-medium outline-none transition-colors"
       >
-        <span>{t("settings.sandbox.levelLabel")}</span>
-        <span className="min-w-[2.25em] text-right text-muted-foreground">
-          {checked ? t("settings.sandbox.levelHigh") : t("settings.sandbox.levelLow")}
+        <span className="text-foreground">{t("settings.sandbox.levelLabel")}</span>
+        <span className={active === "off" ? "text-muted-foreground" : "text-primary"}>
+          {t(activeOption.labelKey)}
         </span>
-        {/* Presentation only: the item carries the state and the keyboard. */}
-        <Switch
-          size="sm"
-          checked={checked}
-          disabled={disabled}
-          tabIndex={-1}
-          aria-hidden={true}
-          className="pointer-events-none"
+
+        <HugeiconsIcon
+          icon={ChevronRightStandardIcon}
+          strokeWidth={1.75}
+          className="-ml-0.5 size-[calc(13px*var(--ui-space-scale,1))] text-foreground"
         />
-      </DropdownMenuPrimitive.CheckboxItem>
-      <DropdownMenuPrimitive.Item
-        aria-label={help}
-        title={help}
-        className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-hidden hover:text-foreground focus-visible:text-foreground data-[highlighted]:text-foreground"
-        // Deferred past the menu's focus restore.
-        onSelect={() =>
-          setTimeout(
-            () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
-            0,
-          )
-        }
+        <span id={descriptionId} className="sr-only">
+          {t(activeOption.descriptionKey)}
+        </span>
+      </DropdownMenuPrimitive.SubTrigger>
+      <DropdownMenuSubContent
+        sideOffset={offsets.side}
+        alignOffset={offsets.align}
+        className="unsloth-plus-menu w-[calc(312px*var(--ui-space-scale,1))]"
       >
-        <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={2} className="size-3.5" />
-      </DropdownMenuPrimitive.Item>
-      <span id={descriptionId} className="sr-only">
-        {disabled
-          ? t("settings.sandbox.levelFullAccessNote")
-          : checked
-            ? t("settings.sandbox.levelHighShort")
-            : t("settings.sandbox.levelLowShort")}
-      </span>
-    </span>
+
+        <DropdownMenuLabel className="flex items-start justify-between gap-3">
+          <span className="min-w-0">{t("settings.sandbox.levelPickerTitle")}</span>
+          <DropdownMenuPrimitive.Item
+            // my-0!: drops the menu item margin so it lines up with the question.
+            className="my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60"
+            // Deferred past the menu's focus restore.
+            onSelect={() =>
+              setTimeout(
+                () => openSettings("sandbox", { scrollTarget: "sandbox-permissions" }),
+                0,
+              )
+            }
+          >
+            {t("settings.sandbox.learnMore")}
+          </DropdownMenuPrimitive.Item>
+        </DropdownMenuLabel>
+        {options.map((option) => (
+          <DropdownMenuItem
+            key={option.value}
+            disabled={disabled && option.value !== "off"}
+            onSelect={() => {
+              if (option.value === active || option.value === "off") return;
+              void pickSandboxLevel(option.value, setSandboxLevel, () =>
+                // Deferred past the menu's focus restore.
+                setTimeout(onOsSandboxMissing ?? (() => setSandboxSetupOpen(true)), 0),
+              );
+            }}
+            className={cn("items-start gap-2 py-2", active === option.value && "font-medium")}
+          >
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="text-ui-13 leading-tight">{t(option.labelKey)}</span>
+              <span className="text-xs font-normal leading-snug text-muted-foreground">
+                {t(option.descriptionKey)}
+              </span>
+            </span>
+            {active === option.value ? (
+              <HugeiconsIcon
+                icon={MenuTickIcon}
+                strokeWidth={2}
+                className="permission-mode-tick ml-auto size-4 shrink-0 self-center"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuPrimitive.Sub>
   );
 }
 
