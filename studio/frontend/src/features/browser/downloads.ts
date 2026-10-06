@@ -6,7 +6,7 @@ import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib
 import { toast } from "@/lib/toast";
 import { fileNameFromUrl, isWebUrl, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
-import { approveDownload } from "./download-approval";
+import { approveDownload } from "./download-approval-queue";
 import { useBrowserHistoryStore } from "./history-store";
 import { saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";

@@ -12,7 +12,7 @@ import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { hostOf } from "./address";
-import { approveDownload } from "./download-approval";
+import { approveDownload } from "./download-approval-queue";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";

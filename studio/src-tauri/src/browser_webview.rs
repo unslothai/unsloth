@@ -678,18 +678,7 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
     let name = suggested
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
-            name.chars()
-                .map(|c| {
-                    if c.is_control() || "/\\:".contains(c) {
-                        '_'
-                    } else {
-                        c
-                    }
-                })
-                .collect::<String>()
-        })
-        .filter(|name| !name.trim_matches('.').is_empty())
+        .map(crate::native_file_dialogs::safe_download_name)
         .unwrap_or_else(|| "download".into());
     // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
     let same = |a: &Path, b: &Path| {

@@ -12,36 +12,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { getLocale, translate, useT } from "@/i18n";
-import { toast } from "@/lib/toast";
+import { useT } from "@/i18n";
 import { useId, useState } from "react";
-import { create } from "zustand";
-import { hostOf, isWebUrl } from "./address";
-import { useBrowserPrefsStore } from "./prefs-store";
-
-/** `host` is "" when there is no site to remember the answer for. */
-type Request = { host: string; label: string; name: string; resolve: (allow: boolean) => void };
-
-const useApprovalStore = create<{ queue: Request[] }>(() => ({ queue: [] }));
-
-/** Whether a file from `url` may be saved: a remembered answer for its site, else the user's.
- *  `site` is the page that started it, which the answer is kept for (the file's own address by
- *  default). Only a web page counts as a site: blob: and data: URLs have no host, and one answer
- *  for "" would then cover them on every site. */
-export function approveDownload(url: string, name: string, site: string = url): Promise<boolean> {
-  const host = isWebUrl(site) ? hostOf(site) : "";
-  const prefs = useBrowserPrefsStore.getState();
-  const remembered = host ? prefs.downloadSites[host] : undefined;
-  if (remembered === "block") {
-    toast.error(translate("browser.downloadPrompt.blocked", { host }, getLocale()));
-    return Promise.resolve(false);
-  }
-  if (remembered === "allow" || !prefs.askBeforeDownloading) return Promise.resolve(true);
-  const label = host || hostOf(url) || url.slice(0, 80);
-  return new Promise((resolve) =>
-    useApprovalStore.setState((state) => ({ queue: [...state.queue, { host, label, name, resolve }] })),
-  );
-}
+import { answerDownload, useApprovalStore } from "./download-approval-queue";
 
 /** Asks about each waiting download in turn; mounted once for the app. */
 export function DownloadApprovalDialog() {
@@ -55,12 +28,8 @@ export function DownloadApprovalDialog() {
   const answer = (allow: boolean, kept = true) => {
     // A button press also closes the dialog; only the first answer counts for this request.
     if (!request || useApprovalStore.getState().queue[0] !== request) return;
-    if (kept && remember && request.host) {
-      useBrowserPrefsStore.getState().setDownloadSite(request.host, allow ? "allow" : "block");
-    }
     setRemember(false);
-    useApprovalStore.setState((state) => ({ queue: state.queue.slice(1) }));
-    request.resolve(allow);
+    answerDownload(request, allow, kept && remember);
   };
 
   return (

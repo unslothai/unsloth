@@ -31,6 +31,7 @@ import {
   resetNativeDownloadFolder,
   useBrowserPrefsStore,
   useBrowserStore,
+  useDownloadSitesStore,
   useNativeBrowser,
 } from "@/features/browser";
 import { useChatRuntimeStore } from "@/features/chat";
@@ -97,8 +98,8 @@ function DownloadLocationRow() {
 /** Sites with a remembered download answer, each changeable or removable. */
 function DownloadSiteRows() {
   const t = useT();
-  const sites = useBrowserPrefsStore((state) => state.downloadSites);
-  const { setDownloadSite } = useBrowserPrefsStore.getState();
+  const sites = useDownloadSitesStore((state) => state.sites);
+  const { setSite: setDownloadSite } = useDownloadSitesStore.getState();
   const hosts = Object.keys(sites).sort();
   return (
     <SettingsRow

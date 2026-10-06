@@ -212,7 +212,7 @@ fn local_dialog_path(path: tauri_plugin_dialog::FilePath) -> Result<PathBuf, Str
 }
 
 /// Stage the write beside the destination so a partial file never replaces a real one.
-fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
+pub(crate) fn staged_temp_file(path: &Path) -> Result<tempfile::NamedTempFile, String> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -576,13 +576,62 @@ pub fn cancel_native_file_save(
     Ok(())
 }
 
+/// Room under the usual 255-byte name limit for the " (999)" a taken name gets.
+const MAX_DOWNLOAD_NAME_BYTES: usize = 240;
+const WINDOWS_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A website's name for a file, made safe to save under on every platform: no separators,
+/// control or Windows-reserved characters, no trailing dots or spaces (Windows drops them), no
+/// device name (`CON`, `nul.txt`), and short enough for the file system.
+pub(crate) fn safe_download_name(name: &str) -> String {
+    let mut name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let kept = name.trim_end_matches(['.', ' ']).len();
+    name.truncate(kept);
+    if name.trim_matches(['.', ' ']).is_empty() {
+        return "download".into();
+    }
+    // Reserved whatever the extension.
+    let device = name.split('.').next().unwrap_or("").trim_end();
+    if WINDOWS_DEVICE_NAMES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(device))
+    {
+        name.insert(0, '_');
+    }
+    if name.len() > MAX_DOWNLOAD_NAME_BYTES {
+        // Shorten the stem and keep the extension, on a character boundary.
+        let extension = name
+            .rfind('.')
+            .filter(|&at| at > 0 && name.len() - at <= 32)
+            .map_or("", |at| &name[at..]);
+        let mut end = MAX_DOWNLOAD_NAME_BYTES - extension.len();
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name = format!("{}{extension}", &name[..end]);
+    }
+    name
+}
+
 /// Save the request body in `directory` under a free name, without a dialog.
 pub(crate) fn save_request_in(
     request: &tauri::ipc::Request<'_>,
     directory: &Path,
 ) -> Result<PathBuf, String> {
     let (file_name, content) = request_file(request)?;
-    let path = unique_destination(directory, &file_name)?;
+    let path = unique_destination(directory, &safe_download_name(&file_name))?;
     save_selected_file(Some(path), content.as_ref())?
         .ok_or_else(|| "Failed to save the file.".to_string())
 }
@@ -1053,6 +1102,27 @@ pub async fn pick_native_training_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_names_are_safe_on_every_platform() {
+        assert_eq!(safe_download_name("report:2026.pdf"), "report_2026.pdf");
+        assert_eq!(
+            safe_download_name("a<b>c|d?e*f\"g.txt"),
+            "a_b_c_d_e_f_g.txt"
+        );
+        assert_eq!(safe_download_name("evil\u{7}name.sh"), "evil_name.sh");
+        assert_eq!(safe_download_name("CON"), "_CON");
+        assert_eq!(safe_download_name("nul.tar.gz"), "_nul.tar.gz");
+        assert_eq!(safe_download_name("console.log"), "console.log");
+        assert_eq!(safe_download_name("notes. . "), "notes");
+        assert_eq!(safe_download_name(".."), "download");
+        assert_eq!(safe_download_name(" "), "download");
+        // 255 three-byte characters: cut on a character boundary, extension kept.
+        let long = format!("{}.pdf", "\u{3042}".repeat(255));
+        let safe = safe_download_name(&long);
+        assert!(safe.len() <= MAX_DOWNLOAD_NAME_BYTES, "{}", safe.len());
+        assert!(safe.ends_with("\u{3042}.pdf"));
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {

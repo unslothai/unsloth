@@ -117,25 +117,26 @@ fn load(path: Option<&Path>) -> Vec<Entry> {
         .unwrap_or_default()
 }
 
-/// Written to a temp file and renamed, so a crash never leaves half a file.
+/// Best effort: the list is rebuilt as downloads come and go.
 fn save(path: Option<&Path>, value: &impl Serialize) {
-    let Some(path) = path else {
-        return;
-    };
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    let Ok(bytes) = serde_json::to_vec(value) else {
-        return;
-    };
-    let _ = fs::create_dir_all(parent).and_then(|()| {
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        temporary.write_all(&bytes)?;
-        temporary
-            .persist(path)
-            .map(|_| ())
-            .map_err(|error| error.error)
-    });
+    if let Some(path) = path {
+        let _ = write_json(path, value);
+    }
+}
+
+/// Written to a temp file and renamed, so a crash never leaves half a file.
+fn write_json(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent folder"))?;
+    let bytes = serde_json::to_vec(value)?;
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| error.error)
 }
 
 fn with_entries<R: Runtime, T>(
@@ -320,17 +321,19 @@ fn folder_info<R: Runtime>(app: &AppHandle<R>) -> Result<DownloadFolder, String>
     })
 }
 
-fn set_folder<R: Runtime>(app: &AppHandle<R>, folder: Option<PathBuf>) {
-    let file = folder_file(app);
-    match &folder {
-        Some(path) => save(file.as_deref(), &FolderFile { path: path.clone() }),
-        None => {
-            if let Some(file) = file {
-                let _ = fs::remove_file(file);
-            }
-        }
-    }
+/// Kept only once it is on disk, so Settings never shows a choice that a restart would lose.
+fn set_folder<R: Runtime>(app: &AppHandle<R>, folder: Option<PathBuf>) -> Result<(), String> {
+    let file = folder_file(app).ok_or_else(|| "Could not find the app data folder.".to_string())?;
+    let written = match &folder {
+        Some(path) => write_json(&file, &FolderFile { path: path.clone() }),
+        None => match fs::remove_file(&file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        },
+    };
+    written.map_err(|error| format!("Failed to save the download location: {error}"))?;
     *app.state::<BrowserDownloads>().folder.lock().unwrap() = Some(folder);
+    Ok(())
 }
 
 #[tauri::command]
@@ -363,7 +366,7 @@ pub async fn browser_download_folder_pick(
     let path = picked
         .into_path()
         .map_err(|_| "Only local folders are supported.".to_string())?;
-    set_folder(&app, Some(path));
+    set_folder(&app, Some(path))?;
     folder_info(&app).map(Some)
 }
 
@@ -374,7 +377,7 @@ pub fn browser_download_folder_reset(
     app: AppHandle,
 ) -> Result<DownloadFolder, String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    set_folder(&app, None);
+    set_folder(&app, None)?;
     folder_info(&app)
 }
 
@@ -576,9 +579,22 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     if fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    fs::copy(from, to)
+    copy_into_place(from, to)
+}
+
+/// Copied beside `to` and renamed over it once complete, so a copy that fails (a full or
+/// unplugged drive) leaves no half file, and a file the user chose to replace intact.
+fn copy_into_place(from: &Path, to: &Path) -> Result<(), String> {
+    let failed = |error: std::io::Error| format!("Failed to save {}: {error}", to.display());
+    let mut temporary = crate::native_file_dialogs::staged_temp_file(to)?;
+    let mut source = fs::File::open(from).map_err(failed)?;
+    std::io::copy(&mut source, temporary.as_file_mut())
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(failed)?;
+    temporary
+        .persist(to)
         .map(|_| ())
-        .map_err(|error| format!("Failed to save {}: {error}", to.display()))
+        .map_err(|error| failed(error.error))
 }
 
 #[cfg(test)]
@@ -607,6 +623,38 @@ mod tests {
             path_of(&entries, &entries[MAX_ENTRIES - 1].id.clone()),
             Some(PathBuf::from(format!("/tmp/{}", MAX_ENTRIES - 1)))
         );
+    }
+
+    #[test]
+    fn a_copy_replaces_its_target_only_once_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("file.zip");
+        fs::write(&to, b"kept").unwrap();
+        // A source that can't be read: the file being replaced is untouched, no temp is left.
+        assert!(copy_into_place(&dir.path().join("missing.zip"), &to).is_err());
+        assert_eq!(fs::read(&to).unwrap(), b"kept");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        let from = dir.path().join("staged.zip");
+        fs::write(&from, b"new").unwrap();
+        copy_into_place(&from, &to).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn a_failed_location_write_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        // The parent is a file, so the folder can't be made.
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, b"x").unwrap();
+        let folder = FolderFile {
+            path: dir.path().to_path_buf(),
+        };
+        assert!(write_json(&blocker.join("folder.json"), &folder).is_err());
+        let file = dir.path().join("folder.json");
+        write_json(&file, &folder).unwrap();
+        let read: FolderFile = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(read.path, dir.path());
     }
 
     #[test]

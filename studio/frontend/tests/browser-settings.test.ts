@@ -272,13 +272,64 @@ test("a page the reader set to 100% keeps it after a fetched file", async () => 
   useBrowserPrefsStore.getState().setDefaultZoom(1);
 });
 
-test("a site's download answer is remembered, changed and forgotten", () => {
-  const prefs = useBrowserPrefsStore.getState();
-  prefs.setDownloadSite("example.com", "allow");
-  prefs.setDownloadSite("example.org", "block");
-  assert.deepEqual(useBrowserPrefsStore.getState().downloadSites, { "example.com": "allow", "example.org": "block" });
-  prefs.setDownloadSite("example.com", "block");
-  prefs.setDownloadSite("example.org", null);
-  assert.deepEqual(useBrowserPrefsStore.getState().downloadSites, { "example.com": "block" });
+test("a site's download answer is remembered, changed and forgotten, per account", async () => {
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const { accountDatabaseName } = await import("../src/lib/account-transition.ts");
+  const sites = useDownloadSitesStore.getState();
+  sites.setSite("example.com", "allow");
+  sites.setSite("example.org", "block");
+  assert.deepEqual(useDownloadSitesStore.getState().sites, { "example.com": "allow", "example.org": "block" });
+  sites.setSite("example.com", "block");
+  sites.setSite("example.org", null);
+  assert.deepEqual(useDownloadSitesStore.getState().sites, { "example.com": "block" });
+  // Bob's answers live under Bob's name, not the shared browser prefs.
+  const name = useDownloadSitesStore.persist.getOptions().name;
+  assert.equal(name, accountDatabaseName("unsloth_browser_download_sites"));
+  assert.notEqual(name, "unsloth_browser_download_sites");
+  assert.ok(data.has(name!));
+  assert.ok(!(data.get("unsloth_browser_prefs") ?? "").includes("example.com"));
   assert.equal(useBrowserPrefsStore.getState().askBeforeDownloading, true);
+  sites.setSite("example.com", null);
+});
+
+test("a remembered answer settles the site's other waiting downloads", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const first = approveDownload("https://a.example/1.zip", "1.zip");
+  const second = approveDownload("https://a.example/2.zip", "2.zip");
+  const other = approveDownload("https://b.example/3.zip", "3.zip");
+  answerDownload(useApprovalStore.getState().queue[0], false, true);
+  assert.equal(await first, false);
+  assert.equal(await second, false);
+  assert.deepEqual(useApprovalStore.getState().queue.map((request) => request.host), ["b.example"]);
+  assert.equal(useDownloadSitesStore.getState().sites["a.example"], "block");
+  // Not remembered: only the one asked about is answered.
+  const fourth = approveDownload("https://b.example/4.zip", "4.zip");
+  answerDownload(useApprovalStore.getState().queue[0], true, false);
+  assert.equal(await other, true);
+  assert.equal(useApprovalStore.getState().queue.length, 1);
+  answerDownload(useApprovalStore.getState().queue[0], true, false);
+  assert.equal(await fourth, true);
+  assert.equal(useDownloadSitesStore.getState().sites["b.example"], undefined);
+  useDownloadSitesStore.getState().setSite("a.example", null);
+});
+
+test("a blob: download's answer is never remembered for every site", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const blob = approveDownload("blob:https://a.example/uuid", "file.bin", "blob:https://a.example/uuid");
+  const request = useApprovalStore.getState().queue[0];
+  assert.equal(request.host, "");
+  answerDownload(request, true, true);
+  assert.equal(await blob, true);
+  assert.deepEqual(useDownloadSitesStore.getState().sites, {});
+  // From a page, the page's site is the one remembered.
+  const paged = approveDownload("blob:https://cdn.example/uuid", "file.bin", "https://a.example/page");
+  assert.equal(useApprovalStore.getState().queue[0].host, "a.example");
+  answerDownload(useApprovalStore.getState().queue[0], false, false);
+  assert.equal(await paged, false);
 });

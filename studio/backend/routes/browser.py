@@ -72,20 +72,14 @@ _META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", 
 # Module scripts load with CORS, which the sandbox's opaque origin fails unless the host allows
 # any origin. Self-contained ones are fetched here and inlined; ones with imports keep their src.
 _MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
-_TYPE_MODULE_RE = re.compile(r"""(?<![\w-])type\s*=\s*["']?module["'\s>]""", re.IGNORECASE)
-_ATTR_SRC_RE = re.compile(
-    r"""(?<![\w-])src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE
+# One attribute of a start tag, read as the HTML tokenizer does: a name, then an optional value,
+# quoted or bare. Quoted values are skipped whole, so an attribute named inside another's value
+# (onerror="this.src='x'") isn't taken for the real one. A stray "/" matches on its own.
+_TAG_ATTR_RE = re.compile(
+    r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?|/"""
 )
-_ATTR_INTEGRITY_RE = re.compile(
-    r"""(?<![\w-])integrity\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE
-)
-_USE_CREDENTIALS_RE = re.compile(
-    r"""(?<![\w-])crossorigin\s*=\s*["']?use-credentials""", re.IGNORECASE
-)
-_FETCH_ATTRS_RE = re.compile(
-    r"""\s(?:src|integrity|crossorigin)(?=[\s=/>])(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?""",
-    re.IGNORECASE,
-)
+# Dropped from an inlined tag: they only concern fetching the file.
+_FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
 # Static or dynamic imports and re-exports resolve against the module's own URL.
 _MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$.]|from\s*["'`])""")
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
@@ -1286,6 +1280,17 @@ def _open_tag(script: str) -> str:
     return script[: script.lower().rindex("</script")].rstrip()
 
 
+def _script_attrs(open_tag: str) -> list[tuple[str, str, str]]:
+    """A ``<script ...>`` start tag's attributes as ``(lowercase name, value, source text)``."""
+    attrs = []
+    for match in _TAG_ATTR_RE.finditer(open_tag, len("<script"), len(open_tag) - 1):
+        if match.group(1) is None:
+            continue
+        value = next((group for group in match.groups()[1:] if group is not None), "")
+        attrs.append((match.group(1).lower(), _html.unescape(value), match.group(0)))
+    return attrs
+
+
 def _inline_module_scripts(
     page: str,
     base_url: str,
@@ -1295,10 +1300,13 @@ def _inline_module_scripts(
     tags: list[tuple[re.Match[str], str, str, bool]] = []
     comments: Optional[list[tuple[int, int]]] = None
     for match in _MODULE_SCRIPT_RE.finditer(page):
-        open_tag = _open_tag(match.group(0))
-        if not _TYPE_MODULE_RE.search(open_tag):
+        attrs: dict[str, str] = {}
+        for name, value, _text in _script_attrs(_open_tag(match.group(0))):
+            # The first of a repeated attribute is the one that counts.
+            attrs.setdefault(name, value)
+        if attrs.get("type", "").strip().lower() != "module":
             continue
-        src = _attr(_ATTR_SRC_RE.search(open_tag))
+        src = attrs.get("src")
         url = _join(base_url, src) if src else None
         if not url or not url.lower().startswith("https://"):
             continue
@@ -1307,8 +1315,8 @@ def _inline_module_scripts(
             comments = [m.span() for m in _HTML_COMMENT_RE.finditer(page)]
         if any(begin <= match.start() < finish for begin, finish in comments):
             continue
-        integrity = _attr(_ATTR_INTEGRITY_RE.search(open_tag)) or ""
-        tags.append((match, url, integrity, bool(_USE_CREDENTIALS_RE.search(open_tag))))
+        credentials = attrs.get("crossorigin", "").strip().lower() == "use-credentials"
+        tags.append((match, url, attrs.get("integrity", ""), credentials))
         if len(tags) == _MAX_INLINED_MODULES:
             break
     if not tags:
@@ -1325,7 +1333,12 @@ def _inline_module_scripts(
         if code is None or len(code) > room:
             continue
         room -= len(code)
-        open_tag = _FETCH_ATTRS_RE.sub("", _open_tag(match.group(0)))
+        kept = (
+            text
+            for name, _value, text in _script_attrs(_open_tag(match.group(0)))
+            if name not in _FETCH_ATTRS
+        )
+        open_tag = "".join(["<script", *(" " + text for text in kept), ">"])
         parts += [page[end : match.start()], open_tag, code, "</script>"]
         end = match.end()
     parts.append(page[end:])

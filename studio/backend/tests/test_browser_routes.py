@@ -391,6 +391,8 @@ def test_self_contained_module_scripts_are_inlined(monkeypatch):
         (None, b'import {a} from "./b.js";a()', "text/javascript"),
         (None, b'const m = await import("./lazy.js")', "application/javascript"),
         (None, b'export * from "./c.js"', "text/javascript"),
+        # Resolves against the module's own URL, which inlining would change to the page's.
+        (None, b'new Worker(new URL("./w.js", import.meta.url))', "text/javascript"),
         (None, b'x="<!--";y="<script>"', "text/javascript"),
         (None, b"a()", "text/plain"),
         ("Failed to fetch URL: HTTP 404", "", ""),
@@ -490,3 +492,27 @@ def test_a_module_fetch_that_raises_leaves_the_page_alone(monkeypatch):
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", boom)
     page = '<p>x</p><script type="module" src="/m.js"></script>'
     assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+
+
+def test_script_attributes_are_read_from_the_tag_not_from_values(monkeypatch):
+    # "src" and "type" written inside another attribute's value aren't the tag's own.
+    fetched = _modules(
+        monkeypatch,
+        {
+            "https://example.com/main.js": (None, b"main()", "text/javascript"),
+            "https://example.com/fallback.js": (None, b"fallback()", "text/javascript"),
+            "https://example.com/classic.js": (None, b"classic()", "text/javascript"),
+        },
+    )
+    page = (
+        """<script type="module" onerror="this.src='/fallback.js'" src="/main.js"></script>"""
+        '<script data-note="type=module" src="/classic.js"></script>'
+        '<script type="text/javascript" type="module" src="/classic.js"></script>'
+    )
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == (
+        """<script type="module" onerror="this.src='/fallback.js'">main()</script>"""
+        '<script data-note="type=module" src="/classic.js"></script>'
+        '<script type="text/javascript" type="module" src="/classic.js"></script>'
+    )
+    assert fetched == ["https://example.com/main.js"]

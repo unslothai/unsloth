@@ -14,9 +14,6 @@ export type AnnotationScreenshots = "always" | "never";
 /** Page zoom a new tab starts at, and that resetting zoom returns to. */
 export const DEFAULT_ZOOM_STEPS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 
-/** A site's remembered answer to "download this file?". */
-export type DownloadSiteDecision = "allow" | "block";
-
 /** How long visits are kept, in days; 0 keeps them until cleared. */
 export const HISTORY_RETENTION_DAYS = [0, 90, 30, 7, 1];
 
@@ -43,8 +40,6 @@ interface BrowserPrefsState {
   askWhereToSave: boolean;
   /** Confirm downloads from websites before they're saved. */
   askBeforeDownloading: boolean;
-  /** Remembered answers by host. */
-  downloadSites: Record<string, DownloadSiteDecision>;
   annotationScreenshots: AnnotationScreenshots;
   setOpenLinksInBrowser: (value: boolean) => void;
   setOpenFilesInBrowser: (value: boolean) => void;
@@ -63,8 +58,6 @@ interface BrowserPrefsState {
   setSaveDownloadHistory: (value: boolean) => void;
   setAskWhereToSave: (value: boolean) => void;
   setAskBeforeDownloading: (value: boolean) => void;
-  /** Remember a site's answer, or forget it with null. */
-  setDownloadSite: (host: string, decision: DownloadSiteDecision | null) => void;
   setAnnotationScreenshots: (value: AnnotationScreenshots) => void;
 }
 
@@ -87,7 +80,6 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       saveDownloadHistory: true,
       askWhereToSave: false,
       askBeforeDownloading: true,
-      downloadSites: {},
       annotationScreenshots: "never",
       setOpenLinksInBrowser: (openLinksInBrowser) => set({ openLinksInBrowser }),
       setOpenFilesInBrowser: (openFilesInBrowser) => set({ openFilesInBrowser }),
@@ -111,11 +103,6 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       setSaveDownloadHistory: (saveDownloadHistory) => set({ saveDownloadHistory }),
       setAskWhereToSave: (askWhereToSave) => set({ askWhereToSave }),
       setAskBeforeDownloading: (askBeforeDownloading) => set({ askBeforeDownloading }),
-      setDownloadSite: (host, decision) =>
-        set((state) => {
-          const { [host]: _old, ...rest } = state.downloadSites;
-          return { downloadSites: decision ? { ...rest, [host]: decision } : rest };
-        }),
       setAnnotationScreenshots: (annotationScreenshots) => set({ annotationScreenshots }),
     }),
     {

@@ -9,6 +9,7 @@ export { ClearBrowsingDataDialog } from "./clear-data-dialog";
 export { BrowserToggleButton } from "./browser-toggle";
 export { canAskWhereToSave, saveLinkAs } from "./downloads";
 export { DownloadApprovalDialog } from "./download-approval";
+export { type DownloadSiteDecision, useDownloadSitesStore } from "./download-sites-store";
 export {
   type DownloadFolder,
   nativeDownloadFolder,
@@ -27,7 +28,6 @@ export {
   type AnnotationScreenshots,
   type BookmarksToolbarMode,
   DEFAULT_ZOOM_STEPS,
-  type DownloadSiteDecision,
   HISTORY_RETENTION_DAYS,
   useBrowserPrefsStore,
 } from "./prefs-store";
