@@ -564,3 +564,50 @@ def test_script_attributes_are_read_from_the_tag_not_from_values(monkeypatch):
         '<script type="text/javascript" type="module" src="/classic.js"></script>'
     )
     assert fetched == ["https://example.com/main.js"]
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        "<textarea>{}</textarea>",
+        "<title>{}</title>",
+        "<style>{}</style>",
+        "<noscript>{}</noscript>",
+        "<xmp>{}</xmp>",
+        "<textarea>{}",
+        "<plaintext>{}",
+    ],
+)
+def test_a_module_tag_written_as_text_is_left_alone(monkeypatch, wrap):
+    # Inside these the tag is text the page shows, and inlined code could close the element.
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    page = wrap.format('<script type="module" src="/m.js"></script>')
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == []
+
+
+def test_text_elements_in_script_code_dont_hide_later_modules(monkeypatch):
+    # The parser reads a script's code as text: an unclosed "<style" in it opens nothing.
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
+    page = (
+        "<script>var css = '<style' + '>'; var t = '<textarea>';</script>"
+        "<!-- <title> -->"
+        '<textarea><script type="module" src="/m.js"></script></textarea>'
+        '<script type="module" src="/m.js"></script>'
+    )
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out.endswith('</textarea><script type="module">ready()</script>')
+    assert out.count("ready()") == 1
+
+
+def test_the_page_limit_is_counted_in_bytes(monkeypatch):
+    # 60 two-byte characters: counted as characters, the page would seem to have room.
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"m" * 50, "text/javascript")})
+    page = "é" * 60 + '<script type="module" src="/m.js"></script>'
+    monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", 200)
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", 220)
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert "m" * 50 in out and len(out.encode()) <= 220

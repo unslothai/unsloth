@@ -544,6 +544,7 @@ async fn deliver<R: Runtime>(
     ask: bool,
 ) -> Result<Option<(PathBuf, String)>, String> {
     let folder = download_folder(app)?;
+    let staged = entry.staged.clone();
     let target = if ask {
         let (tx, rx) = tokio::sync::oneshot::channel();
         app.dialog()
@@ -560,18 +561,34 @@ async fn deliver<R: Runtime>(
         let target = picked
             .into_path()
             .map_err(|_| "Only local paths are supported.".to_string())?;
-        move_file(&entry.staged, &target)?;
+        let to = target.clone();
+        blocking(move || move_file(&staged, &to)).await?;
         target
     } else {
-        let state = app.state::<BrowserDownloads>();
-        let _naming = state.naming.lock().unwrap();
-        let target = crate::native_file_dialogs::unique_destination(&folder, &entry.name)?;
-        move_file(&entry.staged, &target)?;
-        target
+        let app = app.clone();
+        let name = entry.name.clone();
+        blocking(move || {
+            let state = app.state::<BrowserDownloads>();
+            let _naming = state.naming.lock().unwrap();
+            let target = crate::native_file_dialogs::unique_destination(&folder, &name)?;
+            move_file(&staged, &target)?;
+            Ok(target)
+        })
+        .await?
     };
     crate::browser_webview::mark_downloaded(&target, &entry.url);
     let id = record(app, target.clone());
     Ok(Some((target, id)))
+}
+
+/// File work off the async runtime's workers: a copy to another volume can take minutes, and
+/// IPC and timers share those workers.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("Failed to save the download: {error}"))?
 }
 
 /// Rename, or copy where the target is on another volume.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import codecs
 import hashlib
 import hmac
@@ -85,7 +86,18 @@ _FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
 _MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
 _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
-_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
+# Where markup stops being markup: a comment, or an element whose content is text (raw text and
+# RCDATA, noscript as scripting is on, and script itself). A script tag written inside one is
+# shown or ignored, not run.
+_INERT_START_RE = re.compile(
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)\b"
+    + _TAG_BODY,
+    re.IGNORECASE,
+)
+_CLOSING_TAG_RES = {
+    name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
+    for name in ("script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript")
+}
 # The JavaScript MIME types a module script may be served as (WHATWG MIME Sniffing).
 _JS_TYPES = frozenset(
     "application/ecmascript application/javascript application/x-ecmascript "
@@ -1297,6 +1309,27 @@ def _fetch_module(
     return code
 
 
+def _inert_spans(page: str) -> list[tuple[int, int]]:
+    """Spans of ``page`` that are text, not markup, in order: comments, and the content of
+    raw-text elements. Read front to back as the parser does, so a "<style" inside a script's
+    code or a comment doesn't open one."""
+    spans: list[tuple[int, int]] = []
+    at = 0
+    while match := _INERT_START_RE.search(page, at):
+        if match.group(1) is None:
+            close = page.find("-->", match.end())
+            end = len(page) if close < 0 else close + 3
+            spans.append((match.start(), end))
+        else:
+            name = match.group(1).lower()
+            close = None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
+            # Unclosed (or plaintext): text to the end of the page.
+            end = close.end() if close else len(page)
+            spans.append((match.end(), close.start() if close else len(page)))
+        at = max(end, match.end())
+    return spans
+
+
 def _open_tag(script: str) -> str:
     """A script element's start tag, from a match of _MODULE_SCRIPT_RE."""
     return script[: script.lower().rindex("</script")].rstrip()
@@ -1320,7 +1353,7 @@ def _inline_module_scripts(
 ) -> str:
     """Inline the page's self-contained module scripts, which the sandbox can't load itself."""
     tags: list[tuple[re.Match[str], str, str, bool]] = []
-    comments: Optional[list[tuple[int, int]]] = None
+    inert: Optional[list[tuple[int, int]]] = None
     for match in _MODULE_SCRIPT_RE.finditer(page):
         attrs: dict[str, str] = {}
         for name, value, _text in _script_attrs(_open_tag(match.group(0))):
@@ -1332,10 +1365,12 @@ def _inline_module_scripts(
         url = _join(base_url, src) if src else None
         if not url or not url.lower().startswith("https://"):
             continue
-        # A commented-out tag stays as it is; inlined code could end the comment.
-        if comments is None:
-            comments = [m.span() for m in _HTML_COMMENT_RE.finditer(page)]
-        if any(begin <= match.start() < finish for begin, finish in comments):
+        # A tag in a comment or in a textarea, title, style... is text: it stays as it is, and
+        # inlined code could end that element.
+        if inert is None:
+            inert = _inert_spans(page)
+        at = bisect.bisect_right(inert, (match.start(), len(page))) - 1
+        if at >= 0 and inert[at][0] <= match.start() < inert[at][1]:
             continue
         credentials = attrs.get("crossorigin", "").strip().lower() == "use-credentials"
         tags.append((match, url, attrs.get("integrity", ""), credentials))
@@ -1349,12 +1384,14 @@ def _inline_module_scripts(
     )
     parts: list[str] = []
     end = 0
-    # Inlined code counts toward the panel's page limit, like the page itself.
-    room = _MAX_BROWSER_HTML_BYTES - len(page)
+    # Inlined code counts toward the panel's page limit, like the page itself: in bytes, as the
+    # limit is, not characters.
+    room = _MAX_BROWSER_HTML_BYTES - len(page.encode("utf-8"))
     for (match, *_), code in zip(tags, codes):
-        if code is None or len(code) > room:
+        size = len(code.encode("utf-8")) if code is not None else 0
+        if code is None or size > room:
             continue
-        room -= len(code)
+        room -= size
         kept = (
             text
             for name, _value, text in _script_attrs(_open_tag(match.group(0)))

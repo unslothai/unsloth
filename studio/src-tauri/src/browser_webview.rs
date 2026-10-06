@@ -240,6 +240,9 @@ enum BrowserEvent {
     DownloadPrompt {
         tab_id: String,
         url: String,
+        /// The page showing when the download started: the site a remembered answer is for,
+        /// whatever the tab shows by the time the prompt is handled.
+        site: String,
         name: String,
         id: String,
     },
@@ -1064,11 +1067,16 @@ fn create_view<R: Runtime>(
                         url.clone(),
                         path,
                     );
+                    let site = webview
+                        .url()
+                        .map(|page| page.to_string())
+                        .unwrap_or_default();
                     emit(
                         app,
                         BrowserEvent::DownloadPrompt {
                             tab_id: download_tab.clone(),
                             url: url.to_string(),
+                            site,
                             name,
                             id,
                         },

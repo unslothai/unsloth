@@ -49,7 +49,8 @@ type NativeEvent =
       success: boolean;
       downloadId: string | null;
     }
-  | { kind: "downloadPrompt"; tabId: string; url: string; name: string; id: string };
+  /** `site`: the page showing when the download started. */
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -113,10 +114,11 @@ function listenOnce(): void {
 /** The file downloads into staging meanwhile; it reaches the download folder only if allowed.
  *  Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
-  const { id, url, name } = event;
-  // The tab's page is the site asking, as in a browser: blob: and data: downloads have none.
-  const decided =
-    tab && currentEntry(tab).kind === "web" ? approveDownload(url, name, shownUrl(tab)) : Promise.resolve(false);
+  const { id, url, site, name } = event;
+  // The page that started it is the site asking, as in a browser (blob: and data: downloads have
+  // no site of their own). Taken when it started: the tab may show another site by now, whose
+  // remembered answer must not cover this one.
+  const decided = tab && currentEntry(tab).kind === "web" ? approveDownload(url, name, site) : Promise.resolve(false);
   void decided
     .then((allow) => {
       if (allow) toast(t("browser.native.downloading", { name }));
