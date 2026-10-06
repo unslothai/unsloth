@@ -766,6 +766,35 @@ def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
     assert "task" not in entry
 
 
+def test_a_dedicated_separation_repo_keeps_its_task_and_workflows(monkeypatch):
+    repo = _Info(
+        "models--someone--htdemucs-GGUF",
+        "htdemucs-GGUF",
+        model_id = "someone/htdemucs-GGUF",
+        task = "audio-to-audio",
+    )
+    _catalog(monkeypatch, [repo], picks = {})
+    monkeypatch.setattr(
+        inf,
+        "_audio_cpp_speech_model_objects",
+        lambda created: [
+            {
+                "id": "someone/htdemucs-GGUF",
+                "object": "model",
+                "created": created,
+                "owned_by": inf._OWNED_BY,
+                "task": "audio-to-audio",
+                "loaded": False,
+                "audio_workflows": ["separate"],
+            }
+        ],
+    )
+
+    ids = {model["id"]: model for model in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["someone/htdemucs-GGUF"]["task"] == "audio-to-audio"
+    assert ids["someone/htdemucs-GGUF"]["audio_workflows"] == ["separate"]
+
+
 def test_downloaded_tts_model_is_not_advertised_without_switch_support(monkeypatch):
     tts = _Info(
         "models--unsloth--csm-1b",

@@ -35383,6 +35383,8 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
                 *_MEDIA_MODEL_TASKS,
                 _STT_MODEL_TASK,
                 _TTS_MODEL_TASK,
+                # A separation GGUF: listed by _audio_cpp_speech_model_objects with its workflows.
+                _SEP_MODEL_TASK,
                 _UNSUPPORTED_DIFFUSION_TASK,
             ):
                 continue
