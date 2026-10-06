@@ -5835,17 +5835,18 @@ RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
 
 def _has_quantized_linears(model, routed_ok):
     for module in model.modules():
-        # GPTQ / AWQ / HQQ / EETQ projections are plain nn.Modules holding packed weights.
-        if any(hasattr(module, name) for name in ("qweight", "qzeros", "W_q")):
-            return True
-        if not isinstance(module, torch.nn.Linear):
-            continue
         routed = type(module).__name__ == "_UnslothNVFP4Linear" or getattr(
             module, "_unsloth_compressed_tensors_fp8", False
         )
         if routed:
             if not routed_ok:
                 return True
+            continue
+        # Packed weights without a dense .weight: GPTQ / AWQ (qweight), HQQ (W_q), and our own
+        # MXFP4 / compressed-tensors INT4 linears (weight_packed), several of them not nn.Linear.
+        if any(hasattr(module, name) for name in ("qweight", "qzeros", "W_q", "weight_packed")):
+            return True
+        if not isinstance(module, torch.nn.Linear):
             continue
         weight = getattr(module, "weight", None)
         # FSDP-QLoRA packs Params4bit into a float quant_storage, so the dtype alone looks dense.
