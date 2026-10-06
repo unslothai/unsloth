@@ -163,8 +163,8 @@ export const sv = {
       newChat: "Ny chatt",
       options: "Chattalternativ",
       openChat: "Öppna i helvy",
-      moveLeft: "Flytta till vänster panel",
-      moveRight: "Flytta till höger panel",
+      moveLeft: "Flytta till vänstra panelen",
+      moveRight: "Flytta till högra panelen",
     },
     annotate: {
       countOne: "1 anteckning",
@@ -227,8 +227,8 @@ export const sv = {
       downloads: "Hämtade filer",
       bookmarks: "Bokmärken",
       search: "Sök",
-      today: "Idag",
-      yesterday: "Igår",
+      today: "I dag",
+      yesterday: "I går",
       remove: "Ta bort",
       clearHistory: "Rensa historik",
       clearDownloads: "Rensa hämtningar",
@@ -241,7 +241,7 @@ export const sv = {
       fromChat: "Från chatt",
       searchHistory: "Sök i webbhistoriken",
       filter: "Filtrera",
-      allTime: "All tid",
+      allTime: "All historik",
       allTimeHistory: "All historik",
       lastWeek: "Senaste 7 dagarna",
       lastMonth: "Senaste 30 dagarna",
@@ -299,9 +299,9 @@ export const sv = {
         "{host} ber besökare bevisa att de är människor, vilket appens inbyggda vy inte kan göra här. Öppna den i din webbläsare i stället.",
       botCheckDescriptionWeb:
         "{host} ber besökare bevisa att de är människor, vilket appens inbyggda vy inte kan göra här. Öppna den i din webbläsare eller i {app}, som kan öppna den.",
-      desktopApp: "Unsloth skrivbordsapp",
+      desktopApp: "Unsloth-skrivbordsappen",
       resubmit:
-        "Sidan kom från ett formulär. Om du läser in den igen skickas formuläret igen, vilket kan upprepa det som det gjorde.",
+        "Sidan kom från ett formulär. Om du läser in den igen skickas formuläret igen, vilket kan upprepa det som formuläret gjorde.",
       upload:
         "Filuppladdningar fungerar inte i den här vyn. Öppna sidan i systemets webbläsare för att skicka den.",
       scriptNavigation:
@@ -338,7 +338,7 @@ export const sv = {
       "Avlasta modellen innan du reparerar, återställer eller tar bort dess motor.",
     title: "Inferensmotorer",
     description:
-      "Valfria motorer för lokala text- och visionsmodeller som stöds. Välj en installerad motor i modellens körinställningar. Experimentellt.",
+      "Valfria motorer för lokala text- och visionsmodeller som stöds. Välj en installerad motor i modellens körningsinställningar. Experimentellt.",
     picker: "Inferensmotor",
     precision: "Precision",
     precisionAuto: "Modellens standard",
@@ -358,7 +358,7 @@ export const sv = {
     installTitle: "Installera {engine}",
     installAndLoad: "Installera och läs in",
     confirm:
-      "Installera {engine} {version}? Denna valfria hämtning kan använda flera gigabyte. Exakt ytterligare hämtnings- och diskutrymme är inte tillgängligt. Kompatibla cachade paket och modellfiler återanvänds.",
+      "Installera {engine} {version}? Denna valfria hämtning kan använda flera gigabyte. Exakt hur mycket mer som hämtas och hur mycket diskutrymme som används är inte känt. Kompatibla cachade paket och modellfiler återanvänds.",
     confirmSized:
       "Installera {engine} {version}? Denna valfria hämtning är ungefär {size}. Paket som Studio redan har, inklusive PyTorch när versionerna matchar, återanvänds i stället för att hämtas igen.",
     wslSetup:
@@ -515,7 +515,7 @@ export const sv = {
     useModelScopeFailed: "Det gick inte att byta till ModelScope.",
     updateToken: "Uppdatera token",
     hfToken: {
-      label: "HF token",
+      label: "HF-token",
       saved: "Sparad",
       add: "Inte angiven",
       savedAriaLabel: "Hugging Face-token sparad",
@@ -571,7 +571,7 @@ export const sv = {
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
-    accountMenu: "kontomeny för {name}",
+    accountMenu: "Kontomeny för {name}",
     updateAvailable: "Uppdatering tillgänglig",
     resize: {
       collapse: "Klicka för att fälla ihop",
@@ -579,7 +579,7 @@ export const sv = {
       drag: "Dra för att ändra storlek",
     },
     aria: {
-      home: "Unsloth startsida",
+      home: "Unsloth-startsida",
       closeSidebar: "Stäng sidofält",
       openSidebar: "Öppna sidofält",
       resizeSidebar: "Ändra storlek på eller fäll ihop sidofältet",
@@ -860,7 +860,7 @@ export const sv = {
       showChatToolFiles: "Filer från chattverktyg",
       showChatToolFilesDescription:
         "Filer som kod och verktyg skapat under chattar.",
-      showGeneratedMedia: "Genererad media",
+      showGeneratedMedia: "Genererade medier",
       showGeneratedMediaDescription:
         "Bilder, videor och ljud från sidorna Bilder, Video och Ljud.",
       showFineTunesDescription:
@@ -900,7 +900,7 @@ export const sv = {
         "Inte tillgänglig. Anslut enheten igen eller återställ mappen.",
       locationResetUnavailableTitle: "Återställa {name}?",
       locationResetUnavailableDescription:
-        "Enheten är inte ansluten. Filerna i {path} blir kvar på den enheten och visas inte i Biblioteket förrän du flyttar tillbaka dem.",
+        "Enheten är inte ansluten. Filerna i {path} blir kvar på den enheten och visas inte i biblioteket förrän du flyttar tillbaka dem.",
       locationLeftBehind: "Filerna i {path} blir kvar på den enheten.",
       dataStorage: "Bibliotekets lagring",
       manageStorage: "Hantera lagring",
@@ -911,7 +911,7 @@ export const sv = {
       itemCount: "{count} objekt",
       tabsSection: "Flikar",
       tabsDescription:
-        "Välj vilka flikar Biblioteket visar. En flik som du öppnar via en länk visas ändå.",
+        "Välj vilka flikar biblioteket visar. En flik som du öppnar via en länk visas ändå.",
       tabHidden: "Dold",
       lastVisited: "Senast besökt",
     },
@@ -936,14 +936,14 @@ export const sv = {
     keyboardShortcuts: {
       title: "Tangentbordsgenvägar",
       searchPlaceholder: "Sök genvägar …",
-      keystrokePlaceholder: "Tryck på ett kortkommando för att söka",
+      keystrokePlaceholder: "Tryck på en tangentkombination för att söka",
       searchByKeystrokes: "Sök efter tangenttryckningar",
       searchByName: "Sök efter namn",
       noResults: "Inga genvägar matchar sökningen.",
       unassigned: "Ej tilldelad",
-      recording: "Tryck tangenter …",
+      recording: "Tryck på tangenter …",
       recordingHint:
-        "Tryck den nya tangentkombinationen eller Esc för att avbryta.",
+        "Tryck på den nya tangentkombinationen eller Esc för att avbryta.",
       needsModifier:
         "Lägg till ⌘, Ctrl eller Alt. En ensam tangent skulle fånga upp textinmatning.",
       conflict: "Används också av en annan genväg",
@@ -1023,7 +1023,7 @@ export const sv = {
           description: "Markera valda chattar eller den aktuella som olästa",
         },
         togglePinChat: {
-          label: "Växla fästning",
+          label: "Fäst/lossa",
           description: "Fäst eller lossa valda chattar eller den aktuella",
         },
         selectAllChats: {
@@ -1095,7 +1095,7 @@ export const sv = {
           description: "Gå till projektarbetsytan",
         },
         switchToHub: {
-          label: "Växla till Modellhub",
+          label: "Växla till Modellhubb",
           description: "Gå till modellhubben",
         },
         switchToTrain: {
@@ -1179,7 +1179,7 @@ export const sv = {
           description: "Byt namn på den aktuella chatten",
         },
         forkChat: {
-          label: "Forka chatt",
+          label: "Förgrena chatt",
           description: "Förgrena en ny chatt från senaste meddelandet",
         },
         copyChatAsMarkdown: {
@@ -1259,7 +1259,7 @@ export const sv = {
       logSection: "Loggfil",
       source: "Loggfil",
       sourceHint:
-        "Modellkörningarna skriver egna loggar, så en misslyckad inläsning eller generering förklaras ofta där snarare än i serverloggen.",
+        "Modellprocesserna skriver egna loggar, så en misslyckad inläsning eller generering förklaras ofta där snarare än i serverloggen.",
       path: "Plats",
       pathCopy: "Kopiera sökväg",
       currentSession: "Aktuell",
@@ -1303,11 +1303,11 @@ export const sv = {
       openLogsFolderFailed: "Det gick inte att öppna loggmappen.",
       exportFailed: "Det gick inte att hämta loggarna.",
       exportTooOld:
-        "Unsloth-backend som körs är för gammal för att exportera loggar. Uppdatera backend och starta om.",
+        "Den Unsloth-backend som körs är för gammal för att exportera loggar. Uppdatera den och starta om.",
       exportForbidden:
         "För att hämta alla loggar krävs en inloggad Unsloth-session. En API-nyckel räcker inte.",
       keywords:
-        "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
+        "felsökning logg loggar fel krasch spårning stackspårning diagnostik misslyckades debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
       title: "Röst",
@@ -1385,9 +1385,9 @@ export const sv = {
         sttDownload: "Hämta",
         sttDownloadConfirmTitle: "Hämta {model}?",
         sttDownloadConfirmBody:
-          "Lokal diktering kör helt offline, men behöver först talmodellen {model}. Ungefär {size}, hämtas en gång till din Hugging Face-cache.",
+          "Lokal diktering körs helt offline, men behöver först talmodellen {model}. Ungefär {size}, hämtas en gång till din Hugging Face-cache.",
         sttDownloadConfirmBodyUnsized:
-          "Lokal diktering kör helt offline, men behöver först talmodellen {model}. Den hämtas en gång till din Hugging Face-cache.",
+          "Lokal diktering körs helt offline, men behöver först talmodellen {model}. Den hämtas en gång till din Hugging Face-cache.",
         sttOpenVoiceSettings: "Öppna röstinställningar",
         sttDownloadStarted: "Hämtar {model}",
         sttDownloading: "Hämtar … {progress} %",
@@ -1430,10 +1430,10 @@ export const sv = {
         manage: "Hantera",
         backToVoice: "Tillbaka till Röst",
         addEntry: "Lägg till post",
-        newEntryAria: "Ny ordlistapost",
+        newEntryAria: "Ny ordlistepost",
         entryPlaceholder: "Jane Doe",
-        entryAria: "Ordlistapost {index}",
-        removeEntryAria: "Ta bort ordlistapost {index}",
+        entryAria: "Ordlistepost {index}",
+        removeEntryAria: "Ta bort ordlistepost {index}",
       },
       recents: {
         sectionTitle: "Dikteringshistorik",
@@ -1566,7 +1566,7 @@ export const sv = {
         preloadOnStartupDescription:
           "Hämta hjälpmodellen för AI Assist i bakgrunden vid start. Av som standard; AI Assist kan fortfarande hämta den vid behov.",
         disabledByEnv:
-          "Inaktiverad av UNSLOTH_HELPER_MODEL_DISABLE i bakändens miljö.",
+          "Inaktiverad av UNSLOTH_HELPER_MODEL_DISABLE i backendens miljö.",
         loadError: "Det gick inte att läsa in inställningarna för hjälp-LLM.",
         saveError: "Det gick inte att spara inställningarna för hjälp-LLM.",
       },
@@ -1574,7 +1574,7 @@ export const sv = {
         sectionTitle: "Automatiskt modellbyte (OpenAI API)",
         enable: "Byt modell enligt begäran",
         enableDescription:
-          "Läs in en hämtad modell som nämns i en API-begäran innan den hanteras. Av som standard.",
+          "Läs in en hämtad modell som nämns i en API-begäran innan begäran hanteras. Av som standard.",
         autoDownload: "Hämta saknade modeller",
         autoDownloadDescription:
           "Hämta en GGUF som nämns i en API-begäran men ännu inte är hämtad. Då kan alla med API-nyckel använda diskutrymme och bandbredd.",
@@ -1712,7 +1712,7 @@ export const sv = {
         transportDescription:
           "Hur modell- och datauppsättningsfiler hämtas från Hugging Face. HTTPS återupptar där hämtningen avbröts; Xet är ofta snabbare första gången men börjar om filen om du avbryter.",
         transportHint:
-          "HTTPS använder vanlig TLS: alla nätverk, proxyservrar och VPN tillåter det, en avbruten överföring återupptas från de byte som redan finns på disken och minnesanvändningen förblir jämn. Xet hämtar deduplicerade delar, så ett arkiv som delar data med ett du redan har kan komma mycket snabbare, men det kräver hf_xet, använder mer RAM och ett avbrott förkastar den pågående filen. Auto frågar denna dator: den väger RAM mot om Xet har stannat här och faller tillbaka till HTTPS.",
+          "HTTPS använder vanlig TLS: alla nätverk, proxyservrar och VPN tillåter det, en avbruten överföring återupptas från de byte som redan finns på disken och minnesanvändningen förblir jämn. Xet hämtar deduplicerade delar, så ett arkiv som delar data med ett du redan har kan komma mycket snabbare, men det kräver hf_xet, använder mer RAM och ett avbrott förkastar den pågående filen. Automatiskt läge anpassas efter den här datorn: det tar hänsyn till RAM och om Xet har fastnat här, och faller tillbaka till HTTPS.",
         https: "HTTPS",
         xet: "Xet",
         auto: "Automatiskt",
@@ -1726,7 +1726,8 @@ export const sv = {
           "Deduplicerad delöverföring. Ofta snabbare vid ny hämtning, börjar om filen vid avbrott och behöver mer minne.",
         autoHint:
           "Väljer per dator och växlar till HTTPS om Xet stannar eller misslyckas här.",
-        autoCurrently: "Automatiskt använder {transport} på den här datorn.",
+        autoCurrently:
+          "Automatiskt läge använder {transport} på den här datorn.",
         xetMissing:
           "Xet är inte tillgängligt eftersom hf_xet inte är installerat.",
       },
@@ -1763,7 +1764,7 @@ export const sv = {
         loaded: "Inläst",
         downloading: "Hämtar {model}",
         downloadingDescription:
-          "Förloppet visas i hämtningspanelen. Indexeringen använder den när den har kommit.",
+          "Förloppet visas i hämtningspanelen. Indexeringen använder modellen när hämtningen är klar.",
         downloadFailed: "Det gick inte att starta hämtningen",
         downloadConflict: "Återuppta denna hämtning från Hubben",
         downloadBusy: "En hämtning pågår redan",
@@ -1822,11 +1823,11 @@ export const sv = {
       nameSaved: "Profilnamnet har sparats",
       namePersistErrorTitle: "Det gick inte att spara profilnamnet permanent",
       namePersistErrorDescription:
-        "Namnet har uppdaterats för den här sessionen, men kanske inte finns kvar efter ominläsning.",
+        "Namnet har uppdaterats för den här sessionen, men finns kanske inte kvar efter ominläsning.",
       photoUpdated: "Profilbilden har uppdaterats",
       photoPersistErrorTitle: "Det gick inte att spara profilbilden permanent",
       photoPersistErrorDescription:
-        "Bilden har uppdaterats för den här sessionen, men kanske inte finns kvar efter ominläsning.",
+        "Bilden har uppdaterats för den här sessionen, men finns kanske inte kvar efter ominläsning.",
       photoUpdateErrorTitle: "Det gick inte att uppdatera profilbilden",
       imageUseError: "Det gick inte att använda denna bild.",
       stats: {
@@ -1878,7 +1879,7 @@ export const sv = {
         firstToken: "Genomsnittlig tid till första token",
         tokensPerSecond: "{value} tok/s",
         topModelsTitle: "Mest använda modeller",
-        topModelsDescription: "Ordning efter utbytta token",
+        topModelsDescription: "Rangordnade efter utbytta token",
         modelSummary: "{tokens} · {messages}",
         noModels: "Ingen modellanvändning har registrerats ännu.",
         trainingTitle: "Träning",
@@ -1908,7 +1909,7 @@ export const sv = {
         label: "Tema",
         description: "Färger som används i Unsloth, i ljust och mörkt läge.",
         standard: "Standard",
-        classic: "Classic",
+        classic: "Klassisk",
         minimal: "Minimal",
         moreThemes: "Fler teman",
       },
@@ -2040,11 +2041,11 @@ export const sv = {
       description: "Övervaka maskinvara och lagring på denna Unsloth-server.",
       liveUpdates: "Direktuppdateringar",
       floatingWindow: "Flytande fönster",
-      disableOverlay: "Inaktivera överlagring",
+      disableOverlay: "Inaktivera överlägg",
       liveMonitor: {
         title: "Direktövervakning",
         apiTitle: "API-övervakning",
-        summary: "Direktbegäranden, fel och tokenanvändning",
+        summary: "Begäranden, fel och tokenanvändning i realtid",
         status: "{active} aktiva · {recent} senaste · {model}",
         noModelLoaded: "ingen modell inläst",
         autoOpen: "Den flytande övervakaren öppnas automatiskt",
@@ -2147,15 +2148,15 @@ export const sv = {
           unresolved:
             "Det gick inte att kontrollera tillgängliga bakändar. Kontrollera anslutningen och försök igen.",
           updateChecksDisabled:
-            "Uppdateringskontroller är inaktiverade (UNSLOTH_DISABLE_UPDATE_CHECK=1), så tillgängliga backends slås inte upp.",
+            "Uppdateringskontroller är inaktiverade (UNSLOTH_DISABLE_UPDATE_CHECK=1), så tillgängliga bakändar slås inte upp.",
         },
         llamaBackendKeywords:
-          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
+          "llama.cpp bakände gguf inferens cuda rocm hip vulkan metal cpu gpu accelerator förbyggd byta motor anpassad sökväg katalog mapp llama-server körbar fil binär llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
         title: "Modellminne",
         keepResident: "Behåll modellen i GPU-minnet",
-        keepResidentDescription: "Ligg kvar i VRAM mellan uppmaningar.",
+        keepResidentDescription: "Ligger kvar i VRAM mellan uppmaningar.",
         keepResidentHint:
           "Lämna inte tillbaka vikterna till systemets RAM medan modellen är inläst. Stänger av automatisk avlastning vid inaktivitet och anger även --mlock när vikterna ligger i värddatorns RAM (enhetligt minne eller delvis GPU-avlastning), så att operativsystemet inte kan växla ut dem och läsa in dem igen vid nästa uppmaning.",
         noRamReserve: "Reservera inte system-RAM för modellen",
@@ -2168,7 +2169,7 @@ export const sv = {
         multiModelHint:
           "Varje inläst modell besvarar de förfrågningar som anger den. Med flera GPU:er hamnar en ny modell på en GPU som ingen annan modell använder, om någon har plats. När den inte får plats bredvid de andra avlastas först de modeller som inte används, och sedan ersätter den den aktiva modellen. Träning avlastar de extra modellerna före den aktiva.",
         mlockVetoed:
-          "--mlock förblir av: att låsa modellen på plats skulle reservera RAM för hela den. Automatisk avlastning vid inaktivitet är fortfarande avstängd.",
+          "--mlock förblir av: att låsa modellen på plats skulle reservera RAM för hela modellen. Automatisk avlastning vid inaktivitet är fortfarande avstängd.",
         mlockNotApplicable:
           "Helt på GPU:n: inget i systemets RAM att låsa. Automatisk avlastning vid inaktivitet förblir av.",
         memlockCapped:
@@ -2178,7 +2179,7 @@ export const sv = {
         loadError: "Det gick inte att läsa in inställningarna för modellminne",
         saveError: "Det gick inte att spara inställningarna för modellminne",
         modelMemoryKeywords:
-          "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+          "mlock memlock ulimit vram gpu minne ram minnesresident fäst sida lås låst behåll inläst avlasta inaktiv mmap no-mmap inläsningsläge växling sidväxling mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
       },
       storage: {
         title: "Lagring",
@@ -2191,7 +2192,7 @@ export const sv = {
         modelsFolderHint:
           "Där hämtade modeller lagras. Ändra detta för att hålla modeller borta från systemdisken. Gäller endast nya hämtningar. Modeller som redan finns ligger kvar där de är.",
         modelsFolderKeywords:
-          "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
+          "modellkatalog modellmapp katalog mapp sökväg plats hämtning hämtningar cache lagring disk enhet flytta hugging face models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         futureDownloads: "Endast nya hämtningar",
         environmentManaged: "Hanteras av miljövariabeln {variable}.",
         locationFree: "{free} ledigt",
@@ -2323,7 +2324,7 @@ export const sv = {
         copyUsagePrompt: "Kopiera uppmaning för underagent",
         defaultPrompt:
           "Starta en lokal agent för att implementera denna funktion.",
-        opencodePrompt: "@unsloth find the cause of this test failure",
+        opencodePrompt: "@unsloth hitta orsaken till det här testfelet",
       },
       quickstart: {
         title: "Bygg ett kommando",
@@ -2343,7 +2344,7 @@ export const sv = {
         description:
           "Ange --model för att välja modell och kvantisering och --context-length för att ställa in fönstret. Använd ett kvantiseringssuffix eller en uttrycklig flagga --gguf-variant.",
         suffixLabel: "Med ett kvantiseringssuffix",
-        variantLabel: "Med en uttrycklig variantsflagga",
+        variantLabel: "Med en uttrycklig variantflagga",
       },
       options: {
         title: "Vanliga alternativ",
@@ -2369,7 +2370,7 @@ export const sv = {
         yolo: "Hoppa över godkännandefrågor. Använd endast i betrodda miljöer.",
       },
       remote: {
-        title: "Anslut till en fjärr-Unsloth",
+        title: "Anslut till Unsloth på en fjärrdator",
         description:
           "Rikta unsloth start mot en Unsloth-instans som körs någon annanstans genom att ange dessa innan du startar (eller skicka --api-key direkt):",
       },
@@ -2381,7 +2382,7 @@ export const sv = {
       dryRun: {
         title: "Förhandsgranska utan att starta",
         description:
-          "Lägg till --no-launch för att skriva ut miljön och kommandot i stället för att starta agenten. Om --model anges kan modellen ändå lösas och läsas in.",
+          "Lägg till --no-launch för att skriva ut miljön och kommandot i stället för att starta agenten. Om --model anges kan modellen ändå slås upp och läsas in.",
       },
     },
     chat: {
@@ -2456,12 +2457,12 @@ export const sv = {
       autoScrollAuto: "Automatisk rullning",
       autoScrollManual: "Manuell",
       autoScrollKeywords:
-        "rulla automatisk rullning autoscroll följ fäst botten hoppa strömning generering visningsområde lås håll auto manuell scroll",
+        "rulla automatisk rullning autoscroll följ fäst botten hoppa strömning generering visningsområde lås håll auto manuell scroll auto-scroll follow stick bottom jump streaming generating viewport lock hold manual",
       scrollToBottomButton: "Knapp för att rulla till botten",
       scrollToBottomButtonDescription:
         "Visa en knapp för att hoppa tillbaka till senaste meddelandet efter att du har rullat uppåt.",
       scrollToBottomButtonKeywords:
-        "rulla botten hoppa senaste nyaste pil ner knapp flytande dölj visa scroll",
+        "rulla botten hoppa senaste nyaste pil ner knapp flytande dölj visa scroll bottom jump latest newest arrow down button floating hide show",
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
@@ -2476,19 +2477,19 @@ export const sv = {
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
       rememberParamsPerModel: "Kom ihåg inställningar per modell",
       rememberParamsPerModelDescription:
-        "Återställ varje modells senast använda prompt, temperatur och andra inställningar.",
+        "Återställ varje modells senast använda uppmaning, temperatur och andra inställningar.",
       autoCompact: "Komprimera långa chattar automatiskt",
       autoCompactDescription:
         "Äldre turer flyttas till ett sökbart arkiv när en chatt fyller sin kontext.",
       autoCompactKeywords:
-        "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact",
+        "komprimering komprimera autokomprimering kontextfönster trunkera rullande kontrollpunkt marginal arkiv hämtning återkallning rag sök compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall search",
       visibility: {
         collapsed: "Hopfälld",
         auto: "Fäll ut medan den körs",
         expanded: "Alltid utfälld",
       },
       visibilityKeywords:
-        "fäll ihop hopfälld fäll ut utfälld öppen stängd resonemang tänkande verktygsanrop verktygsaktivitet vik gruppera strömning",
+        "fäll ihop hopfälld fäll ut utfälld öppen stängd resonemang tänkande verktygsanrop verktygsaktivitet vik gruppera strömning collapse collapsed expand expanded open closed reasoning thinking tool calls tool activity fold group streaming",
       thinking: {
         visibility: "Resonemang",
         visibilityDescription:
@@ -2522,7 +2523,7 @@ export const sv = {
         title: "Canvas",
         collapseHtmlBlocks: "Fäll ihop HTML-block",
         collapseHtmlBlocksDescription:
-          "Fäll även ihop inhägnade HTML-dokument när Canvas är av.",
+          "Fäll även ihop HTML-dokument i kodblock när Canvas är av.",
         allowNetworkAccess: "Tillåt nätverksåtkomst för Canvas",
         allowNetworkAccessDescription:
           "Låt Canvas läsa in externa skript, stilar, teckensnitt och media. Stäng av för offline-förhandsvisningar.",
@@ -2530,7 +2531,7 @@ export const sv = {
         blockedBannerPlural:
           "Blockerade {count} externa resurser från {hosts}.",
         blockedBannerAction: "Tillåt för denna Canvas",
-        blockedTitle: "Canvas nätverksåtkomst är avstängd",
+        blockedTitle: "Nätverksåtkomst för Canvas är avstängd",
         blockedHint:
           "Aktivera ”{setting}” under Inställningar → Chatt för att låta Canvas läsa in externa resurser, eller tillåt det endast för denna Canvas.",
         blockedSettingsAction: "Öppna inställningar",
@@ -2755,7 +2756,7 @@ export const sv = {
       projectFilesKept:
         "Sandlådor är mappar som skapas för enskilda chattar. Filer som sparats i projektens arbetsytor behålls.",
       deleteAllAction: "Ta bort alla",
-      deleteChatsOnly: "Ta bort endast chattar…",
+      deleteChatsOnly: "Ta bara bort chattar…",
       deleteChatsAndSandboxes: "Ta bort chattar och sandlådor…",
       deleteSandboxFilesDescription:
         "Ta även bort varje chatts sandlådemapp och filerna i den. Filer i projektens arbetsytor behålls.",
@@ -2807,14 +2808,14 @@ export const sv = {
       copyNow: "Kopiera nu – den visas inte igen.",
       usageExamples: "Användningsexempel",
       usageNoModel:
-        "Läs in eller hämta en modell för att se exempel som går att köra. Den här servern har ännu ingen namngiven modell.",
+        "Läs in eller hämta en modell för att se exempel som går att köra. Den här servern har ännu ingen modell att ange.",
       usageTools: "Verktyg",
-      exampleCurlTools: "curl + tools",
-      examplePythonTools: "Python + tools",
-      exampleJavaScriptTools: "JavaScript + tools",
-      exampleCurlAdvanced: "curl + advanced",
-      examplePythonAdvanced: "Python + advanced",
-      exampleJavaScriptAdvanced: "JavaScript + advanced",
+      exampleCurlTools: "curl + verktyg",
+      examplePythonTools: "Python + verktyg",
+      exampleJavaScriptTools: "JavaScript + verktyg",
+      exampleCurlAdvanced: "curl + avancerat",
+      examplePythonAdvanced: "Python + avancerat",
+      exampleJavaScriptAdvanced: "JavaScript + avancerat",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "Säker HTTPS",
@@ -2837,7 +2838,7 @@ export const sv = {
       expired: "har löpt ut",
       today: "i dag",
       created: "Skapad {value}",
-      used: "Använd {value}",
+      used: "Senast använd {value}",
       expires: "Löper ut {value}",
       actionsFor: "Åtgärder för {name}",
       copyPrefix: "Kopiera prefix",
@@ -2878,7 +2879,7 @@ export const sv = {
         download: "Hämta",
         downloadConfirmTitle: "Hämta Laya {model}?",
         downloadConfirmBody:
-          "Decision API behöver denna modell för att besvara begäranden. Ungefär {size}, hämtas en gång till din Hugging Face-cache.",
+          "Decision API behöver denna modell för att besvara begäranden. Ungefär {size}, hämtas en gång och sparas i din Hugging Face-cache.",
         unload: "Avlasta",
         downloadBusy: "En Decision API-modell hämtas redan.",
         downloadFailed: "Det gick inte att starta hämtningen.",
@@ -3024,7 +3025,7 @@ export const sv = {
         "Filerna för datauppsättningen har tagits bort från den här enheten, så träningen hämtar dem igen.",
     },
     preview: {
-      title: "Förhandsvisa körning",
+      title: "Förhandsvisning av körning",
       ready: "Klar",
       notReady: "Inte klar",
       modelPending: "Väntar på modell",
@@ -3073,7 +3074,7 @@ export const sv = {
         "Att installera den versionen i stället för att behålla modellens egen kod växlar denna körning till 16-bitars LoRA, som behöver mycket mer VRAM än QLoRA.",
       advancedSettings: "Avancerade inställningar",
       defaultAdvancedSettings: "Standardvärden",
-      nonDefaultAdvancedSettings: "{count} icke-standard",
+      nonDefaultAdvancedSettings: "{count} ändrade från standard",
     },
     datasetPicker: {
       noun: "datauppsättningar",
@@ -3088,7 +3089,7 @@ export const sv = {
         "Vissa platser för datauppsättningar gick inte att söka igenom.",
       noLocalDatasets:
         "Inget på den här enheten ännu. Hämta en datauppsättning från Hubben, bygg en i Recept eller ladda upp en fil.",
-      openDataRecipes: "Öppna datarecept",
+      openDataRecipes: "Öppna Datarecept",
       searchingHub: "Söker på Hugging Face …",
       noDatasetsFound: "Inga datauppsättningar hittades.",
       tokenRejectedTitle: "Hugging Face-token nekades",
@@ -3097,7 +3098,7 @@ export const sv = {
       hubUnreachable: "Det gick inte att nå Hugging Face",
       cantUseDataset: "Det går inte att använda datauppsättningen",
       reasonInvalidHubId:
-        "Ange ett giltigt ID för Hugging Face-datauppsättningen: repo eller ägare/repo, utan efterföljande punkter eller bindestreck och utan suffixet .git (högst 96 tecken per del).",
+        "Ange ett giltigt ID för Hugging Face-datauppsättningen: repo eller ägare/repo, utan flera punkter eller bindestreck i följd och utan suffixet .git (högst 96 tecken per del).",
       sourceRecipe: "Recept",
       sourceUpload: "Ladda upp",
       sourceLocal: "Lokal",
@@ -3135,7 +3136,7 @@ export const sv = {
       reasonNotTrainable: "Den här lokala modellen går inte att träna.",
       reasonUnsupportedFormat: "Det här modellformatet stöds inte för träning.",
       reasonInvalidHubId:
-        "Ange ett giltigt Hugging Face-modell-ID: repo eller ägare/repo, utan efterföljande punkter eller bindestreck och utan suffixet .git (högst 96 tecken per del).",
+        "Ange ett giltigt Hugging Face-modell-ID: repo eller ägare/repo, utan flera punkter eller bindestreck i följd och utan suffixet .git (högst 96 tecken per del).",
       sourceModelsFolder: "Modellkatalog",
       sourceHfCache: "HF-cache",
       sourceLmStudio: "LM Studio",
@@ -3147,7 +3148,7 @@ export const sv = {
       vramTightBadge: "Ont om minne",
       vramNeeds: "Behöver ~{est} GB VRAM (GPU: {total} GiB)",
       vramTight: "~{est} GB VRAM (ont om utrymme på {total} GiB)",
-      vramApprox: "~{est}GB VRAM",
+      vramApprox: "~{est} GB VRAM",
     },
     methods: {
       qlora: {
@@ -3253,7 +3254,7 @@ export const sv = {
           source:
             "Använd en Hugging Face-datauppsättning (inte en lokal uppladdning eller S3-källa).",
           maxSteps:
-            "Ange Max Steps > 0 – strömmande datauppsättningar har ingen känd längd.",
+            "Ange Maxsteg > 0 – strömmande datauppsättningar har ingen känd längd.",
           trainOnCompletions: "Stäng av ”Endast assistentslutföranden”.",
           evalSplit:
             "Välj en separat eval-delning – utvärdering är på men ingen särskild eval-delning har angetts.",
@@ -3273,11 +3274,11 @@ export const sv = {
         },
         notifications: {
           turnedOffMaxSteps:
-            "Strömning avstängd: strömning kräver ett fast Max Steps > 0.",
+            "Strömning avstängd: strömning kräver ett fast värde för Maxsteg > 0.",
           adjusted:
             "Anpassat för strömning. Inaktiverade inkompatibla alternativ: {options}.",
           needsMaxSteps:
-            "Strömning behöver ett fast Max Steps (strömmande datauppsättningar har ingen känd längd). Ange först Max Steps > 0.",
+            "Strömning kräver ett fast värde för Maxsteg (strömmande datauppsättningar har ingen känd längd). Ange först Maxsteg > 0.",
           enabledAdjusted:
             "Strömning aktiverad. Inaktiverade inkompatibla alternativ: {options}.",
           disabledForDetectedModality:
@@ -3340,7 +3341,7 @@ export const sv = {
         prefix: "Sökvägsprefix",
         prefixPlaceholder: "datasets/whisper/",
         accessKeyId: "Åtkomstnyckel-ID",
-        accessKeyIdPlaceholder: "Exempel: AWS-åtkomstnyckel-ID",
+        accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Hemlig åtkomstnyckel",
         secretAccessKeyPlaceholder: "Din hemliga AWS-åtkomstnyckel",
         useIamRole: "Använd IAM-roll",
@@ -3360,8 +3361,8 @@ export const sv = {
       trainingHyperparameters: "Träningshyperparametrar",
       maxSteps: "Maxsteg",
       epochs: "Epoker",
-      useMaxSteps: "Använd Max Steps",
-      useEpochs: "Använd Epochs",
+      useMaxSteps: "Använd maxsteg",
+      useEpochs: "Använd epoker",
       maxStepsTooltip: "Åsidosätt totalt antal optimerarsteg.",
       epochsTooltip: "Antal fullständiga genomgångar av datauppsättningen.",
       contextLength: "Kontextlängd",
@@ -3377,7 +3378,7 @@ export const sv = {
         "Används endast när CPT tränar embed_tokens. Inbäddningar är lättare att göra instabila än LoRA-vikter och behöver därför vanligen lägre inlärningshastighet. Lämna tomt för att använda lr/10; ett typiskt fungerande intervall är 2–10 gånger lägre än huvudvärdet. Öka endast om anpassningen av ordförråd eller domäntoken går för långsamt.",
       rank: "Rank",
       rankTooltip:
-        "Dimension för låg-rank-matriserna. Högre = större kapacitet.",
+        "Dimension för matriserna med låg rang. Högre = större kapacitet.",
       alpha: "Alpha",
       alphaTooltip:
         "Skalningsfaktor för LoRA-uppdateringar. Vanligtvis 2 × rank.",
@@ -3393,7 +3394,7 @@ export const sv = {
       trainWithLora: "Träna med LoRA",
       stableRank: "Stabil rank",
       memoryEfficient: "Minneseffektiv",
-      weightDecomposed: "Viktnedbruten",
+      weightDecomposed: "Viktdekomponerad",
       notSupportedAppleSilicon: "Stöds inte på Apple Silicon",
       doraNeedsVisionLayersOff:
         "Stäng av träning av visionslager för att använda DoRA",
@@ -3417,8 +3418,8 @@ export const sv = {
         adamwTorchFused: "AdamW (PyTorch Fused)",
       },
       lrSchedulerOptions: {
-        linear: "Linear",
-        cosine: "Cosine",
+        linear: "Linjär",
+        cosine: "Cosinus",
       },
       batchSize: "Batchstorlek",
       batchSizeTooltip:
@@ -3431,7 +3432,7 @@ export const sv = {
       warmupStepsTooltip: "Öka LR gradvis vid träningsstart för stabilitet.",
       scheduleEpochsTooltip:
         "Antal fullständiga genomgångar av datauppsättningen. Ange 0 för att köra enligt maxsteg.",
-      saveSteps: "Spara steg",
+      saveSteps: "Sparsteg",
       saveStepsTooltip: "Spara en kontrollpunkt var N:e steg. 0 inaktiverar.",
       evalSteps: "Utvärderingssteg",
       evalStepsTooltip:
@@ -3444,7 +3445,7 @@ export const sv = {
       none: "Ingen",
       standard: "Standard",
       enablePacking: "Aktivera packning",
-      assistantCompletionsOnly: "Endast assistentslutföranden",
+      assistantCompletionsOnly: "Endast assistentens svar",
       readMore: "Läs mer",
     },
     training: {
@@ -3480,7 +3481,7 @@ export const sv = {
       resumeFailed: "Det gick inte att återuppta träningen",
       resumeFailedTitle: "Det gick inte att återuppta träningen",
       resumeUnavailable:
-        "Endast stoppade eller felaktiga körningar med en sparad kontrollpunkt kan återupptas.",
+        "Endast stoppade eller misslyckade körningar med en sparad kontrollpunkt kan återupptas.",
       modelUnverified:
         "Det gick inte att verifiera modellens inställningar. Kontrollera anslutningen eller Hugging Face-token och försök igen.",
       legacyDatasetScriptUnsupported:
@@ -3509,7 +3510,7 @@ export const sv = {
       parametersReset:
         "Parametrarna har återställts till modellens standardvärden",
       audioIncompatible:
-        "Denna modell stöder inte ljud. Växla till en ljudkapabel modell eller välj en datauppsättning utan ljud.",
+        "Denna modell stöder inte ljud. Växla till en modell som stöder ljud eller välj en datauppsättning utan ljud.",
       visionIncompatible:
         "Textmodellen är inte kompatibel med en multimodal datauppsättning. Växla till en bildmodell eller välj en datauppsättning med enbart text.",
       cancelTitle: "Avbryt träning",
@@ -3584,7 +3585,7 @@ export const sv = {
     charts: {
       settings: "Diagraminställningar",
       settingsDescription:
-        "Justera diagrammets presentation medan träningen fortsätter köra.",
+        "Justera diagrammets presentation medan träningen pågår.",
       openSettings: "Öppna diagraminställningar",
       viewWindow: "Visningsfönster",
       viewWindowDescription: "Visa endast senaste steg eller hela historiken.",
@@ -3700,7 +3701,7 @@ export const sv = {
     kvRate: "KV reserverat, ~{rate}/token",
     oomLikely: "Med nuvarande inställningar är OOM sannolikt",
     tooLarge:
-      "Större än VRAM, avlastas till CPU. En mindre kvantisering kör snabbare",
+      "Större än VRAM, körs delvis på CPU:n. En mindre kvantisering går snabbare",
   },
   skills: {
     title: "Färdigheter",
@@ -3806,7 +3807,7 @@ export const sv = {
         projects: "Sök projekt",
         archived: "Sök arkiverade chattar",
         project: 'Sök i "{project}"',
-        sections: "Sök sektioner",
+        sections: "Sök avsnitt",
       },
       toolbar: {
         show: "Visa",
@@ -3843,11 +3844,11 @@ export const sv = {
       },
       badges: {
         pinned: "Fäst",
-        fork: "Fork",
+        fork: "Förgrening",
         compare: "Jämför",
       },
       menu: {
-        fork: "Forka",
+        fork: "Förgrena",
         moveTo: "Flytta till projekt",
         newChatInProject: "Ny chatt i projektet",
         edit: "Redigera",
@@ -3888,7 +3889,7 @@ export const sv = {
       toast: {
         projectMoved: "{project} flyttades till {section}",
         projectUnfiled: "{project} togs bort från {section}",
-        forkFailed: "Det gick inte att forka",
+        forkFailed: "Det gick inte att förgrena",
         projectDeleted: '"{name}" togs bort',
         projectDeleteFailed: "Det gick inte att ta bort projektet",
         removedFromSection: "Borttagna från avsnittet: {count}",
@@ -4042,7 +4043,7 @@ export const sv = {
       deleteTitle: 'Ta bort "{name}"?',
       deleteManyTitle: "Ta bort {count} objekt?",
       deleteManyDescription:
-        "Filer tas bort från där de ligger. Allt i en borttagen mapp flyttas upp en nivå.",
+        "Filerna tas bort där de ligger. Allt i en borttagen mapp flyttas upp en nivå.",
       deleteFolderIntoParent:
         'Allt innehåll flyttas till "{folder}". Inga filer tas bort.',
       deleteFolderIntoLibrary:
@@ -4091,7 +4092,7 @@ export const sv = {
     },
     viewer: {
       scale: "Skala",
-      fit: "Zooma till anpassad storlek",
+      fit: "Anpassa till fönstret",
       moreActionsImage: "Fler åtgärder för den här bilden",
       moreActionsVideo: "Fler åtgärder för den här videon",
       moreActionsClip: "Fler åtgärder för det här klippet",
