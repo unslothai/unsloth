@@ -18,7 +18,6 @@ export const he = {
     openDefaultApp: "פתח באפליקציית ברירת המחדל",
     openWith: "פתח באמצעות",
     unslothBrowser: "הדפדפן של Unsloth",
-    canvas: "קנבס",
     newChat: "צ'אט חדש",
     browserTab: "כרטיסיית דפדפן חדשה",
     saveAs: "שמור בשם…",
@@ -218,7 +217,6 @@ export const he = {
       copied: "הועתק",
       copyFailed: "העתקת הקובץ נכשלה.",
       wrap: "גלישת שורות",
-      canvas: "קנבס",
     },
     pages: {
       history: "היסטוריה",
