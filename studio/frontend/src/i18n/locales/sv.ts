@@ -1550,7 +1550,7 @@ export const sv = {
         engineLabel: "TTS-motor",
         engineSystemDescription: "Inbyggda enhetsröster",
         engineStudioDescription:
-          "Använder den inlästa ljudmodellen (t.ex. Orpheus)",
+          "Använder talmodellen som är inläst i Ljud",
         engineSystem: "Systemröster",
         engineStudio: "Läs in TTS-modell",
         engineCustom: "Anpassad slutpunkt",
@@ -1565,10 +1565,13 @@ export const sv = {
           "Röstnamnet som slutpunkten förväntar sig; alloy är standard",
         modelLabel: "TTS-modell",
         modelDescription:
-          "Läs in en ljudmodell från modellväljaren (t.ex. Orpheus TTS)",
+          "Läs in en talmodell i Ljud. Den ersätter chattmodellen.",
         openAudioAction: "Öppna Ljud",
         voiceLabel: "Röst",
         voiceDescription: "Bästa rösterna på denna enhet",
+        studioVoiceDescription: "Röster som sparats i Ljud kräver en kloningsmodell",
+        studioVoiceDefault: "Modellens egen röst",
+        studioVoiceSaved: "Sparad röst",
         speedLabel: "Hastighet",
         pitchLabel: "Tonhöjd",
         volumeLabel: "Volym",

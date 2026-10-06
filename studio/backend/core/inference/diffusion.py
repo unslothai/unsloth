@@ -212,6 +212,7 @@ from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
+from .diffusion_postprocess import install as install_device_postprocess
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -10305,6 +10306,8 @@ class DiffusionBackend:
                         elif state.transformer_cache:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
+                        # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
+                        install_device_postprocess(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"

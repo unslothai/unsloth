@@ -102,6 +102,9 @@ def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
         # A fine-tune of a local model names that folder; a Hub repo id is kept.
         if isinstance(base, str) and os.path.isabs(base):
             item["model"] = {**item["model"], "baseModel": cache_reference(base)}
+        made_with = (item.get("audio") or {}).get("model")
+        if isinstance(made_with, str) and os.path.isabs(made_with):
+            item["audio"] = {**item["audio"], "model": cache_reference(made_with)}
         shown.append(item)
     return redact_inventory_host_paths(shown, via_api_key = via_api_key)
 
@@ -162,10 +165,12 @@ async def get_library(
 
     items = await run_in_threadpool(library.list_items)
     disk = await run_in_threadpool(library.disk_usage)
+    unlisted = await run_in_threadpool(library.unlisted_bytes, items)
     return {
         "items": _items_for_caller(items, via_api_key),
         "folders": library_db.list_folders(),
         "disk": redact_inventory_host_paths(disk, via_api_key = via_api_key),
+        "unlistedBytes": unlisted,
     }
 
 

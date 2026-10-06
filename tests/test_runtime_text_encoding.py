@@ -60,11 +60,14 @@ REVIEWED_VENDORED_OFFENDERS = {
     "studio/backend/vendor/laya/agent.py:31: open()",
     "studio/backend/vendor/laya/agent.py:47: open()",
     "studio/backend/vendor/laya/agent.py:156: open()",
+    # Cloudflare's Clef loader (sha256 in unsloth/_vendor/clef/clef_manifest.json) reading
+    # joint_head_config.json, which json.dumps writes as ASCII, so every locale decodes it.
+    "unsloth/_vendor/clef/joint_schema_model.py:515: read_text()",
 }
 # keyed on path + expression, not line, so unrelated edits above it do not break the scan.
 REVIEWED_NON_FILE_OPEN = (
     "studio/backend/core/inference/audio_inputs.py",
-    "stream.codec_context.open()",
+    "stream.codec_context.open(strict=True)",
 )
 GUARDED_METHODS = {"read_text", "write_text"}
 # path classes, so an unbound `Path.open(p)` shifts every argument one right.
@@ -428,12 +431,12 @@ def test_skips_foreign_openers_and_readers():
 
 
 def test_skips_only_the_reviewed_pyav_codec_open():
-    pyav = "\n" * 263 + "stream.codec_context.open()\n"
+    pyav = "\n" * 263 + "stream.codec_context.open(strict = True)\n"
     path = "studio/backend/core/inference/audio_inputs.py"
     assert not _offenders_in(pyav, path)
     assert not _offenders_in("\n" + pyav, path)
     assert _offenders_in(pyav, "studio/backend/core/inference/other.py")
-    assert _offenders_in("\n" * 263 + "config.codec_context.open()\n", path)
+    assert _offenders_in("\n" * 263 + "config.codec_context.open(strict = True)\n", path)
 
 
 def test_test_trees_are_out_of_scope():
