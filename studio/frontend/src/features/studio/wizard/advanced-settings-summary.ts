@@ -62,7 +62,10 @@ function countNonDefaultScalarSettings(
 ): number {
   return Object.entries(SCALAR_DEFAULTS).reduce((total, [rawKey, value]) => {
     const key = rawKey as keyof typeof SCALAR_DEFAULTS;
-    const expected = baselineValue(baseline, key, value);
+    const expected =
+      key === "trainOnCompletions" && state.trainingMethod === "cpt"
+        ? false
+        : baselineValue(baseline, key, value);
     return state[key] === expected ? total : total + 1;
   }, 0);
 }

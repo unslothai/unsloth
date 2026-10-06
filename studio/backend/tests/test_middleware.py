@@ -284,6 +284,16 @@ class TestMaxBodyMiddleware:
             default_request_body_limit_bytes()
         )
 
+    def test_browser_posts_are_capped_before_auth(self, main_module):
+        from routes.browser import router
+
+        posts = [route.path for route in router.routes if "POST" in route.methods]
+        assert posts
+        for path in posts:
+            assert any(
+                f"/api/browser{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
@@ -816,15 +826,18 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["server"] == "unsloth-studio"
         assert "content-security-policy" in r.headers
 
-    def test_artifact_preview_frame_omits_x_frame_options(self, main_module):
+    @pytest.mark.parametrize(
+        "path", ["/api/inference/artifact-preview-frame", "/api/inference/mcp-app-frame"]
+    )
+    def test_frame_shells_omit_x_frame_options(self, main_module, path):
         app = FastAPI()
         app.add_middleware(main_module.SecurityHeadersMiddleware)
 
-        @app.get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        @app.get(path)
         async def frame():
             return Response(content = b"<html></html>", media_type = "text/html")
 
-        r = TestClient(app).get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        r = TestClient(app).get(path)
         assert r.status_code == 200
         assert "x-frame-options" not in {k.lower() for k in r.headers.keys()}
         assert r.headers["referrer-policy"] == "no-referrer"
@@ -1036,17 +1049,33 @@ class TestFrontendAssets:
         app = FastAPI()
         app.state.cloudflare_url = None
         assert main_module.setup_frontend(app, tmp_path, tunnel_only = True)
+        loopback_client = TestClient(
+            app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000)
+        )
         client = TestClient(app)
         remote_client = TestClient(app, base_url = "https://remote.trycloudflare.com")
         headers = {"CF-Connecting-IP": "198.51.100.7"}
         assert client.get("/").status_code == 404
         assert client.get("/assets/app.js").status_code == 404
+        assert loopback_client.get("/").status_code == 200
+        assert loopback_client.get("/assets/app.js").status_code == 200
+        proxied_loopback = TestClient(
+            app,
+            base_url = "http://127.0.0.1:8888",
+            client = ("127.0.0.1", 40001),
+            headers = {"X-Forwarded-For": "203.0.113.7"},
+        )
+        assert proxied_loopback.get("/").status_code == 404
+        assert proxied_loopback.get("/assets/app.js").status_code == 404
+        assert loopback_client.get("/", headers = {"Host": "evil.example:8888"}).status_code == 404
         assert remote_client.get("/", headers = headers).status_code == 404
 
         app.state.cloudflare_url = "https://remote.trycloudflare.com"
         assert remote_client.get("/", headers = headers).status_code == 200
         assert remote_client.get("/settings/api", headers = headers).status_code == 200
         assert remote_client.get("/assets/app.js", headers = headers).status_code == 200
+        assert loopback_client.get("/", headers = headers).status_code == 404
+        assert loopback_client.get("/").status_code == 200
         assert client.get("/", headers = headers).status_code == 404
         assert client.get("/settings/api", headers = headers).status_code == 404
         assert client.get("/").status_code == 404
@@ -1446,6 +1475,26 @@ class TestRemoteAccessCORS:
     unconditional reflection plus Access-Control-Allow-Credentials, on the loopback socket too, so
     any page the user had open could read the local API's unauthenticated responses.
     """
+
+    def test_configured_cors_exposes_typesafe_request_id(self, main_module):
+        cors = next(
+            middleware
+            for middleware in main_module.app.user_middleware
+            if middleware.cls is main_module.RemoteAccessCORSMiddleware
+        )
+        app = FastAPI()
+        app.add_middleware(cors.cls, **{**cors.kwargs, "remote_access_state": app.state})
+
+        @app.get("/decision")
+        async def decision():
+            return Response(headers = {"x-typesafe-request-id": "decision-request"})
+
+        response = TestClient(app).get("/decision", headers = {"Origin": "tauri://localhost"})
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] in ("*", "tauri://localhost")
+        assert response.headers["x-typesafe-request-id"] == "decision-request"
+        exposed = response.headers["access-control-expose-headers"].lower().split(",")
+        assert "x-typesafe-request-id" in {header.strip() for header in exposed}
 
     TUNNEL = "https://demo-abc.trycloudflare.com"
 

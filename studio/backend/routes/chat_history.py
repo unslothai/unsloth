@@ -71,6 +71,7 @@ from storage.studio_db import (
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
+    count_chat_messages_for_threads,
     list_chat_threads,
     remap_chat_thread_document_ids,
     sync_chat_messages,
@@ -184,6 +185,8 @@ class ChatThread(BaseModel):
     forkedFromMessageId: Optional[str] = None
     forkBoundaryMessageId: Optional[str] = None
     forkTitleBase: Optional[str] = None
+    # Server-set on rename, move or (un)archive.
+    modifiedAt: Optional[int] = None
     settings: Optional[ChatThreadSettings] = None
 
     @field_serializer("settings")
@@ -411,6 +414,10 @@ class ChatPresetLoadConfig(BaseModel):
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
+    mlxKvQuant: Optional[
+        Literal["auto", "8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"]
+    ] = None
+    # Declared only because extra="forbid" would 400 the whole save for a client still sending it.
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
@@ -590,6 +597,10 @@ class ChatMessagesBatchRequest(BaseModel):
 
 class ChatMessagesBatchResponse(BaseModel):
     messagesByThreadId: dict[str, list[ChatMessage]]
+
+
+class ChatMessageCountsResponse(BaseModel):
+    countsByThreadId: dict[str, int]
 
 
 class ChatImportLedgerResponse(BaseModel):
@@ -981,7 +992,8 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
-_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+# A long paste is attached as text under its own tag (attachmentContentText in pasted-text.ts).
+_ATTACHMENT_TAG_RE = re.compile(r"<(attachment|pasted_text) name=[^\n]*>\n(.*)\n</\1>", re.DOTALL)
 _ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
 
 
@@ -989,7 +1001,7 @@ def _attachment_body_text(text: str) -> str:
     """An attachment's text without its chat wrapper, as the file itself reads."""
     tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
     if tagged:
-        return tagged.group(1)
+        return tagged.group(2)
     labelled = _ATTACHMENT_LABEL_RE.match(text)
     return text[labelled.end() :] if labelled else text
 
@@ -1218,7 +1230,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
             return
         folder_sync.retire_scope(scope, owned)
         # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
-        # unless the purge is skipped too.
+        # unless the purge is skipped too. A recreate racing this is unretired by upsert_chat_project.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 
@@ -1403,6 +1415,16 @@ def batch_thread_messages(
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**m))
     return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+
+
+@router.post("/messages:counts", response_model = ChatMessageCountsResponse)
+def count_thread_messages(
+    payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Per-thread message counts, without message bodies."""
+    return ChatMessageCountsResponse(
+        countsByThreadId = count_chat_messages_for_threads(payload.threadIds)
+    )
 
 
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)

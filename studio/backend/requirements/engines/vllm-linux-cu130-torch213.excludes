@@ -1,0 +1,6 @@
+# FlashInfer fetches the closed trtllm kernels it uses on demand (cached per engine
+# environment) instead of the 300 MB cubin wheel of every kernel.
+flashinfer-cubin
+# cutlass-dsl loads the newest CUDA flavour the driver runs; the engines need driver 580 (CUDA 13),
+# so the cu12 libraries are never loaded.
+nvidia-cutlass-dsl-libs-cu12

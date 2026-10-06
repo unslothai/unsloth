@@ -23,7 +23,7 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
+export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx" | "npu";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 

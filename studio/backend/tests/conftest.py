@@ -120,6 +120,47 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_real_mxc_drive_aliases(monkeypatch):
+    # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
+    # MXC tests opt back in.
+    monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
+
+
+@pytest.fixture(autouse = True)
+def _forget_mxc_isolation_settings():
+    # Held for a second across tests that each get their own Studio home; only when already imported.
+    def _forget():
+        settings = sys.modules.get("utils.mxc_isolation_settings")
+        if settings is not None:
+            settings.forget_cached_setting()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _no_background_sandbox_probes(monkeypatch):
+    # No warm-up thread and no background re-probe; each test starts with no cached tool answer.
+    monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
+
+    def _forget():
+        os_sandbox = sys.modules.get("core.inference.os_sandbox")
+        if os_sandbox is not None:
+            os_sandbox.forget_tool_isolation()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _no_restricted_region_defaults(monkeypatch):
+    # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
@@ -162,8 +203,10 @@ def _reset_gpu_query_cache():
     # Only when already imported: importing utils.hardware would change import-order tests.
     def _reset():
         gpu_query = sys.modules.get("utils.hardware.gpu_query")
-        if gpu_query is not None:
-            gpu_query.reset()
+        # A background probe thread may still be importing it; a half-built module has no cache yet.
+        reset = getattr(gpu_query, "reset", None)
+        if reset is not None:
+            reset()
         hw = sys.modules.get("utils.hardware.hardware")
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
@@ -172,6 +215,29 @@ def _reset_gpu_query_cache():
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse = True)
+def _restore_fp32_matmul_precision():
+    # torchao's default config handler sets set_float32_matmul_precision("high") process-wide.
+    def _get():
+        getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
+        return getter() if getter is not None else None
+
+    before = _get() or "highest"
+    yield
+    after = _get()
+    if after is not None and after != before:
+        sys.modules["torch"].set_float32_matmul_precision(before)
+
+
+@pytest.fixture(autouse = True)
+def _reset_media_import_window(monkeypatch):
+    # A load path claims the window for the process; later prewarm tests would skip.
+    warm = sys.modules.get("utils.torch_warmup")
+    if warm is not None and hasattr(warm, "_media_import_claimed"):
+        monkeypatch.setattr(warm, "_media_import_claimed", False)
+        monkeypatch.setattr(warm, "_media_import_owner", None)
 
 
 @pytest.fixture(autouse = True)
@@ -336,6 +402,26 @@ def _isolate_generation_state():
     active_generations.reset_for_tests()
     yield
     active_generations.reset_for_tests()
+
+
+@pytest.fixture(autouse = True)
+def _forget_the_managed_provider_url_setting():
+    """Drop the managed-account private provider URL setting's cached answer around each test.
+
+    ``managed_provider_url_settings`` holds the owner's switch for a second so every managed
+    outbound request does not open SQLite. Each test points ``UNSLOTH_STUDIO_HOME`` at a fresh
+    store, but the held answer outlives it: a test that turned the switch on left ``True`` cached,
+    and the next test in the same xdist worker to run inside that second read it instead of its own
+    store's default, so test_managed_account_cannot_list_models_from_a_loopback_provider got a 200
+    with the loopback provider's models where it expected a 400.
+    """
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
+    yield
+    settings = sys.modules.get("utils.managed_provider_url_settings")
+    if settings is not None:
+        settings.forget_cached_setting()
 
 
 @pytest.fixture(autouse = True)
@@ -1306,3 +1392,40 @@ def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
     else:
         monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     yield
+
+
+@pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(monkeypatch):
+    """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    for module in list(sys.modules.values()):
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
+
+
+@pytest.fixture(autouse = True)
+def _clear_github_rate_limit_lockout():
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    yield
+    freshness_flow._api_rate_limited_until = 0.0
+
+
+@pytest.fixture
+def traced_offload_hooks(monkeypatch):
+    """diffusers' own group-offload hook methods for one test (install_group_offload_hooks_eager is process-wide)."""
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    install_group_offload_hooks_eager()
+    for cls in (
+        go.GroupOffloadingHook,
+        go.LayerExecutionTrackerHook,
+        go.LazyPrefetchGroupOffloadingHook,
+    ):
+        for name, fn in list(vars(cls).items()):
+            orig = getattr(fn, "_unsloth_orig", None)
+            if orig is not None:
+                monkeypatch.setattr(cls, name, orig)

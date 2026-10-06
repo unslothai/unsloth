@@ -99,9 +99,14 @@ test("flavor accents used as text meet the accent-text floor", () => {
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],
     ] as const) {
-      const start = indexCss.indexOf(selector);
-      assert.ok(start >= 0, `${id} ${mode} block`);
-      const block = indexCss.slice(start, indexCss.indexOf("}", start));
+      // A palette can open the same selector more than once (its seeds in one block, a shared
+      // variable such as --composer-shadow in another), so read every block it opens.
+      const blocks: string[] = [];
+      for (let start = indexCss.indexOf(selector); start >= 0; start = indexCss.indexOf(selector, start + 1)) {
+        blocks.push(indexCss.slice(start, indexCss.indexOf("}", start)));
+      }
+      assert.ok(blocks.length > 0, `${id} ${mode} block`);
+      const block = blocks.join("\n");
       const token = (name: string) =>
         block.match(new RegExp(`\\s${name}: (#[0-9a-f]{6});`))?.[1];
       const page = token("--th-bg");
@@ -119,4 +124,13 @@ test("flavor accents used as text meet the accent-text floor", () => {
       }
     }
   }
+});
+
+test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Cherry", () => {
+  // The menu draws FLAVOR_THEME_IDS in order: Butterfly Pea took Blueberry's slot and Earl Grey
+  // took Honey's, with Blueberry and Honey moving to where those two were.
+  assert.deepEqual(FLAVOR_THEME_IDS.slice(0, 5), ["matcha", "espresso", "butterfly-pea", "cherry", "earl-grey"]);
+  assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
+  assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);
+  assert.equal(COLOR_THEMES.cherry.name, "Cherry");
 });

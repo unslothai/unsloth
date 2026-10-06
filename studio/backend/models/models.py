@@ -41,6 +41,13 @@ class ModelCheckpoints(BaseModel):
         False,
         description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
     )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None for non-adapter runs. A None VALUE means unverified (e.g. "
+        "full_state without a weight-header probe).",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -132,6 +139,13 @@ class LoRAInfo(BaseModel):
             "The Audio page needs this to offer a trained checkpoint: a scan row "
             "carries no modality otherwise, so an audio adapter reads as a text one."
         ),
+    )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None when no adapter config was found. A None VALUE means "
+        "unverified.",
     )
 
 
@@ -306,6 +320,10 @@ class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
     path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+    recursive: Optional[bool] = Field(
+        None,
+        description = "Also scan sub-folders. Omitted keeps the stored setting of an already registered folder.",
+    )
 
 
 class ScanFolderInfo(BaseModel):
@@ -314,6 +332,7 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
         description = "Last scan result: ok, permission_denied, missing, or unreadable",

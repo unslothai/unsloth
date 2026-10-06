@@ -12,6 +12,7 @@ const PANEL_WIDTH_KEYS = ["sidebar_width", "chat_settings_width"];
 // The store reads window at import time, so stub it before importing.
 const stubWindow = {
   innerWidth: 1440,
+  location: { protocol: "http:" },
   localStorage: {
     getItem: () => null,
     setItem: () => {},
@@ -26,7 +27,23 @@ const {
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MAX,
   SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MIN_DESKTOP,
+  SIDEBAR_WIDTH_MIN_WEB,
 } = await import("../src/hooks/use-sidebar-width.ts");
+
+test("the web keeps room for the collapse button beside search; desktop does not need it", async () => {
+  // The stub is a browser window, so this run takes the web floor.
+  assert.equal(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MIN_WEB);
+  assert.ok(SIDEBAR_WIDTH_MIN_DESKTOP < SIDEBAR_WIDTH_MIN_WEB);
+  const source = await readSrcAsync("hooks/use-sidebar-width.ts");
+  assert.match(
+    source,
+    /SIDEBAR_WIDTH_MIN = isTauri\s*\?\s*SIDEBAR_WIDTH_MIN_DESKTOP\s*:\s*SIDEBAR_WIDTH_MIN_WEB;/,
+  );
+  // Off the desktop titlebar, or always in the mobile sheet.
+  const sidebar = await readSrcAsync("components/app-sidebar.tsx");
+  assert.match(sidebar, /\{\(isMobile \|\| !usesDesktopTitlebar\) && \(/);
+});
 
 test("clamps to the absolute range on a roomy window", () => {
   stubWindow.innerWidth = 1440;

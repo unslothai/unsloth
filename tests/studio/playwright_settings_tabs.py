@@ -27,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    wait_for_smoke_page,
     click_forced,
 )
 
@@ -44,7 +45,9 @@ TABS = [
     "remote-lan",
     "agents",
     "keyboard-shortcuts",
+    "browser",
     "debugging",
+    "sandbox",
     "about",
     "accounts",
 ]
@@ -664,6 +667,7 @@ def main() -> int:
     vite = start_vite(PORT)
     try:
         url = f"http://127.0.0.1:{PORT}/smoke-settings.html"
+        wait_for_smoke_page(url, "smoke-settings-main.tsx", proc = vite)
         with sync_playwright() as pw:
             launcher = getattr(pw, ENGINE)
             kwargs: dict = {"headless": True}

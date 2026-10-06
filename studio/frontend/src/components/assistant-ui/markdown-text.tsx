@@ -3,6 +3,9 @@
 
 "use client";
 
+import { openImageViewer } from "@/components/image-viewer";
+import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
+import { useT } from "@/i18n";
 import {
   ArtifactCard,
   useChatProjectScope,
@@ -52,6 +55,7 @@ import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
+  type ReactNode,
   createContext,
   memo,
   useCallback,
@@ -88,8 +92,17 @@ import {
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import {
+  type ContextFile,
+  FileContextMenu,
+  loadSandboxFile,
+  WebLinkContextMenu,
+} from "./link-context-menu";
+import {
   decodeSegment,
   markdownSandboxImageSrc,
+  sandboxFileForHref,
+  sandboxSessionIdFor,
+  sandboxSessionInSrc,
 } from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
@@ -98,6 +111,8 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
@@ -245,8 +260,26 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
           setFailedSrc(resolved ?? null);
           onError?.(event);
         }}
-        className={`max-w-full rounded-lg ${failedNow && !sized ? "hidden" : ""} ${className ?? ""}`}
+        className={`max-w-full cursor-zoom-in rounded-lg ${failedNow && !sized ? "hidden" : ""} ${className ?? ""}`}
         {...dom}
+        onClick={(event) => {
+          // A linked image is the link's: the click opens that, not the viewer.
+          if (failedNow || !resolved || event.currentTarget.closest("a")) return;
+          const title = alt || "Image";
+          openImageViewer([
+            {
+              key: resolved,
+              title,
+              fileName: downloadName,
+              load: () =>
+                file !== null && sandbox.state.status === "loaded"
+                  ? Promise.resolve(sandbox.state.blob)
+                  : urlToBlob(resolved),
+              // Already showing here, so a host that refuses the fetch can still be enlarged.
+              fallbackUrl: /^https?:/i.test(resolved) ? resolved : undefined,
+            },
+          ]);
+        }}
       />
       {failedNow && (
         <span
@@ -287,22 +320,113 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   );
 });
 
-const STREAMDOWN_COMPONENTS = {
-  a: ({ href, children, ...props }: ComponentProps<"a">) => (
+const LINK_CLASS =
+  "text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer";
+
+ /** A link in an answer; a file the chat's tools wrote opens the file rather than routing the app to its path. */
+function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
+  const { node: _node, ...dom } = props as ComponentProps<"a"> & { node?: unknown };
+  const file = href ? sandboxFileForHref(href) : null;
+  // Only file links subscribe to the chat's scope; links re-render per streamed token.
+  if (href && file !== null) {
+    return (
+      <SandboxFileLink href={href} file={file} dom={dom}>
+        {children}
+      </SandboxFileLink>
+    );
+  }
+  const link = (
     <a
       href={href}
       rel="noopener noreferrer"
-      className="text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer"
+      className={LINK_CLASS}
       onClick={(e) => {
         if (href && openLink(href)) {
           e.preventDefault();
         }
       }}
-      {...props}
+      {...dom}
     >
       {children}
     </a>
-  ),
+  );
+  return href ? <WebLinkContextMenu href={href}>{link}</WebLinkContextMenu> : link;
+}
+
+function SandboxFileLink({
+  href,
+  file,
+  dom,
+  children,
+}: {
+  href: string;
+  file: string;
+  dom: Omit<ComponentProps<"a">, "href" | "children">;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const sessionId =
+    sandboxSessionInSrc(href) ??
+    sandboxSessionIdFor(remoteId ?? activeThreadId ?? undefined, projectId);
+  if (sessionId) {
+    const target: ContextFile = {
+      name: file.slice(file.lastIndexOf("/") + 1),
+      load: () => loadSandboxFile(sessionId, file),
+      sandbox: { sessionId, file },
+    };
+    const openFile = () => {
+      if (filesOpenInBrowser()) {
+        void target
+          .load()
+          .then((blob) =>
+            openFileInBrowser({ blob, name: target.name, contentType: blob.type, key: `sandbox:${sessionId}:${file}` }),
+          )
+          .catch(() => toast.error(t("linkMenu.openFailed", { name: target.name })));
+        return;
+      }
+      void target
+        .load()
+        .then((blob) => downloadFile(blob, target.name, blob.type || undefined))
+        .catch((error) => {
+          if (!isDownloadCancelled(error)) toast.error(t("linkMenu.saveFailed"));
+        });
+    };
+    return (
+      <FileContextMenu file={{ ...target, open: openFile }}>
+        <a
+          href={href}
+          className={LINK_CLASS}
+          onClick={(event) => {
+            event.preventDefault();
+            openFile();
+          }}
+          {...dom}
+        >
+          {children}
+        </a>
+      </FileContextMenu>
+    );
+  }
+  return (
+    <a
+      href={href}
+      rel="noopener noreferrer"
+      className={LINK_CLASS}
+      onClick={(e) => {
+        if (openLink(href)) e.preventDefault();
+      }}
+      {...dom}
+    >
+      {children}
+    </a>
+  );
+}
+
+const STREAMDOWN_COMPONENTS = {
+  a: MarkdownLink,
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
   img: MarkdownImage,
@@ -1110,6 +1234,10 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const pendingLinkRepair = useMemo(
+    () => !isStreaming && hasIncompleteLinkRepair(processedText),
+    [isStreaming, processedText],
+  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1127,6 +1255,7 @@ function MarkdownTextRenderer({
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
+            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks

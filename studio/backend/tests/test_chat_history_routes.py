@@ -608,12 +608,13 @@ def test_chat_preset_load_config_covers_frontend_persisted_fields():
     assert persisted, "no PresetLoadConfig keys parsed"
 
     backend = set(chat_history.ChatPresetLoadConfig.model_fields)
+    backend -= {"mlxKvBits"}
     assert (
         persisted == backend
     ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
-def test_chat_settings_payload_accepts_mlx_kv_bits():
+def test_chat_settings_payload_accepts_mlx_kv_quant():
     from pydantic import ValidationError
 
     # extra="forbid" rejects the whole settings write on an undeclared key.
@@ -623,14 +624,15 @@ def test_chat_settings_payload_accepts_mlx_kv_bits():
                 {
                     "name": "MLX preset",
                     "params": {"temperature": 0.7},
-                    "loadConfig": {"mlxKvBits": 8},
+                    "loadConfig": {"mlxKvQuant": "tq-3.5"},
                 },
             ],
         }
     )
     dumped = payload.model_dump(exclude_unset = True)
-    assert dumped["customPresets"][0]["loadConfig"]["mlxKvBits"] == 8
+    assert dumped["customPresets"][0]["loadConfig"]["mlxKvQuant"] == "tq-3.5"
 
+    chat_history.ChatPresetLoadConfig.model_validate({"mlxKvQuant": "auto"})
     for width in (4, None):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
     # Only the widths MLX supports.
@@ -667,9 +669,16 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
         pytest.skip("frontend runtime.ts not present")
 
     with open(runtime_ts, encoding = "utf-8") as fh:
-        block = re.search(r"interface InferenceParams \{(.*?)\n\}", fh.read(), re.DOTALL)
+        source = fh.read()
+    block = re.search(r"interface InferenceParams \{(.*?)\n\}", source, re.DOTALL)
     assert block, "InferenceParams interface not found in runtime.ts"
-    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
+    omitted = re.search(
+        r"PersistedInferenceParams = Partial<\s*Omit<InferenceParams,([^>]*)>", source
+    )
+    assert omitted, "PersistedInferenceParams Omit<> not found in runtime.ts"
+    persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - set(
+        re.findall(r'"(\w+)"', omitted.group(1))
+    )
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
     assert (

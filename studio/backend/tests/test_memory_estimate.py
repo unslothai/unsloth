@@ -26,6 +26,7 @@ No GPU, no network, no model load: every GGUF here is a synthetic header on tmp_
 """
 
 import inspect
+import json
 import os
 import sys
 import types as _types
@@ -293,6 +294,16 @@ class TestGgufRuntimeBytes:
         runtime = ri._gguf_runtime_bytes(gqa_gguf, 0)
         assert runtime.n_ctx == _GQA_FIELDS["context_length"]
         assert runtime.kv_bytes > 0
+
+    @pytest.mark.parametrize("pooling_type, priced_ubatch", [(1, 2048), (2, 2048), (3, None)])
+    def test_embedding_micro_batch_matches_the_launch(self, tmp_path, pooling_type, priced_ubatch):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "pooling_type": pooling_type})
+        assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch == priced_ubatch
+
+    def test_undeclared_embedding_pooling_keeps_the_default_micro_batch(self, tmp_path):
+        # llama.cpp runs a header without pooling_type as NONE, which /v1/embeddings refuses.
+        gguf = _write_gguf(tmp_path, "nomic-bert", _GQA_FIELDS)
+        assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch is None
 
     def test_missing_dims_are_unknown_not_zero(self, dimless_gguf):
         # THE case this NamedTuple exists for. kv_bytes == 0 here means "could not
@@ -686,6 +697,14 @@ class TestLocalizedEstimateConfig:
         config = _local_config(gqa_gguf)
         assert ri._localized_estimate_config(config, gqa_gguf) is config
 
+    def test_a_hand_added_projector_above_the_snapshot_is_priced(self, gqa_gguf, tmp_path):
+        # #9286: the projector sits in models--<repo>/, past the localizer's search root.
+        projector = tmp_path / "mmproj-F16.gguf"
+        projector.write_bytes(b"x")
+        config = _repo_config(is_vision = True, gguf_local_mmproj_file = str(projector))
+        local = ri._localized_estimate_config(config, gqa_gguf)
+        assert local.gguf_mmproj_file == str(projector)
+
     def test_repo_config_is_copied_never_mutated(self, gqa_gguf):
         # The original is sitting in _estimate_config_cache for the TTL, shared by
         # every later tick of the slider. A half-localized config escaping into
@@ -911,17 +930,410 @@ class TestEstimateMemoryRoute:
         assert resp.available is False
         assert resp.reason == "unsupported_source"
 
-    def test_non_gguf_model_is_not_priced(self, monkeypatch):
-        # Safetensors / MLX size their memory through a different allocator;
-        # quoting the GGUF arithmetic for them is a made-up number in a box.
+    def test_managed_caller_cannot_size_an_owner_only_path(self, monkeypatch):
+        # Sizing reads the file a draft/projector/adapter flag names, so a path the
+        # load would refuse is answered "unsizable" before anything is opened.
+        from utils import openai_auto_switch_settings as settings
+
+        def boom(*a, **kw):
+            raise AssertionError("estimate-memory must not size a refused path")
+
+        monkeypatch.setattr(ri.account_access, "managed_account", lambda: True)
+        monkeypatch.setattr(ri.account_access, "require_model_access", lambda *a, **kw: None)
+        monkeypatch.setattr(settings, "get_model_override", lambda key: {})
+        monkeypatch.setattr(
+            ri, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = None)
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", boom)
+        resp = _estimate(
+            model_path = "/models/m.gguf", llama_extra_args = ["-md", "/home/owner/private.gguf"]
+        )
+        assert resp.available is False
+        assert resp.reason == "unsizable"
+
+    def test_the_estimate_asks_the_question_the_worker_asks_of_the_stack(self, monkeypatch):
+        import utils.mlx_repair as repair
+        monkeypatch.setattr(repair, "is_apple_silicon", lambda: True)
+        for blockers, available in (([], True), (["mlx-vlm 0.0.1 is too old"], False)):
+            monkeypatch.setattr(repair, "mlx_stack_blockers", lambda b = blockers: b)
+            assert ri._mlx_estimate_available() is available
+
+    def test_non_gguf_model_is_not_priced_without_mlx(self, monkeypatch):
         monkeypatch.setattr(
             ri,
             "_cached_estimate_config",
             lambda *a, **kw: SimpleNamespace(is_gguf = False, identifier = "org/model"),
         )
+        monkeypatch.setattr(ri, "_mlx_estimate_available", lambda: False)
         resp = _estimate(model_path = "org/model")
         assert resp.available is False
         assert resp.reason == "not_gguf"
+
+    def test_a_native_audio_load_is_not_priced_as_an_mlx_one(self, monkeypatch, tmp_path):
+        import core.inference.native_audio as native_audio
+
+        self._mlx_target(monkeypatch, str(tmp_path))
+        priced = []
+        monkeypatch.setattr(
+            ri, "_mlx_estimate_fitted_context", lambda *a, **kw: priced.append(a) or None
+        )
+        monkeypatch.setattr(native_audio, "is_native_audio_model", lambda name: name == "org/tts")
+        resp = _estimate(model_path = "org/tts")
+        assert (resp.available, resp.reason, priced) == (False, "not_gguf", [])
+        assert _estimate(model_path = "org/model").reason != "not_gguf"
+
+    @staticmethod
+    def _mlx_target(monkeypatch, model_dir, **config):
+        """A resolved non-GGUF config on an MLX host, with its weights at *model_dir*."""
+        monkeypatch.setattr(
+            ri,
+            "_cached_estimate_config",
+            lambda *a, **kw: SimpleNamespace(is_gguf = False, identifier = "org/model", **config),
+        )
+        monkeypatch.setattr(ri, "_mlx_estimate_available", lambda: True)
+        monkeypatch.setattr(ri, "_local_mlx_model_dir", lambda config: model_dir)
+
+    @staticmethod
+    def _record_breakdown(monkeypatch, **fields):
+        """Install a breakdown stub, returning the dict its call is recorded into."""
+        import core.inference.mlx_memory as mlx_memory
+
+        seen = {}
+
+        def _breakdown(
+            model_dir,
+            *,
+            n_ctx,
+            kv_bits = None,
+            load_in_4bit = False,
+            **kw,
+        ):
+            seen.update(
+                model_dir = model_dir, n_ctx = n_ctx, kv_bits = kv_bits, load_in_4bit = load_in_4bit
+            )
+            return mlx_memory.MlxMemoryBreakdown(n_ctx = n_ctx, **fields)
+
+        monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", _breakdown)
+        return seen
+
+    def test_mlx_model_not_on_disk_is_not_downloaded(self, monkeypatch):
+        self._mlx_target(monkeypatch, None)
+        resp = _estimate(model_path = "org/model")
+        assert resp.available is False
+        assert resp.reason == "not_downloaded"
+
+    def test_mlx_model_whose_cache_cannot_be_read_is_unsizable(self, monkeypatch):
+        self._mlx_target(monkeypatch, "/models/thing")
+        import core.inference.mlx_memory as mlx_memory
+
+        monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", lambda *a, **kw: None)
+        resp = _estimate(model_path = "org/model")
+        assert resp.available is False
+        assert resp.reason == "unsizable"
+        assert resp.total_bytes == 0
+
+    def test_mlx_model_is_priced_and_itemized(self, monkeypatch, tmp_path):
+        self._mlx_target(monkeypatch, "/models/thing")
+        seen = self._record_breakdown(
+            monkeypatch,
+            weights_bytes = 8_000_000_000,
+            kv_bytes = 600_000_000,
+            compute_bytes = 400_000_000,
+            total_bytes = 9_000_000_000,
+            gpu_bytes = 9_000_000_000,
+            layer_count = 36,
+        )
+        resp = _estimate(
+            model_path = "org/model",
+            max_seq_length = 16384,
+            mlx_kv_bits = 4,
+            cache_type_kv = "q8_0",
+        )
+        assert (resp.available, resp.reason, resp.kv_estimable) == (True, None, True)
+        assert (resp.weights_bytes, resp.kv_bytes, resp.compute_bytes) == (
+            8_000_000_000,
+            600_000_000,
+            400_000_000,
+        )
+        assert (resp.total_bytes, resp.gpu_bytes, resp.n_ctx, resp.layer_count) == (
+            9_000_000_000,
+            9_000_000_000,
+            16384,
+            36,
+        )
+        assert seen == {
+            "model_dir": "/models/thing",
+            "n_ctx": 16384,
+            "kv_bits": 4,
+            "load_in_4bit": True,
+        }
+        _estimate(
+            model_path = "org/model",
+            max_seq_length = 16384,
+            mlx_kv_bits = 4,
+            load_in_4bit = False,
+        )
+        assert seen["load_in_4bit"] is False
+
+        import utils.transformers_version as tv
+
+        asked, guarded, real_guard = [], [], ri._offline_guarded
+        monkeypatch.setattr(
+            tv,
+            "latest_tier_active_for",
+            lambda name, token = None: asked.append((name, token)) or True,
+        )
+        monkeypatch.setattr(
+            ri,
+            "_offline_guarded",
+            lambda t, fn, *a, **kw: guarded.append(fn) or real_guard(t, fn, *a, **kw),
+        )
+        _estimate(model_path = "org/model", max_seq_length = 16384, load_in_4bit = True, hf_token = "tok")
+        assert seen["load_in_4bit"] is False
+        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_active_for]
+        monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: False)
+
+        monkeypatch.setattr(
+            ri,
+            "_cached_estimate_config",
+            lambda *a, **kw: SimpleNamespace(
+                is_gguf = False,
+                identifier = "org/model",
+                is_lora = True,
+                path = str(tmp_path),
+                base_model = "org/base",
+            ),
+        )
+        seen.clear()
+        resp = _estimate(model_path = "org/model", max_seq_length = 16384, load_in_4bit = True)
+        assert (resp.available, resp.reason, resp.total_bytes) == (False, "unsizable", 0)
+        assert seen == {}
+
+    def test_a_full_finetune_output_is_priced_at_the_16_bit_it_loads_at(
+        self, monkeypatch, tmp_path
+    ):
+        # The load route resolves a Studio full-finetune output to 16-bit; pricing it 4-bit
+        # advertised a fitted window the real load could not hold.
+        self._mlx_target(monkeypatch, "/models/thing", is_lora = False, path = str(tmp_path))
+        seen = self._record_breakdown(
+            monkeypatch,
+            weights_bytes = 1,
+            kv_bytes = 1,
+            compute_bytes = 1,
+            total_bytes = 3,
+            gpu_bytes = 3,
+            layer_count = 2,
+        )
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: False)
+        monkeypatch.setattr(ri, "is_full_finetune_output", lambda path: path == str(tmp_path))
+        _estimate(model_path = "org/model", max_seq_length = 4096, load_in_4bit = True)
+        assert seen["load_in_4bit"] is False
+        monkeypatch.setattr(ri, "is_full_finetune_output", lambda path: False)
+        _estimate(model_path = "org/model", max_seq_length = 4096, load_in_4bit = True)
+        assert seen["load_in_4bit"] is True
+
+    def test_the_snapshot_priced_is_the_one_the_load_would_open(self, monkeypatch, tmp_path):
+        import utils.models.model_config as mc
+
+        asked, found = [], []
+        snaps, ref = tmp_path / "snapshots", tmp_path / "refs" / "main"
+        monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [None])
+        monkeypatch.setattr(
+            mc, "_iter_hf_cache_snapshots", lambda name, cache_dir = None: asked.append(name) or found
+        )
+        if ri._mlx_estimate_available():
+            for alias in ("unsloth/Qwen3-4B-bnb-4bit", "unsloth/Qwen3-4B-unsloth-bnb-4bit"):
+                assert (
+                    ri._local_mlx_model_dir(
+                        SimpleNamespace(path = None, is_local = False, identifier = alias)
+                    )
+                    is None
+                )
+            assert asked == ["unsloth/Qwen3-4B", "unsloth/Qwen3-4B"]
+        for made in (
+            "stub/config.json",
+            "new/config.json",
+            "new/model.safetensors",
+            "old/config.json",
+            "old/model.safetensors",
+        ):
+            (snaps / made).parent.mkdir(parents = True, exist_ok = True)
+            (snaps / made).write_text("{}")
+        ref.parent.mkdir()
+        found[:], new_, old = (
+            [snaps / "stub", snaps / "new", snaps / "old"],
+            str(snaps / "new"),
+            str(snaps / "old"),
+        )
+        config = SimpleNamespace(path = None, is_local = False, is_lora = False, identifier = "org/model")
+        for named, expected in (
+            ("old", old),
+            ("stub", None),
+            ("collected", new_),
+            ("../snapshots/old", new_),
+            (None, new_),
+        ):
+            ref.write_text(named) if named else ref.unlink()
+            assert ri._local_mlx_model_dir(config) == expected
+
+    def test_a_part_finished_download_is_not_priced_as_a_smaller_model(self, tmp_path):
+        def index(weight_map):
+            (tmp_path / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": weight_map})
+            )
+
+        (tmp_path / "config.json").write_text("{}")
+        config = SimpleNamespace(path = str(tmp_path), is_local = True, is_lora = False)
+        five = [f"model-0000{i}-of-00005.safetensors" for i in range(1, 6)]
+        for name in five[:2]:
+            (tmp_path / name).write_bytes(b"")
+        assert ri._local_mlx_model_dir(config) is None
+        for name in five[2:]:
+            (tmp_path / name).write_bytes(b"")
+        assert ri._local_mlx_model_dir(config) == str(tmp_path)
+        (tmp_path / "adapter-00001-of-00002.safetensors").write_bytes(b"")
+        assert ri._local_mlx_model_dir(config) == str(tmp_path)
+        (tmp_path / "config.json").write_text(json.dumps({"vision_config": {}}))
+        (tmp_path / "weights").mkdir()
+        nested = [f"model-0000{i}-of-00002.safetensors" for i in (1, 2)]
+        for name in nested:
+            (tmp_path / "weights" / name).write_bytes(b"")
+        index({n: f"weights/{n}" for n in nested})
+        assert ri._local_mlx_model_dir(config) == str(tmp_path)
+        (tmp_path / "weights" / nested[1]).unlink()
+        assert ri._local_mlx_model_dir(config) is None
+
+    def test_shard_names_that_count_nothing_are_counted_by_the_index(self, tmp_path):
+        (tmp_path / "config.json").write_text("{}")
+        config = SimpleNamespace(path = str(tmp_path), is_local = True, is_lora = False)
+        (tmp_path / "model.safetensors").write_bytes(b"")
+        assert ri._local_mlx_model_dir(config) == str(tmp_path)
+        (tmp_path / "model.safetensors").unlink()
+        (tmp_path / "weights").mkdir()
+        named = [f"model-{i:05d}.safetensors" for i in range(1, 45)] + [
+            "mtp.safetensors",
+            "weights/extra.safetensors",
+        ]
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {n: n for n in named}})
+        )
+        (tmp_path / named[0]).write_bytes(b"")
+        assert ri._local_mlx_model_dir(config) is None
+        for name in named[1:]:
+            (tmp_path / name).write_bytes(b"")
+        assert ri._local_mlx_model_dir(config) == str(tmp_path)
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        str(i): f"model-{i:05d}-of-00099.safetensors" for i in range(1, 100)
+                    }
+                }
+            )
+        )
+        assert ri._local_mlx_model_dir(config) == str(tmp_path)
+
+    def test_an_mlx_estimate_prices_max_seq_length_not_n_ctx(self, monkeypatch):
+        self._mlx_target(monkeypatch, "/models/thing")
+        seen = self._record_breakdown(
+            monkeypatch,
+            weights_bytes = 1,
+            kv_bytes = 1,
+            compute_bytes = 1,
+            total_bytes = 3,
+            gpu_bytes = 3,
+        )
+        _estimate(model_path = "org/model", max_seq_length = 8192, n_ctx = 32768)
+        assert seen["n_ctx"] == 8192
+
+    def test_an_unpinned_mlx_estimate_prices_the_fit_and_reports_it(self, monkeypatch, tmp_path):
+        from core.inference import mlx_inference
+        from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+        write = (tmp_path / "config.json").write_text
+        write(json.dumps({"max_position_embeddings": 262_144}))
+        self._mlx_target(monkeypatch, str(tmp_path))
+        asked, fit = {}, {"answer": 24_576}
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_fit_to_memory",
+            lambda model_dir, ceiling, **kw: (
+                asked.update(kw, ceiling = ceiling, dir = model_dir) or fit["answer"]
+            ),
+        )
+        seen = self._record_breakdown(
+            monkeypatch,
+            weights_bytes = 1,
+            kv_bytes = 1,
+            compute_bytes = 1,
+            total_bytes = 3,
+            gpu_bytes = 3,
+        )
+        widths, refuses = [], {"answer": False}
+        monkeypatch.setattr(
+            mlx_inference,
+            "mlx_kv_quant_is_refused",
+            lambda *a: widths.append(a) or refuses["answer"],
+        )
+
+        # The width the cache takes is priced into the fit, and the fitted window is a budget.
+        resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (24_576, 4, 24_576)
+        assert widths == [(str(tmp_path), 4)]
+        assert asked == {
+            "ceiling": 262_144,
+            "retains_history": True,
+            "dir": str(tmp_path),
+            "kv_bits": 4,
+            "load_in_4bit": seen["load_in_4bit"],
+        }
+
+        # /load's own vocabulary prices the same width; TurboQuant is priced at full width,
+        # the width the load fits it at, and never asks the mx.quantize probe.
+        widths.clear()
+        resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_quant = "4")
+        assert (seen["kv_bits"], resp.context_fitted, widths) == (4, 24_576, [(str(tmp_path), 4)])
+        widths.clear()
+        resp = _estimate(model_path = "org/model", mlx_kv_quant = "tq-4", mlx_kv_bits = 4)
+        assert (asked["kv_bits"], seen["kv_bits"], widths) == (None, None, [])
+
+        # A width the load would refuse is priced at full width, fitted or pinned.
+        refuses["answer"] = True
+        resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
+        assert (asked["kv_bits"], seen["kv_bits"], resp.context_fitted) == (None, None, 24_576)
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted) == (8192, None, None)
+
+        # A pin never displaces an accepted width; it is not fitted either.
+        refuses["answer"] = False
+        asked.clear()
+        resp = _estimate(model_path = "org/model", max_seq_length = 8192, mlx_kv_bits = 4)
+        assert (seen["n_ctx"], seen["kv_bits"], resp.context_fitted, asked) == (8192, 4, None, {})
+
+        widths.clear()
+        _estimate(model_path = "org/model")
+        assert (widths, asked["kv_bits"], seen["kv_bits"]) == ([], None, None)
+
+        fit["answer"] = None
+        write(json.dumps({"max_position_embeddings": MAX_REQUESTABLE_CONTEXT * 4}))
+        resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
+        assert resp.context_fitted is None
+        assert (seen["n_ctx"], seen["kv_bits"]) == (MAX_REQUESTABLE_CONTEXT, 4)
+        write(json.dumps({"model_type": "llama"}))
+        seen.clear()
+        assert _estimate(model_path = "org/model").reason == "unsizable"
+        assert seen == {}
+
+        write(json.dumps({"max_position_embeddings": 262_144}))
+        self._mlx_target(monkeypatch, str(tmp_path), is_vision = True)
+        for available in (True, False):
+            monkeypatch.setattr(
+                mlx_inference, "mlx_vlm_snapshot_store_available", lambda a = available: a
+            )
+            _estimate(model_path = "org/model")
+            assert asked["retains_history"] is available
 
     def test_gguf_not_on_disk_is_not_downloaded(self, monkeypatch):
         # No header to read and no reaching for the network on a slider drag.
@@ -1171,6 +1583,36 @@ class TestEstimateMemoryRoute:
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.weights_bytes > 0
         assert resp.n_ctx == 4096
+
+
+class TestInt8PrefillAvailabilityRoute:
+    @pytest.mark.parametrize(
+        "downloaded,takes_int8,answer",
+        [
+            (True, True, (True, None)),
+            (False, True, (False, "not_downloaded")),
+            (True, False, (False, "unsupported_zoo")),
+        ],
+    )
+    def test_the_answer(self, monkeypatch, tmp_path, downloaded, takes_int8, answer):
+        from core.inference import mlx_inference
+        from models.inference import Int8PrefillAvailabilityRequest
+
+        asked = []
+        zoo = _types.ModuleType("unsloth_zoo.mlx.inference")
+        zoo.nax_quantized_linear = (lambda m, int8_prefill = None: m) if takes_int8 else len
+        verdict = SimpleNamespace(available = True, reason = "")
+        zoo.int8_prefill_checkpoint_available = lambda path: asked.append(path) or verdict
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", zoo)
+        monkeypatch.setattr(mlx_inference, "_int8_prefill_checkpoint_cache", {})
+        model_dir = str(tmp_path) if downloaded else None
+        TestEstimateMemoryRoute._mlx_target(monkeypatch, model_dir)
+        request = Int8PrefillAvailabilityRequest(model_path = "org/model")
+        resp = asyncio.run(ri.int8_prefill_availability(request, current_subject = "test"))
+        assert (resp.available, resp.reason) == answer
+        if answer[0]:
+            assert mlx_inference.mlx_int8_prefill_checkpoint_status(model_dir) == (True, "")
+        assert asked == ([model_dir] if answer[0] else [])
 
 
 class TestParallelSlotResolution:
@@ -2683,6 +3125,229 @@ class TestAnInheritedContextIsPriced:
         assert out.n_ctx == 8192
 
 
+class TestAnAutoContextIsMarkedShrinkable:
+    """Only contexts the loader can shrink should use a floor for memory warnings."""
+
+    @pytest.fixture(autouse = True)
+    def wide(self, tmp_path, monkeypatch):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        config = SimpleNamespace(
+            identifier = "local/wide",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: [(0, 0, 0)])
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_FIT_CTX", raising = False)
+        self.fit_ctx_supported(monkeypatch, True)
+        return gguf
+
+    @staticmethod
+    def fit_ctx_supported(monkeypatch, supported):
+        from core.inference.llama_cpp import LlamaCppBackend
+        real = LlamaCppBackend.probe_server_capabilities
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {**real(binary), "supports_fit_ctx": supported}),
+        )
+
+    @pytest.mark.parametrize(
+        ("request_fields", "fit_ctx_supported", "floor_ctx"),
+        [
+            ({}, True, 8192),
+            ({"gpu_memory_mode": "auto"}, True, 8192),
+            # Manual with Auto layers: load_model emits --fit-ctx 8192 where the build takes it.
+            ({"gpu_memory_mode": "manual"}, True, 8192),
+            ({"gpu_memory_mode": "manual"}, False, 4096),
+            # A pass-through --fit-ctx comes last, so it is the floor.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["-fitc", "16384"]}, True, 16384),
+            # /load strips Manual's --fit flags, so the fitter still runs.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["--fit", "off"]}, True, 8192),
+        ],
+    )
+    def test_an_unnamed_context_is_priced_at_the_fit_floor(
+        self, wide, monkeypatch, request_fields, fit_ctx_supported, floor_ctx
+    ):
+        """Use the loader's fit floor, not the smallest possible context."""
+        self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.n_ctx == 262144
+        assert resp.context_is_pinned is False
+        config = ri._cached_estimate_config()
+        floor = ri._gguf_memory_breakdown(config, wide, n_ctx = floor_ctx, **request_fields)
+        shorter = ri._gguf_memory_breakdown(config, wide, n_ctx = 256, **request_fields)
+        assert shorter.gpu_bytes < resp.gpu_floor_bytes == floor.gpu_bytes < resp.gpu_bytes
+
+    def test_a_native_context_under_the_fit_floor_has_nothing_to_shrink(
+        self, tmp_path, monkeypatch
+    ):
+        gguf = _write_gguf(
+            tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 4096}, name = "short.gguf"
+        )
+        config = SimpleNamespace(**{**vars(ri._cached_estimate_config()), "gguf_file": gguf})
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        resp = _estimate(model_path = gguf)
+        assert resp.context_is_pinned is False
+        assert resp.gpu_floor_bytes == resp.gpu_bytes
+
+    @pytest.mark.parametrize(
+        ("request_fields", "env_ctx", "fit_ctx_supported"),
+        [
+            ({"n_ctx": 8192}, None, True),
+            ({"llama_extra_args": ["-c", "0"]}, None, True),
+            ({"llama_extra_args": ["--ctx-size=4096"]}, None, True),
+            ({"llama_extra_args": ["-nkvo"]}, None, True),
+            ({"gpu_memory_mode": "manual", "gpu_layers": 0}, None, True),
+            ({"gpu_memory_mode": "manual", "gpu_layers": 99}, None, True),
+            # /load folds a Manual -ngl into the layer field, which fixes the placement.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "99"]}, None, True),
+            ({}, "4096", True),
+            # Without -c or --fit-ctx, inherited zero preserves native context.
+            ({"gpu_memory_mode": "manual"}, "0", False),
+            # llama.cpp stores --fit-ctx unsigned, so -1 disables the reduction.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["--fit-ctx", "-1"]}, None, True),
+        ],
+    )
+    def test_a_context_the_launch_opens_verbatim_stays_pinned(
+        self, wide, monkeypatch, request_fields, env_ctx, fit_ctx_supported
+    ):
+        self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
+        if env_ctx is not None:
+            monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", env_ctx)
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.available is True
+        assert resp.context_is_pinned is True, (request_fields, env_ctx)
+        assert resp.gpu_floor_bytes is None
+
+    @pytest.mark.parametrize(("fit_ctx_supported", "floor_ctx"), [(True, 8192), (False, 4096)])
+    def test_manual_ignores_the_fit_variables_its_launch_clears(
+        self, wide, monkeypatch, fit_ctx_supported, floor_ctx
+    ):
+        # _MANUAL_PLACEMENT_ENV_VARS: the child never sees LLAMA_ARG_FIT_CTX or the layers.
+        monkeypatch.setenv("LLAMA_ARG_FIT_CTX", "16384")
+        monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "20")
+        self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
+        manual = {"gpu_memory_mode": "manual"}
+        floor = ri._gguf_memory_breakdown(
+            ri._cached_estimate_config(), wide, n_ctx = floor_ctx, **manual
+        )
+        resp = _estimate(model_path = wide, **manual)
+        assert resp.gpu_floor_bytes == floor.gpu_bytes
+        assert resp.floor_can_offload is True
+
+    @pytest.mark.parametrize("request_fields", [{}, {"gpu_memory_mode": "manual"}])
+    def test_an_inherited_zero_is_overruled_by_the_launch(self, wide, monkeypatch, request_fields):
+        # Auto placement emits its own -c, and Manual its --fit-ctx, after the environment.
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "0")
+        assert _estimate(model_path = wide, **request_fields).context_is_pinned is False
+
+    @pytest.mark.parametrize(
+        ("request_fields", "env", "can_offload"),
+        [
+            ({}, {}, True),
+            ({"gpu_memory_mode": "manual"}, {}, True),
+            # Context can shrink even when these settings prevent layer offload.
+            ({"llama_extra_args": ["--fit", "off"]}, {}, False),
+            ({"llama_extra_args": ["-ngl", "99"]}, {}, False),
+            ({}, {"LLAMA_ARG_N_GPU_LAYERS": "20"}, False),
+            # The final -ngl -1 enables offload, overriding earlier arguments and env.
+            ({"llama_extra_args": ["-ngl", "-1"]}, {}, True),
+            ({"llama_extra_args": ["-ngl", "99", "-ngl", "-1"]}, {}, True),
+            ({"llama_extra_args": ["-ngl", "-1"]}, {"LLAMA_ARG_N_GPU_LAYERS": "20"}, True),
+            # llama.cpp's spellings: auto is its default, all a count that stands.
+            ({"llama_extra_args": ["-ngl", "auto"]}, {}, True),
+            ({"llama_extra_args": ["-ngl", "all"]}, {}, False),
+        ],
+    )
+    def test_the_floor_says_whether_layers_can_move_past_it(
+        self, wide, monkeypatch, request_fields, env, can_offload
+    ):
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.context_is_pinned is False
+        assert resp.floor_can_offload is can_offload, (request_fields, env)
+
+    @pytest.mark.parametrize(
+        "request_fields",
+        [
+            {"llama_extra_args": ["--fit"]},
+            {"gpu_memory_mode": "manual", "llama_extra_args": ["--fit-ctx"]},
+            {"gpu_memory_mode": "manual", "llama_extra_args": ["-fitc="]},
+        ],
+    )
+    def test_a_half_typed_fit_flag_still_prices(self, wide, request_fields):
+        # The panel prices every keystroke of the extras field.
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.available is True
+        assert resp.context_is_pinned is True
+        assert resp.gpu_floor_bytes is None
+
+    def test_a_zero_fit_ctx_can_land_on_the_native_length(self, wide):
+        # The fitter may settle on n_ctx 0, which llama.cpp reads as native.
+        resp = _estimate(model_path = wide, gpu_memory_mode = "manual", llama_extra_args = ["-fitc", "0"])
+        assert resp.context_is_pinned is True
+
+    @pytest.mark.parametrize("selected_gpu_ids", [None, [0, 1]])
+    def test_tensor_mode_takes_the_layer_fallback_floor(self, wide, monkeypatch, selected_gpu_ids):
+        """Tensor mode falls back to a layer split on conditions only the launch sees, which
+        opens at the layer floor and replicates compute buffers per device. The fallback keeps
+        every card the tensor launch had, picked automatically or not, so the floor is priced
+        as that layer split whenever it needs more than tensor mode."""
+        devices = [(0, 0, 0), (1, 0, 0)]
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: devices)
+        monkeypatch.setattr(ri, "_tensor_split_possible", lambda ids: True)
+        config = ri._cached_estimate_config()
+        pinned = bool(selected_gpu_ids)
+        cards = ri._guard_device_count(selected_gpu_ids, devices, tensor_parallel = True)
+        assert cards == 2
+        common = dict(
+            n_ctx = 8192, n_devices = cards, tensor_split_possible = True, device_pin_governs = pinned
+        )
+        as_tensor = ri._gguf_memory_breakdown(config, wide, tensor_parallel = True, **common)
+        as_layer = ri._gguf_memory_breakdown(
+            config,
+            wide,
+            tensor_parallel = False,
+            llama_extra_args = ["--split-mode", "layer"],
+            **common,
+        )
+        # The case under test: tensor alone would read as fitting a budget the fallback misses.
+        assert as_tensor.gpu_bytes < as_layer.gpu_bytes
+        resp = _estimate(model_path = wide, tensor_parallel = True, selected_gpu_ids = selected_gpu_ids)
+        assert resp.context_is_pinned is False
+        assert resp.gpu_floor_bytes == as_layer.gpu_bytes
+
+
+class TestTheContextFloorFollowsThePlacementPath:
+    """Auto placement stops shrinking at a floor that depends on the path the load takes."""
+
+    @staticmethod
+    def floor(monkeypatch, *, apple = False):
+        import utils.hardware as hardware
+
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: apple)
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS", raising = False)
+        breakdown = SimpleNamespace(kv_on_gpu = True, kv_estimable = True)
+        return ri._estimate_context_floor(None, [], "auto", None, breakdown)
+
+    def test_a_layer_split_stops_at_the_fit_floor(self, monkeypatch):
+        from core.inference.llama_cpp import _FIT_MIN_CTX
+        assert self.floor(monkeypatch).ctx == _FIT_MIN_CTX == 8192
+
+    def test_metal_reprices_down_to_the_smallest_context_it_searches(self, monkeypatch):
+        from core.inference.llama_cpp import _FIT_FLOOR_MIN_CTX
+        assert self.floor(monkeypatch, apple = True).ctx == _FIT_FLOOR_MIN_CTX == 256
+
+
 class TestTheResolutionTriesOfflineFirst:
     """A repo already on this disk is priced without asking the Hub.
 
@@ -3308,3 +3973,1091 @@ class TestFourMoreLaunchNormalizations:
         )
         out = ri._gguf_memory_breakdown(config, gguf, n_ctx = 8192, n_parallel = 4)
         assert out.n_parallel == 4
+
+
+class TestMlxEstimateKvBits:
+    """Which requested KV widths reach the MLX planner, and which are dropped."""
+
+    @pytest.mark.parametrize(
+        "quant, bits, expected",
+        [
+            (None, 4, 4),
+            (None, 8, 8),
+            (None, 7, None),
+            (None, 0, None),
+            (None, None, None),
+            (None, True, None),
+            ("4", None, 4),
+            (" 8 ", 4, 8),
+            ("auto", 8, None),
+            ("tq-4", 4, None),
+            ("bogus", 4, None),
+        ],
+    )
+    def test_kv_bits_resolution(self, quant, bits, expected):
+        # An explicit mlx_kv_quant wins over the superseded width, as on /load.
+        assert ri._mlx_estimate_kv_bits(quant, bits) == expected
+
+
+import glob  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from core.inference import mlx_memory as mm  # noqa: E402
+
+
+@pytest.fixture(autouse = True)
+def _fresh_sizing_cache():
+    # Tests re-price one checkpoint under different patched internals.
+    from core.inference import mlx_inference
+
+    mm._clear_sizing_cache()
+    mlx_inference._kv_refusal_cache.clear()
+    yield
+    mm._clear_sizing_cache()
+    mlx_inference._kv_refusal_cache.clear()
+
+
+def test_a_load_is_sized_once_until_its_files_change(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text("{}")
+    shard = tmp_path / "model.safetensors"
+    shard.write_bytes(b"x")
+    built = []
+    monkeypatch.setattr(
+        mm, "_size_load_uncached", lambda *a: built.append(a) or f"sizing{len(built)}"
+    )
+    first = mm._size_load(str(tmp_path), 4, None, True)
+    assert mm._size_load(str(tmp_path), 4, None, True) is first and len(built) == 1
+    assert mm._size_load(str(tmp_path), None, None, True) != first and len(built) == 2
+    shard.write_bytes(b"xy")
+    assert mm._size_load(str(tmp_path), 4, None, True) != first and len(built) == 3
+
+
+try:
+    import importlib
+
+    importlib.import_module("mlx.core")
+    importlib.import_module("mlx_lm")
+    _HAVE_MLX = True
+except Exception:
+    _HAVE_MLX = False
+
+_NEEDS_MLX = pytest.mark.skipif(not _HAVE_MLX, reason = "needs a working MLX install")
+
+
+def _mlx_raise():
+    raise NotImplementedError
+
+
+def _plan_entry(**over):
+    """One cache plan entry: a growing key/value cache unless overridden."""
+    return {
+        "const": 0.0,
+        "slope": 4096.0,
+        "quant_const": 0.0,
+        "quant_slope": 1152.0,
+        "bound_spec": None,
+        "conv_width": 0,
+        "block": 256,
+        "converts": True,
+        **over,
+    }
+
+
+_GROWING = _plan_entry()
+_RECURRENT = _plan_entry(
+    const = 2_195_456.0,
+    slope = 0.0,
+    quant_const = 2_195_456.0,
+    quant_slope = 0.0,
+    conv_width = 8192,
+    block = 1,
+    converts = False,
+)
+_UNQUANTIZED = {"quant_start": None, "prefill_chunk": mm.MLX_PREFILL_CHUNK}
+
+
+def _caption(
+    plan,
+    bits = None,
+    converted = False,
+    n_ctx = 32768,
+):
+    return mm._cache_width_name(plan, bits, converted, "bf16", n_ctx, mm.MLX_PREFILL_CHUNK)
+
+
+def _local_snapshot(repo):
+    """This repo's snapshot directory, skipping the test when it is not here."""
+    hub = os.path.expanduser("~/.cache/huggingface/hub")
+    hits = glob.glob(
+        os.path.join(hub, "models--" + repo.replace("/", "--"), "snapshots", "*", "config.json")
+    )
+    if not hits:
+        pytest.skip(f"{repo} not on this disk")
+    return os.path.dirname(hits[0])
+
+
+def _on_bfloat16_chip():
+    import mlx.core as mx
+    if mm._runtime_dtype() is not mx.bfloat16:
+        pytest.skip("measured on a chip the loader gives bfloat16")
+
+
+class TestCacheWidthName:
+    def test_only_the_entries_that_grow_name_the_cache(self):
+        hybrid = [_RECURRENT] * 30 + [_GROWING] * 10
+        assert _caption(hybrid) == "bf16"
+        assert _caption(hybrid, 4, True) == "4-bit"
+        assert _caption([_RECURRENT]) == "bf16"
+
+    def test_a_converted_run_is_named_as_its_own_control_is_labelled(self):
+        assert [_caption([_GROWING] * 10, b, True) for b in (8, 6, 5, 4, 3, 2)] == [
+            "8-bit",
+            "6-bit",
+            "5-bit",
+            "4-bit",
+            "3-bit",
+            "2-bit",
+        ]
+        assert _caption([_GROWING] * 10, 4, False) == "bf16"
+
+    def test_an_entry_that_cannot_convert_keeps_its_width_through_a_converting_run(self):
+        staying = _plan_entry(converts = False, quant_slope = _GROWING["slope"])
+        assert _caption([staying] * 57 + [_GROWING] * 3, 4, True) == "bf16/4-bit"
+        heavy, light = (
+            _plan_entry(quant_slope = 100_000.0),
+            _plan_entry(converts = False, slope = 1.0, quant_slope = 1.0),
+        )
+        assert _caption([light] * 50 + [heavy] * 2, 4, True) == "4-bit/bf16"
+
+    @_NEEDS_MLX
+    def test_a_bounded_entry_is_weighed_by_what_it_holds_and_not_by_its_slope(self):
+        from mlx_lm.models.cache import ChunkedKVCache
+
+        bounded = _plan_entry(converts = False, bound_spec = (ChunkedKVCache, "chunk_size", 8192))
+        plan = [bounded] * 3 + [_plan_entry(quant_slope = 1152.0)]
+        assert _caption(plan, 4, True, 8192).startswith("bf16")
+        assert _caption(plan, 4, True, 131_072).startswith("4-bit")
+
+    @_NEEDS_MLX
+    def test_every_width_a_cache_is_built_at_has_a_caption(self):
+        import mlx.core as mx
+        assert [mm._width_name(d) for d in (mx.bfloat16, mx.float16, mx.float32)] == [
+            "bf16",
+            "f16",
+            "f32",
+        ]
+
+
+class TestKvBytes:
+    def test_a_hybrid_plan_is_far_cheaper_than_charging_every_layer_as_attention(self):
+        hybrid = [_RECURRENT] * 30 + [_GROWING] * 10
+        assert (
+            mm._kv_bytes(hybrid, 131_072, **_UNQUANTIZED)[0] * 3
+            < mm._kv_bytes([_GROWING] * 40, 131_072, **_UNQUANTIZED)[0]
+        )
+
+    def test_a_runtime_that_declines_to_chunk_is_recognised_on_either_half(self):
+        assert mm._declines_to_chunk(type("M", (), {"no_chunked_prefill": True}), object())
+        assert mm._declines_to_chunk(object, type("T", (), {"no_chunked_prefill": True})())
+        assert not mm._declines_to_chunk(object, object())
+
+    def test_a_cache_converted_before_prefill_is_never_charged_at_full_width(self):
+        plan = [_GROWING, _RECURRENT]
+        quantized = mm._line_bytes(plan, 32768, 2048, quantized = True)
+        assert mm._kv_bytes(plan, 32768, 0, 2048) == (quantized, 0)
+        assert mm._kv_bytes(plan, 2048, 0, 2048)[0] == mm._line_bytes(plan, 2048, 2048, True)
+
+    def test_one_failed_conversion_refuses_the_whole_request(self):
+        def _entry(converts):
+            return type(
+                "Entry",
+                (),
+                {
+                    "max_size": None,
+                    "window_size": None,
+                    "to_quantized": lambda self, **kw: "converted" if converts else _mlx_raise(),
+                },
+            )()
+
+        assert mm._quantize_like_runtime([_entry(True), _entry(False)], 4) is None
+
+    def test_a_windowed_entry_keeps_its_width_while_the_rest_convert(self):
+        from core.inference.mlx_inference import MLX_KV_GROUP_SIZE
+
+        def _entry(**window):
+            attrs = {"max_size": None, "window_size": None, **window}
+            attrs["to_quantized"] = lambda self, **kw: ("converted", kw)
+            return type("Entry", (), attrs)()
+
+        full, ring, window = _entry(), _entry(max_size = 512), _entry(window_size = 512)
+        quantized = ("converted", {"group_size": MLX_KV_GROUP_SIZE, "bits": 4})
+        assert mm._quantize_like_runtime([full, ring], 4) == [quantized, ring]
+        # Past two entries the last full-attention one stays float, as the load keeps it.
+        last = _entry()
+        assert mm._quantize_like_runtime([full, last, ring, window], 4) == [
+            quantized,
+            last,
+            ring,
+            window,
+        ]
+        assert mm._quantize_like_runtime([full, ring, window], 4) is None
+        assert mm._quantize_like_runtime([ring, window], 4) is None
+        assert mm._quantize_like_runtime([full], None) is None
+
+    @pytest.mark.skipif(not _HAVE_MLX, reason = "drives a real cache class")
+    def test_a_bounded_window_leaves_the_request_full_width(self):
+        from mlx_vlm.models.unlimited_ocr.language import RingSlidingKVCache
+
+        entry = RingSlidingKVCache(512)
+        assert entry.to_quantized(group_size = 64, bits = 4) is not None
+        assert mm._quantize_like_runtime([entry], 4) is None
+
+
+class TestComputeBytes:
+    def test_an_unreadable_width_is_not_guessed(self):
+        assert mm._compute_bytes(mm._config_widths({}), 2, 2048, [_GROWING], 8192, None) == 0
+
+    def test_the_calibrated_term_matches_the_measurement_it_came_from(self):
+        measured = 610 * 1024**2
+        priced = mm._compute_bytes(
+            (1024, 3072, 16), 2, mm.MLX_PREFILL_CHUNK, [_GROWING] * 28, 8192, None
+        )
+        assert 0.7 * measured < priced < 1.5 * measured, (
+            f"prices {priced / 1024**2:.0f} MiB where the load measured "
+            f"{measured / 1024**2:.0f} MiB"
+        )
+
+
+@_NEEDS_MLX
+class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
+    """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache."""
+
+    GQA = (3584, 18944, 32, 8, 128, 0)
+    MHA = (3584, 18944, 32, 32, 128, 0)
+    WIDE = (3584, 18944, 16, 2, 256, 0)
+
+    @pytest.mark.parametrize(
+        "widths, chunk, copies",
+        [
+            (GQA, 2048, True),
+            (GQA, 256, True),
+            (MHA, 2048, True),
+            (MHA, 256, False),
+            (WIDE, 2048, False),
+            (WIDE, 256, False),
+        ],
+    )
+    def test_both_halves_of_the_wrappers_choice_are_asked(self, widths, chunk, copies):
+        assert (mm._dequantized_row_bytes(widths, 2, 4, 64, chunk) is not None) is copies
+
+    def test_the_copy_charged_is_the_cache_the_wrapper_would_make(self):
+        import mlx.core as mx
+
+        from unsloth_zoo.mlx.attention import _row_bytes
+
+        cache = mx.quantize(mx.zeros((1, 8, 1, 128), dtype = mx.bfloat16), group_size = 64, bits = 4)
+        assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) == (
+            2 * 8 * _row_bytes(cache, 64, mx.bfloat16)
+        )
+
+    def test_a_copied_route_is_charged_the_copy_and_not_the_scores(self):
+        row = mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
+        floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
+        priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
+        scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+        assert priced - floor == row * 32768 < scores
+
+    def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
+        widths = (3584, 18944, 128, 1, 64, 0)
+        row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
+        floor = mm._compute_bytes(widths, 2, 2048, [], 32768, None)
+        charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
+        assert row is not None and charged == (32769) * 128 * mm._QUANT_SCORE_DTYPE_SIZE
+        assert charged > row * 32768
+
+    def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
+        import builtins
+
+        real = builtins.__import__
+
+        def _no_wrapper(name, *a, **kw):
+            if name == "unsloth_zoo.mlx.attention":
+                raise ImportError("this zoo predates the wrapper")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _no_wrapper)
+        assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) is None
+        floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
+        priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
+        assert priced - floor == (
+            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+        )
+
+    @pytest.mark.parametrize(
+        "stated, expected",
+        [
+            ({"num_key_value_heads": 8, "head_dim": 128}, (8, 128, 0)),
+            ({}, (32, 112, 0)),
+            ({"num_key_value_heads": 4}, (4, 112, 0)),
+            ({"head_dim": 64}, (32, 64, 0)),
+            ({"head_dim": 192, "v_head_dim": 128}, (32, 192, 128)),
+        ],
+    )
+    def test_the_geometry_the_route_reads_comes_off_the_checkpoint(self, stated, expected):
+        from types import SimpleNamespace
+
+        config = {"hidden_size": 3584, "num_attention_heads": 32, **stated}
+        assert mm._config_widths(config)[3:] == expected
+        assert mm._tower_widths(SimpleNamespace(args = SimpleNamespace(**config)))[3:] == expected
+
+    def test_a_tower_whose_values_are_narrower_keeps_the_scores(self):
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 64), 2, 4, 64, 2048) is None
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 128), 2, 4, 64, 2048) == (
+            mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
+        )
+
+    def test_a_tower_that_states_nothing_is_still_priced_from_its_checkpoint(self):
+        assert len(mm._tower_widths(object())) == len(mm._config_widths({}))
+        config = {
+            "hidden_size": 3584,
+            "intermediate_size": 18944,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+        }
+        merged = tuple(
+            tower or checkpoint
+            for tower, checkpoint in zip(mm._tower_widths(object()), mm._config_widths(config))
+        )
+        assert mm._dequantized_row_bytes(merged, 2, 4, 64, 2048) == (
+            mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
+        )
+
+    def test_an_unquantized_load_never_reaches_the_route(self):
+        assert mm._dequantized_row_bytes(self.GQA, 2, None, 64, 2048) is None
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 0, 0, 0), 2, 4, 64, 2048) is None
+
+
+@pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")
+class TestProbeFollowsTheLoadersRoute:
+    """The estimator must not price a load path that cannot be taken."""
+
+    def test_a_vision_model_is_never_priced_from_mlx_lms_copy_of_it(self):
+        import importlib
+
+        config = {"model_type": "kimi_vl", "vision_config": {"depth": 2}}
+        assert importlib.import_module("mlx_lm.models.kimi_vl")
+        assert {
+            model_class.__module__.split(".")[0]
+            for _, _, model_class in mm._probe_models(config, None)
+        } == {"mlx_vlm"}
+
+    @pytest.mark.parametrize(
+        "architecture, resolved",
+        [("DeepseekOCRForCausalLM", "deepseekocr"), ("DeepseekOCR2ForCausalLM", "deepseekocr_2")],
+    )
+    def test_a_config_is_read_as_the_loader_resolves_it_not_as_stated(
+        self, tmp_path, architecture, resolved
+    ):
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_type": "deepseek_vl_v2", "architectures": [architecture]})
+        )
+        assert mm._snapshot_config(str(tmp_path))["model_type"] == resolved
+
+    def test_a_checkpoint_supplying_its_own_module_is_refused_and_not_imported(self):
+        with pytest.raises(ValueError, match = "its own model module"):
+            list(mm._probe_models({"model_type": "qwen3", "model_file": "modeling.py"}, None))
+
+    def test_the_probe_hands_the_forward_pass_a_model_in_eval_mode(self):
+        import mlx.core as mx
+        config = json.loads(
+            (Path(_local_snapshot("unsloth/Qwen3-4B-Thinking-2507")) / "config.json").read_text()
+        )
+        assert next(iter(mm._probe_models(config, mx.bfloat16)))[0]().training is False
+
+    @pytest.mark.parametrize(
+        "chip, expected", [("Apple M1 Max", "float16"), ("Apple M3 Max", "bfloat16")]
+    )
+    def test_the_chip_decides_the_width_the_loader_installs(self, monkeypatch, chip, expected):
+        import mlx.core as mx
+        monkeypatch.setattr(mx, "device_info", lambda: {"device_name": chip})
+        assert mm._runtime_dtype() is getattr(mx, expected)
+
+
+@pytest.mark.skipif(not _HAVE_MLX, reason = "asks the installed runtime")
+class TestGenerationSettingsComeFromTheLoader:
+    """What a load prefills at is read off the runtime, except where Studio pins it."""
+
+    def test_each_path_is_read_from_the_function_that_would_run_it(self, monkeypatch):
+        import inspect
+
+        from core.inference import mlx_inference as mi
+
+        monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda: False)
+        for vision, drafted in ((False, False), (True, False), (False, True), (True, True)):
+            step = mi._generation_step(vision = vision, drafted = drafted)
+            assert mi.mlx_prefill_chunk(vision = vision, drafted = drafted) == (
+                inspect.signature(step).parameters["prefill_step_size"].default
+            )
+        assert mi._generation_step(vision = True, drafted = False).__module__.startswith("mlx_vlm")
+        assert mi._generation_step(vision = False, drafted = False).__module__.startswith("mlx_lm")
+        assert mi.mlx_prefill_chunk(drafted = True) != mi.mlx_prefill_chunk()
+        assert mi.mlx_prefill_chunk(vision = True, drafted = True) == mi.mlx_prefill_chunk(vision = True)
+
+    def test_a_pinned_vision_step_outranks_the_runtimes_own(self, monkeypatch):
+        from core.inference import mlx_inference as mi
+
+        vlm_default = mi._generation_default("prefill_step_size", 0, vision = True, drafted = False)
+        monkeypatch.setattr(mi, "vlm_prefill_step", lambda: vlm_default + 256)
+        media, bare = {"image_token_id": 151655}, {"model_type": "vlm"}
+        for store, config, expected in (
+            (True, media, vlm_default + 256),
+            (True, bare, vlm_default),
+            (False, media, vlm_default),
+            (True, None, vlm_default),
+        ):
+            monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda p = store: p)
+            assert mi.mlx_prefill_chunk(vision = True, config = config) == expected
+            assert mi.mlx_prefill_chunk(config = media) == mi.MLX_PREFILL_CHUNK_FALLBACK
+
+    def test_the_step_priced_and_the_store_that_pins_it_answer_together(self, monkeypatch):
+        """The estimate is only right while these two read the same capability."""
+        import importlib
+
+        from core.inference.mlx_inference import (
+            MLXInferenceBackend,
+            mlx_vlm_snapshot_store_available,
+        )
+
+        vlm_generate = importlib.import_module("mlx_vlm.generate")
+        backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+        backend._memory_limits_applied = {}
+        for cached_tokens, built in ((True, True), (False, False)):
+            backend._vlm_snapshot_store = None
+            backend._vlm_snapshot_store_unavailable = False
+            monkeypatch.setattr(
+                vlm_generate,
+                "GenerationResult",
+                type("R", (), {"cached_tokens": 0} if cached_tokens else {}),
+            )
+            assert mlx_vlm_snapshot_store_available() is built
+            assert (backend._vlm_prompt_cache_store() is not None) is built
+
+    @pytest.mark.parametrize("chunk", [None, 0, True, "2048"])
+    def test_a_runtime_that_states_no_usable_value_falls_back(self, monkeypatch, chunk):
+        from core.inference import mlx_inference as mi
+
+        def _stated(**kw):
+            return lambda prefill_step_size = chunk: None
+
+        monkeypatch.setattr(mi, "_generation_step", _stated)
+        assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
+
+    def test_the_estimator_tells_the_loader_which_package_would_load_it(self, monkeypatch):
+        from core.inference import mlx_inference as mi
+
+        seen = []
+        monkeypatch.setattr(mi, "mlx_prefill_chunk", lambda **kw: seen.append(kw["vision"]) or 2048)
+        vision = mm._generation_settings({"model_type": "kimi_vl", "vision_config": {"depth": 2}})
+        assert mm._generation_settings({"model_type": "qwen3"}) == vision == (2048, 64)
+        assert seen == [True, False]
+
+    def test_every_loader_quantizes_a_converted_cache_from_the_first_token(self, monkeypatch):
+        entry = {
+            "bytes": 1,
+            "quant_bytes": 1,
+            "bound_spec": None,
+            "conv_width": 0,
+            "block": 1,
+            "converts": True,
+        }
+        probe = {
+            "entries": [entry],
+            "quantized": True,
+            "whole_prompt": False,
+            "layers": 1,
+            "widths": (1, 1, 1),
+        }
+        monkeypatch.setattr(mm, "_probe", lambda *a, **kw: probe)
+        for vision in (True, False):
+            monkeypatch.setattr(mm, "_loads_as_vision", lambda _c, v = vision: v)
+            assert mm._cache_plan({}, None, 4)[1] == 0
+        probe["quantized"] = False
+        assert mm._cache_plan({}, None, 4)[1] is None
+
+    def test_a_host_without_the_loader_prices_the_fallback(self, monkeypatch):
+        import builtins
+
+        real = builtins.__import__
+
+        def _no_loader(name, *a, **kw):
+            if name == "core.inference.mlx_inference":
+                raise ImportError("no loader here")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _no_loader)
+        assert mm._generation_settings({"model_type": "llama"}) == (mm.MLX_PREFILL_CHUNK, 64)
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("reported, compute", [(None, 1_035_321_999), (512, 903_201_423)])
+def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported, compute):
+    _on_bfloat16_chip()
+    if reported is not None:
+        from core.inference import mlx_inference as mi
+        monkeypatch.setattr(mi, "mlx_prefill_chunk", lambda **kw: reported)
+    breakdown = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = 4,
+    )
+    assert breakdown is not None and breakdown.compute_bytes == compute
+    override = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = 4,
+        prefill_chunk = 512,
+    )
+    assert override.compute_bytes == 903_201_423
+
+
+@_NEEDS_MLX
+def test_a_model_mlx_vlm_would_diffuse_is_refused_rather_than_priced():
+    snapshot = _local_snapshot("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+    assert mm._routes_to_diffusion(mm._snapshot_config(snapshot)) is True
+    assert mm.mlx_memory_breakdown(snapshot, n_ctx = 32768, load_in_4bit = True) is None
+
+
+@_NEEDS_MLX
+def test_an_ordinary_vision_model_is_not_mistaken_for_a_diffusion_one():
+    config = {"model_type": "kimi_vl", "vision_config": {"depth": 2}}
+    assert mm._routes_to_diffusion(config) is False
+    assert mm._generation_settings(config)[0] > 0
+
+
+@_NEEDS_MLX
+class TestDiffusionRouting:
+    """The markers gate a build; mlx-vlm's own predicate is the verdict."""
+
+    @staticmethod
+    def _resolving(
+        monkeypatch,
+        *,
+        canvas,
+        mask,
+        build = lambda config: object(),
+    ):
+        monkeypatch.setattr(
+            mm,
+            "_loader_config",
+            lambda arch, config: SimpleNamespace(canvas_length = canvas, mask_token_id = mask),
+        )
+        monkeypatch.setattr(
+            "mlx_vlm.utils.get_model_and_args",
+            lambda config: (SimpleNamespace(Model = build), None),
+        )
+
+    @pytest.mark.parametrize("verdict", [True, False])
+    def test_the_predicate_outranks_the_marker(self, monkeypatch, verdict):
+        from mlx_vlm.generate import diffusion as vlm_diffusion
+
+        self._resolving(monkeypatch, canvas = None, mask = 100)
+        monkeypatch.setattr(vlm_diffusion, "is_diffusion_model", lambda model, kw: verdict)
+        assert mm._routes_to_diffusion({"model_type": "whatever"}) is verdict
+
+    def test_a_diverted_load_refuses_without_needing_a_checkpoint(self, monkeypatch):
+        from mlx_vlm.generate import diffusion as vlm_diffusion
+
+        self._resolving(monkeypatch, canvas = 512, mask = None)
+        monkeypatch.setattr(vlm_diffusion, "is_diffusion_model", lambda model, kw: True)
+        monkeypatch.setattr(mm, "_loads_as_vision", lambda config: True)
+        with pytest.raises(ValueError, match = "diffusion generator"):
+            mm._generation_settings({"model_type": "whatever"})
+
+    def test_an_architecture_carrying_no_marker_is_never_built(self, monkeypatch):
+        def _explode(config):
+            raise AssertionError("built a wrapper for a config carrying no marker")
+
+        self._resolving(monkeypatch, canvas = None, mask = None, build = _explode)
+        assert mm._routes_to_diffusion({"model_type": "whatever"}) is False
+
+    def test_a_marked_model_that_cannot_be_placed_is_refused_not_assumed(self, monkeypatch):
+        def _explode(config):
+            raise RuntimeError("this wrapper cannot be built")
+
+        self._resolving(monkeypatch, canvas = 512, mask = None, build = _explode)
+        with pytest.raises(RuntimeError):
+            mm._routes_to_diffusion({"model_type": "whatever"})
+        with pytest.raises(RuntimeError):
+            mm._generation_settings({"model_type": "whatever", "vision_config": {"depth": 2}})
+
+
+@pytest.mark.skipif(not _HAVE_MLX, reason = "drives real cache classes")
+def test_the_peak_of_a_bounded_cache_is_measured_not_derived():
+    from mlx_lm.models import cache as C
+
+    for bound, attribute, value, n_ctx, chunk, expected in (
+        (C.RotatingKVCache, "max_size", 512, 100, 2048, 355),
+        (C.RotatingKVCache, "max_size", 512, 255, 2048, 510),
+        (C.RotatingKVCache, "max_size", 512, 1024, 2048, 1023),
+        (C.ChunkedKVCache, "chunk_size", 512, 4096, 2048, 2560),
+        (C.ChunkedKVCache, "chunk_size", 512, 2560, 2048, 2048),
+        (C.RotatingKVCache, "max_size", 512, 256, 1, 512),
+        (C.RotatingKVCache, "max_size", 512, 10**12, 2048, 2559),
+    ):
+        assert (
+            mm._bounded_peak(bound, attribute, value, n_ctx, chunk) == expected
+        ), f"{bound.__name__}({value}) at {n_ctx}"
+    assert mm._bound_spec(type("E", (), {"max_size": 512})())
+    assert mm._bound_spec(type("E", (), {"chunk_size": 512})())
+    spec = (C.RotatingKVCache, "max_size", 512)
+    entry = {"slope": 1.0, "block": mm.MLX_KV_BLOCK, "bound_spec": spec}
+    for n_ctx, charged in ((253, 508), (100, 355), (1024, 1023), (10**12, 2559)):
+        assert mm._held_tokens(entry, n_ctx, 2048) == charged
+
+
+@pytest.mark.skipif(not _HAVE_MLX, reason = "builds a real architecture")
+class TestPricingALoad:
+    _CONFIG = {
+        "model_type": "llama",
+        "hidden_size": 256,
+        "num_hidden_layers": 2,
+        "intermediate_size": 512,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 4,
+        "rms_norm_eps": 1e-5,
+        "vocab_size": 512,
+        "rope_theta": 10000.0,
+    }
+
+    def _checkpoint(
+        self,
+        tmp_path,
+        *,
+        prefix = "",
+    ):
+        import mlx.core as mx
+        from mlx.utils import tree_flatten
+
+        config = dict(self._CONFIG, tie_word_embeddings = True)
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        built = mm._whole_model(config, mx.bfloat16)
+        mx.save_safetensors(
+            str(tmp_path / "model.safetensors"),
+            {
+                prefix + name: mx.zeros(value.shape, dtype = mx.bfloat16)
+                for name, value in tree_flatten(built.parameters())
+            },
+        )
+        return config
+
+    def test_a_float32_checkpoint_goes_resident_at_the_width_the_chip_gives_it(self):
+        if mm._runtime_dtype().size != 2:
+            pytest.skip("measured on a chip the loader gives a 16-bit width")
+        snapshot = _local_snapshot("hf-internal-testing/tiny-random-LlamaForCausalLM")
+        config = json.loads((Path(snapshot) / "config.json").read_text())
+        assert mm.mlx_weight_bytes(snapshot, config, load_in_4bit = False) == 2_064_544
+
+    def test_a_quantizing_load_is_priced_below_the_shards(self, tmp_path):
+        config = self._checkpoint(tmp_path)
+        wide = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = False)
+        quantized = mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = True)
+        assert (wide, quantized) == (2_886_144, 1_001_984)
+        assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
+
+    def test_shards_that_name_nothing_the_architecture_has_are_not_priced_from_it(self, tmp_path):
+        config = self._checkpoint(tmp_path, prefix = "draft.")
+        with pytest.raises(ValueError, match = "does not supply"):
+            mm._resident_bytes(str(tmp_path), config, quantize = True)
+        for flag in (True, False):
+            assert mm.mlx_weight_bytes(str(tmp_path), config, load_in_4bit = flag) == (
+                mm._shard_bytes(str(tmp_path), config)
+            )
+
+
+@pytest.mark.skipif(not _HAVE_MLX, reason = "asks the installed loader")
+class TestALoadWithNoFootprintToQuote:
+    def test_quantization_metadata_no_load_can_honour_is_refused_not_priced(self, tmp_path):
+        per_module = {"model.layers.0.self_attn.q_proj": {"bits": 4, "group_size": 64}}
+        for spelling in ("quantization", "quantization_config"):
+            stated = {"model_type": "llama", spelling: per_module}
+            assert mm._load_is_refused(str(tmp_path), stated, True)
+            assert mm._load_is_refused(str(tmp_path), stated, False) is None
+            bnb = {"model_type": "llama", spelling: {"quant_method": "bitsandbytes"}}
+            for flag in (True, False):
+                assert "bitsandbytes" in (mm._load_is_refused(str(tmp_path), bnb, flag) or "")
+
+    @pytest.mark.parametrize(
+        "repo, names",
+        [
+            ("OsaurusAI/ZAYA1-VL-8B-MXFP4", "no home for"),
+            ("Qwen/Qwen3-Embedding-0.6B", "QK-norm"),
+            ("z-lab/Qwen3.6-27B-DFlash", "QK-norm"),
+            ("z-lab/gemma-4-31B-it-DFlash", "QK-norm"),
+            ("yuyijiong/Qwen3.5-4B-Eagle3", "no home for"),
+        ],
+    )
+    def test_a_checkpoint_no_load_starts_from_is_refused(self, repo, names):
+        snapshot = _local_snapshot(repo)
+        config = mm._snapshot_config(snapshot)
+        for flag in (True, False):
+            assert names in (mm._load_is_refused(snapshot, config, flag) or "")
+            assert mm.mlx_memory_breakdown(snapshot, n_ctx = 2048, load_in_4bit = flag) is None
+
+    def test_no_checkpoint_on_this_disk_is_refused_for_an_invented_reason(self):
+        hub = os.path.expanduser("~/.cache/huggingface/hub")
+        seen = accepted = 0
+        for path in glob.glob(os.path.join(hub, "models--*", "snapshots", "*", "config.json")):
+            directory = os.path.dirname(path)
+            config = mm._snapshot_config(directory)
+            if not isinstance(config, dict) or not config.get("model_type"):
+                continue
+            try:
+                if not mm.mlx_shard_files(directory, config):
+                    continue
+            except Exception:
+                continue
+            seen += 1
+            refusals = [mm._load_is_refused(directory, config, flag) for flag in (True, False)]
+            for refusal in refusals:
+                assert refusal is None or any(
+                    reason in refusal for reason in ("QK-norm", "no home for", "bitsandbytes")
+                ), f"{path}: {refusal}"
+            accepted += refusals[0] is None
+        if not seen:
+            pytest.skip("no checkpoints on this disk")
+        assert accepted > seen * 0.9, "the gate has started refusing wholesale"
+
+    def test_extras_a_registered_rule_filters_are_not_refused(self):
+        snapshot = _local_snapshot("google/gemma-4-E2B")
+        config = mm._snapshot_config(snapshot)
+        assert mm._load_is_refused(snapshot, config, True) is None
+        assert mm.mlx_weight_bytes(snapshot, config, load_in_4bit = True) == 7_510_668_230
+
+    _FILTERED = [
+        "language_model.model.per_layer_model_projection.biases",
+        "language_model.model.per_layer_model_projection.scales",
+    ]
+    _GEMMA4 = {"model_type": "gemma4", "vision_config": {"model_type": "gemma4"}}
+
+    @pytest.mark.parametrize(
+        "config, extras, names",
+        [
+            (_GEMMA4, _FILTERED, None),
+            (_GEMMA4, _FILTERED + ["mystery.weight"], "mystery.weight"),
+            ({"model_type": "an-architecture-with-no-rule"}, ["d2t", "fc.weight"], "d2t"),
+        ],
+    )
+    def test_a_rule_exempts_only_the_keys_it_names(self, config, extras, names):
+        refusal = mm._extra_tensors_refused(object(), config, extras)
+        assert refusal is None if names is None else (names in refusal and "no home for" in refusal)
+
+
+class TestShardsTheLoaderReads:
+    """Which safetensors beside a config actually become weights."""
+
+    _VISION = {"model_type": "llava", "vision_config": {"hidden_size": 8}}
+
+    def _spread(self, tmp_path, config):
+        for name in (
+            "model-00001.safetensors",
+            "adapter_model.safetensors",
+            "consolidated.safetensors",
+        ):
+            (tmp_path / name).write_bytes(b"x" * 100)
+        return sorted(os.path.basename(p) for p in mm.mlx_shard_files(str(tmp_path), config))
+
+    def test_the_text_loader_reads_model_shards_only(self, tmp_path):
+        assert self._spread(tmp_path, {"model_type": "llama"}) == ["model-00001.safetensors"]
+        adapter_only = tmp_path / "lora"
+        adapter_only.mkdir()
+        (adapter_only / "adapter_model.safetensors").write_bytes(b"x" * 100)
+        assert mm.mlx_shard_files(str(adapter_only), {"model_type": "llama"}) == []
+
+    def test_the_vision_loader_reads_the_index_before_the_directory(self, tmp_path):
+        assert self._spread(tmp_path, self._VISION) == [
+            "adapter_model.safetensors",
+            "model-00001.safetensors",
+        ]
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a.weight": "model-00001.safetensors"}})
+        )
+        assert self._spread(tmp_path, self._VISION) == ["model-00001.safetensors"]
+
+    @_NEEDS_MLX
+    @pytest.mark.parametrize("declared", [0, 1_000_000, 1 << 40])
+    def test_a_shard_is_not_read_past_the_header_it_declares(self, tmp_path, declared):
+        import mlx.core as mx
+
+        shard = tmp_path / "model.safetensors"
+        body = json.dumps({"a.weight": {"dtype": "F16", "shape": [2], "data_offsets": [0, 4]}})
+        shard.write_bytes(declared.to_bytes(8, "little") + body.encode() + b"\0" * 4)
+        with pytest.raises(ValueError, match = "safetensors header"):
+            mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16)
+        shard.write_bytes(len(body).to_bytes(8, "little") + body.encode() + b"\0" * 4)
+        assert list(mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16))
+
+    @_NEEDS_MLX
+    def test_a_header_is_capped_below_the_shard_it_sits_in(self, tmp_path, monkeypatch):
+        import mlx.core as mx
+
+        body = json.dumps({"a.weight": {"dtype": "F16", "shape": [2], "data_offsets": [0, 4]}})
+        (tmp_path / "model.safetensors").write_bytes(
+            len(body).to_bytes(8, "little") + body.encode() + b"\0" * 4
+        )
+        read = lambda: mm._checkpoint_tensors(str(tmp_path), {"model_type": "llama"}, mx.bfloat16)
+        assert list(read())
+        monkeypatch.setattr(mm, "_MAX_SAFETENSORS_HEADER", len(body) - 1)
+        with pytest.raises(ValueError, match = "safetensors header"):
+            read()
+
+    @pytest.mark.parametrize(
+        "shard",
+        [
+            "../secret.safetensors",
+            "a/../../secret.safetensors",
+            "/etc/passwd",
+            "..\\secret.safetensors",
+            "C:/secret.safetensors",
+        ],
+    )
+    def test_an_index_naming_a_shard_outside_the_snapshot_is_refused(self, tmp_path, shard):
+        # A cached repo's index must not steer sizing at files beside or above its snapshot.
+        (tmp_path / "secret.safetensors").write_bytes(b"x" * 100)
+        snapshot = tmp_path / "snap"
+        snapshot.mkdir()
+        (snapshot / "model-00001.safetensors").write_bytes(b"x" * 100)
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a.weight": "model-00001.safetensors", "b.weight": shard}})
+        )
+        with pytest.raises(ValueError, match = "outside the snapshot"):
+            mm.mlx_shard_files(str(snapshot), self._VISION)
+
+    def test_a_nested_shard_inside_the_snapshot_is_still_read(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "model-00001.safetensors").write_bytes(b"x" * 100)
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a.weight": "sub/./model-00001.safetensors"}})
+        )
+        assert [os.path.basename(p) for p in mm.mlx_shard_files(str(tmp_path), self._VISION)] == [
+            "model-00001.safetensors"
+        ]
+
+    @pytest.mark.parametrize(
+        "weight_map", [["model-00001.safetensors"], "model-00001.safetensors", 7, True, None]
+    )
+    def test_an_index_whose_weight_map_is_not_a_mapping_is_fatal(self, tmp_path, weight_map):
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": weight_map})
+        )
+        with pytest.raises(ValueError, match = "no weight map"):
+            mm.mlx_shard_files(str(tmp_path), self._VISION)
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize(
+    "repo, n_ctx, kv_bits, weights, kv, compute, layers, caption",
+    [
+        (
+            "unsloth/Qwen3-4B-Thinking-2507",
+            32768,
+            None,
+            2_822_044_672,
+            4_869_586_944,
+            863_355_535,
+            36,
+            "bf16",
+        ),
+        (
+            "unsloth/Qwen3-4B-Thinking-2507",
+            32768,
+            4,
+            2_822_044_672,
+            1_369_571_328,
+            1_035_321_999,
+            36,
+            "4-bit",
+        ),
+        (
+            "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit",
+            32768,
+            None,
+            21_634_993_114,
+            740_720_640,
+            943_440_527,
+            40,
+            "bf16",
+        ),
+        ("unsloth/gemma-3-270m-it", 8192, None, 392_058_112, 65_258_496, 725_729_935, 18, "bf16"),
+        (
+            "mlx-community/deepseek-vl2-tiny-4bit",
+            4096,
+            None,
+            2_099_712_075,
+            267_386_880,
+            803_717_775,
+            12,
+            "bf16",
+        ),
+        (
+            "Qwen/Qwen2.5-VL-3B-Instruct",
+            32768,
+            4,
+            3_520_856_064,
+            342_392_832,
+            753_582_735,
+            36,
+            "4-bit",
+        ),
+        (
+            "Qwen/Qwen2.5-VL-3B-Instruct",
+            5001,
+            4,
+            3_520_856_064,
+            56_852_480,
+            717_152_431,
+            36,
+            "4-bit",
+        ),
+        (
+            "Qwen/Qwen2.5-VL-3B-Instruct",
+            5000,
+            4,
+            3_520_856_064,
+            56_852_480,
+            717_151_119,
+            36,
+            "4-bit",
+        ),
+        (
+            "mlx-community/gemma-3n-E2B-it-4bit",
+            4096,
+            None,
+            4_462_976_625,
+            60_784_640,
+            705_544_847,
+            30,
+            "bf16",
+        ),
+        (
+            "mlx-community/Molmo-7B-D-0924-4bit",
+            4096,
+            None,
+            5_298_715_127,
+            249_561_088,
+            1_281_737_359,
+            28,
+            "bf16",
+        ),
+        (
+            "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            512,
+            None,
+            2_061_600,
+            98_304,
+            688_341_647,
+            2,
+            "bf16",
+        ),
+    ],
+)
+def test_a_real_checkpoint_is_priced_to_the_byte(
+    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption
+):
+    _on_bfloat16_chip()
+    breakdown = mm.mlx_memory_breakdown(
+        _local_snapshot(repo), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
+    )
+    assert breakdown is not None
+    assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)
+    assert breakdown.compute_bytes == compute
+    assert breakdown.layer_count == layers
+    assert breakdown.cache_type_kv == caption
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("kv_bits, caption", [(6, "6-bit"), (8, "8-bit")])
+def test_the_caption_names_a_width_the_real_conversion_reaches(kv_bits, caption):
+    _on_bfloat16_chip()
+    breakdown = mm.mlx_memory_breakdown(
+        _local_snapshot("unsloth/Qwen3-4B-Thinking-2507"),
+        n_ctx = 32768,
+        load_in_4bit = True,
+        kv_bits = kv_bits,
+    )
+    assert breakdown is not None and breakdown.cache_type_kv == caption
+
+
+class TestTheContextSearch:
+    """The search itself, priced by a stub so it runs where MLX and the checkpoints do not."""
+
+    @staticmethod
+    def _linear(monkeypatch, unpriceable = ()):
+        """A byte per token, so every expected answer below is readable off the budget."""
+
+        def _priced(sizing, n_ctx):
+            return None if n_ctx in unpriceable else SimpleNamespace(total_bytes = n_ctx)
+
+        monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: object())
+        monkeypatch.setattr(mm, "_priced_at", _priced)
+
+    def test_the_answer_is_the_largest_whole_block_under_budget(self, monkeypatch):
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) == 6912
+
+    def test_a_floor_between_blocks_rounds_up_rather_than_under_the_minimum(self, monkeypatch):
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_context("x", budget_bytes = 4200, max_ctx = 8192, min_ctx = 4100) is None
+        assert mm.mlx_fit_context("x", budget_bytes = 5000, max_ctx = 8192, min_ctx = 4100) == 4864
+
+    def test_a_context_that_cannot_be_priced_abandons_the_fit(self, monkeypatch):
+        self._linear(monkeypatch, unpriceable = (6144,))
+        assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) is None
+
+    def test_a_ceiling_that_already_fits_is_left_alone(self, monkeypatch):
+        self._linear(monkeypatch)
+        assert mm.mlx_fit_context("x", budget_bytes = 9000, max_ctx = 8192) is None
+
+    def test_a_load_that_cannot_be_sized_is_not_fitted(self, monkeypatch):
+        monkeypatch.setattr(mm, "_size_load", lambda *a, **kw: None)
+        assert mm.mlx_fit_context("x", budget_bytes = 7000, max_ctx = 8192) is None
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("budget_gib, fitted", [(6, 18_432), (12, 61_952), (24, 149_504)])
+def test_a_real_checkpoint_is_fitted_to_the_byte(budget_gib, fitted):
+    _on_bfloat16_chip()
+    snapshot = _local_snapshot("unsloth/Qwen3-4B-Thinking-2507")
+    budget = budget_gib * 1024**3
+    assert (
+        mm.mlx_fit_context(snapshot, budget_bytes = budget, max_ctx = 262_144, load_in_4bit = True)
+        == fitted
+    )
+    priced = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted, load_in_4bit = True)
+    over = mm.mlx_memory_breakdown(snapshot, n_ctx = fitted + mm.MLX_KV_BLOCK, load_in_4bit = True)
+    assert priced.total_bytes <= budget < over.total_bytes
+    assert mm.mlx_memory_breakdown(snapshot, n_ctx = float("nan"), load_in_4bit = True) is None
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize(
+    "repo, kv_bits, whole_prompt",
+    [
+        ("unsloth/Qwen3-4B-Thinking-2507", 4, False),
+        ("unsloth/Qwen3-4B-Thinking-2507", None, True),
+        ("unsloth/gemma-3-270m-it", None, False),
+        ("unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit", None, False),
+    ],
+)
+def test_the_total_never_falls_as_the_context_grows(repo, kv_bits, whole_prompt):
+    sizing = mm._size_load(_local_snapshot(repo), kv_bits, None, True)
+    if whole_prompt:
+        forced = replace(sizing, facts = {**sizing.facts, "whole_prompt": True})
+        assert mm._priced_at(forced, 32_768).total_bytes > mm._priced_at(sizing, 32_768).total_bytes
+        sizing = forced
+    steps = range(mm.MLX_KV_BLOCK, 262_145, mm.MLX_KV_BLOCK)
+    totals = [mm._priced_at(sizing, n).total_bytes for n in steps]
+    assert totals == sorted(totals)

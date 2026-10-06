@@ -14,7 +14,7 @@ from dataclasses import replace
 
 import pytest
 
-from core.inference import mxc_runtime, os_sandbox, tools
+from core.inference import mxc_read_grants, mxc_runtime, os_sandbox, tools
 
 
 @pytest.fixture(autouse = True)
@@ -23,6 +23,9 @@ def _dacl_journal_outside_grants(monkeypatch, tmp_path):
     outside = Path(os.path.abspath(os.sep)) / "unsloth-test-dacl-journal-never-created"
     monkeypatch.setattr(mxc_runtime, "dacl_state_path", lambda: outside)
     monkeypatch.setattr(mxc_runtime, "dacl_state_dir", lambda: tmp_path)
+    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
+    monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
+    monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
 
 
 def _plan(tmp_path, mode = "auto"):
@@ -635,6 +638,71 @@ def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
     )
     with pytest.raises(mxc_adapter.MxcAdapterError, match = "changed before dispatch"):
         mxc_adapter.spawn(request)
+
+
+# Held with a switch off too: a deferred revocation or a switch turned on mid-build leaves entries it reads.
+@pytest.mark.parametrize("dacl, grants", [(True, True), (True, False), (False, True)])
+def test_a_launch_holds_the_read_grants_until_its_last_cleanup(monkeypatch, tmp_path, dacl, grants):
+    from core.inference import sandbox_windows_mxc
+
+    released = []
+    lease = type("Lease", (), {"release": lambda self: released.append("grants")})()
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "dacl_fallback_enabled", lambda: dacl)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: grants)
+    monkeypatch.setattr(mxc_read_grants, "hold", lambda: released.append("hold") or lease)
+
+    def build(_plan, **_kw):
+        released.append("build")
+        return {"policyHash": "sha256:controlled"}
+
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "build_launch_request", build)
+    capability = os_sandbox.SandboxCapability(
+        backend = "mxc-processcontainer",
+        available = True,
+        reason = "qualified",
+        environment = "win32",
+        profile_id = mxc_runtime.PROFILE_ID,
+    )
+    prepared = sandbox_windows_mxc.prepare(_plan(tmp_path), capability)
+    prepared.cleanup_callbacks.append(lambda: released.append("workload"))
+    prepared.cleanup()
+    assert released == ["hold", "build", "workload", "grants"]
+
+
+def test_a_launch_that_fails_to_build_gives_its_grant_lease_back(monkeypatch, tmp_path):
+    from core.inference import sandbox_windows_mxc
+
+    released = []
+    lease = type("Lease", (), {"release": lambda self: released.append("grants")})()
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "dacl_fallback_enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "hold", lambda: lease)
+
+    def refuse(_plan, **_kw):
+        raise sandbox_windows_mxc.mxc_policy.MxcPolicyError("controlled refusal")
+
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "build_launch_request", refuse)
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "controlled refusal"):
+        sandbox_windows_mxc.prepare(_plan(tmp_path), _unavailable())
+    assert released == ["grants"]
+
+
+def test_a_launch_whose_grant_lease_cannot_be_recorded_is_refused(monkeypatch, tmp_path):
+    from core.inference import sandbox_windows_mxc
+
+    def refuse():
+        raise mxc_read_grants.ReadGrantError("controlled lease failure")
+
+    built = []
+    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", refuse)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_policy,
+        "build_launch_request",
+        lambda _plan, **_kw: built.append(True) or {"policyHash": "sha256:controlled"},
+    )
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "controlled lease failure"):
+        sandbox_windows_mxc.prepare(_plan(tmp_path), _unavailable())
+    assert built == []
 
 
 def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):

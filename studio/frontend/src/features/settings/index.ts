@@ -3,6 +3,11 @@
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
 export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
+export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -11,7 +16,13 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
+export { loadMultiModelEnabled } from "./api/multi-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
+export { listOpenAIModels } from "./api/openai-models";
+export {
+  loadSystemOneSettings,
+  subscribeSystemOneSettings,
+} from "./api/systemone";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
@@ -87,6 +98,7 @@ export {
   useShortcutLabels,
   useShortcutAvailable,
 } from "./hooks/use-shortcut";
+export { useHubSourceNotice } from "./hooks/use-hub-source-notice";
 export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
@@ -96,6 +108,7 @@ export {
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
 export { settingsTabVisible } from "./settings-tab-visibility";
+export { DIALOG_SETTINGS_SEARCH_INDEX } from "./dialog-search-index";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export { requestSttDownload } from "./stores/stt-download-prompt-store";
 export {

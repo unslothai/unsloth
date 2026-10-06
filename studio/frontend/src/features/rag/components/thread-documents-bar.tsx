@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AttachmentIcon,
@@ -41,6 +47,7 @@ import {
   announceProjectSourcesUpdated,
   invalidateProjectSources,
   listKnowledgeBases,
+  subscribeKnowledgeBasesChanged,
   listProjectDocuments,
   listThreadDocuments,
 } from "../api/rag-api";
@@ -62,37 +69,72 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DocumentStatusChip } from "./document-status-chip";
-import { useRagDocuments } from "./use-rag-documents";
+import {
+  type KnowledgeBaseFocus,
+  KnowledgeBaseDialog,
+} from "./knowledge-base-dialog";
+import { EXPIRY_GRACE_MS } from "./staged-source";
+import { uploadItemFromIntent, useRagDocuments } from "./use-rag-documents";
 
-// Read-only chip shown when retrieval comes from a KB, so the source isn't invisible.
-function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
-  const [name, setName] = useState<string | null>(null);
+// Refetched after any KB mutation so a rename shows at once.
+function useKnowledgeBaseName(kbId: string | null): string | null {
+  // Keyed by id: a drop during a switch must not name one KB and add to another.
+  const [known, setKnown] = useState<{ kbId: string; name: string | null } | null>(
+    null,
+  );
   useEffect(() => {
+    if (!kbId) return;
     let cancelled = false;
-    listKnowledgeBases()
-      .then((rows) => {
-        if (!cancelled) setName(rows.find((kb) => kb.id === kbId)?.name ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setName(null);
-      });
+    let latest = 0;
+    const load = () => {
+      const request = ++latest;
+      listKnowledgeBases()
+        .then((rows) => {
+          if (cancelled || request !== latest) return;
+          setKnown({ kbId, name: rows.find((kb) => kb.id === kbId)?.name ?? null });
+        })
+        .catch(() => {
+          // A failed refetch says nothing about the KB.
+        });
+    };
+    load();
+    const unsubscribe = subscribeKnowledgeBasesChanged(load);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [kbId]);
+  return known !== null && known.kbId === kbId ? known.name : null;
+}
+
+// Shown when retrieval comes from a KB, so the source isn't invisible.
+function KnowledgeBaseSourceChip({
+  name,
+  onOpen,
+  buttonRef,
+}: {
+  name: string | null;
+  onOpen: () => void;
+  buttonRef: RefObject<HTMLButtonElement | null>;
+}) {
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <span
-        className="composer-pill-btn shrink-0 cursor-default"
-        title="This chat retrieves from a knowledge base. Change the source in RAG retrieval settings."
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={onOpen}
+        className="composer-pill-btn min-w-0 max-w-full"
+        title="Add or remove documents"
       >
         <HugeiconsIcon
           icon={FileDatabaseIcon}
           strokeWidth={2}
-          className="size-3.5"
+          className="size-3.5 shrink-0"
         />
-        <span>{name ? `Knowledge base: ${name}` : "Knowledge base"}</span>
-      </span>
+        <span className="min-w-0 truncate">
+          {name ? `Knowledge base: ${name}` : "Knowledge base"}
+        </span>
+      </button>
     </div>
   );
 }
@@ -537,6 +579,22 @@ export function ThreadDocumentsBar({
   // Desktop drops land in the native-intent store because the drop listener lives on
   // the chat page; only the chat that received the OS drop may drain its batch.
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const [kbDialogFocus, setKbDialogFocus] = useState<KnowledgeBaseFocus | null>(
+    null,
+  );
+  const kbChipRef = useRef<HTMLButtonElement>(null);
+  // The toaster outlives this bar; an "Add" after unmount would open nothing.
+  const kbDropOffersRef = useRef(new Set<string | number>());
+  useEffect(() => {
+    const offers = kbDropOffersRef.current;
+    return () => {
+      for (const id of offers) toast.dismiss(id);
+      offers.clear();
+    };
+  }, []);
+  const activeKbName = useKnowledgeBaseName(
+    ragEnabled && ragSource.type === "kb" ? ragSource.kbId : null,
+  );
   const hasPendingAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -559,9 +617,32 @@ export function ThreadDocumentsBar({
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
-      toast.error("This chat retrieves from a knowledge base", {
-        description: "Add these files to the knowledge base instead.",
+      const kbId = ragSource.kbId;
+      const files =
+        intents.length === 1
+          ? `"${intents[0].displayLabel}"`
+          : `${intents.length} files`;
+      const target = activeKbName
+        ? `"${activeKbName}"`
+        : "this chat's knowledge base";
+      // Nothing else holds these files: keep the offer while their path tokens are readable.
+      const expiresAt = Math.min(...intents.map((intent) => intent.path.expiresAtMs));
+      const offer = toast(`Add ${files} to ${target}?`, {
+        description:
+          "This chat retrieves from that knowledge base, not from files dropped in the chat.",
+        duration: Number.isFinite(expiresAt)
+          ? Math.max(8_000, expiresAt - EXPIRY_GRACE_MS - Date.now())
+          : Infinity,
+        action: {
+          label: "Add",
+          onClick: () =>
+            setKbDialogFocus({
+              kbId,
+              uploads: intents.map(uploadItemFromIntent),
+            }),
+        },
       });
+      kbDropOffersRef.current.add(offer);
       return;
     }
     // A stale KB preference is inactive while RAG is off; use thread retrieval.
@@ -569,15 +650,7 @@ export function ThreadDocumentsBar({
       setRagSource({ type: "thread" });
       setRagEnabled(true);
     }
-    attach(
-      intents.map((intent) => ({
-        kind: "native" as const,
-        token: intent.path.token,
-        name: intent.displayLabel,
-        sizeBytes: intent.path.sizeBytes,
-        modifiedMs: intent.path.modifiedMs,
-      })),
-    );
+    attach(intents.map(uploadItemFromIntent));
   }, [
     hasPendingAttachments,
     projectUnresolved,
@@ -585,6 +658,7 @@ export function ThreadDocumentsBar({
     attach,
     ragEnabled,
     ragSource,
+    activeKbName,
     setRagSource,
     setRagEnabled,
   ]);
@@ -610,17 +684,51 @@ export function ThreadDocumentsBar({
     fileInputRef.current?.click();
   }, []);
 
+  // Every branch, always the first fragment child: an "Add" must open after the source
+  // moves, and deleting the active KB in it must not remount it.
+  const kbDialog = (
+    <KnowledgeBaseDialog
+      open={kbDialogFocus !== null}
+      onOpenChange={(next) => {
+        if (!next) setKbDialogFocus(null);
+      }}
+      focus={kbDialogFocus}
+      onCloseAutoFocus={(event) => {
+        const chip = kbChipRef.current;
+        if (chip?.isConnected) {
+          event.preventDefault();
+          chip.focus({ preventScroll: true });
+        }
+      }}
+    />
+  );
+
   // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragEnabled && ragSource.type === "kb") {
-    return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
+    const kbId = ragSource.kbId;
+    return (
+      <>
+        {kbDialog}
+        <KnowledgeBaseSourceChip
+          name={activeKbName}
+          onOpen={() => setKbDialogFocus({ kbId })}
+          buttonRef={kbChipRef}
+        />
+      </>
+    );
   }
   // Project sources retrieve whether the Docs pill is on or not (chat-adapter's projectRagEnabled),
   // so list them either way rather than letting the model answer from files the user cannot see.
   // The attach controls stay behind the pill: with it off, thread scope is inert.
   if (!ragEnabled) {
-    return projectDocuments.length > 0 ? (
-      <InheritedProjectSources documents={projectDocuments} />
-    ) : null;
+    return (
+      <>
+        {kbDialog}
+        {projectDocuments.length > 0 ? (
+          <InheritedProjectSources documents={projectDocuments} />
+        ) : null}
+      </>
+    );
   }
 
   // Attaching before the chat's project is known would file the file by guess.
@@ -628,107 +736,110 @@ export function ThreadDocumentsBar({
   const chipCount = documents.length + projectDocuments.length;
 
   return (
-    <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <AttachFilesButton
-        disabled={busy}
-        compact={chipCount > 0}
-        sharesWithProject={sharesWithProject}
-        onClick={handleAddDocs}
-      />
-      {/* Only a project chat has two scopes to choose between. */}
-      {projectId ? (
-        <AttachmentTargetMenu
+    <>
+      {kbDialog}
+      <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
+        <AttachFilesButton
           disabled={busy}
+          compact={chipCount > 0}
           sharesWithProject={sharesWithProject}
-          onSelect={(target) =>
-            setThreadProjectAttachmentTarget(effectiveThreadId, target)
-          }
+          onClick={handleAddDocs}
         />
-      ) : null}
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        accept={RAG_UPLOAD_ACCEPT}
-        className="hidden"
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          e.target.value = "";
-          if (files.length === 0) return;
-          attach(files);
-        }}
-      />
-      {/* Cap height so a large set scrolls; fade the cut-off row. */}
-      <div
-        ref={chipScrollRef}
-        onScroll={updateChipFade}
-        className={cn(
-          "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
-          chipsOverflow && "rag-docs-bottom-fade",
-        )}
-      >
-        {/* Project sources first: inherited context, and it outlives this chat. */}
-        {projectDocuments.map((doc) => (
-          <DocumentStatusChip
-            key={`project:${doc.id}`}
-            filename={doc.filename}
-            status={doc.status}
-            progress={doc.progress}
-            stage={doc.stage}
-            error={doc.error}
-            shared={true}
-            onRemove={
-              doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
-                ? undefined
-                : () => setRemovingShared(doc)
+        {/* Only a project chat has two scopes to choose between. */}
+        {projectId ? (
+          <AttachmentTargetMenu
+            disabled={busy}
+            sharesWithProject={sharesWithProject}
+            onSelect={(target) =>
+              setThreadProjectAttachmentTarget(effectiveThreadId, target)
             }
           />
-        ))}
-        {documents.map((doc) => (
-          <DocumentStatusChip
-            key={doc.id}
-            filename={doc.filename}
-            status={doc.status}
-            progress={doc.progress}
-            stage={doc.stage}
-            error={doc.error}
-            onRemove={
-              doc.id.startsWith("pending_")
-                ? undefined
-                : () => void remove(doc.id)
-            }
-          />
-        ))}
+        ) : null}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={RAG_UPLOAD_ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = "";
+            if (files.length === 0) return;
+            attach(files);
+          }}
+        />
+        {/* Cap height so a large set scrolls; fade the cut-off row. */}
+        <div
+          ref={chipScrollRef}
+          onScroll={updateChipFade}
+          className={cn(
+            "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
+            chipsOverflow && "rag-docs-bottom-fade",
+          )}
+        >
+          {/* Project sources first: inherited context, and it outlives this chat. */}
+          {projectDocuments.map((doc) => (
+            <DocumentStatusChip
+              key={`project:${doc.id}`}
+              filename={doc.filename}
+              status={doc.status}
+              progress={doc.progress}
+              stage={doc.stage}
+              error={doc.error}
+              shared={true}
+              onRemove={
+                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
+                  ? undefined
+                  : () => setRemovingShared(doc)
+              }
+            />
+          ))}
+          {documents.map((doc) => (
+            <DocumentStatusChip
+              key={doc.id}
+              filename={doc.filename}
+              status={doc.status}
+              progress={doc.progress}
+              stage={doc.stage}
+              error={doc.error}
+              onRemove={
+                doc.id.startsWith("pending_")
+                  ? undefined
+                  : () => void remove(doc.id)
+              }
+            />
+          ))}
+        </div>
+        <AlertDialog
+          open={removingShared !== null}
+          onOpenChange={(open) => {
+            if (!open) setRemovingShared(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove from project sources</AlertDialogTitle>
+              <AlertDialogDescription>
+                Remove "{removingShared?.filename}"? Every chat in this project
+                loses it, and the file and its indexed content are deleted. This
+                cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const doc = removingShared;
+                  setRemovingShared(null);
+                  if (doc) void removeFromProject(doc.id);
+                }}
+              >
+                Remove
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
-      <AlertDialog
-        open={removingShared !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemovingShared(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove from project sources</AlertDialogTitle>
-            <AlertDialogDescription>
-              Remove "{removingShared?.filename}"? Every chat in this project
-              loses it, and the file and its indexed content are deleted. This
-              cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const doc = removingShared;
-                setRemovingShared(null);
-                if (doc) void removeFromProject(doc.id);
-              }}
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+    </>
   );
 }

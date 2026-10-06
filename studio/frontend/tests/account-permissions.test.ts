@@ -9,8 +9,41 @@ import {
   type StubElement,
 } from "./helpers/module-stubs.ts";
 
-function permissionUi(loginMode: string, permissionMode: string) {
+type Capability = {
+  pythonOsIsolated: boolean;
+  terminalOsIsolated: boolean;
+} | null;
+
+function permissionUi(
+  owner: boolean,
+  permissionMode: string,
+  loginMode = "multi",
+  capability: Capability = null,
+) {
+  const accountSession = loadWithStubs<{
+    useFullAccessAllowed: () => boolean;
+  }>(new URL("../src/features/auth/account-session.ts", import.meta.url), {
+    react: { useSyncExternalStore: (_subscribe: unknown, snapshot: () => boolean) => snapshot() },
+    "./login-client": {
+      getFullAccessAllowed: () => loginMode !== "multi",
+    },
+    "./session": {
+      getAuthToken: () => `e30.${Buffer.from(JSON.stringify({
+        sub: owner ? "unsloth" : "alice", role: owner ? "owner" : "user",
+      })).toString("base64url")}.sig`,
+    },
+  });
   const changes: string[] = [];
+  const capabilityStub = {
+    loadSandboxCapability: async () => capability,
+    loadSettledSandboxCapability: async () => capability,
+    // Nothing cached: every pick reads, so these cases see the settled answer.
+    cachedSandboxCapability: () => null,
+    onSandboxCapabilityChange: () => () => {},
+    sandboxReady: (value: NonNullable<Capability>) =>
+      value.pythonOsIsolated && value.terminalOsIsolated,
+    capabilityPending: () => false,
+  };
   const state = {
     permissionMode,
     setPermissionMode: (value: string) => {
@@ -20,7 +53,14 @@ function permissionUi(loginMode: string, permissionMode: string) {
   const component = loadWithStubs<{
     PermissionModeMenuItems: (props: {
       onRequestFullAccess: () => void;
+      onRequestSandboxSetup: () => void;
     }) => StubElement;
+    PERMISSION_MODE_OPTIONS: readonly { value: string; label: string }[];
+    permissionModeOption: (mode: string) => { value: string; label: string };
+    pickSandboxedMode: (
+      setPermissionMode: (mode: string) => void,
+      onRequestSandboxSetup: () => void,
+    ) => Promise<void>;
     FullAccessConfirmDialog: (props: {
       open: boolean;
       onOpenChange: () => void;
@@ -35,55 +75,130 @@ function permissionUi(loginMode: string, permissionMode: string) {
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
-        CircleAlert: "CircleAlert",
         Hand: "Hand",
         ShieldCheck: "ShieldCheck",
       },
-      "@/features/auth/account-session": {
-        useFullAccessAllowed: () => loginMode !== "multi",
+      "radix-ui": { DropdownMenu: { Item: "DropdownMenuPrimitive.Item" } },
+      "@/features/settings": {
+        useSettingsDialogStore: (selector: (state: unknown) => unknown) =>
+          selector({ openDialog: () => {} }),
+      },
+      "@/i18n": { useT: () => (key: string) => key },
+      "@/features/auth/account-session": accountSession,
+      "./api/sandbox-capability": capabilityStub,
+      "./sandbox-pick": loadWithStubs(
+        new URL("../src/features/chat/sandbox-pick.ts", import.meta.url),
+        { "./api/sandbox-capability": capabilityStub },
+      ),
+      "./sandbox-setup-dialog": {
+        SandboxSetupDialog: "SandboxSetupDialog",
+        useSandboxSetupDialogStore: () => () => {},
       },
       "@/components/ui/alert-dialog": { AlertDialog: "AlertDialog" },
       "@/components/ui/button": { Button: "Button" },
       "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },
       "@/lib/chevron-icons": {},
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
+      "@/lib/shield-alert-icon": { ShieldAlertGlyph: "ShieldAlertGlyph" },
+      "@hugeicons/core-free-icons": {},
       "@/lib/tick-icon": {},
       "@/lib/utils": { cn: () => "" },
       "@hugeicons/react": {},
       "./stores/chat-runtime-store": {
-        useChatRuntimeStore: (selector: (state: unknown) => unknown) =>
-          selector(state),
+        useChatRuntimeStore: Object.assign(
+          (selector: (state: unknown) => unknown) => selector(state),
+          { getState: () => state, subscribe: () => () => {} },
+        ),
       },
     },
   );
   return { component, changes };
 }
 
-for (const mode of ["single", "multi"]) {
-  test(`${mode} permission menu enforces installation full-access policy`, () => {
-    const ui = permissionUi(mode, "full");
-    const menu = ui.component.PermissionModeMenuItems({
-      onRequestFullAccess() {},
+for (const loginMode of ["single", "multi"]) {
+  for (const owner of [true, false]) {
+    test(`${loginMode} permission menu allows full access only for the owner (${owner})`, () => {
+      const ui = permissionUi(owner, "full", loginMode);
+      const menu = ui.component.PermissionModeMenuItems({
+        onRequestFullAccess() {},
+        onRequestSandboxSetup() {},
+      });
+      const rows = menu.props.children as StubElement[];
+      assert.equal(rows.length, owner ? 4 : 3);
+      assert.deepEqual(ui.changes, owner ? [] : ["auto"]);
+      const dialog = ui.component.FullAccessConfirmDialog({
+        open: true,
+        onOpenChange() {},
+      });
+      assert.equal(dialog === null, !owner);
     });
-    const rows = menu.props.children as StubElement[];
-    assert.equal(rows.length, mode === "multi" ? 3 : 4);
-    assert.deepEqual(ui.changes, mode === "multi" ? ["auto"] : []);
-    const dialog = ui.component.FullAccessConfirmDialog({
-      open: true,
-      onOpenChange() {},
-    });
-    assert.equal(dialog === null, mode === "multi");
-  });
+  }
 }
 
 test("multi-user policy leaves non-full preferences untouched", () => {
   for (const mode of ["ask", "auto", "off"]) {
-    const ui = permissionUi("multi", mode);
+    const ui = permissionUi(false, mode);
     ui.component.PermissionModeMenuItems({
       onRequestFullAccess() {
         assert.fail("Full access must be unavailable");
       },
+      onRequestSandboxSetup() {},
     });
     assert.deepEqual(ui.changes, []);
   }
 });
+
+test("the stored values keep their order and their names", () => {
+  const ui = permissionUi(true, "auto");
+  assert.deepEqual(
+    ui.component.PERMISSION_MODE_OPTIONS.map((option) => [
+      option.value,
+      option.label,
+    ]),
+    [
+      ["ask", "Ask for approval"],
+      ["auto", "Approve for me"],
+      ["off", "Run automatically"],
+      ["full", "Full access"],
+    ],
+  );
+  assert.equal(ui.component.permissionModeOption("bogus").value, "auto");
+});
+
+for (const [name, capability, expected] of [
+  ["an older server that cannot say", null, "applied"],
+  [
+    "a working OS sandbox",
+    { pythonOsIsolated: true, terminalOsIsolated: true },
+    "applied",
+  ],
+  [
+    "a Terminal without OS isolation",
+    { pythonOsIsolated: true, terminalOsIsolated: false },
+    "setup",
+  ],
+  [
+    "no OS sandbox",
+    { pythonOsIsolated: false, terminalOsIsolated: false },
+    "setup",
+  ],
+] as const) {
+  test(`picking Run automatically with ${name} is ${expected}`, async () => {
+    const ui = permissionUi(true, "auto", "single", capability);
+    const applied: string[] = [];
+    let setupRequested = 0;
+    await ui.component.pickSandboxedMode(
+      (mode) => applied.push(mode),
+      () => {
+        setupRequested += 1;
+      },
+    );
+    if (expected === "applied") {
+      assert.deepEqual(applied, ["off"]);
+      assert.equal(setupRequested, 0);
+    } else {
+      assert.deepEqual(applied, []);
+      assert.equal(setupRequested, 1);
+    }
+  });
+}

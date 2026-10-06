@@ -71,7 +71,9 @@ _EXTERNAL_ROUTING_FIELDS = {
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
+    "extra_audio_base64",
     "video_base64",
+    "mcp_image",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64
@@ -238,6 +240,10 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     if (request.n or 1) != 1:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
+    if request.permission_mode == "off" and not request._off_confirm_opt_out:
+        # The validator forces confirm_tool_calls=False for "off"; persisted, the replay would read that as the
+        # caller's explicit opt-out and never arm the no-OS-sandbox confirm gate.
+        sanitized.pop("confirm_tool_calls", None)
     for field in _EXTERNAL_ROUTING_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True
@@ -311,6 +317,9 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
+    from routes.inference import _request_used_api_key
+
+    sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
     if timezone_headers := _timezone_headers(request):
         sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or

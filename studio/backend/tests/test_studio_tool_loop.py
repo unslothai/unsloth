@@ -24,6 +24,7 @@ from core.inference.studio_tool_loop import (
     ToolLoopRun,
     stream_with_studio_tools,
 )
+from core.inference.tool_loop_controller import _reject_json_constant
 
 
 def _shared_setup_1():
@@ -137,6 +138,7 @@ def _run(
     tool_choice = None,
     messages = None,
     supports_vision = False,
+    mcp_image = None,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -164,6 +166,7 @@ def _run(
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
+            mcp_image = mcp_image,
         )
         async for line in agen:
             out.append(line)
@@ -599,6 +602,40 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
     assert slots == []
     assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
     assert [call["name"] for call in executed] == ["web_search"]
+
+
+def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch):
+    from core.inference.mcp_image import McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    disclosure = {"server": "Trace", "tool": "lookup", "size_bytes": 3}
+    shared = {"disclosure": disclosure, "image": image.approved_for("r1")}
+    asked: list = []
+    monkeypatch.setattr(
+        loop_mod, "mcp_image_share", lambda name, args, image: shared if image else None
+    )
+    monkeypatch.setattr(
+        loop_mod, "begin_tool_decision", lambda session, approval: asked.append(approval) or 1
+    )
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow"
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    call = {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}
+    turns = [
+        [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+        [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+    ]
+    lines = _run(FakeTransport(turns), mcp_image = image, bypass_permissions = True)
+
+    start = _events(lines, "tool_start")[0]
+    assert start["awaiting_confirmation"] is True and start["image_disclosure"] == disclosure
+    assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
+    # Without an image the same call keeps the ordinary path: no card, no image.
+    executed.clear()
+    lines = _run(FakeTransport(turns), bypass_permissions = True)
+    assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
+    assert "mcp_image" not in executed[0]
 
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
@@ -1148,6 +1185,52 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     assert set(exhausted) == {"id", "type", "function"}
     assert exhausted["function"]["name"] == "web_search"
     assert len(_events(lines, "tool_end")) == 2
+
+
+@pytest.mark.parametrize("heals", [False, True])
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        '{"query": "b',
+        '{"query":' + "1" * 4301 + "}",
+        "[" * 100_000,
+        '{"query":NaN}',
+    ],
+    ids = ["cut-off", "digit-limit", "nesting-limit", "nan-constant"],
+)
+def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed, heals, fragment):
+    """llama-server parses every replayed tool_call's arguments, so an unparseable one 500s the next turn."""
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            _call_delta(0, "call_a", "web_search", '{"query":"a"}'),
+                            _call_delta(1, "call_b", "web_search", fragment),
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = heals,
+    )
+    _run(transport, max_calls = 1)
+
+    assert [call["name"] for call in executed] == ["web_search"]
+    assert len(transport.requests) == 2
+    replayed = transport.requests[1]["messages"]
+    exhausted = [
+        call
+        for message in replayed
+        if message.get("role") == "assistant"
+        for call in message.get("tool_calls") or []
+        if call["id"] == "call_b"
+    ][0]
+    json.loads(exhausted["function"]["arguments"], parse_constant = _reject_json_constant)
 
 
 def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):

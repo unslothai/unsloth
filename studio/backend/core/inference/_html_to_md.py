@@ -334,6 +334,8 @@ class _MarkdownRenderer(HTMLParser):
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
+        # Just emitted a list marker: a block opening the item (loose <li><p>) stays on the marker line.
+        self._li_marker_pending: bool = False
 
         self._in_table: bool = False
         self._current_row: list[str] = []
@@ -367,6 +369,8 @@ class _MarkdownRenderer(HTMLParser):
         return len(self._bq_stack) > frame.outer_bq_depth
 
     def _emit(self, text: str) -> None:
+        if text:
+            self._li_marker_pending = False
         frame = self._header_stack[-1] if self._header_stack else None
         # Tee wherever the text routes, so a heading in a nested buffer is captured. A link opened inside the frame
         # delivers twice, so tee only the formatted form; an enclosing link, once.
@@ -724,7 +728,8 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("\n")
 
         elif tag in _BLOCK_TAGS:
-            self._emit("\n\n")
+            if not self._li_marker_pending:
+                self._emit("\n\n")
 
         elif tag == "hr":
             self._emit("\n\n---\n\n")
@@ -757,6 +762,7 @@ class _MarkdownRenderer(HTMLParser):
                     self._emit(f"\n{indent}1. ")
             else:
                 self._emit(f"\n{indent}* ")
+            self._li_marker_pending = True
 
         elif tag == "pre":
             self._pre_parts = []
@@ -799,7 +805,10 @@ class _MarkdownRenderer(HTMLParser):
         if not self._exit_tag(tag):
             return
 
-        if tag in _HEADING_TAGS:
+        if tag == "li":
+            self._li_marker_pending = False
+
+        elif tag in _HEADING_TAGS:
             self._emit("\n\n")
 
         elif tag == "a":
@@ -874,6 +883,9 @@ class _MarkdownRenderer(HTMLParser):
         self._count_header_text(text)
         # Suppress whitespace-only nodes between table elements (source indentation).
         if self._in_table and not self._in_cell and not text.strip():
+            return
+        # Source indentation between <li> and its first block must not end the marker line.
+        if self._li_marker_pending and not text.strip():
             return
         self._emit(text)
 
