@@ -24154,7 +24154,6 @@ _AUDIO_CPP_RUNTIME_MISSING = {
 
 
 def _audio_cpp_release_ladder() -> list:
-    """the installer-defined ``(repo, tag)`` releases for ``unsloth studio update``."""
     studio_dir = str(Path(__file__).resolve().parents[2])
     if studio_dir not in sys.path:
         sys.path.insert(0, studio_dir)
@@ -24164,7 +24163,6 @@ def _audio_cpp_release_ladder() -> list:
 
 
 def _audio_cpp_runtime_status() -> dict:
-    """reports runtime capabilities so the Audio page can mark models before loading."""
     try:
         from core.inference import audio_cpp_server
 
@@ -24185,8 +24183,7 @@ def _audio_cpp_runtime_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
-    # only the managed tree can be updated; user-supplied binaries remain user-managed.
-    # setup skips managed installs under any of these variables, regardless of resolved path.
+    # only the managed tree is updatable; setup skips it under any of these, whatever the path.
     setup_skips = (
         os.environ.get("AUDIOCPP_SERVER_PATH")
         or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
