@@ -295,7 +295,8 @@ def test_provider_compaction_replaces_history_before_tool_follow_up(executed):
     assert follow_up[0] == {"role": "system", "content": "Keep this instruction."}
     assert follow_up[1] == {
         "role": "assistant",
-        "content": [{"type": "compaction", "encrypted_content": "opaque-current"}],
+        "content": "",
+        "extra_content": {"openai_responses_compaction": "opaque-current"},
     }
     serialized = json.dumps(follow_up)
     assert "old question" not in serialized

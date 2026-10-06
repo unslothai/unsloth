@@ -245,7 +245,8 @@ def test_non_stream_route_reports_local_context_truncation(
 
     truncation = {"dropped_messages": 2, "boundary_messages": 2, "fits": True}
 
-    def fit(messages, _payload, *, tools = None):
+    def fit(messages, _payload, *, saved_transcript = True, tools = None):
+        assert saved_transcript is True
         assert tools is None
         return messages[-1:], truncation, 128
 

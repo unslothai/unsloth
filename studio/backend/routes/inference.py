@@ -28057,6 +28057,7 @@ async def _proxy_to_external_provider(
                 _fit_external_context,
                 messages,
                 payload,
+                saved_transcript = not run_studio_tool_loop,
                 tools = _external_fit_tools,
             )
             if truncation and truncation.get("dropped_messages"):

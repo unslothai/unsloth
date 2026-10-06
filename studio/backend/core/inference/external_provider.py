@@ -1428,7 +1428,6 @@ class ExternalProviderClient:
     ):
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
-        # Returns the messages and max_tokens to send when a deployment refuses server-side compaction.
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
