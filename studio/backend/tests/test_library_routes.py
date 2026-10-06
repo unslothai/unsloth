@@ -536,8 +536,10 @@ def test_a_path_made_again_right_after_an_edit_starts_fresh(client, signed_in, m
     def replace_then_recreate(src, dst):
         replace(src, dst)
         if os.path.basename(dst) == "report.txt":
-            os.remove(dst)
-            Path(dst).write_bytes(b"someone else\n")
+            # Made beside it first: a file made after the remove can reuse the freed inode on Linux.
+            other = dst + ".other"
+            Path(other).write_bytes(b"someone else\n")
+            replace(other, dst)
 
     monkeypatch.setattr(os, "replace", replace_then_recreate)
     execute_tool(
