@@ -249,6 +249,16 @@ def test_fetch_arguments(monkeypatch):
         )
 
 
+def test_only_unsloth_hosts_get_the_studio_header(monkeypatch):
+    calls = _fetch(monkeypatch, (None, b"<html></html>", "text/html"))
+    _call()
+    headers = calls[0]["host_headers"]
+    for host in ("unsloth.ai", "www.unsloth.ai", "docs.UNSLOTH.ai", "unsloth.ai."):
+        assert headers(host) == {"X-Unsloth-Studio": "1"}, host
+    for host in ("example.com", "notunsloth.ai", "unsloth.ai.example.com", "unsloth.aix"):
+        assert headers(host) == {}, host
+
+
 @pytest.mark.parametrize(
     "result, detail",
     [
@@ -278,17 +288,23 @@ def test_fetches_run_in_their_own_pool(monkeypatch):
 
 def test_a_closed_request_cancels_the_fetch(monkeypatch):
     seen = {}
+    # The route returns 499 without waiting for its pool task, so wait on the fetch itself. Draining
+    # the pool with no-ops was not enough: idle workers finish those while the fetch's own thread
+    # has not yet recorded what it saw, and a loaded CI worker read an empty dict (KeyError).
+    finished = threading.Event()
 
     def slow_fetch(url, **kwargs):
-        seen["cancelled"] = kwargs["cancel_event"].wait(5)
+        try:
+            seen["cancelled"] = kwargs["cancel_event"].wait(5)
+        finally:
+            finished.set()
         return "cancelled", "", ""
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", slow_fetch)
     with pytest.raises(HTTPException) as caught:
         _call(_Client(disconnected = True))
     assert caught.value.status_code == 499
-    for _ in range(browser_mod._FETCH_POOL._max_workers):
-        browser_mod._FETCH_POOL.submit(lambda: None).result(5)
+    assert finished.wait(10), "the pooled fetch never ran"
     assert seen["cancelled"] is True
 
 

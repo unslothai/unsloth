@@ -14,9 +14,8 @@ const { audioModelsForTask, isMusicGenerationModel } = await import(
   "../src/features/audio/catalog.ts"
 );
 
-const { audioCppModelSpeaks } = await import(
-  "../src/features/audio/audio-cpp-catalog.ts"
-);
+const { AUDIO_CPP_MODELS, audioCppModelSpeaks, audioCppWorkflowsFor } =
+  await import("../src/features/audio/audio-cpp-catalog.ts");
 
 type Workflow = "speak" | "clone" | "edit" | "convert" | "music" | "transcribe";
 const WORKFLOWS: Workflow[] = [
@@ -91,6 +90,7 @@ test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clon
     ["RVC-GGUF", ["convert"]],
     ["SeedVC-MLX-GGUF", ["convert"]],
     ["MeanVC2-GGUF", ["convert"]],
+    ["Tone-Color-VC-GGUF", ["convert"]],
     ["Chatterbox-GGUF", ["clone", "convert"]],
     ["Vevo2-GGUF", ["clone", "edit", "convert"]],
   ] as const) {
@@ -292,7 +292,12 @@ test("the clone-only name hint follows the backend's speaks=False families", asy
 });
 
 test("Hub search rows for conversion families outside the catalog list on Convert", () => {
-  for (const id of ["someone/RVC-v2-GGUF", "x/Seed-VC-GGUF", "x/MeanVC2-GGUF"]) {
+  for (const id of [
+    "someone/RVC-v2-GGUF",
+    "x/Seed-VC-GGUF",
+    "x/MeanVC2-GGUF",
+    "x/Tone-Color-VC-GGUF",
+  ]) {
     const row = { id, task: "text-to-speech" };
     assert.equal(audioRowMatchesWorkflow(row, "convert"), true, id);
     assert.equal(audioRowMatchesWorkflow(row, "clone"), false, id);
@@ -318,4 +323,35 @@ test("a Fish Audio Hub row lists on both Speak and Clone before download", () =>
   assert.equal(audioRowMatchesWorkflow(row, "speak"), true);
   assert.equal(audioRowMatchesWorkflow(row, "clone"), true);
   assert.equal(audioRowMatchesWorkflow(row, "music"), false);
+});
+
+test("every seeded audio GGUF lists on exactly the pages it runs on", () => {
+  const pages = [...WORKFLOWS.slice(0, 5), "separate", "transcribe"] as const;
+  const hubTask = {
+    tts: "text-to-speech",
+    music: "text-to-audio",
+    asr: "automatic-speech-recognition",
+    sep: null,
+  };
+  const listed = (id: string) => {
+    const model = AUDIO_CPP_MODELS.find((entry) => entry.id.endsWith(`/${id}`));
+    assert.ok(model, id);
+    const row = { id: model.id, task: hubTask[model.task] };
+    return pages.filter((page) => audioRowMatchesWorkflow(row, page));
+  };
+  for (const model of AUDIO_CPP_MODELS) {
+    const workflows = audioCppWorkflowsFor(model);
+    assert.deepEqual(listed(model.id.split("/").pop() ?? ""), workflows, model.id);
+    assert.equal(audioCppModelSpeaks(model.id), workflows.includes("speak"), model.id);
+  }
+  assert.deepEqual(listed("Fish-Audio-S2-Pro-GGUF"), ["speak", "clone"]);
+  assert.deepEqual(listed("MioTTS-1.7B-GGUF"), ["clone"]);
+  assert.deepEqual(listed("OmniVoice-GGUF"), ["speak", "clone"]);
+  assert.deepEqual(listed("DotTTS-Edit-GGUF"), ["speak", "clone", "edit"]);
+  assert.deepEqual(listed("DramaBox-GGUF"), ["speak"]);
+  assert.deepEqual(listed("Tone-Color-VC-GGUF"), ["convert"]);
+  assert.deepEqual(listed("FireRedTTS3-Instruct-GGUF"), ["clone"]);
+  assert.deepEqual(listed("MOSS-VoiceGenerator-GGUF"), ["speak"]);
+  assert.deepEqual(listed("HeartMuLa-GGUF"), ["music"]);
+  assert.deepEqual(listed("Niagara-ASR-GGUF"), ["transcribe"]);
 });

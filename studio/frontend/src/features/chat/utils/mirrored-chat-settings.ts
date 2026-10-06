@@ -15,8 +15,6 @@ const MIRRORED_BOOLEAN_KEYS = [
   "imageToolsEnabled",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
-  "artifactsEnabled",
-  "showCanvasMenuItem",
   "searchImages",
   "mcpEnabledForChat",
   "confirmToolCalls",
@@ -30,6 +28,7 @@ const MIRRORED_BOOLEAN_KEYS = [
 const MIRRORED_ENUM_VALUES = {
   // "full" (Full access) is session-only and never persisted.
   permissionMode: ["ask", "auto", "off"],
+  sandboxLevel: ["high", "low"],
   ragMode: ["hybrid", "lexical", "dense"],
   ragAutoInject: ["auto", "on", "off"],
   speculativeType: ["auto", "ngram", "off"],

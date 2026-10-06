@@ -461,6 +461,7 @@ test("the dropped-model strings are translated everywhere", async () => {
     "ko",
     "pt-br",
     "ru",
+    "sv",
     "zh-CN",
   ];
   for (const locale of locales) {

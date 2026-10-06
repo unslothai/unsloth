@@ -30,7 +30,6 @@ from ..device_type import (
 from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
-import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
 import torch
@@ -65,7 +64,6 @@ elif DEVICE_TYPE == "npu":
 
 
 # tl.math.tanh is now libdevice.tanh.
-import triton
 import triton.language as tl
 
 if Version(triton.__version__) >= Version("3.0.0"):
