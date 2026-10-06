@@ -49,3 +49,24 @@ def test_raw_text_scores_unspaced_scripts_by_length_not_by_spaces():
         Dataset.from_dict({"content": [doc, doc], "source": ["news article", "news article"]})
     )
     assert list(result.dataset["text"]) == [doc, doc]
+
+
+def test_raw_format_eval_split_reuses_the_train_column():
+    from utils.datasets.dataset_utils import format_and_template_dataset
+
+    train = format_and_template_dataset(
+        Dataset.from_dict({"title": ["A"], "body": ["The body has the most words."]}),
+        model_name = "test",
+        tokenizer = None,
+        format_type = "raw",
+    )
+    eval_ = format_and_template_dataset(
+        Dataset.from_dict({"title": ["A much longer title"], "body": ["Short."]}),
+        model_name = "test",
+        tokenizer = None,
+        format_type = "raw",
+        split_name = "eval",
+        raw_text_column = train["raw_text_column"],
+    )
+    assert train["raw_text_column"] == "body"
+    assert list(eval_["dataset"]["text"]) == ["Short."]

@@ -3100,6 +3100,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     dataset_name = hf_dataset or "local",
                     custom_format_mapping = custom_format_mapping,
                     split_name = "eval",
+                    raw_text_column = info.get("raw_text_column"),
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
