@@ -354,6 +354,34 @@ test("returning to the owner clears the previous managed account", async () => {
   assert.equal(b.data.has("unsloth-private"), false);
 });
 
+test("a switch drops the last account's downloads after every step that can fail, before committing", async () => {
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "unsloth" });
+  const order: string[] = [];
+  await transitionBrowserAccount(
+    "Alice",
+    "/chat",
+    () => void order.push("commit"),
+    b.browser,
+    async () => void order.push("clear"),
+    async () => {
+      assert.deepEqual(b.deleted, [...ACCOUNT_DATABASES]);
+      order.push("downloads");
+    },
+  );
+  assert.deepEqual(order, ["clear", "downloads", "commit"]);
+});
+
+for (const failure of ["blocked", "error"]) {
+  test(`a switch whose ${failure} database delete fails keeps the account's downloads`, async () => {
+    const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "unsloth" }, failure);
+    let forgotten = 0;
+    await assert.rejects(
+      transitionBrowserAccount("Alice", "/chat", () => {}, b.browser, async () => {}, async () => void forgotten++),
+    );
+    assert.equal(forgotten, 0);
+  });
+}
+
 for (const failure of ["blocked", "error"]) {
   test(`IndexedDB ${failure} prevents new session publication and navigation`, async () => {
     const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "unsloth" }, failure);

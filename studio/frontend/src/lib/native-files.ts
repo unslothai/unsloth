@@ -8,6 +8,8 @@ const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
 const NATIVE_FILE_SOURCE_HEADER = "x-unsloth-source-url";
 const NATIVE_FILE_SAVE_TOKEN_HEADER = "x-unsloth-save-token";
 const NATIVE_FILE_CHUNK_BYTES = 8 * 1024 * 1024;
+/** `marked` is false where the volume keeps no internet mark, null where nothing marks it. */
+type NativeSavedFile = { name: string; marked: boolean | null };
 export class DownloadCancelledError extends Error {
   constructor() {
     super("Save cancelled.");
@@ -111,7 +113,7 @@ export async function saveWebDownload(
         : content instanceof Blob
           ? new Uint8Array(await content.arrayBuffer())
           : content;
-    const saved = await invoke<{ name: string; marked: boolean | null } | null>("save_native_file", bytes, {
+    const saved = await invoke<NativeSavedFile | null>("save_native_file", bytes, {
       headers: {
         [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(filename),
         ...(sourceUrl ? { [NATIVE_FILE_SOURCE_HEADER]: encodeNativeFilename(sourceUrl) } : {}),

@@ -2252,6 +2252,7 @@ fn main() {
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
             browser_webview::browser_download_keep,
+            browser_webview::browser_downloads_account_switched,
             browser_webview::browser_download_discard,
             browser_capture::browser_capture,
             browser_capture::browser_view_print,

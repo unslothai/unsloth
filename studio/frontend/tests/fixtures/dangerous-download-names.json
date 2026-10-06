@@ -259,6 +259,10 @@
     {
       "name": "x.dmg.part",
       "dangerous": false
+    },
+    {
+      "name": "windows10.0-kb5005565-x64.msu",
+      "dangerous": true
     }
   ]
 }

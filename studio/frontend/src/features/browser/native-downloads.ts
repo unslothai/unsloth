@@ -46,7 +46,8 @@ export type NativeDownloadDeps = {
   t: (key: TranslationKey, values?: InterpolationValues) => string;
 };
 
-// Ids with a keep or discard under way or done, so a second click or a late close can't act twice.
+// Ids with a keep or discard under way, so a second prompt can't act on one twice. Done ones leave:
+// their prompt's own `answered` keeps its late close inert.
 const settled = new Set<string>();
 // Each prompt gets its own toast id: sonner removes a clicked toast's id a moment later, which would
 // also take a follow-up prompt shown under that id.
@@ -90,13 +91,14 @@ function askToKeep(
     if (answered || settled.has(id)) return;
     answered = true;
     settled.add(id);
-    deps.call("browser_download_discard", { id }).catch(retry("discardFailed"));
+    deps.call("browser_download_discard", { id }).then(() => settled.delete(id), retry("discardFailed"));
   };
   const keep = () => {
     if (answered || settled.has(id)) return;
     answered = true;
     settled.add(id);
     deps.call<string>("browser_download_keep", { id }).then((name) => {
+      settled.delete(id);
       deps.record({ name, url: event.url, size: event.size ?? 0, contentType: "" });
       toast.success(t("browser.native.downloaded", { name }));
     }, retry("keepFailed"));

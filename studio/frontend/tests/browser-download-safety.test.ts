@@ -224,13 +224,24 @@ test("a panel save the system couldn't mark warns; a marked one does not", async
   }
 });
 
-test("only an account switch asks the desktop app to drop staged downloads", () => {
+test("clearing browsing data never drops downloads; only an account switch does", () => {
   const clear = readFileSync(new URL("../src/lib/native-browser-clear.ts", import.meta.url), "utf8");
-  assert.match(clear, /accountSwitch: options\.accountSwitch \?\? false/);
-  const transition = readFileSync(new URL("../src/lib/account-transition.ts", import.meta.url), "utf8");
-  assert.match(transition, /clearNativeBrowsingData\(\{ accountSwitch: true \}\)/);
+  const clearing = clear.slice(clear.indexOf("export async function clearNativeBrowsingData"), clear.indexOf("export async function forgetNativeAccountDownloads"));
+  assert.doesNotMatch(clearing, /browser_downloads_account_switched/);
   const dialog = readFileSync(new URL("../src/features/browser/clear-data-dialog.tsx", import.meta.url), "utf8");
-  assert.match(dialog, /clearNativeBrowsingData\(\)/);
+  assert.doesNotMatch(dialog, /forgetNativeAccountDownloads/);
+});
+
+test("Keep and Discard leave no id behind once done", async () => {
+  const h = harness(async () => "setup.exe");
+  for (const id of ["d1", "d2"]) handleNativeDownload({ ...finished, name: "setup.exe", id, needsApproval: true, marked: true }, h.deps as never);
+  (h.shown[0]?.options?.action as { onClick: () => void }).onClick();
+  (h.shown[1]?.options?.cancel as { onClick: () => void }).onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // Neither id is held once done, so the set never grows with the session.
+  handleNativeDownload({ ...finished, name: "setup.exe", id: "d1", needsApproval: true, marked: true }, h.deps as never);
+  (h.shown.at(-1)?.options?.cancel as { onClick: () => void }).onClick();
+  assert.deepEqual(h.calls.map((call) => call.command), ["browser_download_keep", "browser_download_discard", "browser_download_discard"]);
 });
 
 test("download history keeps sanitized sources, and older history is sanitized once", async () => {

@@ -677,7 +677,10 @@ fn safe_download_name(suggested: &Path) -> String {
 }
 
 fn is_bidi_control(c: char) -> bool {
-    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
@@ -1827,15 +1830,26 @@ fn abandon_staged(inner: &mut ViewsState) -> Vec<PathBuf> {
     files
 }
 
-/// Every view is closing. Only an account switch drops downloads: clearing data promises that
-/// downloaded files stay, staged ones included, while the next account must never see or be asked
-/// about the last one's. Returns the files to delete.
-fn closing_views(inner: &mut ViewsState, account_switch: bool) -> Vec<PathBuf> {
-    if !account_switch {
-        return Vec::new();
-    }
+/// The next account must never see or be asked about the last one's downloads: those still
+/// running stop reporting, and the files to delete are returned.
+fn forget_account_downloads(inner: &mut ViewsState) -> Vec<PathBuf> {
     inner.account_epoch = inner.account_epoch.wrapping_add(1);
     abandon_staged(inner)
+}
+
+/// An account switch is about to commit: called after every step that can still fail it, so a
+/// failed switch keeps the account and its downloads awaiting Keep.
+#[tauri::command]
+pub fn browser_downloads_account_switched<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    let abandoned = forget_account_downloads(&mut state.inner.lock().unwrap());
+    for file in abandoned {
+        remove_staged_file(file);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1843,11 +1857,11 @@ pub async fn browser_view_clear_data<R: Runtime>(
     webview: Webview<R>,
     state: State<'_, BrowserViews>,
     close_views: Option<bool>,
-    account_switch: Option<bool>,
 ) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
     // Clear data and an account switch close the pages first, so none can write the cleared data back.
+    // Downloads stay: clearing data promises they do, and a switch drops its own once it commits.
     let closing = close_views.unwrap_or(false);
     if closing {
         {
@@ -1891,16 +1905,6 @@ pub async fn browser_view_clear_data<R: Runtime>(
     let result = clear_profile(&page).await;
     if hidden {
         let _ = page.close();
-    }
-    // Only once the clear worked: a failed one keeps the account, and its downloads awaiting Keep.
-    if closing && result.is_ok() {
-        let abandoned = closing_views(
-            &mut state.inner.lock().unwrap(),
-            account_switch.unwrap_or(false),
-        );
-        for file in abandoned {
-            remove_staged_file(file);
-        }
     }
     result
 }
@@ -2353,6 +2357,7 @@ mod tests {
             safe_download_name(Path::new("a\u{2066}b\u{200f}.txt")),
             "a_b_.txt"
         );
+        assert_eq!(safe_download_name(Path::new("a\u{061c}b.txt")), "a_b.txt");
     }
 
     #[test]
@@ -2547,16 +2552,13 @@ mod tests {
         }
 
         #[test]
-        fn only_an_account_switch_drops_downloads() {
+        fn an_account_switch_fences_and_drops_downloads() {
             let dir = tempfile::tempdir().unwrap();
             let ready_file = dir.path().join("Unconfirmed 9.download");
             let views = Mutex::new(ViewsState::default());
-            let id = stage(&views, &ready_file, "a.exe", ready(Some(true)));
+            stage(&views, &ready_file, "a.exe", ready(Some(true)));
             let mut inner = views.lock().unwrap();
-            assert!(closing_views(&mut inner, false).is_empty());
-            assert_eq!(inner.account_epoch, 0);
-            assert!(inner.staged.contains_key(&id));
-            assert_eq!(closing_views(&mut inner, true), vec![ready_file]);
+            assert_eq!(forget_account_downloads(&mut inner), vec![ready_file]);
             assert_eq!(inner.account_epoch, 1);
             assert!(inner.staged.is_empty());
         }

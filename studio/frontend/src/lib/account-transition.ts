@@ -3,7 +3,7 @@
 
 import { RUNTIME_REPAIR_KEY } from "../hooks/runtime-repair-history.ts";
 import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
-import { clearNativeBrowsingData } from "./native-browser-clear.ts";
+import { clearNativeBrowsingData, forgetNativeAccountDownloads } from "./native-browser-clear.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
 /** Written before a switch publishes new tokens, so peer tabs stop sending requests until the
@@ -197,7 +197,10 @@ export async function transitionBrowserAccount(
   browser: AccountTransitionBrowser = window,
   // The browser's own clear: it closes the open pages first and keeps them closed while it runs,
   // so none writes the previous account's data back.
-  clearSiteData: () => Promise<void> = () => clearNativeBrowsingData({ accountSwitch: true }),
+  clearSiteData: () => Promise<void> = clearNativeBrowsingData,
+  // After every step that can still fail the switch, so a failed one keeps the account's
+  // downloads awaiting Keep.
+  forgetDownloads: () => Promise<void> = forgetNativeAccountDownloads,
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;
@@ -233,6 +236,7 @@ export async function transitionBrowserAccount(
         deleteAccountDatabase(browser.indexedDB, name),
       ),
     );
+    await forgetDownloads();
   }
   // Fence first: peers see it before the tokens, so nothing of the previous account goes out
   // under the new credentials while their reload is pending.
