@@ -3,10 +3,10 @@
 
 """Give the desktop app the ROCm environment a terminal launch already has.
 
-unsloth#9926: ``fix_path_env::fix()`` is ``fix_vars(&["PATH"])``, so src-tauri
-reads the login shell and keeps PATH out of it, dropping every ROCm variable
-beside it. Parity, not policy: only a desktop launch, only an AMD host, only
-allowlisted names that are absent here. Every other launch reads no shell.
+unsloth#9926: ``shell_path::fix_path()`` in src-tauri reads the login shell and
+keeps PATH out of it, dropping every ROCm variable beside it. Parity, not
+policy: only a desktop launch, only an AMD host, only allowlisted names that
+are absent here. Every other launch reads no shell.
 """
 
 from __future__ import annotations
@@ -62,6 +62,29 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "GPU_MAX_HW_QUEUES",
 )
 # Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
+
+# unsloth#12678: a -c shell never loads $HISTFILE but still saves its history on
+# exit, so an rc that adds one entry overwrites the user's file with it. Shells
+# that cannot parse the POSIX probe keep the command as it was; a list of
+# exceptions, so a versioned or renamed bash/zsh still gets the fix.
+_NON_POSIX_SHELLS = frozenset(
+    {"fish", "nu", "nushell", "csh", "tcsh", "xonsh", "elvish", "pwsh", "ion", "murex"}
+)
+
+
+def probe_command(shell: str, command: str) -> str:
+    """``command`` for ``shell -ilc``, with no history save, logout file or EXIT trap.
+
+    zsh ``RCS`` off also covers a readonly HISTFILE; ``eval`` + ``|| :`` keep a
+    failed unset from aborting the list (zsh) or tripping ERR_EXIT / ``set -e``.
+    """
+    if os.path.basename(shell) in _NON_POSIX_SHELLS:
+        return command
+    return (
+        "if [ -n \"${ZSH_VERSION-}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; "
+        f"eval 'unset HISTFILE' 2>/dev/null || :; exec {command}"
+    )
+
 
 # NVIDIA's open kernel module registers KFD nodes too (4318), hence the check.
 _AMD_VENDOR_ID = "4098"
@@ -119,7 +142,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
         target = os.path.join(work, "env")
         try:
             process = subprocess.Popen(
-                [shell, "-ilc", f"env -0 > {shlex.quote(target)}"],
+                [shell, "-ilc", probe_command(shell, f"env -0 > {shlex.quote(target)}")],
                 stdin = subprocess.DEVNULL,
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
