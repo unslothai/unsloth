@@ -24206,6 +24206,75 @@ async def openai_audio_transcriptions(
     return JSONResponse(content = {"text": text})
 
 
+@router.post("/audio/translations")
+async def openai_audio_translations(
+    request: Request,
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(None),
+    response_format: str = Form("json"),
+    provider_id: Optional[str] = Form(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """OpenAI-compatible speech translation to English (POST /v1/audio/translations).
+
+    Runs on the local Whisper sidecar; ``whisper-1`` or nothing selects the default model.
+    ``response_format`` supports ``json``, ``text`` and ``verbose_json``. ``prompt`` and
+    ``temperature`` are accepted and ignored."""
+    fmt = (response_format or "json").strip().lower()
+    if fmt not in ("json", "text", "verbose_json"):
+        _raise_unsupported_openai_parameter(
+            "response_format",
+            f"Unsupported response_format '{response_format}'. Use 'json', 'text' or 'verbose_json'.",
+        )
+    if isinstance(provider_id, str):
+        _raise_unsupported_openai_parameter(
+            "provider_id",
+            "Translations run on a local Whisper model; provider_id is not supported.",
+        )
+    from core.inference.stt_sidecar import can_translate
+
+    sidecar_model = None if model in (None, "", "whisper-1") else model
+    # mtmd / audio.cpp engines and turbo checkpoints would just transcribe.
+    if _stt_engine_for_model(sidecar_model) is not None or not can_translate(sidecar_model):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                f"'{model}' cannot translate. Use a multilingual Whisper model such as 'small'.",
+                status = 400,
+                code = "invalid_value",
+                param = "model",
+            ),
+        )
+    raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
+    _opening_label = sidecar_model or "whisper-1"
+    async with _monitored_media_request(
+        request,
+        model = public_model_id(_opening_label) or _opening_label,
+        prompt = file.filename or "audio",
+        subject = current_subject,
+    ) as monitor_id:
+        result = await _transcribe_audio_result(
+            raw, sidecar_model, None, fast = False, request = request, translate = True
+        )
+        text = str(result.get("text", ""))
+        _served_model = str(result.get("model") or "")
+        api_monitor.relabel(monitor_id, public_model_id(_served_model) or _served_model)
+        api_monitor.set_reply(monitor_id, text)
+    if fmt == "text":
+        return PlainTextResponse(content = text)
+    if fmt == "verbose_json":
+        duration = result.get("duration")
+        return JSONResponse(
+            content = {
+                "task": "translate",
+                "language": "english",
+                "duration": float(duration) if isinstance(duration, (int, float)) else 0.0,
+                "text": text,
+            }
+        )
+    return JSONResponse(content = {"text": text})
+
+
 # =====================================================================
 
 # Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
@@ -24938,12 +25007,14 @@ async def _transcribe_audio_result(
     *,
     source_path: Optional[Path] = None,
     timestamps: bool = False,
+    translate: bool = False,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape.
 
     ``source_path`` (a prepared WAV inside the account) replaces ``raw``: audio.cpp reads it in
-    place, with ``timestamps`` when asked; every other engine gets its bytes."""
+    place, with ``timestamps`` when asked; every other engine gets its bytes. ``translate`` is
+    Whisper's English translation; only the Transformers sidecar takes it."""
     if account_access.managed_account():
         await asyncio.to_thread(
             account_access.require_model_access, _stt_repo_reference(model, engine)
@@ -24981,6 +25052,9 @@ async def _transcribe_audio_result(
         model,
     )
     sidecar = _stt_sidecar_for(serving_engine)
+    transcribe = (
+        functools.partial(sidecar.transcribe, task = "translate") if translate else sidecar.transcribe
+    )
     cancel_event = threading.Event() if request is not None or on_progress is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
@@ -25027,7 +25101,7 @@ async def _transcribe_audio_result(
             )
         elif on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
-                sidecar.transcribe,
+                transcribe,
                 raw,
                 model,
                 language,
@@ -25036,10 +25110,10 @@ async def _transcribe_audio_result(
                 on_progress = on_progress,
             )
         elif cancel_event is None:
-            result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
+            result = await asyncio.to_thread(transcribe, raw, model, language, fast)
         else:
             result = await asyncio.to_thread(
-                sidecar.transcribe,
+                transcribe,
                 raw,
                 model,
                 language,
@@ -35108,6 +35182,9 @@ def _slot_model_objects() -> list[dict]:
     Shared by the LIST and RETRIEVE handlers so both report the same ids and
     field shape.
     """
+    from core.inference.audio_cpp_models import AUDIO_CPP_SEP_AUDIO_TYPE
+    from core.inference.audio_workflows import status_audio_workflows
+
     if (
         routed_slot.get() is None
         and account_access.managed_account()
@@ -35176,6 +35253,7 @@ def _slot_model_objects() -> list[dict]:
             getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
         ):
             entry["task"] = _TTS_MODEL_TASK
+            entry["audio_workflows"] = status_audio_workflows(True, llama_backend._audio_type)
         models.append(entry)
 
     # Describing residency must not construct an unused orchestrator: its cold
@@ -35201,12 +35279,18 @@ def _slot_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
+        audio_type = model_info.get("audio_type")
+        is_sep = audio_type == AUDIO_CPP_SEP_AUDIO_TYPE
         if (
             not model_info.get("is_mlx")
             and model_info.get("is_audio")
-            and (model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES)
+            and (audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES or is_sep)
         ):
-            entry["task"] = _TTS_MODEL_TASK
+            # A resident separation model is not a chat model either.
+            entry["task"] = _SEP_MODEL_TASK if is_sep else _TTS_MODEL_TASK
+            entry["audio_workflows"] = model_info.get("audio_workflows") or (
+                status_audio_workflows(True, audio_type)
+            )
 
         for _field in ("native_context_length", "max_context_length", "context_length_fitted"):
             _value = _positive_int_or_none(model_info.get(_field))
@@ -35326,6 +35410,7 @@ def _classified_catalog(models: list) -> list:
 _MEDIA_MODEL_TASKS = ("text-to-image", "text-to-video")
 _STT_MODEL_TASK = "automatic-speech-recognition"
 _TTS_MODEL_TASK = "text-to-speech"
+_SEP_MODEL_TASK = "audio-to-audio"
 
 
 def _media_owner(task: str) -> str:
@@ -35575,6 +35660,13 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
             "owned_by": _OWNED_BY,
             "task": _STT_MODEL_TASK,
             "loaded": model_id in loaded,
+            # Custom Whisper repos are not probed here, so only curated ones advertise translate.
+            "audio_workflows": (
+                ["transcribe", "translate"]
+                if model_id in stt_sidecar.STT_MODELS.values()
+                and stt_sidecar.can_translate(model_id)
+                else ["transcribe"]
+            ),
         }
         spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model_id)
         if spec is not None:
@@ -35747,6 +35839,8 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
                 *_MEDIA_MODEL_TASKS,
                 _STT_MODEL_TASK,
                 _TTS_MODEL_TASK,
+                # A separation GGUF: listed by _audio_cpp_speech_model_objects with its workflows.
+                _SEP_MODEL_TASK,
                 _UNSUPPORTED_DIFFUSION_TASK,
             ):
                 continue
@@ -35808,9 +35902,10 @@ def _servable_catalog_rows(
 
 
 def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
-    """Downloaded audio.cpp speech and music GGUFs, found by header in the HF cache. The cache scan
-    lists a dedicated repo as a GGUF but cannot key an umbrella folder, and neither loads in
-    llama.cpp. /v1/audio/speech serves both kinds, loading one by name when auto-switch is on."""
+    """Downloaded audio.cpp speech, music and separation GGUFs, found by header in the HF cache. The
+    cache scan lists a dedicated repo as a GGUF but cannot key an umbrella folder, and none loads in
+    llama.cpp. /v1/audio/speech serves speech and music, /v1/audio/run every workflow listed in
+    ``audio_workflows``, loading the model by name when auto-switch is on."""
     try:
         from core.inference import audio_cpp_server
         from core.inference.audio_cpp_models import downloaded_models
@@ -35820,7 +35915,7 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
             return []
         objects = []
         for model in downloaded_models():
-            if model.audio_type is None or model.task not in ("tts", "music"):
+            if model.audio_type is None or model.task not in ("tts", "music", "sep"):
                 continue
             if account_access.managed_account() and not account_access.model_visible(
                 model.repo_id or model.id
@@ -35835,9 +35930,11 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
                     "object": "model",
                     "created": created,
                     "owned_by": _OWNED_BY,
-                    "task": _TTS_MODEL_TASK,
+                    # Music stays text-to-speech, since /v1/audio/speech serves it.
+                    "task": _SEP_MODEL_TASK if model.task == "sep" else _TTS_MODEL_TASK,
                     "display_name": model.display_name,
                     "loaded": False,
+                    "audio_workflows": list(model.workflows),
                 }
             )
         return objects

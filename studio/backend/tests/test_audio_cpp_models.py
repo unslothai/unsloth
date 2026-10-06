@@ -1229,7 +1229,7 @@ def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
     assert not victim.exists()
 
 
-def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
+def test_v1_models_lists_speech_and_separation_models_with_their_workflows(hub, monkeypatch):
     from core.inference import audio_cpp_server
     from routes import inference as ri
 
@@ -1240,8 +1240,13 @@ def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
     ] == "sep"
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: "audiocpp_server")
     monkeypatch.setattr(audio_cpp_server, "model_runtime_problem", lambda model, binary = None: None)
-    listed = [o["id"] for o in ri._audio_cpp_speech_model_objects(0)]
-    assert listed == [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    listed = {o["id"]: o for o in ri._audio_cpp_speech_model_objects(0)}
+    kokoro = listed[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    assert kokoro["task"] == "text-to-speech" and "speak" in kokoro["audio_workflows"]
+    # /v1/audio/speech cannot serve it, so it is not text-to-speech; /v1/audio/run loads it by name.
+    demucs = listed[f"{AUDIO_CPP_REPO}/HTDemucs-GGUF"]
+    assert demucs["task"] == "audio-to-audio" and demucs["audio_workflows"] == ["separate"]
+    assert len(listed) == 2
 
 
 def test_downloaded_models_are_found_by_header(hub):
