@@ -2612,6 +2612,11 @@ export const he = {
       backToData: "חזרה לנתונים",
       exportFailed: "לא ניתן לייצא צ'אטים",
       description: "נהל היסטוריית צ'אט וקבצים שהועלו המאוחסנים במכשיר זה.",
+      manageFiles: {
+        label: "ניהול קבצים",
+        description: "חיפוש, מיון וארגון של תמונות, סרטונים, אודיו וקבצים.",
+        action: "פתח את הספרייה",
+      },
       archivedChats: "צ'אטים בארכיון",
       archivedChatsDescription: "הצג ונהל צ'אטים שהעברת לארכיון.",
       archivedImages: "תמונות בארכיון",
