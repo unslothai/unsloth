@@ -514,15 +514,20 @@ class _TemplateProcessor:
 
 
 @pytest.mark.parametrize(
-    "chat_template, image_token, served",
-    [(_MARKS_EACH_IMAGE, "<|image_pad|>", [2, 4]), (_MARKS_ONE_IMAGE, "<image>", [4])],
-    ids = ["marks each image", "marks one image"],
+    "chat_template, image_token, model_type, served",
+    [
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "qwen2_5_vl", [2, 4]),
+        (_MARKS_ONE_IMAGE, "<image>", "llava", [4]),
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "mllama", [4]),
+    ],
+    ids = ["marks each image", "marks one image", "single-image model"],
 )
 def test_a_transformers_vision_model_is_served_every_image_its_template_can_mark(
-    chat_template, image_token, served
+    chat_template, image_token, model_type, served
 ):
     import base64
     import io
+    import types
 
     from PIL import Image
 
@@ -537,7 +542,8 @@ def test_a_transformers_vision_model_is_served_every_image_its_template_can_mark
     inf = _inference_module()
     loader = inf.InferenceBackend.__new__(inf.InferenceBackend)
     processor = _TemplateProcessor(chat_template, image_token)
-    loader.models = {"vl": {"tokenizer": processor, "processor": processor, "model": None}}
+    model = types.SimpleNamespace(config = types.SimpleNamespace(model_type = model_type))
+    loader.models = {"vl": {"tokenizer": processor, "processor": processor, "model": model}}
     loader._load_chat_template_info("vl")
 
     _pytest = _shared_setup_1(__file__)
