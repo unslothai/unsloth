@@ -55,8 +55,6 @@ export interface PersistedChatSettings {
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
   researchModelTimeoutSeconds?: number;
-  artifactsEnabled?: boolean;
-  showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;
   confirmToolCalls?: boolean;
   /** "full" (Full access) is session-only and never leaves the browser. */

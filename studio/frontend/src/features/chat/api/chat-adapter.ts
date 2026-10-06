@@ -1835,12 +1835,6 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends, so the recount prices the same text.
-export const CANVAS_TOOL_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
-export const CANVAS_FALLBACK_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
-
 /** The MCP image bound applied to the run's own tool results, BEFORE they are
  *  serialized. Bounding the OpenAI history afterwards meant every result's image
  *  array was stringified into an envelope on the main thread and then parsed again
@@ -1946,7 +1940,7 @@ export async function buildLocalTokenCountHistory(
   studio_tool_history?: true;
 }> {
   const runtimeState = useChatRuntimeStore.getState();
-  const { params, artifactsEnabled, supportsTools } = runtimeState;
+  const { params } = runtimeState;
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
@@ -1985,24 +1979,6 @@ export async function buildLocalTokenCountHistory(
       role: "system",
       content: combinedSystemPrompt,
     });
-  }
-
-  // Canvas appends one of these on every request, so a count without it reads low.
-  const canvasInstruction = artifactsEnabled
-    ? supportsTools
-      ? CANVAS_TOOL_INSTRUCTION
-      : CANVAS_FALLBACK_INSTRUCTION
-    : "";
-  if (canvasInstruction) {
-    const first = outboundMessages[0];
-    if (first && first.role === "system" && typeof first.content === "string") {
-      outboundMessages[0] = {
-        ...first,
-        content: `${first.content}\n\n${canvasInstruction}`,
-      };
-    } else {
-      outboundMessages.unshift({ role: "system", content: canvasInstruction });
-    }
   }
 
   return {
@@ -2056,7 +2032,6 @@ export async function buildLocalTokenCountExtras(
   const {
     supportsTools,
     toolsEnabled,
-    artifactsEnabled,
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
@@ -2100,7 +2075,6 @@ export async function buildLocalTokenCountExtras(
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
-    !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
@@ -2131,7 +2105,6 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      ...(artifactsEnabled ? ["render_html"] : []),
       // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
       ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
     ],
@@ -4876,7 +4849,6 @@ export function createOpenAIStreamAdapter(
         supportsTools,
         toolsEnabled,
         imageToolsEnabled,
-        artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
@@ -5229,26 +5201,8 @@ export function createOpenAIStreamAdapter(
         !queuedRunSettings && !continuation,
       );
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
-      const hasOutboundImage = Boolean(imageBase64);
 
-      // Canvas is independent of Search/Code: render_html stays local-only and mirrors the backend image-turn gate.
-      const renderHtmlToolEnabledForThisTurn = Boolean(
-        !isExternalRequest &&
-          supportsTools &&
-          artifactsEnabled &&
-          !hasOutboundImage,
-      );
-      const artifactInstruction = artifactsEnabled
-        ? renderHtmlToolEnabledForThisTurn
-          ? CANVAS_TOOL_INSTRUCTION
-          : CANVAS_FALLBACK_INSTRUCTION
-        : null;
-      const effectiveDisabledToolGuard =
-        disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
-          : disabledToolGuard;
-      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
-      addSystemInstruction(outboundMessages, artifactInstruction);
+      addSystemInstruction(outboundMessages, disabledToolGuard);
 
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);
@@ -6256,7 +6210,7 @@ export function createOpenAIStreamAdapter(
             docs:
               supportsStudioToolsForThisTurn &&
               (ragEnabled || projectRagEnabled),
-            artifacts: renderHtmlToolEnabledForThisTurn,
+            artifacts: false,
             confirmToolCalls,
             bypassPermissions,
             permissionMode,
@@ -6652,7 +6606,6 @@ export function createOpenAIStreamAdapter(
             ...(supportsTools &&
               (toolsEnabled ||
                 codeToolsEnabled ||
-                renderHtmlToolEnabledForThisTurn ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
@@ -6671,9 +6624,6 @@ export function createOpenAIStreamAdapter(
                       : []),
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
-                      : []),
-                    ...(renderHtmlToolEnabledForThisTurn
-                      ? ["render_html"]
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
