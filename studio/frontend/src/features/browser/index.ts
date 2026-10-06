@@ -43,7 +43,6 @@ export function openFileInBrowser(input: OpenFileInput): void {
 
 const htmlOpenKey = (key: string) => `file:html:${key}`;
 
-/** Open chat HTML in its own tab, as preview or source. */
 export function openHtmlInBrowser({
   key,
   name,

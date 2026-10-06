@@ -206,7 +206,6 @@ const TOOLBAR_BUTTON =
 const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
-// A true circle, glyph centred.
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
 // The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
 const ANNOTATE_GLYPH = "size-4.5 translate-x-[4%] translate-y-[4%]";

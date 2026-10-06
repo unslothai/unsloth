@@ -181,7 +181,6 @@ export function ArtifactCard({
     <div className={cn("my-2 w-full max-w-xl", className)}>
       <div
         className={cn(
-          // Dark mode uses shades, not borders.
           "group/artifact-card relative flex min-h-[calc(72px*var(--ui-space-scale,1))] items-center gap-3.5 overflow-hidden rounded-2xl border border-border/70 bg-muted/15 py-3 pl-3 pr-3.5 transition-colors dark:border-transparent dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]",
           !isStreaming &&
             "hover:bg-muted/25 dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]",
@@ -193,7 +192,6 @@ export function ArtifactCard({
             className="artifact-card-shimmer pointer-events-none absolute inset-0 z-0 motion-reduce:hidden"
           />
         ) : null}
-        {/* The whole card opens the page. */}
         <button
           type="button"
           disabled={isStreaming}

@@ -555,7 +555,6 @@ export function ArtifactHtmlFrame({
                     setOutput(emptyCanvasConsole(code));
                   }}
                 >
-                  {/* Devtools clear icon. */}
                   <BanIcon />
                 </Button>
               </TooltipTrigger>

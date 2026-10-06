@@ -45,7 +45,6 @@ const NAMED_ENTITIES: Record<string, string> = {
   hellip: "\u2026",
 };
 
-/** The page <title>, or null. */
 export function htmlDocumentTitle(code: string): string | null {
   const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(code);
   if (!match) return null;
