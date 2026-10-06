@@ -118,7 +118,6 @@ def test_the_policy_level_defaults_to_high_and_rejects_typos():
         tool_policy.normalize_sandbox_level("lowest")
 
 
-
 def _chat(**extra):
     return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **extra)
 
@@ -166,7 +165,6 @@ def test_an_unknown_level_is_a_422():
         for bad in ("medium", "", 1, True):
             response = client.post(path, json = {**body, "sandbox_level": bad})
             assert response.status_code == 422, (path, bad)
-
 
 
 @pytest.fixture
@@ -312,7 +310,6 @@ def test_windows_low_launches_on_the_host_shell(windows_cmd_host, monkeypatch):
         with pytest.raises(_Stop):
             tools._bash_exec("echo hi", None, 60, _SESSION, tool_execution_mode = mode)
     assert seen == [False, True]
-
 
 
 class _ModeRecordingExecuteTool:
@@ -547,7 +544,6 @@ def test_the_codex_loop_forwards_the_level(monkeypatch):
         object(), run = run, policy = policy, cancel_event = threading.Event()
     )
     assert entered["policy"].sandbox_level == "low"
-
 
 
 @pytest.mark.parametrize("sent,expected", [("low", "low"), ("LOW", "low"), (None, "high")])
