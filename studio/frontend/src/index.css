@@ -4331,6 +4331,12 @@ html[data-chat-font] .aui-root {
 		line-height: 1.55;
 	}
 
+	/* The body's text-sm would otherwise override the size above. */
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		font-size: inherit;
+		line-height: inherit;
+	}
+
 	.aui-thread-root [data-streamdown="code-block-header"] {
 		font-size: calc(0.6875rem * var(--ui-font-scale, 1));
 	}
