@@ -1009,12 +1009,7 @@ def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
 
 
 def _tight_embedded_mtp_backend(tmp_path: Path, monkeypatch, *, architecture: str, floor: int):
-    """_tight_vram_backend with an embedded MLA head instead of a sidecar.
-
-    The head's reserve scales with context (8 GB at 8192), so it misses the 24 GB
-    card at the native context and fits at half of it, which the stubbed fit
-    returns whenever it sizes the load with the drafter.
-    """
+    """Embedded MLA head (8 GB at 8192) that misses the 24 GB card at 8192 and fits at half."""
     gb = 1024**3
     backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 0.0)
 
@@ -1039,8 +1034,7 @@ def _tight_embedded_mtp_backend(tmp_path: Path, monkeypatch, *, architecture: st
 
 
 def test_auto_shrinks_context_to_keep_a_fast_mla_mtp_head(tmp_path, monkeypatch):
-    """GLM-5.3-Flash's NextN head is its main decode speedup, so Auto pays for it in
-    context instead of dropping it, unlike every other drafter below."""
+    """Auto pays context for a NextN-only head instead of dropping it."""
     backend, gguf = _tight_embedded_mtp_backend(
         tmp_path, monkeypatch, architecture = "glm5-next", floor = 4096
     )
