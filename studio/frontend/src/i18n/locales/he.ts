@@ -1509,7 +1509,7 @@ export const he = {
       },
       chatDefaults: "ברירות מחדל של הצ'אט",
       autoTitleNewChats: "מתן כותרת אוטומטית לצ'אטים חדשים",
-      autoTitleNewChatsDescription: "צור כותרת קצרה מההודעה הראשונה.",
+      autoTitleNewChatsDescription: "צור כותרת מההודעה הראשונה.",
       helperLlm: {
         sectionTitle: "מודל עזר (Helper LLM)",
         preloadOnStartup: "שמור מודל עזר במטמון בעת ההפעלה",
@@ -1830,15 +1830,15 @@ export const he = {
       title: "מראה",
       description: "כיצד Unsloth נראה במכשיר זה.",
       theme: {
-        title: "ערכת נושא",
-        label: "סכמת צבעים",
+        title: "סגנון חזותי",
+        label: "מצב",
         description: "בהיר, כהה, או התאמה למערכת.",
         system: "מערכת",
         light: "בהיר",
         dark: "כהה",
       },
       palette: {
-        label: "פלטת צבעים",
+        label: "ערכת נושא",
         description: "הצבעים שבשימוש בכל רחבי Unsloth, במצב בהיר וכהה.",
         standard: "סטנדרטית",
         classic: "קלאסית",
@@ -1955,15 +1955,14 @@ export const he = {
       sidebarNav: {
         title: "ניווט סרגל צד",
         description:
-          "הצמד ושנה את סדר הלשוניות בסרגל הצד. לשוניות שלא הוצמדו ייאספו בתפריט 'עוד'; לשונית לא מוצמדת בודדת תוסתר במקום לפתוח תפריט עבורה. 'צ'אט חדש' נשאר קבוע.",
+          "הצמד ושנה את סדר הלשוניות בסרגל הצד. לשוניות שלא הוצמדו עוברות לתפריט 'עוד'.",
         dragToReorder: "גרור כדי לשנות סדר",
         pinToSidebar: "הצמד את {name} לסרגל הצד",
         moreHolds: "עוד ({count})",
       },
       sidebarMenu: {
         title: "תפריט פרופיל",
-        description:
-          "בחר אילו קיצורי דרך יופיעו כאשר תלחץ על שמך בתחתית סרגל הצד, ובאיזה סדר. הגדרות, עזרה, התנתקות וכיבוי מופיעים תמיד.",
+        description: "בחר ושנה את סדר קיצורי הדרך שמתחת לשמך.",
         darkModeToggle: "מתג מצב כהה",
         dragToReorder: "גרור כדי לשנות סדר",
       },
@@ -1980,7 +1979,7 @@ export const he = {
         summary: "בקשות חיות, שגיאות ושימוש בטוקנים",
         status: "{active} פעילות · {recent} לאחרונה · {model}",
         noModelLoaded: "אין מודל טעון",
-        autoOpen: "הצג את המוניטור הצף אוטומטית",
+        autoOpen: "המוניטור הצף נפתח אוטומטית",
         autoOpenDescription: "פותח חלונית קטנה בעת הגעת תעבורת API.",
         cpu: "מעבד (CPU)",
         ram: "זיכרון (RAM)",
@@ -2000,7 +1999,7 @@ export const he = {
         sharedWithSystemRam: "משותף עם RAM המערכת",
         estimatedAvailable: "זמין משוער: {value}",
         sharedEstimatedAvailable: "RAM מערכת משותף: {value} זמינים משוער",
-        ggufInference: "הסקה של GGUF",
+        ggufInference: "זיכרון מודל GGUF",
         unavailable: "לא זמין",
         detecting: "בודק קיום מעבדים גרפיים (GPUs)...",
         unreadable: "לא ניתן לקרוא את חומרת השרת.",
@@ -2208,7 +2207,7 @@ export const he = {
       description:
         "חבר סוכני תכנות כגון Claude Code ו-Codex למודל מקומי באמצעות unsloth start.",
       intro:
-        "מחבר את Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode וסוכנים נוספים למודל המוגש מקומית על ידי Unsloth, במצב לא מקוון לחלוטין. הוא מפעיל שרת תואם OpenAI ולעולם אינו נוגע בקובצי ההגדרות של הסוכן שלך.",
+        "מחבר את Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode וסוכנים נוספים למודל המוגש מקומית על ידי Unsloth, במצב לא מקוון לחלוטין. הוא מפעיל שרת תואם OpenAI ולעולם אינו נוגע בקובצי ההגדרות של הסוכן שלך.",
       readDocs: "קרא את התיעוד",
       copy: "העתק",
       copied: "הועתק",
@@ -2294,9 +2293,9 @@ export const he = {
         yolo: "דלג על בקשות אישור. השתמש בסביבות מהימנות בלבד.",
       },
       remote: {
-        title: "התחברות ל-Unsloth Studio מרוחק",
+        title: "התחברות ל-Unsloth מרוחק",
         description:
-          "כוון את unsloth start אל Unsloth Studio הפועל במקום אחר על ידי הגדרת ערכים אלה לפני ההפעלה (או העבר ישירות --api-key):",
+          "כוון את unsloth start אל מופע Unsloth הפועל במקום אחר על ידי הגדרת ערכים אלה לפני ההפעלה (או העבר ישירות --api-key):",
       },
       passthrough: {
         title: "העברת ארגומנטים לסוכן",
@@ -2347,13 +2346,13 @@ export const he = {
       title: "צ'אט",
       description: "התאם אישית את התנהגות הצ'אט במכשיר זה.",
       modelSelection: {
-        title: "הגדרות בחירת מודל",
+        title: "בחירת מודל",
         expandQuantizations: "הרחב קוונטיזציות",
         expandQuantizationsDescription:
-          "מופעל: מודלי GGUF ב-'במכשיר' מציגים את הקוונטיזציות שלהם מיד. כבוי: לחץ על מודל כדי להציג את הקוונטיזציות שלו.",
-        showAllQuantizations: "הצג את כל הקוונטיזציות",
+          "הצג קוונטיזציות GGUF ב-'במכשיר' בלי לפתוח כל מודל.",
+        showAllQuantizations: "כל הקוונטיזציות",
         showAllQuantizationsDescription:
-          "מופעל: מציג את כל הקוונטיזציות ב-'במכשיר', כולל אלה שלא הורדו. כבוי: מציג רק קוונטיזציות שהורדו.",
+          "כלול ב-'במכשיר' גם קוונטיזציות שלא הורדו.",
         showMemoryBar: "הצג סרגל שימוש ב-VRAM",
         showMemoryBarDescription:
           "מציג תרשים של שימוש ה-VRAM המוערך של כל מודל שהורד מתחת לשורה שלו: משקולות, מטמון KV בהקשר שבו הוא ייטען, ושריין טיוטה ספקולטיבית אם קיים.",
@@ -2371,7 +2370,7 @@ export const he = {
       },
       pastedTextThreshold: "כווץ טקסט מודבק ארוך",
       pastedTextThresholdDescription:
-        "טקסט מודבק הארוך מזה יהפוך לקובץ מצורף מסוג .txt במקום למלא את תיבת ההודעה. הקש {shortcut} כדי להדביק בתיבת ההודעה בכל זאת.",
+        "הקש {shortcut} כדי להדביק ישירות בתיבת ההודעה.",
       pastedTextThresholdOff: "כבוי",
       autoScroll: "גלילה בזמן יצירה",
       autoScrollDescription:
@@ -2385,20 +2384,20 @@ export const he = {
         "הצג לחצן לקפיצה חזרה להודעה האחרונה לאחר גלילה למעלה.",
       scrollToBottomButtonKeywords:
         "scroll bottom jump latest newest arrow down button floating hide show גלילה תחתית לחצן חץ",
-      showResponseModel: "הצג מודל מענה",
-      showResponseModelDescription: "הצג מטא-נתונים של המודל בתשובות העוזר.",
+      showResponseModel: "מודל המענה",
+      showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
-      modelDisclaimer: "הצג הבהרה לגבי המודל",
+      modelDisclaimer: "הבהרה לגבי המודל",
       modelDisclaimerDescription:
         'הצג את הכיתוב "מודלי שפה עלולים לטעות" מתחת לתיבת הצ\'אט.',
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
-        "ברירת מחדל לקבצים שצורפו בצ'אט השייך לפרויקט: אנדקס אותם עבור הפרויקט כולו כדי שכל צ'אט בו יוכל להשתמש בהם. כל צ'אט יכול לשנות זאת מתפריט הצירוף.",
+        "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",
       rememberParamsPerModel: "זכור הגדרות לפי מודל",
       rememberParamsPerModelDescription:
-        "החלפת מודלים משחזרת את הטמפרטורה, הפרומפט והגדרות נוספות שבהן השתמשת לאחרונה עם אותו מודל. כיבוי ישמור על סט הגדרות אחיד לכל המודלים.",
+        "שחזר את הפרומפט, הטמפרטורה והגדרות נוספות שבהן השתמשת לאחרונה עם כל מודל.",
       autoCompact: "כווץ אוטומטית צ'אטים ארוכים",
       autoCompactDescription:
         "כאשר צ'אט GGUF מקומי ממלא את אורך ההקשר שהגדרת, השמט סבבים ישנים יותר במקום להחזיר שגיאה. הדבר אינו מבוסס על VRAM פנוי.",
@@ -2435,18 +2434,17 @@ export const he = {
       },
       webSearch: {
         title: "חיפוש באינטרנט",
-        images: "הצג תמונות מחיפוש באינטרנט",
-        imagesDescription:
-          "אפשר לחיפוש באינטרנט להחזיר תמונות, והורד תמונה עבור כל פריט המופיע בתשובה. התמונות הממוזערות מורדות ומשנות גודל על ידי Unsloth, כך שהדפדפן אינו פונה ישירות למארחי התמונות.",
+        images: "תמונות מחיפוש באינטרנט",
+        imagesDescription: "כלול תמונות בתוצאות החיפוש.",
       },
       artifacts: {
         title: "קנבס (Canvas)",
         collapseHtmlBlocks: "כווץ בלוקים של HTML",
         collapseHtmlBlocksDescription:
-          "מצב Canvas מכווץ HTML מלא באופן אוטומטי. הפעל אפשרות זו כדי לכווץ גם מסמכי HTML תחומים כאשר Canvas כבוי.",
+          "כווץ גם מסמכי HTML תחומים כאשר Canvas כבוי.",
         allowNetworkAccess: "אפשר גישת רשת לקנבס",
         allowNetworkAccessDescription:
-          "אפשר לתצוגות מקדימות של הקנבס לטעון סקריפטים, סגנונות, גופנים, מדיה ומשאבי רשת מ-CDNs. השאר כבוי לתצוגה מקדימה במצב לא מקוון לחלוטין.",
+          "אפשר ל-Canvas לטעון סקריפטים, סגנונות, גופנים ומדיה חיצוניים. כבה לתצוגה מקדימה במצב לא מקוון.",
         blockedBanner: "נחסם משאב חיצוני {count} מ-{hosts}.",
         blockedBannerPlural: "נחסמו {count} משאבים חיצוניים מ-{hosts}.",
         blockedBannerAction: "אפשר עבור קנבס זה",
@@ -2480,7 +2478,7 @@ export const he = {
       exportingAction: "מייצא...",
       exportConversations: "ייצוא אחרונים ופרויקטים",
       exportConversationsDescription:
-        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV או ShareGPT JSONL, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
+        "הורד צ'אטים מ'אחרונים' או מ'אחרונים ופרויקטים' בפורמט Training JSONL, CSV, ShareGPT JSONL או Markdown, כקובץ מאוחד או לכל צ'אט בנפרד. Message JSONL זמין לכל צ'אט בנפרד.",
       exportConversationsAction: "ייצוא",
       exportScopeRecents: "אחרונים",
       exportScopeAll: "אחרונים + פרויקטים",
@@ -2488,7 +2486,7 @@ export const he = {
       exportPerChatSuffix: "(לכל צ'אט)",
       importChats: "ייבוא צ'אטים",
       importChatsDescription:
-        "ייבא קובץ ייצוא של Open WebUI, JSONL, NDJSON או CSV אל 'אחרונים'.",
+        "ייבא קובצי JSON, JSONL, NDJSON, CSV או Markdown אל 'אחרונים'.",
       importChatsAction: "ייבוא",
       importNoConversations: "לא נמצאו שיחות בקובץ.",
       importedOneChat: "שיחה אחת יובאה אל 'אחרונים'.",
@@ -2869,7 +2867,7 @@ export const he = {
         desktopAvailableDescription:
           "עדכן כעת ואפליקציית שולחן העבודה תופעל מחדש בסיום.",
         desktopExternalServer:
-          "הרץ `unsloth studio update` מהטרמינל שהפעיל את השרת שלך.",
+          "האפליקציה התחברה לשרת Studio שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
         desktopManualInstall:
           "פתח את דף השחרור כדי להתקין את חבילת ה-Linux העדכנית ביותר.",
         desktopCheckFailed: "לא ניתן לבדוק עדכונים",
@@ -3346,7 +3344,7 @@ export const he = {
       chooseModelAndDataset: "בחר מודל ומערך נתונים",
       validation: {
         s3MultimodalUnsupported:
-          "מערכי נתונים מ-S3 אינם נתמכים עדיין לאימון ראייה או אודיו.",
+          "מערכי נתונים מ-S3 אינם נתמכים עדיין לאימון ראייה.",
         s3BucketRequired: "הזן תחילה שם של דלי S3.",
         s3CredentialsRequired: "ספק מפתחות גישה ל-S3 או הפעל תפקיד IAM.",
         modelRequired: "בחר תחילה מודל בסיס.",
