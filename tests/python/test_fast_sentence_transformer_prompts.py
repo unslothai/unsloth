@@ -103,3 +103,28 @@ def test_hub_error_reading_sentence_config_does_not_fail_the_load(tmp_path, monk
         max_seq_length = 32,
     )
     assert model.prompts.get("query", "") == ""
+
+
+def test_local_files_only_reaches_the_sentence_config_lookup(tmp_path, monkeypatch):
+    path = _save_decoder_sentence_model(tmp_path)
+    import sentence_transformers.util
+    from unsloth import FastSentenceTransformer
+
+    real_load_file_path = sentence_transformers.util.load_file_path
+    seen = []
+
+    def load_file_path(model_name_or_path, filename, *args, **kwargs):
+        if filename == "config_sentence_transformers.json":
+            seen.append(kwargs.get("local_files_only"))
+        return real_load_file_path(model_name_or_path, filename, *args, **kwargs)
+
+    monkeypatch.setattr(sentence_transformers.util, "load_file_path", load_file_path)
+    model = FastSentenceTransformer.from_pretrained(
+        path,
+        load_in_4bit = False,
+        full_finetuning = True,
+        max_seq_length = 32,
+        local_files_only = True,
+    )
+    assert seen == [True]
+    assert {k: model.prompts[k] for k in PROMPTS} == PROMPTS

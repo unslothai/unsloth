@@ -2670,6 +2670,8 @@ class FastSentenceTransformer(FastModel):
 
         from sentence_transformers.util import load_file_path
 
+        # sentence-transformers 2.x has no local_files_only parameter, so only pass it when set.
+        _local_only = {"local_files_only": True} if kwargs.get("local_files_only") else {}
         # sentence-transformers >= 6 re-raises Hub errors other than "not found" here; the weights already loaded, so warn rather than fail.
         try:
             st_config_path = load_file_path(
@@ -2680,6 +2682,7 @@ class FastSentenceTransformer(FastModel):
                 or kwargs.get("cache_folder")
                 or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
                 revision = revision,
+                **_local_only,
             )
         except Exception as e:
             print(
