@@ -69,6 +69,7 @@ if "httpx" not in sys.modules:
         sys.modules["httpx"] = module
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_path_var
+import core.inference.llama_cpp as llama_cpp_module
 
 _REAL_POPEN = subprocess.Popen
 
@@ -1005,6 +1006,86 @@ def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
     return backend, gguf, sidecar
+
+
+def _tight_embedded_mtp_backend(tmp_path: Path, monkeypatch, *, architecture: str, floor: int):
+    """Embedded MLA head (8 GB at 8192) that misses the 24 GB card at 8192 and fits at half."""
+    gb = 1024**3
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 0.0)
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._kv_lora_rank = 512
+        backend._architecture = architecture
+        backend._context_length = 8192
+
+    backend._read_gguf_metadata = read_metadata
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(8 * gb * n_ctx / 8192)
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        requested // 2 if mtp_engaged else requested
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(llama_cpp_module, "_FAST_MTP_MIN_CTX", floor)
+    return backend, gguf
+
+
+def test_auto_shrinks_context_to_keep_a_fast_mla_mtp_head(tmp_path, monkeypatch):
+    """Auto pays context for a NextN-only head instead of dropping it."""
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = "glm5-next", floor = 4096
+    )
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0)
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+    assert cmd[cmd.index("-c") + 1] == "4096"
+    assert backend.spec_fallback_reason != "drafter_no_vram"
+
+
+@pytest.mark.parametrize(
+    "architecture, floor",
+    [
+        ("glm5-next", 8192),  # the context that keeps the head is below the floor
+        ("deepseek2", 4096),  # not a NextN-only head: the usual drop
+    ],
+)
+def test_auto_still_drops_mla_mtp_past_the_floor_or_off_the_list(
+    tmp_path, monkeypatch, architecture, floor
+):
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = architecture, floor = floor
+    )
+    monkeypatch.setenv("UNSLOTH_MLA_MTP_ENABLED", "1")
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0)
+
+    cmd = result["cmd"]
+    assert "draft-mtp" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_auto_still_drops_a_sidecar_drafter_on_a_fast_mla_target(tmp_path, monkeypatch):
+    """The context exception is for the embedded head, not a DSpark sidecar Auto picked."""
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = "glm5-next", floor = 4096
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    caps = backend.probe_server_capabilities()
+    backend.probe_server_capabilities = lambda _binary = None: {**caps, "supports_dspark": True}
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0, dspark_draft_path = str(sidecar))
+
+    cmd = result["cmd"]
+    assert "draft-dspark" not in cmd and "draft-mtp" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
 
 
 def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):

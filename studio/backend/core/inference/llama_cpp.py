@@ -4480,8 +4480,11 @@ def _auto_mode_drops_mtp(
 # MLA archs whose MTP context covers only the NextN block instead of duplicating the
 # trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
 # twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
-# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
-_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+# reserve the copy (_estimate_mtp_overhead_bytes). "glm5-next" = upstream name
+# (ggml-org/llama.cpp#27773); builds lacking its NextN graph retry without speculation.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
+# Smallest context Auto shrinks to so a fast MLA head still launches.
+_FAST_MTP_MIN_CTX = 65536
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -25951,6 +25954,22 @@ class LlamaCppBackend:
                                     / (1024 * 1024)
                                     <= _budget_w
                                 ):
+                                    # A NextN-only head is the main decode speedup: pay context.
+                                    if (
+                                        _engaged_is_mtp
+                                        and _arch_has_fast_mla_mtp(
+                                            getattr(self, "_architecture", None)
+                                        )
+                                        and _ctx_w >= min(_ctx_wo, _FAST_MTP_MIN_CTX)
+                                    ):
+                                        _both_fit_somewhere = True
+                                        logger.info(
+                                            "Auto: keeping the embedded MTP head; context %d -> %d "
+                                            "so it fits (%.1f GB budget).",
+                                            _ctx_wo,
+                                            _ctx_w,
+                                            _budget_w / 1024,
+                                        )
                                     break
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
@@ -31273,6 +31292,7 @@ class LlamaCppBackend:
                         _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
+                        or "failed to create mtp context" in _lo
                         or "failed to create llama_context" in _lo
                     ):
                         _retry_reason = (
