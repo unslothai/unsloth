@@ -332,6 +332,7 @@ export function ApiModelLoadControls({
   );
 
   const handleReload = useCallback(async () => {
+    setPendingDownload(null);
     setReloading(true);
     setActionError(null);
     try {
