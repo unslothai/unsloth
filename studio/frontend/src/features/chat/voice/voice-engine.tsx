@@ -474,6 +474,16 @@ export const VoiceEngine: FC = () => {
     }, SYNTH_GAP_MS);
   }, [voiceMode, hasChatModel, voiceSlotLoading, voiceHearing, voiceTranscribing, isThreadRunning, isSpeaking, isPlaying, setVoiceOrbState]);
 
+  // The voice finishing its load is what opens the mic when activateLoop held it shut.
+  const wasSlotLoadingRef = useRef(voiceSlotLoading);
+  useEffect(() => {
+    const was = wasSlotLoadingRef.current;
+    wasSlotLoadingRef.current = voiceSlotLoading;
+    if (!was || voiceSlotLoading) return;
+    if (voiceModeRef.current !== "active" || !hasChatModelRef.current) return;
+    resumeListen();
+  }, [voiceSlotLoading, resumeListen]);
+
   // Clear any pending synth-gap timer on unmount so it can't fire after teardown.
   useEffect(() => () => {
     if (synthGapTimerRef.current) clearTimeout(synthGapTimerRef.current);
@@ -485,6 +495,8 @@ export const VoiceEngine: FC = () => {
     voiceModeRef.current = "active";
     setVoiceModeState("active");
     if (!hasChatModelRef.current) return; // orb shows "Select a model"; mic stays shut
+    // a reply sent before the voice loads would go unspoken; the slot finishing opens the mic
+    if (useChatRuntimeStore.getState().voiceSlotLoading) return;
     if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
       auiRef.current.composer().startDictation();
     }
@@ -516,6 +528,7 @@ export const VoiceEngine: FC = () => {
     const id = setTimeout(() => {
       if (getVoiceMode() !== "active") return;
       if (!hasChatModelRef.current) return;
+      if (useChatRuntimeStore.getState().voiceSlotLoading) return;
       if (auiRef.current.thread().getState().isRunning || isSpeakingRef.current) return;
       auiRef.current.composer().startDictation();
     }, 0);
