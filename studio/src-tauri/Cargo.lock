@@ -1303,16 +1303,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "fix-path-env"
-version = "0.0.0"
-source = "git+https://github.com/tauri-apps/fix-path-env-rs#c4c45d503ea115a839aae718d02f79e7c7f0f673"
-dependencies = [
- "home",
- "strip-ansi-escapes",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1898,15 +1888,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
-]
-
-[[package]]
-name = "home"
-version = "0.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5698,7 +5679,6 @@ dependencies = [
  "cairo-rs",
  "dirs 6.0.0",
  "elevated-command",
- "fix-path-env",
  "gdk",
  "gdk-pixbuf",
  "glib",
@@ -5722,6 +5702,7 @@ dependencies = [
  "sha2 0.11.0",
  "signal-hook",
  "simplelog",
+ "strip-ansi-escapes",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

@@ -12179,10 +12179,13 @@ try {
         }
         $script:WoaResolverEnvSaved = $null
     }
-    foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
-        $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
-        if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
-        else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+    # Guarded like the block above: @($null.Keys) is one $null item, and indexing it would stop this finally before the cleanup below.
+    if ($script:MirrorEnvSaved) {
+        foreach ($_mirrorEnvName in @($script:MirrorEnvSaved.Keys)) {
+            $_mirrorEnvValue = $script:MirrorEnvSaved[$_mirrorEnvName]
+            if ($null -eq $_mirrorEnvValue) { Remove-Item "Env:$_mirrorEnvName" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$_mirrorEnvName" $_mirrorEnvValue }
+        }
     }
     # UNSLOTH_KEPT_TORCH is a process-scoped handoff, and the session outlives the installer.
     Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue

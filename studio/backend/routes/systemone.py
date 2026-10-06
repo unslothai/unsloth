@@ -138,11 +138,10 @@ async def system_one(
             f"Unsupported field(s): {', '.join(sorted(payload.model_extra))}",
         )
     checkpoint = await asyncio.to_thread(catalog.resolve, payload.model)
-    if checkpoint is None:
-        raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
     from auth.authentication import request_admitted_without_credential
 
     # Same rule as the OpenAI routes: a keyless caller never downloads or swaps in another model.
+    # Checked before the unknown-model answer, so it cannot tell which owner fine-tunes exist.
     if checkpoint != await asyncio.to_thread(
         catalog.default_checkpoint
     ) and await asyncio.to_thread(request_admitted_without_credential, request):
@@ -151,6 +150,8 @@ async def system_one(
             "permission_error",
             "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
         )
+    if checkpoint is None:
+        raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
     result = await _decide(checkpoint, payload.state, payload.questions)
     return JSONResponse(result, headers = {"x-typesafe-request-id": str(uuid4())})
 

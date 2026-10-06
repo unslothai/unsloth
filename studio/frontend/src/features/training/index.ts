@@ -51,7 +51,11 @@ export type {
   TrainingConfigState,
 } from "./types/config";
 export { getModelConfig, listLocalModels } from "./api/models-api";
-export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
+export type {
+  DecisionCheckpoint,
+  LocalModelInfo,
+  ModelConfigResponse,
+} from "./api/models-api";
 export type {
   TrainingPhase,
   TrainingViewData,

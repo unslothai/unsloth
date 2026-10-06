@@ -365,15 +365,11 @@ test("Chat-to-Audio handoff preserves the live Hub task", () => {
   // pickedTask, not meta.pipelineTag: a cached row carries no tag, so ASR would read as TTS.
   assert.match(
     pickerSource,
-    /page === "audio"[\s\S]*task:\s*pickedTask \?\? undefined/,
+    /page === "audio"[\s\S]*audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/,
   );
   assert.match(
     pickerSource,
     /page === "audio" &&\s*!audioPickIsRoutable\(\{[\s\S]*isCurated: artifactForRepoId\(id, AUDIO_CATALOG\) !== null/,
-  );
-  assert.match(
-    pickerSource,
-    /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,
   );
   assert.match(
     pickerSource,
@@ -775,5 +771,42 @@ test("the audio page asks the GGUF-aware TTS predicate for trained rows", () => 
   assert.match(
     source,
     /isTtsAudioType\(\s*lora\.audio_type,\s*lora\.export_type === "gguf",?\s*\)/,
+  );
+});
+
+test("music and audio-to-audio picks route only when the Audio page runs them", () => {
+  const pick = (overrides: Partial<Parameters<typeof audioPickIsRoutable>[0]>) =>
+    audioPickIsRoutable({
+      id: "someone/model",
+      task: "text-to-audio",
+      isGguf: false,
+      isCurated: false,
+      ...overrides,
+    });
+  // The Hub's music tag covers runtimes Studio does not have.
+  assert.equal(pick({ id: "facebook/musicgen-small" }), false);
+  assert.equal(pick({ id: "stabilityai/stable-audio-open-1.0" }), false);
+  assert.equal(pick({ id: "calcuis/ace-gguf", isGguf: true, tags: ["gguf"] }), false);
+  assert.equal(
+    pick({ id: "thepatch/stable-audio-3-medium-GGUF", isGguf: true, tags: ["gguf", "sa3.cpp"] }),
+    false,
+  );
+  // A GGUF published for the audio runtime, or one whose header it classified, does run.
+  assert.equal(
+    pick({ id: "ngquocvinh/YuE2-3B-GGUF", isGguf: true, tags: ["gguf", "audio.cpp"] }),
+    true,
+  );
+  assert.equal(pick({ id: "someone/ACE-GGUF", isGguf: true, taskFromGgufArch: true }), true);
+  assert.equal(pick({ id: "MiniMaxAI/MiniMax-Music3", audioType: "minimax_music3" }), true);
+  assert.equal(pick({ isCurated: true }), true);
+  // Separation is the one audio-to-audio kind with a page.
+  assert.equal(
+    pick({ id: "chenmozhijin/BSRoformer-GGUF", task: "audio-to-audio", isGguf: true, audioType: "audiocpp_sep" }),
+    true,
+  );
+  assert.equal(pick({ id: "nvidia/bigvgan_v2_22khz_80band_256x", task: "audio-to-audio" }), false);
+  assert.equal(
+    pick({ id: "someone/codec-GGUF", task: "audio-to-audio", isGguf: true, taskFromGgufArch: true }),
+    false,
   );
 });
