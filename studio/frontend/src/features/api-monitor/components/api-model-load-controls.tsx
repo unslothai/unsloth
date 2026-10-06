@@ -96,6 +96,8 @@ function localSelection(
     value,
     meta?.ggufVariant ?? null,
   );
+  const config =
+    meta?.config ?? (remembered.remembered ? remembered.config : undefined);
   return {
     id: value,
     loadId: meta?.loadId,
@@ -108,8 +110,9 @@ function localSelection(
     isGguf: meta?.isGguf,
     isVision: meta?.isVision,
     isDiffusion: meta?.isDiffusion,
-    config:
-      meta?.config ?? (remembered.remembered ? remembered.config : undefined),
+    config,
+    // As in Chat: a per-model config's speculative mode must not become the global preference.
+    keepSpeculative: config !== undefined,
     nativePathToken: meta?.nativePathToken,
     nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
     forceReload: meta?.forceReload,
@@ -348,6 +351,7 @@ export function ApiModelLoadControls({
             isGguf: target.kind === "gguf",
             ggufVariant: target.ggufVariant ?? undefined,
             config: target.config ?? undefined,
+            keepSpeculative: target.config != null,
             forceReload: true,
             isDownloaded: true,
             previousConfig: currentRuntimePerModelConfig({
@@ -394,10 +398,10 @@ export function ApiModelLoadControls({
           modelLoading
             ? undefined
             : (modelId) => {
+                setPendingDownload(null);
                 if (modelId) {
                   ejectModel(modelId).then(() => onSettled());
                 } else {
-                  setPendingDownload(null);
                   onUnloadActive();
                 }
               }
