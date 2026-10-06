@@ -188,6 +188,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
+    "settings.data.manageFiles.label",
     "settings.data.fineTuneExport",
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",

@@ -2597,6 +2597,11 @@ export const en = {
       exportFailed: "Could not export chats",
       description:
         "Manage chat history and uploaded files stored on this device.",
+      manageFiles: {
+        label: "Manage files",
+        description: "Search, sort, and organize images, videos, audio, and files.",
+        action: "Open Library",
+      },
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
       archivedImages: "Archived images",
