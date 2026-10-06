@@ -5,14 +5,15 @@ import {
   AudioWave01Icon,
   ChefHatIcon,
   DashboardCircleIcon,
-  DownloadSquare01Icon,
+  Download01Icon,
   DragDropVerticalIcon,
   FlimSlateIcon,
   Folder01Icon,
-  Globe02Icon,
   Image03Icon,
+  LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
@@ -35,14 +36,15 @@ const ITEM_META: Record<
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
   projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
+  library: { icon: LibrariesIcon, labelKey: "shell.navigation.library" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
-  export: { icon: DownloadSquare01Icon, labelKey: "shell.navigation.export" },
-  api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
+  export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
+  api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

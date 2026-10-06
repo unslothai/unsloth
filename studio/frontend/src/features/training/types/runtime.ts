@@ -33,6 +33,7 @@ export interface TrainingStatusResponse {
     learning_rate?: number;
     // null = explicit clear (run stopped without saving); absent = unchanged.
     output_dir?: string | null;
+    model_download_repo_id?: string | null;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -92,6 +93,7 @@ export interface TrainingRuntimeState {
   startRequestId: string | null;
   startError: string | null;
   startModelName: string | null;
+  modelDownloadRepoId: string | null;
   startDatasetName: string | null;
   startHfToken: string | null;
   startProjectName: string | null;

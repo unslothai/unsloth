@@ -51,17 +51,20 @@ import {
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
   clampChatSettingsWidth,
   useChatSettingsWidth,
 } from "@/hooks/use-chat-settings-width";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsCompact } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
+import { watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
+import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -75,14 +78,18 @@ import {
   useSyncExternalStore,
 } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
-import { PermissionModeDropdown } from "./permission-mode-select";
+import {
+  PermissionModeDropdown,
+  pickSandboxedMode,
+} from "./permission-mode-select";
+import { useSandboxSetupDialogStore } from "./sandbox-setup-dialog";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   parseExternalModelId,
-  supportsProviderPromptCacheTtl,
-  supportsProviderPromptCaching,
+  promptCacheTtlAppliesToModel,
+  promptCachingAppliesToModel,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -185,7 +192,7 @@ export function ParamSlider({
     return (
       <div className="flex items-center gap-3">
         {/* A floor rather than a fixed width, so a longer label is never clipped. */}
-        <div className="flex min-w-[104px] shrink-0 items-center gap-1.5">
+        <div className="flex min-w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5">
           <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
           </span>
@@ -328,7 +335,7 @@ function CollapsibleSection({
   return (
     <div
       className={cn(
-        !first && "border-t border-black/[0.13] dark:border-white/[0.09]",
+        !first && "border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]",
       )}
     >
       {labelHref ? (
@@ -489,6 +496,7 @@ export function ChatSettingsPanel({
   const {
     width: settingsWidth,
     max: settingsMax,
+    scale: settingsScale,
     stored: settingsStored,
     setWidth: setSettingsWidth,
     resetWidth: resetSettingsWidth,
@@ -505,12 +513,23 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
-  const isMobile = useIsMobile();
+  // Overlay as a sheet below lg so the thread keeps its width.
+  const isCompact = useIsCompact();
+  const uiSpaceScale = useUiSpaceScale();
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
+  useEffect(() => {
+    if (!open || isCompact) return;
+    return watchChatSettingsInset(
+      document.documentElement,
+      asideRef.current,
+      settingsWidth * settingsScale,
+      uiSpaceScale,
+    );
+  }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -549,7 +568,7 @@ export function ChatSettingsPanel({
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -745,7 +764,7 @@ export function ChatSettingsPanel({
     customContextLength,
     loadedContextLength,
     kvCacheDtype,
-    mlxKvBits,
+    mlxKvQuant,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
@@ -770,7 +789,7 @@ export function ChatSettingsPanel({
       customContextLength,
       loadedContextLength,
       kvCacheDtype,
-      mlxKvBits,
+      mlxKvQuant,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,
@@ -802,18 +821,24 @@ export function ChatSettingsPanel({
   const systemPromptEditorDirty =
     systemPromptDraft !== currentSystemPrompt ||
     systemVariablesDraft !== currentSystemVariables;
-  const showPromptCacheTtlControl = Boolean(
-    activeExternalProvider &&
-      supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
-  );
-  const showPromptCachingControl =
-    activeExternalProvider != null &&
-    supportsProviderPromptCaching(activeExternalProvider.providerType);
-  const promptCachingEnabled =
-    activeExternalProvider?.enablePromptCaching !== false;
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  const showPromptCacheTtlControl = Boolean(
+    activeExternalProvider &&
+      promptCacheTtlAppliesToModel(
+        activeExternalProvider.providerType,
+        externalSelection?.modelId,
+      ),
+  );
+  const showPromptCachingControl =
+    activeExternalProvider != null &&
+    promptCachingAppliesToModel(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+    );
+  const promptCachingEnabled =
+    activeExternalProvider?.enablePromptCaching !== false;
   // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const maxTokensMax = isExternalModel
@@ -1074,15 +1099,20 @@ export function ChatSettingsPanel({
 
   useEffect(() => () => promptObserverRef.current?.disconnect(), []);
 
-  const settingsScrollRef = useRef<HTMLDivElement>(null);
+  // Settings dissolve at whichever edge they run past, as on Images and Video.
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
 
   const settingsContent = (
     <>
       <div className="hint-on-hover flex h-full min-h-0 flex-col">
       {/* Header is outside the scroll area so the scrollbar never shifts the close button.
           Reuse the chat header metrics so the toggle stays put when the panel opens. */}
-      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[18px] pt-[var(--studio-chat-header-padding-top,11px)]">
-        {isMobile ? (
+      <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(18px*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
+        {isCompact ? (
           <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
@@ -1093,14 +1123,15 @@ export function ChatSettingsPanel({
             </span>
             <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
+                {/* Centred in the control row, as the header's open button is, so the toggle doesn't jump. */}
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="mt-[calc((var(--studio-chat-control-height,33px)-30px*var(--ui-space-scale,1))/2)] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
-                    icon={LayoutAlignRightIcon}
+                    icon={PanelRightIcon}
                     strokeWidth={1.75}
                     className="size-icon"
                   />
@@ -1119,10 +1150,14 @@ export function ChatSettingsPanel({
       </div>
 
       <div
-        ref={settingsScrollRef}
-        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+        ref={attachSettingsScroll}
+        onScroll={onSettingsScroll}
+        className={cn(
+          "run-settings-scroll panel-scroll-fade relative min-h-0 flex-1 overflow-y-auto",
+          settingsFadeClass,
+        )}
       >
-      <div className="px-[18px] pt-3">
+      <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
             <div className="flex flex-col gap-5">
@@ -1154,11 +1189,11 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length exceeds what fits in unified memory (
-                      {maxContextLength?.toLocaleString()} tokens). The GPU
-                      and the rest of the system share one pool here, so there
-                      is nothing to offload to. Lower the context, leave it on
-                      Auto, or set the KV cache to q8_0.
+                      Context length is above Studio&apos;s free-memory estimate
+                      ({maxContextLength?.toLocaleString()} tokens). It may
+                      still load, but macOS may have to compress or swap other
+                      apps and generation may slow down. Lower the context,
+                      leave it on Auto, or set the KV cache to q8_0.
                     </>
                   ) : (
                     <>
@@ -1272,7 +1307,7 @@ export function ChatSettingsPanel({
                     </DropdownMenuItem>
                     {index === BUILTIN_PRESETS.length - 1 &&
                       presets.length > BUILTIN_PRESETS.length && (
-                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-black/8 dark:bg-white/8" />
+                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
                       )}
                   </Fragment>
                 ))}
@@ -1649,7 +1684,7 @@ export function ChatSettingsPanel({
                   }}
                   placeholder="Random"
                   aria-label="Seed"
-                  className="panel-field h-8 w-[84px] shrink-0"
+                  className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
                 />
               </div>
             ) : null}
@@ -1783,7 +1818,7 @@ export function ChatSettingsPanel({
                 onChange={(event) => setSystemPromptDraft(event.target.value)}
                 placeholder="You are a helpful assistant..."
                 fieldSizing="fixed"
-                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                className="min-h-[min(calc(20rem*var(--ui-space-scale,1)),48dvh)] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
                 rows={14}
               />
             </div>
@@ -1826,10 +1861,10 @@ export function ChatSettingsPanel({
     </>
   );
 
-  if (isMobile) {
+  if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[18rem] p-0 font-heading">
+        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
@@ -1849,13 +1884,11 @@ export function ChatSettingsPanel({
       data-slot="chat-settings-panel"
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
-        open
-          ? "w-(--chat-settings-width) border-l border-sidebar-border"
-          : "w-0 overflow-hidden",
+        open ? "w-(--chat-settings-width)" : "w-0 overflow-hidden",
       )}
       style={
         {
-          "--chat-settings-width": `${settingsWidth}px`,
+          "--chat-settings-width": `${settingsWidth * settingsScale}px`,
           height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
           marginTop: "var(--studio-custom-titlebar-height, 0px)",
         } as CSSProperties
@@ -1869,13 +1902,14 @@ export function ChatSettingsPanel({
         stored={settingsStored}
         min={CHAT_SETTINGS_WIDTH_MIN}
         max={settingsMax}
+        scale={settingsScale}
         clamp={clampChatSettingsWidth}
         setWidth={setSettingsWidth}
         resetWidth={resetSettingsWidth}
         onToggle={() => onOpenChange?.(!open)}
         target={() => asideRef.current}
         cssVar="--chat-settings-width"
-        measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
+        measure={() => (asideRef.current?.getBoundingClientRect().width ?? 0) / settingsScale}
         label={t("shell.aria.resizeRunSettings")}
         toggleLabel={t("shell.aria.openRunSettings")}
         collapseHint={t("shell.resize.collapse")}
@@ -1884,7 +1918,14 @@ export function ChatSettingsPanel({
         dataSlot="chat-settings-resize-handle"
       />
       ) : null}
-      <div className="h-full w-full overflow-hidden">{settingsContent}</div>
+      <div
+        className={cn(
+          "h-full w-full overflow-hidden",
+          open && "border-l border-panel-edge",
+        )}
+      >
+        {settingsContent}
+      </div>
     </aside>
   );
 }
@@ -1995,7 +2036,9 @@ function NudgeToolCallsToggle() {
 
 function ConfirmToolCallsToggle() {
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
 
   return (
     <div className="flex min-h-8 items-center justify-between gap-3">
@@ -2008,7 +2051,8 @@ function ConfirmToolCallsToggle() {
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Run automatically"
-            level).
+            level); on a computer without a working OS sandbox, risky Python
+            and Terminal calls still ask.
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
@@ -2021,7 +2065,17 @@ function ConfirmToolCallsToggle() {
       <Switch
         className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
-        onCheckedChange={setConfirmToolCalls}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            setConfirmToolCalls(true);
+          } else {
+            // Same path as picking "Run automatically": offer the setup when there is no
+            // working OS sandbox instead of switching silently.
+            void pickSandboxedMode(setPermissionMode, () =>
+              setSandboxSetupOpen(true),
+            );
+          }
+        }}
         disabled={permissionMode === "full"}
       />
     </div>
@@ -2045,7 +2099,7 @@ function BypassPermissionsToggle() {
       {/* Full width, styled like the panel selects/preset input. */}
       <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
-        <span className="text-ui-11 text-bypass">
+        <span className="text-ui-11 text-muted-foreground">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}

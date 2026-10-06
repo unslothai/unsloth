@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 
 _backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend not in sys.path:
@@ -142,6 +143,58 @@ def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
     )
     payload = _call({"input": "alpha", "model": "org/E-GGUF"})
     assert payload == {"data": [{"embedding": [0.5]}]}
+
+
+@pytest.mark.parametrize("encoding_format", ["float", "base64"])
+@pytest.mark.parametrize("dimensions, status", [(2, 200), (256, 400)])
+def test_resident_embedding_gguf_checks_dimensions_against_its_width(
+    studio_embedder, encoding_format, dimensions, status
+):
+    import httpx
+
+    forwarded = []
+
+    class _Client:
+        async def post(
+            self,
+            *_args,
+            json = None,
+            **_kwargs,
+        ):
+            forwarded.append(json)
+            vector = [0.5, 0.5]
+            if encoding_format == "base64":
+                vector = base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode()
+            return httpx.Response(200, json = {"data": [{"embedding": vector}]})
+
+        async def aclose(self):
+            return None
+
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    body = {
+        "input": "alpha",
+        "model": "org/E-GGUF",
+        "encoding_format": encoding_format,
+        "dimensions": dimensions,
+    }
+    if status == 200:
+        _call(body)
+    else:
+        error = _http_error(body)
+        assert error.status_code == 400
+        assert "'dimensions' is not supported" in error.detail
+    assert "dimensions" not in forwarded[0]
 
 
 def test_base64_encoding_format(studio_embedder):
@@ -1103,8 +1156,9 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
             await asyncio.sleep(0.01)
             if calls["n"] == cap:
                 break
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(HTTPException) as exc:
             await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert exc.value.status_code == 499
         assert calls["n"] == cap
         gate.set()
         await asyncio.gather(*blockers)
@@ -1191,8 +1245,9 @@ def test_disconnected_client_is_dropped_even_with_a_free_permit(studio_embedder)
     )
 
     async def run():
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(HTTPException) as exc:
             await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert exc.value.status_code == 499
         assert calls == []
         response = await inference_route.openai_embeddings(_Request({"input": "later"}), "t")
         assert response.status_code == 200

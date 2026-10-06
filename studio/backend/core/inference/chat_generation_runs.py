@@ -18,7 +18,7 @@ from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
-from utils.account_context import run_as
+from utils.account_context import current_account_id, run_as
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
 from state import active_generations
@@ -26,9 +26,8 @@ from storage import chat_generation_runs_db as db
 
 logger = get_logger(__name__)
 _EVENT_BATCH_SIZE = 16
-_EVENT_BATCH_MIN_SIZE = 2
-_EVENT_BATCH_SECONDS = 0.1
-_EVENT_SINGLE_FLUSH_SECONDS = 1.0
+# Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
+_EVENT_FLUSH_SECONDS = 1 / 60
 _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,
 # and the only question is whether shutdown returns.
@@ -37,9 +36,8 @@ _SHUTDOWN_CANCEL_SECONDS = 5.0
 # force-kills the backend after five seconds.
 _SWEEP_SHUTDOWN_SECONDS = 0.5
 # A durable run sets cancel_on_disconnect=False, so reaping is keyed on progress rather than on connectedness. The
-# default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S, the request path's own first-token budget: a lease older
-# than that cannot be legitimate prefill, and slow decode is safe at any speed. A century: clear of any real lease, far
-# below where integer milliseconds overflow.
+# default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S; prefill renews via `: prefill-progress`, decode via chunks.
+# A century: clear of any real lease, far below where integer milliseconds overflow.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
 # The longest admission keep-alive cadence worth deriving a lease from. A day already means the queue never reports,
 # and tripling it stays far inside _MAX_ENV_SECONDS.
@@ -66,7 +64,14 @@ class _SSEDecoder:
         return values
 
 
-def _background_request(app: Any, run_id: str, cancel_event: threading.Event) -> Request:
+def _background_request(
+    app: Any,
+    run_id: str,
+    cancel_event: threading.Event,
+    timezone_headers: dict[str, str] | None = None,
+    *,
+    via_api_key: bool | None = None,
+) -> Request:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -80,11 +85,18 @@ def _background_request(app: Any, run_id: str, cancel_event: threading.Event) ->
             (b"x-unsloth-generation-run", run_id.encode("ascii", "ignore")),
             # Durable runs replay their event log to the UI, which needs the Unsloth control frames (see routes.inference).
             (b"x-unsloth-events", b"1"),
+            *(
+                (name.encode("latin-1"), value.encode("latin-1"))
+                for name, value in (timezone_headers or {}).items()
+            ),
         ],
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
-        "state": {"generation_cancel_event": cancel_event},
+        "state": {
+            "generation_cancel_event": cancel_event,
+            "api_monitor_via_api_key": via_api_key,
+        },
     }
 
     async def receive():
@@ -387,6 +399,10 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
+# A server-side tool still running. Rate limited like the wait marker.
+_TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
+# Prefill advancing while prompt_progress is dropped; renews the lease like the tool heartbeat.
+_PREFILL_PROGRESS_MARKER = ": prefill-progress"
 
 
 def _minimum_lease_seconds() -> float:
@@ -493,6 +509,35 @@ class ChatGenerationSupervisor:
                 pass
             return True
         cancel_event = threading.Event()
+        # Durable marker read by state.tool_approvals.wait_tool_decision: a confirm-mode ("ask") call
+        # parked mid-run waits for the returning session (resolved by approval_id) instead of the
+        # 3600s ceiling a browser-owned run uses. In-memory only, so a backend restart still loses
+        # the slot. Two things end an abandoned park, whichever comes first:
+        #   1. the park ceiling itself, UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S, default 300s. The gate
+        #      denies, the model is told the call timed out unanswered and adapts, and the run carries
+        #      on. A user who returns after that finds the call already refused, not still waiting.
+        #      The ceiling counts time with NOBODY WATCHING: durable means cancel_on_disconnect is
+        #      off, not that the tab is gone, so a user reading the card keeps the full
+        #      _DECISION_TIMEOUT. durable_run_id is how the gate asks (state/run_subscribers.py).
+        #   2. the lease sweeper, for a producer wedged before it ever reaches the gate. Parking does
+        #      not renew the progress lease, so once progress has aged past the lease timeout
+        #      reconcile_runs settles the run as interrupted and supervisor.cancel() sets THIS event,
+        #      which wait_tool_decision polls at 500ms.
+        # Either way the waiter returns deny and pops its own _pending slot. Note what the ceiling
+        # does NOT bound: it ends one approval WAIT, not the run. The loop appends the denial as a
+        # tool message and keeps generating, so the InferenceActivityReservation below is released by
+        # the producer unwinding and by nothing else. A turn that parks on several calls in a row can
+        # therefore hold it for several ceilings, and the progress between them renews the lease. The
+        # sweeper is the only bound on a producer that stops making progress at all.
+        cancel_event.durable = True
+        cancel_event.durable_run_id = run_id
+        # Same scope ActiveGeneration captures below: the id alone is not unique across accounts.
+        cancel_event.durable_account_id = current_account_id() or ""
+        # Re-arming the approval counter alone is not enough: parking makes no progress, so the
+        # sweeper settles the run at the lease timeout (1200s) and cancels the wait, capping an
+        # ATTENDED deliberation near 20 minutes. A watching user is not the wedged producer the
+        # lease exists to reap.
+        cancel_event.renew_lease = lambda: db.touch_progress(run_id)
         activity = InferenceActivityReservation()
         activity.reserve()
         registration = active_generations.ActiveGeneration(
@@ -659,6 +704,8 @@ class ChatGenerationSupervisor:
         last_flush = time.monotonic()
         finish_reason: str | None = None
         error: str | None = None
+        # Sent on its own chunk, since the finish chunk still reads `stop`.
+        quote_cut = False
         saw_done = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
@@ -710,13 +757,18 @@ class ChatGenerationSupervisor:
 
                 from routes.inference import produce_openai_chat_completions
 
-                payload = ChatCompletionRequest.model_validate(run["requestPayload"])
+                request_payload = dict(run["requestPayload"])
+                timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
+                via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
+                payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(self.app, run_id, cancel_event),
+                    _background_request(
+                        self.app, run_id, cancel_event, timezone_headers, via_api_key = via_api_key
+                    ),
                     owner,
                     cancel_on_disconnect = False,
                 )
@@ -731,15 +783,7 @@ class ChatGenerationSupervisor:
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
                 timeout = (
-                    max(
-                        0.0,
-                        (
-                            _EVENT_BATCH_SECONDS
-                            if len(pending) >= _EVENT_BATCH_MIN_SIZE
-                            else _EVENT_SINGLE_FLUSH_SECONDS
-                        )
-                        - (time.monotonic() - last_flush),
-                    )
+                    max(0.0, _EVENT_FLUSH_SECONDS - (time.monotonic() - last_flush))
                     if pending
                     else None
                 )
@@ -761,15 +805,16 @@ class ChatGenerationSupervisor:
                     break
                 next_raw_task = asyncio.create_task(iterator.__anext__())
                 text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # Admission comments are progress; plain keep-alives are not. A queued run only emits `:
-                # admission-wait`, which _SSEDecoder drops, so nothing renewed the lease and a healthy queue reaped its
-                # own runs. `: keep-alive` is the opposite signal, emitted when the generator has produced NOTHING, so
-                # renewing on any byte would keep a wedged run alive forever. Rate limited because chunk traffic already
-                # renews through append_events.
+                # Admission / tool / prefill comments are progress (_SSEDecoder drops them); `: keep-alive`
+                # means nothing was produced, so renewing on it would keep a wedged run alive forever.
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text:
+                elif (
+                    _ADMISSION_WAIT_MARKER in text
+                    or _TOOL_HEARTBEAT_MARKER in text
+                    or _PREFILL_PROGRESS_MARKER in text
+                ):
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
@@ -787,10 +832,11 @@ class ChatGenerationSupervisor:
                     pending.append(("chunk", chunk, db.now_ms()))
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
+                    quote_cut = quote_cut or chunk.get("quote_cut") is True
                     now = time.monotonic()
-                    if len(pending) >= _EVENT_BATCH_SIZE or (
-                        len(pending) >= _EVENT_BATCH_MIN_SIZE
-                        and now - last_flush >= _EVENT_BATCH_SECONDS
+                    if (
+                        len(pending) >= _EVENT_BATCH_SIZE
+                        or now - last_flush >= _EVENT_FLUSH_SECONDS
                     ):
                         await asyncio.to_thread(
                             db.append_events,
@@ -832,6 +878,7 @@ class ChatGenerationSupervisor:
                 finish_reason = finish_reason,
                 error = error,
                 pending_events = pending,
+                quote_cut = quote_cut,
             )
             pending = []
         except asyncio.CancelledError:

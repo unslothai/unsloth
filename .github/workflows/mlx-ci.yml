@@ -79,6 +79,10 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'unsloth-cli.py'
+      - 'unsloth_cli/_inference.py'
+      - 'unsloth_cli/commands/train.py'
+      - 'unsloth_cli/tests/test_train_mlx_ddp_launch.py'
       # The capability verdict is decided across these three: hardware/** measures it,
       # mlx_repair.py says whether a self-heal can still overturn it, and main.py holds
       # it back while one can. main.py is the studio's front door and is edited often,
@@ -102,6 +106,31 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
+      # The prebuilt llama.cpp step runs studio/install_llama_prebuilt.py by path and
+      # fetches the GGUF through hf-download-with-retry.sh. The installer imports
+      # prebuilt_core.py and nvidia_probe.py beside it, and
+      # backend.utils.prebuilt.llama_backend and backend.utils.auth_safe (with the
+      # vendored truststore) from the backend, so these decide which bundle it installs.
+      # The job also pip installs studio.txt and the repo itself, and its pytest runs
+      # load tests/conftest.py, which loads tests/_shared.
+      - '.github/scripts/hf-download-with-retry.sh'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/requirements/studio.txt'
+      - 'pyproject.toml'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
   push:
     branches: [main]
     paths:
@@ -110,6 +139,10 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
+      - 'unsloth-cli.py'
+      - 'unsloth_cli/_inference.py'
+      - 'unsloth_cli/commands/train.py'
+      - 'unsloth_cli/tests/test_train_mlx_ddp_launch.py'
       - 'studio/backend/main.py'
       - 'studio/backend/utils/mlx_repair.py'
       - 'studio/backend/tests/test_mlx_inference_backend.py'
@@ -120,6 +153,31 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
+      # The prebuilt llama.cpp step runs studio/install_llama_prebuilt.py by path and
+      # fetches the GGUF through hf-download-with-retry.sh. The installer imports
+      # prebuilt_core.py and nvidia_probe.py beside it, and
+      # backend.utils.prebuilt.llama_backend and backend.utils.auth_safe (with the
+      # vendored truststore) from the backend, so these decide which bundle it installs.
+      # The job also pip installs studio.txt and the repo itself, and its pytest runs
+      # load tests/conftest.py, which loads tests/_shared.
+      - '.github/scripts/hf-download-with-retry.sh'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/requirements/studio.txt'
+      - 'pyproject.toml'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -324,6 +382,14 @@ jobs:
         run: |
           python -m pytest -v --tb=short \
             tests/studio/test_mlx_training_worker_behaviors.py
+
+      - name: MLX CLI DDP tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio/backend
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          python -m pytest -v --tb=short \
+            unsloth_cli/tests/test_train_mlx_ddp_launch.py
 
       # The inference backend's numerical tests importorskip mlx, so they skip on
       # studio-backend-ci.yml's ubuntu runner and only ever execute here. Run from

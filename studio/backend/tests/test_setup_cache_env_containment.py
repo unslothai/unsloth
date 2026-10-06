@@ -10,9 +10,13 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
+import stat
+import string
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -118,12 +122,58 @@ _TOOLCHAIN_PINNED = (
 )
 
 
+def _a_temp_root_the_policy_accepts(monkeypatch, tmp_path):
+    """A temporary root the fallback will actually publish into, on either platform.
+
+    _holding_dir_is_safe asks POSIX mode bits on Linux and macOS, which any directory under
+    tmp_path satisfies, but on Windows there is no ownership to read and it accepts exactly one
+    root: %LOCALAPPDATA%\\Temp. A test that simply pointed gettempdir at tmp_path therefore
+    measured the refusal instead of the fallback, and two of them asserted the fallback was
+    published and failed on windows-latest while passing here. So move LOCALAPPDATA as well,
+    which keeps everything inside tmp_path and exercises the real rule rather than skipping it.
+    """
+    root = tmp_path / "Temp"
+    root.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(root))
+    return root
+
+
+def _as_the_compiler_sees_it(path):
+    """The path as cpp_builder puts it on the command line.
+
+    normalize_path_separator rewrites os.sep to "/" on Windows before the command is built, so a
+    Windows tmp_path measured raw would report every character as mangled: the separators alone
+    are enough for shlex to eat. Measuring the raw path made the whole sweep fail on
+    windows-latest while passing on Linux, which is the harness being wrong, not the guard.
+    """
+    return str(path).replace(os.sep, "/") if os.name == "nt" else str(path)
+
+
+def _assert_no_unparseable_pin(sr, refused_root):
+    """Whatever the resolver published for the toolchain keys, a compiler must be able to read
+    it, and it must not sit inside the root we just refused.
+
+    The rule is not "unset". torch's own fallback is <gettempdir>/torchinductor_<login> and it
+    sanitises only [\\/:*?"<>|], so an o'brien or First Last login lands back on the character
+    that caused the refusal. Unset is only acceptable when the temporary directory is no better.
+    """
+    for key in _TOOLCHAIN_PINNED:
+        value = os.environ.get(key)
+        if value is None:
+            continue
+        assert value.strip(), f"{key} was left blank, which Inductor reads as a relative path"
+        assert not sr.toolchain_path_unparseable(value), f"{key} was pinned to {value!r}"
+        assert not value.startswith(str(refused_root)), f"{key} stayed inside {refused_root}"
+
+
 def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypatch, tmp_path):
     """ "C:\\Users\\First Last" is an ordinary Windows account name, so the DEFAULT Studio root
     contains a space for a large share of installs. Before this file pinned these, Inductor used
-    its own whitespace-free temporary directory and the build worked; pinning it into a spaced
-    root broke torch.compile outright. Unset is the behaviour that shipped, so that is the
-    fallback: the rest of the caches, which nobody pastes into a command line, still move."""
+    its own temporary directory and the build worked; pinning it into a spaced root broke
+    torch.compile outright. The refusal now publishes a parseable directory rather than hoping
+    torch's own default is one, since for a First Last login it is not. The rest of the caches,
+    which nobody pastes into a command line, still move."""
     spaced = tmp_path / "my home" / "studio"
     spaced.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
@@ -131,15 +181,15 @@ def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypa
 
     sr._setup_cache_env()
 
-    for key in _TOOLCHAIN_PINNED:
-        assert key not in os.environ, f"{key} was pinned to a path with a space"
+    _assert_no_unparseable_pin(sr, spaced)
     # Non-vacuity, and the point of the guard being narrow: everything else is still contained.
     for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "UNSLOTH_COMPILE_LOCATION"):
         assert os.environ[key].startswith(str(spaced.parent)), key
 
 
 def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_path):
-    """The other half of the guard: it must fire on whitespace and nothing else."""
+    """The other half of the guard: it must fire on a path a compiler cannot take, not on
+    every path."""
     plain = tmp_path / "plain_home" / "studio"
     plain.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(plain))
@@ -151,16 +201,568 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
         assert os.environ.get(key, "").startswith(str(plain)), key
 
 
-def test_an_explicit_spaced_compiler_cache_is_left_alone(monkeypatch, tmp_path):
-    """Only a default we invented is ours to withhold. A caller who set the variable chose it,
-    and silently dropping it would send their cache somewhere they did not ask for."""
-    chosen = tmp_path / "their choice"
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("o'brien", id = "an apostrophe, which shlex reads as an opening quote"),
+        pytest.param(
+            'say"hi',
+            id = "a double quote",
+            marks = pytest.mark.skipif(
+                os.name == "nt",
+                reason = "illegal in an NTFS name, so the fixture cannot be created",
+            ),
+        ),
+    ],
+)
+def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
+    name, monkeypatch, tmp_path
+):
+    """Whitespace was the only character the guard knew, and a quote is worse than a space: in
+    POSIX mode shlex swallows the rest of the command into one argument and deletes the quote,
+    so the build fails somewhere less obvious than a split path. "/home/o'brien" is an ordinary
+    account name."""
+    quoted = tmp_path / name / "studio"
+    quoted.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(quoted))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    _assert_no_unparseable_pin(sr, quoted)
+    # Non-vacuity: the caches nobody pastes into a command line still move.
+    for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "UNSLOTH_COMPILE_LOCATION"):
+        assert os.environ[key].startswith(str(quoted.parent)), key
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "on Windows the separator is not an escape")
+def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatch, tmp_path):
+    """Legal in a POSIX filename and an escape to shlex, so the character is eaten and the
+    compiler is handed a path that does not exist. Windows is exempt because cpp_builder
+    rewrites the separator to "/" before it builds the command."""
+    odd = tmp_path / "a\\b" / "studio"
+    odd.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(odd))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    _assert_no_unparseable_pin(sr, odd)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "plain",
+        "my dir",
+        "o'brien",
+        'say"hi',
+        "a\tb",
+        pytest.param(
+            "a\\b",
+            marks = pytest.mark.skipif(
+                os.name == "nt",
+                reason = "cpp_builder rewrites the separator before building the command",
+            ),
+        ),
+    ],
+)
+def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp_path):
+    """The test that keeps the character list honest. Rather than restating the predicate, this
+    builds the command shape cpp_builder builds and asks shlex.split whether the path comes back
+    whole, then requires the predicate to have said so. A character added to one and not the
+    other fails here."""
+    path = _as_the_compiler_sees_it(tmp_path / name / "cache" / "torchinductor")
+    command = f"g++ {path}/main.cpp -o {path}/main.so"
+    sr = _load_storage_roots()
+
+    try:
+        survives = shlex.split(command) == ["g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
+    except ValueError:
+        survives = False  # an odd number of quotes raises rather than mangling
+
+    assert sr.toolchain_path_unparseable(path) is not survives, (
+        f"{name!r}: predicate says {sr.toolchain_path_unparseable(path)}, "
+        f"shlex.split round trip says {survives}"
+    )
+
+
+def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
+    """The invariant that actually protects a user, swept over every printable ASCII character
+    plus the whitespace Python recognises and shlex does not.
+
+    The test above pins six characters both ways. This one allows the predicate to be too
+    careful and forbids it being not careful enough, which is the only direction that breaks a
+    build. It is deliberately one-sided: str.isspace() is true for a no-break space and the
+    other Unicode spaces, while shlex splits on ASCII whitespace only, so the predicate refuses
+    seven paths a compiler would in fact have accepted. That costs containment for those roots
+    and nothing else, it predates this file, and closing it would mean re-deriving shlex's own
+    whitespace set here."""
+    sr = _load_storage_roots()
+    specials = list(string.printable) + [" ", " ", " ", "　", " ", "é"]
+    if os.name == "nt":
+        specials.remove("\\")  # the separator, rewritten to "/" before the command is built
+
+    leaked = []
+    for char in specials:
+        path = f"{_as_the_compiler_sees_it(tmp_path)}/unsloth{char}root/cache/torchinductor"
+        command = f"g++ {path}/main.cpp -o {path}/main.so"
+        try:
+            survives = shlex.split(command) == ["g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
+        except ValueError:
+            survives = False
+        if not survives and not sr.toolchain_path_unparseable(path):
+            leaked.append(char)
+
+    assert leaked == [], (
+        "these characters would be pinned into a compiler command line that mangles them: "
+        + ", ".join(repr(c) for c in leaked)
+    )
+
+
+def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatch, tmp_path):
+    """Leaving the variable unset is not automatically safe, which is the whole reason this
+    branch publishes something.
+
+    torch's default is <gettempdir>/torchinductor_<login>, sanitised against [\\\\/:*?"<>|] only,
+    so an o'brien or a First Last login is handed back the character that caused the refusal
+    (torch/_inductor/runtime/cache_dir_utils.py::default_cache_dir). The replacement is named
+    from a hex digest, so it cannot carry one itself, and it is keyed on the path we wanted, so
+    the same install returns to the same cache every launch."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
+
+    sr._setup_cache_env()
+    first = os.environ["TORCHINDUCTOR_CACHE_DIR"]
+
+    assert not sr.toolchain_path_unparseable(first)
+    assert first.startswith(str(temp_root))
+    assert Path(first).is_dir()
+
+    # Stable: a cache that moved every launch would be a cold compile every launch.
+    for key in _TOOLCHAIN_PINNED:
+        monkeypatch.delenv(key, raising = False)
+    sr._setup_cache_env()
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == first
+
+
+def _fallback_path(sr, key, intended):
+    """The exact path the resolver will choose, asked OF the resolver.
+
+    Recomputing the digest here duplicated the naming rule, and the moment the account was
+    folded into it these fixtures silently stopped colliding with the real name: the planted
+    directory sat unused and the tests passed while proving nothing."""
+    return Path(sr._parseable_toolchain_fallback(key, intended))
+
+
+@pytest.mark.parametrize(
+    "occupy",
+    [
+        pytest.param("file", id = "the name is already a regular file"),
+        pytest.param(
+            "readonly",
+            id = "the directory exists but cannot be written",
+            marks = pytest.mark.skipif(
+                os.name == "nt",
+                reason = "a read-only bit does not stop a write on Windows",
+            ),
+        ),
+    ],
+)
+def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_path):
+    """The fallback gets the same probe as any other toolchain path.
+
+    torch treats the value as authoritative and never reconsiders, so publishing a name that is
+    a regular file, or a directory it cannot write into, fails every build rather than the one
+    case this branch exists to prevent. mkdir(exist_ok = True) cannot answer it: it raises
+    FileExistsError for the file and says nothing at all about writability."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
+
+    # Occupy the exact name the fallback will choose, derived the way the resolver derives it.
+    intended = str(sr.cache_root() / "torchinductor")
+    squatter = _fallback_path(sr, "TORCHINDUCTOR_CACHE_DIR", intended)
+    if occupy == "file":
+        squatter.write_text("not a directory", encoding = "utf-8")
+    else:
+        squatter.mkdir()
+        squatter.chmod(0o500)
+
+    try:
+        sr._setup_cache_env()
+    finally:
+        if occupy == "readonly":
+            squatter.chmod(0o700)
+
+    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the temporary root is per-account on Windows")
+@pytest.mark.parametrize(
+    "plant",
+    [
+        pytest.param("world-writable", id = "a directory another user left writable"),
+        pytest.param("symlink", id = "a symlink planted at the name"),
+    ],
+)
+def test_a_fallback_another_user_could_have_planted_is_refused(plant, monkeypatch, tmp_path):
+    """The fallback sits in the SHARED temporary root under a name derived from the install, so
+    it is predictable to anyone on the host. A write probe alone accepted a directory another
+    local user had pre-created world-writable, and TORCH_EXTENSIONS_DIR is where torch loads
+    compiled .so files from, so that is code execution in the Studio process rather than an
+    untidy cache. Ownership cannot be staged here without a second uid, so these two cover the
+    permission bits and the symlink; the uid check is exercised by inspection only."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
+
+    intended = str(sr.cache_root() / "torch-extensions" / sr._torch_runtime_tag())
+    planted = _fallback_path(sr, "TORCH_EXTENSIONS_DIR", intended)
+    if plant == "world-writable":
+        planted.mkdir(mode = 0o777)
+        planted.chmod(0o777)
+    else:
+        (shared / "elsewhere").mkdir()
+        planted.symlink_to(shared / "elsewhere")
+
+    sr._setup_cache_env()
+
+    assert "TORCH_EXTENSIONS_DIR" not in os.environ
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX permission bits")
+def test_the_fallback_it_creates_is_closed_to_everyone_else(monkeypatch, tmp_path):
+    """The other half: when nothing is in the way it must not create a cache the rest of the
+    host can write into either."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    shared = tmp_path / "shared-tmp"
+    shared.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
+
+    sr._setup_cache_env()
+
+    published = Path(os.environ["TORCH_EXTENSIONS_DIR"])
+    mode = published.stat().st_mode
+    assert not mode & (stat.S_IWGRP | stat.S_IWOTH), oct(mode & 0o777)
+    assert published.stat().st_uid == os.geteuid()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
+@pytest.mark.parametrize(
+    "mode, published",
+    [
+        pytest.param(0o755, True, id = "a private holding directory"),
+        pytest.param(0o1777, True, id = "world-writable WITH the sticky bit, which is /tmp"),
+        pytest.param(0o1775, True, id = "group-writable WITH the sticky bit, owned by us"),
+        pytest.param(0o777, False, id = "world-writable and NOT sticky"),
+        pytest.param(0o775, False, id = "group-writable and NOT sticky"),
+    ],
+)
+def test_the_holding_directory_decides_whether_the_fallback_can_be_swapped(
+    mode, published, monkeypatch, tmp_path
+):
+    """Validating the cache directory settles who may write inside it and nothing else.
+
+    Renaming an entry is authorised by the write bit on its PARENT, and the sticky bit is what
+    narrows that to the entry's owner. So a shared temporary root that is writable and not
+    sticky lets another account rename ours aside and leave theirs at the same name between the
+    check and the compiler reading the variable. /tmp is 1777 and fine; a TMPDIR pointed at an
+    ordinary shared directory is not."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(mode)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(shared))
+
+    try:
+        sr._setup_cache_env()
+    finally:
+        shared.chmod(0o755)
+
+    assert ("TORCH_EXTENSIONS_DIR" in os.environ) is published
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership semantics")
+def test_an_ancestor_owned_by_another_account_is_refused(tmp_path):
+    """A mode is not a promise, because changing it belongs to the owner.
+
+    A 0755 holding directory owned by another ordinary account, with our 0700 temporary root
+    inside it, used to pass on today's write bits alone. Its owner can open it whenever it
+    likes, rename the root away and leave a tree holding the predictable cache name. So an
+    ancestor has to be held by this account or by root as well as be closed to others. The
+    foreign owner is applied through os.stat, since changing it for real needs privileges this
+    test does not have; everything else about the tree is real.
+    """
+    from utils.paths import storage_roots
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    os.chmod(outer, 0o755)
+    root = outer / "victim-tmp"
+    root.mkdir()
+    os.chmod(root, 0o700)
+
+    assert (
+        storage_roots._holding_dir_is_safe(root) is True
+    ), "the same tree, ours throughout, is what the refusal below has to be measured against"
+
+    real_stat = os.stat
+
+    def foreign_owner(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if str(path) != str(outer):
+            return info
+        fields = list(info)[:10]
+        fields[4] = os.geteuid() + 1
+        return os.stat_result(tuple(fields))
+
+    os.stat = foreign_owner
+    try:
+        assert storage_roots._holding_dir_is_safe(root) is False
+    finally:
+        os.stat = real_stat
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX symlink and mode semantics")
+def test_a_temporary_root_reached_through_a_swappable_link_is_refused(tmp_path, monkeypatch):
+    """A symlink is a name, and a name in a directory another account can write is not ours.
+
+    Resolving the holding directory first discarded the lexical path, so a link in a 0777
+    directory was judged on the private directory it pointed at while staying replaceable.
+    Both chains are walked now, which also catches the reverse, a link in a safe directory
+    aimed into a shared tree. Symlinked roots are not refused outright: /tmp and /var are
+    symlinks on macOS, so the third case below has to keep passing.
+    """
+    from utils.paths.storage_roots import _holding_dir_is_safe
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o777)
+    private = tmp_path / "private"
+    private.mkdir()
+    os.chmod(private, 0o700)
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    os.chmod(safe, 0o755)
+
+    swappable = shared / "tmp-link"
+    swappable.symlink_to(private)
+    assert _holding_dir_is_safe(swappable) is False
+
+    aimed_at_shared = safe / "bad-link"
+    target = shared / "target"
+    target.mkdir()
+    os.chmod(target, 0o700)
+    aimed_at_shared.symlink_to(target)
+    assert _holding_dir_is_safe(aimed_at_shared) is False
+
+    held_safely = safe / "ok-link"
+    held_safely.symlink_to(private)
+    assert (
+        _holding_dir_is_safe(held_safely) is True
+    ), "a symlinked temporary root in a directory nobody else can write is still usable"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX rename permissions")
+def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_path):
+    """Checking one level is not enough.
+
+    TMPDIR=/shared/victim-tmp at 0700 looks private, but if /shared is 0777 another account can
+    rename the whole root away and leave a tree carrying the predictable cache name in its
+    place, which substitutes the artifacts just as effectively as swapping the leaf. Every
+    ancestor is asked, bounded by the path's own depth."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    private_root = shared / "victim-tmp"
+    private_root.mkdir(mode = 0o700)
+    sr = _load_storage_roots()
+
+    shared.chmod(0o777)
+    try:
+        assert sr._holding_dir_is_safe(private_root) is False
+        # The leaf alone still looks fine, which is exactly why the walk is needed.
+        assert sr._dir_is_not_swappable(private_root) is True
+        shared.chmod(0o755)
+        assert sr._holding_dir_is_safe(private_root) is True
+    finally:
+        shared.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX sticky semantics")
+def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tmp_path):
+    """Sticky is not a blanket safe answer.
+
+    It narrows removal and rename of a child to the child's owner, the DIRECTORY's owner, and a
+    privileged process, so a sticky shared directory belonging to another ordinary account still
+    lets that account swap our cache after it was validated. /tmp passes because root owns it,
+    and that is the case this branch is actually for. Staged by reporting a foreign uid for the
+    parent, since a directory owned by another account cannot be created here."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o1777)
+    sr = _load_storage_roots()
+    real_stat = sr.os.stat
+    foreign = os.geteuid() + 4242
+
+    def lying_stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if str(path) == str(shared):
+            return os.stat_result(
+                (
+                    info.st_mode,
+                    info.st_ino,
+                    info.st_dev,
+                    info.st_nlink,
+                    foreign,
+                    info.st_gid,
+                    info.st_size,
+                    int(info.st_atime),
+                    int(info.st_mtime),
+                    int(info.st_ctime),
+                )
+            )
+        return info
+
+    monkeypatch.setattr(sr.os, "stat", lying_stat)
+    assert sr._holding_dir_is_safe(shared) is False
+
+    monkeypatch.setattr(sr.os, "stat", real_stat)
+    assert sr._holding_dir_is_safe(shared) is True
+
+
+def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeypatch, tmp_path):
+    """os.stat reports no ownership on Windows and the 0o700 handed to os.mkdir buys nothing
+    there, so a redirected %TEMP% on a shared directory cannot be told from a private one
+    without reading ACLs. The default root under %LOCALAPPDATA%\\Temp already is per-account,
+    so that is the one accepted and a redirected root gets no fallback rather than an unverified
+    one. The predicate itself is platform independent, so it is exercised here rather than only
+    on a Windows runner."""
+    local = tmp_path / "AppData" / "Local"
+    default_temp = local / "Temp"
+    default_temp.mkdir(parents = True)
+    shared = tmp_path / "shared-temp"
+    shared.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    sr = _load_storage_roots()
+
+    assert sr._windows_temp_root_is_private(default_temp) is True
+    assert sr._windows_temp_root_is_private(shared) is False
+
+    monkeypatch.delenv("LOCALAPPDATA", raising = False)
+    assert sr._windows_temp_root_is_private(default_temp) is False
+
+    # And it is actually WIRED IN. Exercising the predicate alone left the call site untested:
+    # reverting the Windows branch to an unconditional True kept every assertion above green.
+    # Asserted on the source rather than by behaviour, because forcing os.name to "nt" makes
+    # pathlib instantiate a WindowsPath and raise before the branch is ever reached. A source
+    # check is weaker than a run, and it does fail when the call is removed, which is the one
+    # thing this is guarding.
+    import inspect
+
+    windows_branch = inspect.getsource(sr._holding_dir_is_safe).split('if os.name == "nt":')[1]
+    assert "_windows_temp_root_is_private(parent)" in windows_branch.strip().splitlines()[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the identity is the euid on POSIX")
+def test_two_accounts_under_one_temp_root_do_not_collide(monkeypatch, tmp_path):
+    """Keyed on the intended path alone, two OS accounts sharing one install derived the same
+    name. The first created it 0700 and every later account then failed the ownership check and
+    got nothing pinned, which for a login that is itself unparseable means the build fails after
+    all. The account goes into the digest, not into the visible name: a login is exactly the
+    kind of string that started this."""
+    sr = _load_storage_roots()
+    intended = "/srv/o'brien/studio/cache/torch-extensions/tag"
+
+    monkeypatch.setattr(sr.os, "geteuid", lambda: 1000)
+    mine = sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended)
+    monkeypatch.setattr(sr.os, "geteuid", lambda: 1001)
+    theirs = sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended)
+
+    assert mine and theirs and mine != theirs
+    # Still parseable, and still stable for one account across calls.
+    assert not sr.toolchain_path_unparseable(mine)
+    assert sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended) == theirs
+
+
+def test_a_refused_root_with_no_usable_temp_root_still_publishes_nothing(monkeypatch, tmp_path):
+    """The other end of the same branch. When the temporary directory carries the character too
+    there is nowhere left to point, and an unset variable is better than a broken one."""
+    refused = tmp_path / "o'brien" / "studio"
+    refused.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(tmp_path / "also'bad"))
+
+    sr._setup_cache_env()
+
+    for key in _TOOLCHAIN_PINNED:
+        assert key not in os.environ, key
+
+
+def test_an_explicit_compiler_cache_is_left_alone_when_the_builders_can_read_it(
+    monkeypatch, tmp_path
+):
+    """A caller who set the variable chose it, and a path the builders can read is carried out."""
+    chosen = tmp_path / "their-choice"
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(chosen))
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == str(chosen)
+
+
+def test_an_inherited_unreadable_compiler_cache_is_refused(monkeypatch, tmp_path):
+    """The one thing an explicit value cannot buy: a path the builders cannot paste in.
+
+    Honouring it guarantees a failed compile rather than carrying out a preference, and it
+    arrives by routes nobody chose. Windows persists the variable to the account, so an upgrade
+    inherits what the OLD setup wrote, through any shell already open and through the desktop
+    relaunch; clearing a stored copy cannot reach a process that already read it. Refusing
+    destroys nothing, the pin being process-local and the cache regenerable, which is why
+    setup.ps1 still establishes provenance before it deletes a stored value.
+    """
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "their choice"))
+    temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
+    sr = _load_storage_roots()
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
+
+    sr._setup_cache_env()
+
+    landed = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    assert landed != str(tmp_path / "their choice")
+    assert landed is not None, "a usable temporary root was available, so it should be used"
+    assert not sr.toolchain_path_unparseable(landed)
+
+
+def test_the_refusal_only_applies_to_the_toolchain_keys(monkeypatch, tmp_path):
+    """A spaced HuggingFace cache is nobody's compiler argument and stays exactly as given."""
+    chosen = tmp_path / "their choice"
+    monkeypatch.setenv("HF_HUB_CACHE", str(chosen))
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["HF_HUB_CACHE"] == str(chosen)
 
 
 def test_default_install_leaves_the_shared_hf_cache_alone(monkeypatch, tmp_path):
@@ -1130,7 +1732,10 @@ def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp
 
     sr._setup_cache_env()
 
-    assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    assert (
+        os.environ.get("TORCHINDUCTOR_CACHE_DIR") or ""
+    ).strip() != "" or "TORCHINDUCTOR_CACHE_DIR" not in os.environ
+    _assert_no_unparseable_pin(sr, spaced)
 
 
 def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_path):

@@ -43,6 +43,7 @@ from typing import Iterator, Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
@@ -356,6 +357,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     repointed at a managed scratch dir (a downloaded binary must not see the real
     home's token caches), co-located libs on the loader path, WSL system HIP first
     on WSL2 ROCm."""
+    binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
     isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
     bin_dir = str(Path(binary).parent)
@@ -368,12 +370,28 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
         for path in bundle_dir.glob(pattern)
     )
+    vendored_cuda_dirs: list[str] = []
     if has_cuda_module:
         try:
             from utils.prebuilt.runtime_libs import python_runtime_dirs
             cuda_runtime_dirs = python_runtime_dirs()
         except Exception:
             cuda_runtime_dirs = []
+        try:
+            from utils.llama_cpp_freshness import read_install_marker as read_llama_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            marker = _whisper_install_marker(binary)
+            # Slim bundles hardlink CUDA from their paired llama.cpp install; its marker holds the runtime.
+            linked_from = marker.get("linked_from") if isinstance(marker, dict) else None
+            paired_marker = (
+                read_llama_install_marker(linked_from)
+                if isinstance(linked_from, str) and linked_from
+                else None
+            )
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(paired_marker or marker)
+        except Exception:
+            vendored_cuda_dirs = []
     if sys.platform == "win32":
         var, lead = "PATH", [bin_dir, *cuda_runtime_dirs]
     elif sys.platform == "darwin":
@@ -385,7 +403,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
             lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
     existing = [p for p in env.get(var, "").split(os.pathsep) if p]
-    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))
+    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing, *vendored_cuda_dirs]))
     return env
 
 
@@ -654,12 +672,12 @@ class _GgmlDownloadState:
             detail = (stderr or b"").decode("utf-8", "replace").strip()
             logger.warning("GGUF STT download failed for %s: %s", model_id, detail)
             with self._lock:
-                self._error = f"Download failed for '{model_id}'."
+                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
-                    self._error = f"Download failed for '{model_id}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
         finally:
             if registry is not None and owner is not None:
                 registry.release_repository_owner(repo_id, owner)

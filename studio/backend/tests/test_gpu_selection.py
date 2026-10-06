@@ -33,10 +33,14 @@ from utils.hardware import (
     prepare_gpu_selection,
     resolve_requested_gpu_ids,
 )
-from utils.hardware import nvidia
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BITSANDBYTES_OPTIMIZER = "adamw_8bit"
+PAGED_BITSANDBYTES_OPTIMIZER = "paged-adamw-8bit"
+ADAMW_BITSANDBYTES_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_OPTIMIZER = "paged_adamw_32bit"
+XPU_SAFE_OPTIMIZER = "adamw_torch"
 
 
 async def _inline_to_thread(func, /, *args, **kwargs):
@@ -102,7 +106,6 @@ class _GpuCacheResetMixin:
     def tearDown(self):
         _hw_module._physical_gpu_count = None
         _hw_module._visible_gpu_count = None
-        nvidia._uuid_mask_resolution_cache.clear()
 
 
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
@@ -119,67 +122,50 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
 
-    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks_nvidia_smi_cannot_resolve(
+    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
+        with (
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [])
+
+    def _uuid_mask_ids(
         self,
+        mask,
+        smi_stdout,
+        env = None,
+        returncode = 0,
     ):
         with (
             patch.dict(
                 os.environ,
-                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                {"CUDA_VISIBLE_DEVICES": mask, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", **(env or {})},
                 clear = True,
             ),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
-            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = None),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 2),
+            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
-            self.assertEqual(get_parent_visible_gpu_ids(), [])
+            mock_run.return_value = SimpleNamespace(returncode = returncode, stdout = smi_stdout)
+            return get_parent_visible_gpu_ids(), mock_run.call_count
 
-    def test_parent_visibility_resolves_uuid_masks_via_nvidia_smi(self):
-        with (
-            patch.dict(
-                os.environ,
-                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
-                clear = True,
-            ),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
-            patch(
-                "utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = [2, 5]
-            ) as mock_resolve,
-        ):
-            self.assertEqual(get_parent_visible_gpu_ids(), [2, 5])
-            mock_resolve.assert_called_once_with(["GPU-aaa", "GPU-bbb"])
+    def test_uuid_mask_resolves_to_physical_ids_in_mask_order(self):
+        smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
+        ids, _ = self._uuid_mask_ids("GPU-2f902962-578c,GPU-d18a14b7", smi)
+        self.assertEqual(ids, [1, 0])
 
-    def test_parent_visibility_does_not_resolve_uuid_masks_on_rocm(self):
-        # ROCm has no nvidia-smi; a non-numeric mask there must stay unresolved
-        # rather than attempt an nvidia-only resolution path.
-        with (
-            patch.dict(
-                os.environ,
-                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
-                clear = True,
-            ),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
-            patch("utils.hardware.hardware.IS_ROCM", True),
-            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask") as mock_resolve,
-        ):
-            self.assertEqual(get_parent_visible_gpu_ids(), [])
-            mock_resolve.assert_not_called()
+    def test_unresolvable_uuid_mask_stays_unresolved(self):
+        smi = "0, GPU-aaa1\n1, GPU-aaa2\n"
+        for mask in ("GPU-aaa", "GPU-bbb", "MIG-aaa1", "0,GPU-aaa1", "GPU-aaa1,GPU-aaa1"):
+            with self.subTest(mask = mask):
+                self.assertEqual(self._uuid_mask_ids(mask, smi)[0], [])
+        self.assertEqual(self._uuid_mask_ids("GPU-aaa1", smi, returncode = 9)[0], [])
 
-    def test_parent_visibility_does_not_resolve_uuid_masks_off_pci_bus_id_order(self):
-        # nvidia-smi always numbers by PCI bus id; trusting its indices while
-        # CUDA_DEVICE_ORDER=FASTEST_FIRST is in effect could select the wrong
-        # physical GPU once those indices are written back to
-        # CUDA_VISIBLE_DEVICES for a worker (see the P1 review on #8917).
-        with (
-            patch.dict(
-                os.environ,
-                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "FASTEST_FIRST"},
-                clear = True,
-            ),
-            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
-            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask") as mock_resolve,
-        ):
-            self.assertEqual(get_parent_visible_gpu_ids(), [])
-            mock_resolve.assert_not_called()
+    def test_uuid_mask_not_resolved_off_pci_bus_order_or_on_rocm(self):
+        smi = "0, GPU-aaa1\n"
+        ids, calls = self._uuid_mask_ids("GPU-aaa1", smi, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"})
+        self.assertEqual((ids, calls), ([], 0))
+        with patch("utils.hardware.hardware.IS_ROCM", True):
+            self.assertEqual(self._uuid_mask_ids("GPU-aaa1", smi), ([], 0))
 
     def test_invalid_requests_raise_clear_value_errors(self):
         cases = [
@@ -251,302 +237,6 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
             self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "5,6")
             self.assertEqual(os.environ["TEST_PARENT_ENV"], "keep-me")
-
-
-class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
-    # Real UUIDs from issue #8873's own nvidia-smi output. Every fixture here
-    # keeps index == its position when rows are sorted by pci.bus_id --
-    # get_visible_gpu_utilization() and get_backend_visible_gpu_info() key
-    # their own nvidia-smi rows by index, so resolve_gpu_uuid_mask() only
-    # ever hands back nvidia-smi's own index (verified consistent with PCI
-    # order), never an independently-computed ordinal that could disagree
-    # with those other probes. The one exception is the dedicated
-    # index-mismatch test below.
-    _UUID_A = "GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50"
-    _UUID_B = "GPU-2f902962-578c-0f96-69a5-3e18679211d7"
-
-    def test_resolves_and_preserves_mask_order(self):
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
-                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            # Mask order is reversed relative to the PCI listing -- the
-            # resolved list must follow the mask, not the smi listing.
-            result = nvidia.resolve_gpu_uuid_mask([self._UUID_B, self._UUID_A])
-        self.assertEqual(result, [1, 0])
-
-    def test_fails_closed_when_nvidia_smi_index_does_not_match_pci_bus_order(self):
-        # UUID_A's PCI bus id sorts *after* UUID_B's, but nvidia-smi reports
-        # UUID_A at index 0 and UUID_B at index 1 -- an index that disagrees
-        # with PCI order. get_visible_gpu_utilization() and
-        # get_backend_visible_gpu_info() are both keyed by nvidia-smi's index
-        # elsewhere in this file, so a resolved index that doesn't match PCI
-        # order can't be trusted to line up with them; this must decline to
-        # resolve rather than guess which ordering the rest of the codebase
-        # will actually use for this host.
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:09:00.0, Disabled",
-                f"1, {self._UUID_B}, 00000000:02:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A, self._UUID_B])
-        self.assertIsNone(result)
-
-    def test_returns_none_when_a_token_does_not_match_any_device(self):
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            # e.g. a MIG instance UUID nvidia-smi's uuid/pci.bus_id query never lists.
-            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A, "MIG-not-a-root-gpu"])
-        self.assertIsNone(result)
-
-    def test_returns_none_when_nvidia_smi_fails(self):
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
-            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A])
-        self.assertIsNone(result)
-
-    def test_returns_none_when_nvidia_smi_is_missing(self):
-        with patch("utils.hardware.nvidia.subprocess.run", side_effect = FileNotFoundError()):
-            result = nvidia.resolve_gpu_uuid_mask([self._UUID_A])
-        self.assertIsNone(result)
-
-    def test_resolves_an_unambiguous_uuid_prefix(self):
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
-                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
-        self.assertEqual(result, [0])
-
-    def test_rejects_a_uuid_prefix_shared_by_two_devices(self):
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
-                "1, GPU-d18a14b7-aaaa-bbbb-cccc-000000000000, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            # Both devices share this prefix -- neither is a safe match.
-            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
-        self.assertIsNone(result)
-
-    def test_rejects_a_malformed_token_that_coincidentally_prefixes_a_uuid(self):
-        # A single-GPU host where a bare "GPU" (no trailing "-") happens to
-        # string-prefix the one UUID present must not resolve it -- "GPU" is
-        # not a valid CUDA UUID identifier and this token was never meant as one.
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            self.assertIsNone(nvidia.resolve_gpu_uuid_mask(["GPU"]))
-            self.assertIsNone(nvidia.resolve_gpu_uuid_mask(["G"]))
-
-    def test_leaves_mig_enabled_root_uuid_unresolved(self):
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:01:00.0, Enabled",
-                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            # UUID_A is MIG-enabled -- its root UUID must not resolve, even
-            # though nvidia-smi still lists it as a normal row.
-            self.assertIsNone(nvidia.resolve_gpu_uuid_mask([self._UUID_A]))
-            # UUID_B is unaffected and still resolves on its own.
-            self.assertEqual(nvidia.resolve_gpu_uuid_mask([self._UUID_B]), [1])
-
-    def test_prefix_ambiguous_with_a_mig_enabled_root_stays_unresolved(self):
-        # A normal GPU and a MIG-enabled root share the "GPU-d18a14b7" prefix.
-        # Excluding the MIG root before checking ambiguity would make this
-        # prefix look like it has exactly one candidate (the normal GPU) and
-        # resolve it -- it must instead be treated as ambiguous, the same as
-        # any prefix shared by two non-MIG cards.
-        mig_uuid = "GPU-d18a14b7-aaaa-bbbb-cccc-000000000000"
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
-                f"1, {mig_uuid}, 00000000:04:00.0, Enabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
-        self.assertIsNone(result)
-
-    def test_resolves_a_mixed_numeric_and_uuid_mask(self):
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
-                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            # "0" is validated against the queried GPUs (a real, non-negative
-            # index -- see the invalid-numeric-member tests below for what
-            # happens when it isn't); only the UUID token goes through
-            # resolution proper. Distinct physical IDs here on purpose -- see
-            # the duplicate-rejection test below for what happens when they
-            # alias the same card.
-            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
-        self.assertEqual(result, [0, 1])
-
-    def test_rejects_a_mask_that_resolves_to_duplicate_physical_ids(self):
-        # "0" and UUID_A both name physical GPU 0 -- _visible_ordinal_map()
-        # is keyed by physical ID, so a duplicate would silently collapse one
-        # of the mask's two distinct visible ordinals onto the other.
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
-        self.assertIsNone(result)
-
-    def test_rejects_a_mixed_mask_with_a_negative_numeric_member(self):
-        # Real CUDA_VISIBLE_DEVICES semantics: an invalid member (negative or
-        # out-of-range) truncates enumeration there, hiding everything listed
-        # after it. Rather than replicate that exact truncation point, this
-        # must fail the whole resolution -- falling back to relative ordinals
-        # (no explicit selection at all) rather than resolve a UUID that real
-        # CUDA parsing would never have exposed in the first place.
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
-                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["0", "-1", self._UUID_A])
-        self.assertIsNone(result)
-
-    def test_rejects_a_mixed_mask_with_an_out_of_range_numeric_member(self):
-        # "5" doesn't correspond to any GPU nvidia-smi actually reported --
-        # blindly trusting it (as opposed to the pure-numeric fast path,
-        # which never queries nvidia-smi at all to cross-check) would let a
-        # typo'd or stale index slip through resolution as if it were real.
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["5", self._UUID_A])
-        self.assertIsNone(result)
-
-    def test_rejects_a_numeric_token_that_names_a_mig_enabled_root(self):
-        # "0" numerically names the same MIG-enabled root that UUID
-        # resolution would already reject -- a mixed mask must not be able
-        # to route around that protection just by spelling the index instead
-        # of the UUID.
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_A}, 00000000:01:00.0, Enabled",
-                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_B])
-        self.assertIsNone(result)
-
-    def test_rejects_a_python_only_integer_spelling(self):
-        # int("0_0") == 0 in Python (PEP 515 digit-group underscores), but
-        # that's not a decimal GPU identifier CUDA's own parser would accept
-        # -- it must fail closed rather than be silently normalized to "0".
-        smi_output = "\n".join(
-            [
-                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
-                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
-            ]
-        )
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = nvidia.resolve_gpu_uuid_mask(["0_0", self._UUID_A])
-        self.assertIsNone(result)
-
-    def test_caches_a_resolved_mask_and_does_not_requery(self):
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        tokens = [self._UUID_A]
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            first = nvidia.resolve_gpu_uuid_mask(tokens)
-            second = nvidia.resolve_gpu_uuid_mask(tokens)
-        self.assertEqual(first, [0])
-        self.assertEqual(second, [0])
-        mock_run.assert_called_once()
-
-    def test_revalidates_a_resolved_mask_once_its_ttl_expires(self):
-        # GPU topology/MIG mode isn't provably immutable for a whole Studio
-        # session (an admin can enable MIG on a running host) -- a resolution
-        # from before that change must eventually be revalidated rather than
-        # kept forever.
-        tokens = [self._UUID_A]
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            first = nvidia.resolve_gpu_uuid_mask(tokens)
-        self.assertEqual(first, [0])
-
-        # Simulate the TTL elapsing without a real sleep: back-date the
-        # cached success's timestamp past the expiry window.
-        cache_key = tuple(tokens)
-        _value, cached_at = nvidia._uuid_mask_resolution_cache[cache_key]
-        nvidia._uuid_mask_resolution_cache[cache_key] = (
-            _value,
-            cached_at - nvidia._RESOLVED_MASK_TTL_SECONDS - 1,
-        )
-
-        # UUID_A is now MIG-enabled -- the revalidated resolution must reflect
-        # that instead of trusting the stale cached success.
-        mig_smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Enabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = mig_smi_output)
-            second = nvidia.resolve_gpu_uuid_mask(tokens)
-        self.assertIsNone(second)
-        mock_run.assert_called_once()
-
-    def test_caches_a_failed_resolution_within_the_ttl_and_does_not_requery(self):
-        tokens = [self._UUID_A]
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
-            first = nvidia.resolve_gpu_uuid_mask(tokens)
-            second = nvidia.resolve_gpu_uuid_mask(tokens)
-        self.assertIsNone(first)
-        self.assertIsNone(second)
-        mock_run.assert_called_once()
-
-    def test_retries_a_failed_resolution_once_the_ttl_expires(self):
-        tokens = [self._UUID_A]
-        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
-            first = nvidia.resolve_gpu_uuid_mask(tokens)
-        self.assertIsNone(first)
-
-        # Simulate the TTL elapsing without a real sleep: back-date the
-        # cached failure's timestamp past the expiry window.
-        cache_key = tuple(tokens)
-        _value, cached_at = nvidia._uuid_mask_resolution_cache[cache_key]
-        nvidia._uuid_mask_resolution_cache[cache_key] = (
-            _value,
-            cached_at - nvidia._FAILED_RESOLUTION_TTL_SECONDS - 1,
-        )
-
-        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            second = nvidia.resolve_gpu_uuid_mask(tokens)
-        self.assertEqual(second, [0])
-        mock_run.assert_called_once()
 
 
 class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
@@ -782,18 +472,13 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             },
         ]
         with (
-            patch.dict(
-                os.environ,
-                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
-                clear = True,
-            ),
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
             patch(
                 "utils.hardware.hardware._torch_get_device_inventory",
                 return_value = fake_torch_devices,
             ),
-            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = None),
         ):
             result = get_backend_visible_gpu_info()
 
@@ -801,33 +486,6 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(len(result["devices"]), 2)
         self.assertEqual(result["index_kind"], "relative")
-
-    def test_uuid_parent_visibility_resolves_to_physical_indices(self):
-        """A UUID mask nvidia-smi can resolve (issue #8873) must surface
-        physical indices, not fall back to relative torch ordinals."""
-        smi_output = "\n".join(
-            [
-                "0, GPU Zero, 10000",
-                "1, GPU One, 20000",
-            ]
-        )
-        with (
-            patch.dict(
-                os.environ,
-                {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
-                clear = True,
-            ),
-            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = [0, 1]),
-            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            result = get_backend_visible_gpu_info()
-
-        self.assertTrue(result["available"])
-        self.assertEqual(result["parent_visible_gpu_ids"], [0, 1])
-        self.assertEqual(result["index_kind"], "physical")
-        self.assertEqual([device["index"] for device in result["devices"]], [0, 1])
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
@@ -1281,6 +939,68 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(metadata["selected_gpu_ids"])
 
 
+class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
+    def test_an_uncovered_card_is_rejected_with_the_arch_list(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch(
+                "utils.hardware.hardware._describe_rocm_gpus",
+                return_value = ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"],
+            ),
+            patch(
+                "utils.hardware.hardware._torch_kernel_arch_tokens",
+                return_value = ["gfx1030", "gfx1034"],
+            ),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run the PyTorch build this Unsloth Studio installed, "
+                r"which has kernels for gfx1030, gfx1034 only",
+            ):
+                prepare_gpu_selection([1], model_name = "unsloth/test")
+        mock_auto_select.assert_not_called()
+
+    def test_a_covered_card_beside_an_uncovered_one_is_accepted(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            selected, metadata = prepare_gpu_selection([0], model_name = "unsloth/test")
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "explicit")
+        mock_auto_select.assert_not_called()
+
+    def test_the_refusal_names_the_arch_on_wheels_without_gcnArchName(self):
+        props = SimpleNamespace(
+            name = "AMD Radeon RX 5700 XT", gcnArchName = "", gfx_arch_name = "gfx1010:xnack-"
+        )
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", return_value = props),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"numeric_ids": [0, 1], "raw": None},
+            ),
+        ):
+            self.assertEqual(
+                _hw_module._describe_rocm_gpus([1]), ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"]
+            )
+
+    def test_a_host_where_every_card_is_covered_is_untouched(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
+        ):
+            selected, _ = prepare_gpu_selection([1], model_name = "unsloth/test")
+        self.assertEqual(selected, [1])
+
+
 class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
         backend = TrainingBackend()
@@ -1363,6 +1083,58 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(config["gpu_ids"])
         self.assertEqual(config["resolved_gpu_ids"], [0, 1])
         self.assertEqual(config["gpu_selection"]["selection_mode"], "auto")
+
+    def test_training_backend_swaps_bitsandbytes_optimizers_on_xpu(self):
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        for optimizer in (
+            DEFAULT_BITSANDBYTES_OPTIMIZER,
+            PAGED_BITSANDBYTES_OPTIMIZER,
+            ADAMW_BITSANDBYTES_OPTIMIZER,
+            PAGED_32BIT_BITSANDBYTES_OPTIMIZER,
+        ):
+            with self.subTest(optimizer = optimizer):
+                backend = TrainingBackend()
+                with (
+                    patch("core.training.training.get_device", return_value = DeviceType.XPU),
+                    patch(
+                        "core.training.training.prepare_gpu_selection",
+                        return_value = ([0], {"selection_mode": "auto"}),
+                    ) as mock_prepare_gpu_selection,
+                    patch(
+                        "core.training.training._CTX.Queue",
+                        side_effect = [dummy_queue, dummy_queue],
+                    ),
+                    patch(
+                        "core.training.training._CTX.Process", return_value = DummyProcess()
+                    ) as mock_process,
+                    patch("core.training.training.threading.Thread", return_value = DummyThread()),
+                ):
+                    backend.start_training(
+                        job_id = "test-job-xpu-optimizer",
+                        model_name = "unsloth/test",
+                        training_type = "LoRA/QLoRA",
+                        optim = optimizer,
+                        gpu_ids = None,
+                    )
+
+                config = mock_process.call_args.kwargs["kwargs"]["config"]
+                self.assertEqual(config["device_backend"], DeviceType.XPU.value)
+                self.assertEqual(config["optim"], XPU_SAFE_OPTIMIZER)
+                self.assertEqual(
+                    mock_prepare_gpu_selection.call_args.kwargs["optimizer"],
+                    XPU_SAFE_OPTIMIZER,
+                )
 
     def test_training_backend_preserves_uuid_parent_visibility_in_auto_mode(self):
         backend = TrainingBackend()
@@ -1918,6 +1690,92 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids [99]", exc_info.exception.detail)
+
+    def test_training_route_uses_xpu_safe_optimizer_for_vram_coordination(self):
+        training_route = _load_route_module(
+            "training_route_module_for_xpu_optimizer_test",
+            "routes/training.py",
+        )
+        request = TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            optim = DEFAULT_BITSANDBYTES_OPTIMIZER,
+            gpu_ids = None,
+        )
+        seen = {}
+
+        class DummyBackend:
+            current_job_id = None
+
+            def is_training_active(self):
+                return False
+
+            def start_training(self, **kwargs):
+                seen["backend_optimizer"] = kwargs["optim"]
+                kwargs["before_spawn"]()
+                return True
+
+        def _capture_training_vram_optimizer(**kwargs):
+            seen["vram_optimizer"] = kwargs["optimizer"]
+            return True, {"usable_gb": 24.0, "required_gb": 12.0}
+
+        def _run_can_keep(can_keep):
+            can_keep()
+            return []
+
+        with (
+            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(training_route, "_diffusion_training_active", return_value = False),
+            patch.object(training_route, "_diffusion_gpu_admission", return_value = nullcontext()),
+            patch.object(
+                training_route,
+                "_reject_untrainable_model_request",
+                return_value = SimpleNamespace(
+                    model_name = "unsloth/test",
+                    model_local_path = None,
+                    cached_model_pin = None,
+                ),
+            ),
+            patch.object(training_route, "load_model_defaults", return_value = {"training": {}}),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(_hw_module, "DEVICE", DeviceType.XPU),
+            patch("utils.hardware.ensure_hardware_detected", return_value = DeviceType.XPU),
+            patch(
+                "routes.training_vram.can_keep_chat_during_training",
+                side_effect = _capture_training_vram_optimizer,
+            ),
+            patch(
+                "routes.training_vram.coordinate_models_for_training",
+                side_effect = _run_can_keep,
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(
+                    current_checkpoint = None,
+                    is_export_active = lambda: False,
+                ),
+            ),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = SimpleNamespace(is_loaded = False, unload = lambda: None),
+            ),
+            patch("core.inference.gpu_arbiter.release", lambda *_args, **_kwargs: None),
+            patch(
+                "core.inference.video.get_video_backend",
+                return_value = SimpleNamespace(
+                    status = lambda: {"loaded": False},
+                    unload = lambda: None,
+                ),
+            ),
+        ):
+            response = asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+        self.assertEqual(response.status, "queued")
+        self.assertEqual(seen["backend_optimizer"], XPU_SAFE_OPTIMIZER)
+        self.assertEqual(seen["vram_optimizer"], XPU_SAFE_OPTIMIZER)
 
     def test_training_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
         training_route = _load_route_module(
@@ -2737,3 +2595,131 @@ class TestTheFallbackNameIsOneUnslothResolves(unittest.TestCase):
             answer = get_device_map([0, 1])
         self.assertIn(answer, planned)
         self.assertEqual(planned[answer], "balanced")
+
+
+class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
+    """The diffusion trainers pick their optimizer themselves, outside the request model the
+    route normalizes, so they need the same XPU policy applied before construction."""
+
+    def _probe(self):
+        from core.training.diffusion_train_common import bitsandbytes_optimizer_supported
+        return bitsandbytes_optimizer_supported
+
+    def test_xpu_host_refuses_bitsandbytes_optimizers(self):
+        with patch("utils.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertFalse(self._probe()())
+
+    def test_selected_backends_other_than_xpu_keep_bitsandbytes(self):
+        for device in (DeviceType.CUDA, DeviceType.CPU, DeviceType.MLX):
+            with self.subTest(device = device):
+                with patch("utils.hardware.get_device", return_value = device):
+                    self.assertTrue(self._probe()())
+
+    def test_a_hybrid_host_that_selected_cuda_keeps_bitsandbytes(self):
+        """An Intel iGPU beside an NVIDIA card reports torch.xpu.is_available() True while
+        detection selects CUDA. Keying on presence would drop 8-bit on a CUDA run and make
+        restore_resume_state refuse every existing AdamW8bit checkpoint."""
+        import torch
+        with (
+            patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)),
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+        ):
+            self.assertTrue(self._probe()())
+
+    def test_a_raising_probe_fails_open(self):
+        def _boom():
+            raise RuntimeError("driver exploded")
+
+        with patch("utils.hardware.get_device", side_effect = _boom):
+            self.assertTrue(self._probe()())
+
+    def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
+        import torch
+
+        import core.training.diffusion_dit_trainer as dit_mod
+        import core.training.diffusion_lora_trainer as lora_mod
+
+        class _Bnb8bitMarker(torch.optim.AdamW):
+            """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
+            exactly as the Intel Triton SYCL assertion does."""
+
+            def step(self, *args, **kwargs):
+                raise AssertionError("sycl headers not found")
+
+        fake_bnb = ModuleType("bitsandbytes")
+        fake_optim = ModuleType("bitsandbytes.optim")
+        fake_optim.AdamW8bit = _Bnb8bitMarker
+        fake_bnb.optim = fake_optim
+
+        cases = (
+            ("sdxl_lora", lora_mod, "_make_lora_optimizer"),
+            ("dit", dit_mod, "_make_optimizer"),
+        )
+        for label, module, factory_name in cases:
+            factory = getattr(module, factory_name)
+            for on_xpu in (True, False):
+                with self.subTest(trainer = label, xpu = on_xpu):
+                    param = torch.nn.Parameter(torch.zeros(2, 2))
+                    param.grad = torch.ones(2, 2)
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
+                        ),
+                        patch.object(
+                            module,
+                            "bitsandbytes_optimizer_supported",
+                            lambda supported = not on_xpu: supported,
+                        ),
+                    ):
+                        optimizer = factory([param], 1e-4)
+
+                    if on_xpu:
+                        # Must not be the bnb optimizer, and must survive an actual step.
+                        self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
+                        optimizer.step()
+                    else:
+                        # Unchanged off XPU: still the 8-bit optimizer, not a blanket disable.
+                        self.assertIsInstance(optimizer, _Bnb8bitMarker)
+
+
+class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):
+    """`unsloth train` exposes no --optim, so without this the CLI falls through to
+    trainer.py's own `adamw_8bit` literal and reproduces issue #10021 off the Studio path."""
+
+    def _resolve(self, device: DeviceType) -> str:
+        from core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+        return normalize_training_optimizer_for_device(
+            DEFAULT_TRAINING_OPTIMIZER,
+            device_backend = device.value,
+        )
+
+    def test_xpu_cli_default_is_the_safe_optimizer(self):
+        self.assertEqual(self._resolve(DeviceType.XPU), XPU_SAFE_OPTIMIZER)
+
+    def test_other_backends_keep_the_historical_cli_default(self):
+        from core.training.training import DEFAULT_TRAINING_OPTIMIZER
+        for device in (DeviceType.CUDA, DeviceType.CPU):
+            with self.subTest(device = device):
+                self.assertEqual(self._resolve(device), DEFAULT_TRAINING_OPTIMIZER)
+
+    def test_the_cli_sets_optim_from_the_host_policy(self):
+        """The wiring, not just the helper: train.py must stamp `optim` into training_kwargs."""
+        source = (_BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py").read_text(
+            encoding = "utf-8"
+        )
+        self.assertIn("_optimizer_for_host", source)
+        self.assertIn(
+            'training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))', source
+        )
+
+    def test_an_undetectable_host_keeps_the_historical_default(self):
+        """The CLI helper must fail open: a device lookup that raises cannot stop a run."""
+        cli = _BACKEND_ROOT.parent.parent / "unsloth_cli" / "commands" / "train.py"
+        source = cli.read_text(encoding = "utf-8")
+        self.assertIn("except Exception:", source)
+        # The fallback returns the requested/default optimizer rather than propagating.
+        self.assertIn("return optimizer", source)

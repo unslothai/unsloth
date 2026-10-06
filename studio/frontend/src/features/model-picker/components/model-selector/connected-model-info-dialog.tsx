@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { modelCatalogVersion, subscribeModelCatalog } from "@/features/chat";
+import type { ProviderApiType } from "@/features/chat/api/providers-api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -63,6 +64,7 @@ export function ConnectedModelInfoDialog({
   displayName,
   providerName,
   providerType,
+  apiType,
   baseUrl,
   isReasoningProvider,
 }: {
@@ -73,6 +75,7 @@ export function ConnectedModelInfoDialog({
   displayName: string;
   providerName: string;
   providerType: string;
+  apiType?: ProviderApiType;
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model: the only signal a self-host gives. */
   isReasoningProvider?: boolean;
@@ -80,11 +83,17 @@ export function ConnectedModelInfoDialog({
   // Every figure below is read from the catalogue, which can land after this renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const entry = resolveModelCatalogEntry(providerType, modelId);
-  const marks = connectedModelMarks({ providerType, modelId, baseUrl });
+  const marks = connectedModelMarks({
+    providerType,
+    modelId,
+    baseUrl,
+    apiType,
+  });
   // The resolver behind the composer's Thinking chip, not the catalogue alone.
   const reasoning = getExternalReasoningCapabilities(providerType, modelId, {
     isReasoningProvider,
     baseUrl,
+    apiType,
   });
   // "none" is the off switch, not a rung. Only where a level is sent at all: the default ladder
   // is there even for a style that carries a bare thinking on/off, and listing it read as a
