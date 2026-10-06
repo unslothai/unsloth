@@ -259,12 +259,21 @@ def comfy_resident_mib(
     keep_int8: bool,
     keep_fp8: bool,
     compute_bytes: int = 2,
+    keep_key: Any = None,
+    exclude_tokens: Any = (),
+    min_features: int = 0,
+    fp8_divisible: int = 0,
+    key_map: Any = None,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
     (2x an int8 / fp8 file), every other floating tensor is cast to the compute dtype. The file name says
     nothing reliable here (an fp8 file Studio runs natively is not upcast; an int8 one with no runtime is).
-    None when the header cannot be read. Torch-free."""
+    ``keep_key(key)`` limits the count to the keys the loader reads (a file bundling other components);
+    an int8 layer whose name holds one of ``exclude_tokens`` is priced dequantized, as Studio's int8 filter
+    leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
+    not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
+    file). None when the header cannot be read. Torch-free."""
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
         if scan is None:
@@ -273,13 +282,37 @@ def comfy_resident_mib(
     except Exception:  # noqa: BLE001 -- unknown size: the caller keeps its own estimate
         return None
     header.pop("__metadata__", None)
-    kept = {
-        name + ".weight": (layer.format == INT8_TENSORWISE and keep_int8)
-        or (layer.format == FP8_E4M3 and keep_fp8)
-        for name, layer in scan.layers.items()
-    }
+
+    def _fits(shape: Any, divisible: int) -> bool:
+        if len(shape or ()) != 2:
+            return False
+        out_f, in_f = (int(d) for d in shape)
+        if min(out_f, in_f) < min_features:
+            return False
+        return not divisible or not (out_f % divisible or in_f % divisible)
+
+    def _excluded(key: str, shape: Any) -> bool:
+        names = [key]
+        if key_map is not None:
+            try:
+                names = [k for k, _rows in key_map(key, tuple(shape or ()))] or names
+            except ValueError:
+                pass
+        return any(t in n for n in names for t in exclude_tokens)
+
+    kept = {}
+    for name, layer in scan.layers.items():
+        shape = (header.get(name + ".weight") or {}).get("shape")
+        kept[name + ".weight"] = (
+            layer.format == INT8_TENSORWISE
+            and keep_int8
+            and not _excluded(name + ".weight", shape)
+            and _fits(shape, 0)
+        ) or (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
     total = 0
     for key, entry in header.items():
+        if keep_key is not None and not keep_key(key):
+            continue
         shape = entry.get("shape") or ()
         numel = 1
         for d in shape:
@@ -492,6 +525,56 @@ def _decode_rows(
     return segments
 
 
+def original_layout(transformer_cls: Any, path: str) -> Optional[dict]:
+    """The key map / prepare / dtype hooks for a class with no diffusers single-file converter, or None."""
+    name = getattr(transformer_cls, "__name__", "")
+    if name == "HunyuanVideo15Transformer3DModel":
+        from .video_hv15_comfy import comfy_layout
+    elif name == "MiniMaxH3Transformer3DModel":
+        from .video_minimax_h3_comfy import comfy_layout
+    else:
+        return None
+    return comfy_layout(path)
+
+
+def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
+    """``state`` (file keys) renamed and row-split by ``key_map``; kept layers become ``(codes, scale, group, format)``.
+
+    Row selections are views where they are one contiguous run, so no layer is copied except a reordered one."""
+    import torch
+
+    sources = {
+        layer.name + ".weight": (codes, scale, layer.group, layer.format)
+        for layer, codes, scale in kept
+    }
+
+    def take(value: Any, rows: Any) -> Any:
+        if rows is None:
+            return value
+        if isinstance(value, tuple):
+            codes, scale, group, fmt = value
+            scale = scale.reshape(-1, 1).expand(codes.shape[0], 1)
+            return (take(codes, rows), take(scale, rows), group, fmt)
+        if value.dtype not in (torch.int8, torch.uint8) and value.element_size() == 1:
+            # float8: concatenation goes through uint8 (not implemented for float8 on every torch)
+            return take(value.view(torch.uint8), rows).view(value.dtype)
+        parts = [value[int(r) : int(r) + int(n)] for r, n in rows]
+        return parts[0] if len(parts) == 1 else torch.cat(parts)
+
+    converted: dict = {}
+    for key in list(state):
+        value = state.pop(key)
+        if value is None:
+            value = sources.pop(key)
+        data = value[0] if isinstance(value, tuple) else value
+        rows_total = data.shape[0] if data.dim() else 0
+        for new_key, rows in key_map(key, tuple(data.shape)):
+            if rows is not None and any(r < 0 or n <= 0 or r + n > rows_total for r, n in rows):
+                raise ValueError(f"{key}: row selection {rows} outside its {rows_total} rows")
+            converted[new_key] = take(value, rows)
+    return converted
+
+
 def comfy_torchao_quantized(model: Any) -> bool:
     """Whether a ComfyUI load left torchao-quantized weights in ``model`` (eager is several times slower)."""
     info = getattr(model, "_unsloth_comfy_quant", None) or {}
@@ -684,6 +767,11 @@ def load_comfy_quant_transformer(
     min_features: Optional[int] = None,
     finalize: bool = True,
     logger: Any = None,
+    keep_key: Any = None,
+    pre_convert: Any = None,
+    key_map: Any = None,
+    prepare_model: Any = None,
+    keep_dtype: Any = None,
 ) -> Any:
     """Build ``transformer_cls`` from the ComfyUI-quantized ``path``.
 
@@ -695,8 +783,15 @@ def load_comfy_quant_transformer(
     (``comfy_fp8_backend``) the ``float8_e4m3fn`` layers Studio's own fp8 filter selects do the same,
     as per-row ``Float8Tensor`` weights or native fp8 twins. Everything else is dequantized to the
     compute dtype. ``finalize`` applies the small-M padding here (the single-file path); the hosted
-    prequant loader passes False and pads after placement, as for its own checkpoints. Raises
-    ``ValueError`` for a checkpoint it must refuse."""
+    prequant loader passes False and pads after placement, as for its own checkpoints.
+
+    ``keep_key(key)`` limits the read to the DiT's keys of a file that bundles other components;
+    ``pre_convert(state)`` renames keys (never values) before the family converter runs. A family with no
+    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``original_layout``):
+    ``[(diffusers key, rows)]`` per file key, ``rows`` None (the whole tensor) or ``[(first row, n rows), ...]``;
+    ``prepare_model(model)`` reshapes the freshly built model before the weights load, and ``keep_dtype(key)``
+    names a dtype a file tensor keeps instead of the compute dtype. Raises ``ValueError`` for a checkpoint it
+    must refuse."""
     import torch
     from safetensors.torch import load_file
 
@@ -713,12 +808,30 @@ def load_comfy_quant_transformer(
     problem = comfy_quant_error(scan, os.path.basename(path))
     if problem:
         raise ValueError(problem)
+    if key_map is None:
+        layout = original_layout(transformer_cls, path)
+        if layout:
+            key_map = layout.get("key_map")
+            prepare_model = prepare_model or layout.get("prepare_model")
+            keep_dtype = keep_dtype or layout.get("keep_dtype")
     kwargs = dict(sf_kwargs)
     dtype = kwargs.pop("torch_dtype", None) or kwargs.pop("dtype", None) or torch.bfloat16
     if dtype is not torch.bfloat16:
         # Studio's fp8 runtime asserts bf16 weights; an fp16 / fp32 pipeline dequantizes them instead.
         fp8_backend = None
-    state = load_file(str(path))
+    if keep_key is None:
+        state = load_file(str(path))
+    else:
+        from safetensors import safe_open
+
+        with safe_open(str(path), framework = "pt", device = "cpu") as handle:
+            state = {k: handle.get_tensor(k) for k in handle.keys() if keep_key(k)}
+        stray = [n for n in scan.layers if n + ".weight" not in state]
+        if stray:
+            raise ValueError(
+                f"{os.path.basename(path)}: ComfyUI-quantized layers outside the denoiser "
+                f"({stray[0]}) are not supported"
+            )
     state.pop(LEGACY_SCALED_FP8_KEY, None)
     for key in [k for k in state if k.endswith(COMFY_QUANT_SUFFIX)]:
         del state[key]
@@ -755,12 +868,18 @@ def load_comfy_quant_transformer(
             dequantized += 1
 
     for key, value in list(state.items()):
-        if fp16_keep or value is None or not value.is_floating_point() or value.dtype == dtype:
+        if value is None or not value.is_floating_point():
+            continue
+        wanted_dtype = keep_dtype(key) if keep_dtype is not None else None
+        if wanted_dtype is not None:
+            state[key] = value.to(wanted_dtype)
+            continue
+        if fp16_keep or value.dtype == dtype:
             continue
         state[key] = value.to(dtype)
     from accelerate import init_empty_weights
 
-    mapping_fn, sfm = _mapping(transformer_cls)
+    mapping_fn, sfm = _mapping(transformer_cls) if key_map is None else (None, None)
     config_repo = kwargs.pop("config", None)
     subfolder = kwargs.pop("subfolder", None)
     token = kwargs.pop("token", None)
@@ -779,6 +898,8 @@ def load_comfy_quant_transformer(
     config.update({k: v for k, v in kwargs.items() if k in expected or k in optional})
     with init_empty_weights():
         model = transformer_cls.from_config(config)
+    if prepare_model is not None:
+        prepare_model(model)
     wanted = model.state_dict()
 
     def _convert_tagged(width: Optional[int]) -> dict:
@@ -787,14 +908,15 @@ def load_comfy_quant_transformer(
             rows = torch.arange(codes.shape[0], dtype = torch.float64) + index * _TAG
             cols = codes.shape[1] if width is None else width
             state[layer.name + ".weight"] = rows.view(-1, 1).expand(codes.shape[0], cols)
-        if sfm._should_convert_state_dict_to_diffusers(wanted, state):
+        checkpoint = pre_convert(dict(state)) if pre_convert is not None else state
+        if sfm._should_convert_state_dict_to_diffusers(wanted, checkpoint):
             out = mapping_fn(
                 config = config,
-                checkpoint = dict(state),
+                checkpoint = dict(checkpoint),
                 **sfm._get_mapping_function_kwargs(mapping_fn, **kwargs),
             )
         else:
-            out = dict(state)
+            out = dict(checkpoint)
         for name in [k for k, v in out.items() if torch.is_tensor(v) and v.dtype == torch.float64]:
             segments = _decode_rows(name, out[name], sources, width = width)
             kinds = {(sources[i][0].format, sources[i][0].group) for i, _r, _n in segments}
@@ -817,11 +939,21 @@ def load_comfy_quant_transformer(
             out[name] = (codes, scale, group, fmt)
         return out
 
-    try:
-        # Narrow tags first (full width costs tens of seconds on a large DiT); anything unproven reruns at full width.
-        converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
-    except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
-        converted = _convert_tagged(None)
+    if key_map is not None:
+        # Rows move whole (no float64 tags: a 21 GB file would need ~5x that in tags)
+        converted = _apply_key_map(state, sources, key_map)
+        for name, value in converted.items():
+            if isinstance(value, tuple) and name in wanted:
+                if tuple(wanted[name].shape) != tuple(value[0].shape):
+                    raise ValueError(
+                        f"{name}: rebuilt as {tuple(value[0].shape)}, the model expects {tuple(wanted[name].shape)}"
+                    )
+    else:
+        try:
+            # Narrow tags first (full width is slow on a large DiT); anything unproven reruns at full width.
+            converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
+        except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
+            converted = _convert_tagged(None)
     del state
     if fp16_keep:
         for key, value in list(converted.items()):
@@ -918,12 +1050,17 @@ def load_comfy_quant_transformer(
     ):
         # Same rebuild the hosted prequant loader does for buffers made in __init__.
         model = transformer_cls.from_config(config)
+        if prepare_model is not None:
+            prepare_model(model)
         _install_native(model)
         model.load_state_dict(converted, strict = False, assign = True)
+    loaded = set(converted)
     del converted
-    # from_single_file ends with model.to(torch_dtype): buffers built in __init__ (Wan's float64 rope) follow it
+    # __init__ buffers (Wan's float64 rope) follow the compute dtype; checkpoint buffers keep theirs (H3 curve table)
     for module_name, module in model.named_modules():
         for buffer_name, buffer in list(module._buffers.items()):
+            if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
+                continue
             if buffer is not None and buffer.is_floating_point():
                 want = _dtype_for(f"{module_name}.{buffer_name}")
                 if buffer.dtype != want:
