@@ -20,8 +20,9 @@ import {
   useBrowserStore,
   useNativeBrowser,
 } from "@/features/browser";
+import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -44,6 +45,20 @@ export function BrowserTab() {
     setShowBookmarkEditor,
   } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
+  const collapseHtmlArtifacts = useChatRuntimeStore((state) => state.collapseHtmlArtifacts);
+  const allowArtifactNetworkAccess = useChatRuntimeStore((state) => state.allowArtifactNetworkAccess);
+  const { setCollapseHtmlArtifacts, setAllowArtifactNetworkAccess } = useChatRuntimeStore.getState();
+  // The network-blocked banner deep-links here.
+  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((state) => state.scrollTarget);
+  useEffect(() => {
+    if (scrollTarget !== "browser-html-network") return;
+    const frame = window.requestAnimationFrame(() => {
+      networkAccessRowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      useSettingsDialogStore.getState().consumeScrollTarget("browser-html-network");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [scrollTarget]);
   // History and downloads open as browser tabs, so only beside a chat.
   const canOpenPages = browserPanelAvailable();
   const openPage = (page: "history" | "downloads" | "bookmarks") => {
@@ -83,6 +98,31 @@ export function BrowserTab() {
             aria-label={t("browser.openFilesSetting")}
             checked={openFilesInBrowser}
             onCheckedChange={setOpenFilesInBrowser}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.artifacts.title")}>
+        <div ref={networkAccessRowRef}>
+          <SettingsRow
+            label={t("settings.chat.artifacts.allowNetworkAccess")}
+            description={t("settings.chat.artifacts.allowNetworkAccessDescription")}
+          >
+            <Switch
+              aria-label={t("settings.chat.artifacts.allowNetworkAccess")}
+              checked={allowArtifactNetworkAccess}
+              onCheckedChange={setAllowArtifactNetworkAccess}
+            />
+          </SettingsRow>
+        </div>
+        <SettingsRow
+          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
+          description={t("settings.chat.artifacts.collapseHtmlBlocksDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.artifacts.collapseHtmlBlocks")}
+            checked={collapseHtmlArtifacts}
+            onCheckedChange={setCollapseHtmlArtifacts}
           />
         </SettingsRow>
       </SettingsSection>

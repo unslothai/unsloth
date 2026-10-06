@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, useChatArtifactsStore } from "@/features/chat";
+import type { DocumentAnnotations } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -18,6 +18,8 @@ export type BrowserEntry =
       contentType: string;
       /** Show as text even if named .html (text extracted from a document). */
       plainText?: boolean;
+      /** The tab's openKey while this entry shows, so Back restores it. */
+      openKey?: string;
     };
 
 export type InternalPage = "history" | "downloads" | "bookmarks";
@@ -32,8 +34,6 @@ export type RequestEdits = (prompt: string) => void;
 
 /** Resolves false when the composer refused them (it says why), so the marks stay. */
 export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<boolean>;
-
-export type OpenInCanvas = (file: { title: string; code: string }) => void;
 
 /** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
@@ -174,6 +174,8 @@ function copyTab(tab: BrowserTab): BrowserTab {
     ...createTab({ kind: "newtab" }),
     history: tab.history.map((entry) => {
       const copy = { ...entry };
+      // The original keeps its key; a copy going Back must not claim it.
+      if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
       return copy;
@@ -247,7 +249,6 @@ type BrowserState = {
   /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
-  openInCanvas: OpenInCanvas | null;
   attachToChat: AttachToChat | null;
   annotateTabId: string | null;
   setAnnotating: (tabId: string | null) => void;
@@ -338,17 +339,13 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
+    openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
   };
 }
 
-function showPanel(): void {
-  useChatArtifactsStore.getState().closeArtifactSurface();
-}
-
 export const useBrowserStore = create<BrowserState>((set, get) => {
   const openTab = (tab: BrowserTab, background = false, after?: string) => {
-    showPanel();
     set((state) => {
       const at = after ? state.tabs.findIndex((other) => other.id === after) : -1;
       const tabs = [...state.tabs];
@@ -364,7 +361,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
   const focusExisting = (openKey: string): boolean => {
     const existing = get().tabs.find((tab) => tab.openKey === openKey);
     if (!existing) return false;
-    showPanel();
     set((state) => ({ open: true, activeTabId: existing.id, openSequence: state.openSequence + 1 }));
     return true;
   };
@@ -382,7 +378,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     chatSide: "left",
     requestEdits: null,
     sendAnnotations: null,
-    openInCanvas: null,
     attachToChat: null,
     annotateTabId: null,
     setAnnotating: (annotateTabId) => set({ annotateTabId }),
@@ -399,7 +394,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         get().newTab();
         return;
       }
-      showPanel();
       set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
     closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
@@ -419,7 +413,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openPinned: (pinnedId, url, title) => {
       const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);
-      showPanel();
       if (shown) {
         set((state) => ({ open: true, activeTabId: shown.id, openSequence: state.openSequence + 1 }));
         return;
@@ -457,7 +450,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const { activeTabId } = get();
       if (options?.newTab === false && activeTabId) {
         get().navigate(activeTabId, { url: target });
-        showPanel();
         set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
         return;
       }
@@ -474,6 +466,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         name: name || "Untitled",
         contentType: contentType || blob.type,
         plainText,
+        ...(openKey ? { openKey } : {}),
       };
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {

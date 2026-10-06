@@ -121,6 +121,10 @@ class DiffusionFamily:
     comfy_flow_shift: Optional[float] = None
     # (lowercased id substring, shift) for checkpoints whose template differs; first match wins.
     comfy_flow_shift_variants: tuple[tuple[str, float], ...] = field(default_factory = tuple)
+    # (lowercased id substring, ((key, value), ...)) overriding ``base_repo``'s transformer config; first match wins.
+    transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
+        default_factory = tuple
+    )
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -352,8 +356,17 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "qwen-image-edit",
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
-        # The 2509 template samples at ModelSamplingAuraFlow 3.
-        comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),
+        comfy_flow_shift_variants = (
+            ("qwen-image-edit-2511", 3.1),
+            ("qwen-image-edit-2509", 3.0),
+            ("qwen-image-edit", 3.0),
+        ),
+        # Only the 2511 config sets zero_cond_t; on 2509 / original Edit it renders oversaturated, off-identity images.
+        transformer_config_variants = (
+            ("qwen-image-edit-2511", ()),
+            ("qwen-image-edit-2509", (("zero_cond_t", False),)),
+            ("qwen-image-edit", (("zero_cond_t", False),)),
+        ),
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
@@ -1284,15 +1297,33 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
 
 
-def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
-    """ComfyUI's static shift for the loaded checkpoint: the first family variant whose key is in
-    an identifier (repo id, GGUF file, base repo), else the family default."""
+def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optional[tuple]:
+    """First ``(key, ...)`` row whose key is in an identifier; ``_`` reads as ``-`` (ComfyUI file names)."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
-        for key, shift in getattr(fam, "comfy_flow_shift_variants", ()) or ():
-            if key in needle:
-                return shift
-    return getattr(fam, "comfy_flow_shift", None)
+        needle = (identifier or "").lower().replace("_", "-")
+        for row in rows or ():
+            if row[0] in needle:
+                return row
+    return None
+
+
+def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    row = _first_variant(getattr(fam, "comfy_flow_shift_variants", ()), identifiers)
+    return row[1] if row else getattr(fam, "comfy_flow_shift", None)
+
+
+def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
+    row = _first_variant(getattr(fam, "transformer_config_variants", ()), identifiers)
+    return dict(row[1]) if row else {}
+
+
+def transformer_variant_differs_from_base(
+    fam: Any, base: Optional[str], *identifiers: Optional[str]
+) -> bool:
+    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
+    rows = getattr(fam, "transformer_config_variants", ())
+    base_row = _first_variant(rows, (base,))
+    return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:

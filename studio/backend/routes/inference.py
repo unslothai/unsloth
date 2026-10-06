@@ -72,6 +72,7 @@ from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
 import re as _re
+from pydantic import BaseModel
 from urllib.parse import quote as _urlquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
@@ -3976,6 +3977,10 @@ from core.inference.studio_tool_loop import (
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
+from models.providers import (
+    normalize_provider_reasoning_config,
+    validate_provider_reasoning_contract,
+)
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
 import io
@@ -4254,6 +4259,134 @@ async def artifact_preview_frame(allow_network: bool = False):
         headers = {
             "Cache-Control": "no-store",
             "Content-Security-Policy": csp,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# Chat HTML opened in the user's own browser, at a one-off URL. Same CSP as the in-app frame, so
+# the page keeps an opaque origin and the network setting.
+_ARTIFACT_PAGE_TTL_SECONDS = 60 * 60
+_ARTIFACT_PAGE_MAX_BYTES = 8 * 1024 * 1024
+# Per account, so one account cannot evict another's pages; the totals only bound memory.
+_ARTIFACT_PAGE_MAX_PAGES = 32
+_ARTIFACT_PAGE_MAX_SUBJECT_BYTES = 64 * 1024 * 1024
+_ARTIFACT_PAGE_MAX_TOTAL_PAGES = 512
+_ARTIFACT_PAGE_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+_ARTIFACT_PAGE_SANDBOX = "sandbox allow-scripts allow-modals allow-popups allow-pointer-lock"
+# token -> (created, body, allow_network, subject), oldest first.
+_artifact_pages: dict[str, tuple[float, bytes, bool, str]] = {}
+# Storage and randomUUID fallbacks for the opaque origin, as in _ARTIFACT_PREVIEW_FRAME_HTML.
+_ARTIFACT_PAGE_PRELUDE = """<script>(() => {
+  const memory = () => { const data = new Map(); return {
+    get length() { return data.size; },
+    key: (index) => Array.from(data.keys())[index] ?? null,
+    getItem: (key) => data.has(String(key)) ? data.get(String(key)) : null,
+    setItem: (key, value) => data.set(String(key), String(value)),
+    removeItem: (key) => data.delete(String(key)),
+    clear: () => data.clear(),
+  }; };
+  for (const name of ["localStorage", "sessionStorage"]) {
+    try { void window[name]; continue; } catch {}
+    try { Object.defineProperty(window, name, { value: memory(), configurable: true }); } catch {}
+  }
+  if (window.crypto && typeof crypto.randomUUID !== "function") {
+    const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+    crypto.randomUUID = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+      (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
+  }
+})();</script>"""
+# Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
+# "<head>": that text may sit in a comment or a script string. The parser opens the head for the
+# script and folds a later <html>'s attributes into the root.
+_ARTIFACT_PAGE_PRELUDE_AT = _re.compile(
+    r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL
+)
+
+
+def _artifact_page_csp(allow_network: bool) -> str:
+    base = (
+        _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+    )
+    directives = [
+        part.strip()
+        for part in base.split(";")
+        if part.strip() and not part.strip().startswith(("frame-ancestors", "sandbox"))
+    ]
+    return "; ".join([*directives, "frame-ancestors 'none'", _ARTIFACT_PAGE_SANDBOX])
+
+
+def _artifact_page_with_prelude(html: str) -> str:
+    match = _ARTIFACT_PAGE_PRELUDE_AT.match(html)
+    at = match.end() if match else 0
+    return html[:at] + _ARTIFACT_PAGE_PRELUDE + html[at:]
+
+
+def _prune_artifact_pages(now: float, subject: str, incoming: int) -> None:
+    """Drop expired pages, then the oldest until `incoming` bytes fit the subject's and the total budget."""
+    for token, (created, *_) in list(_artifact_pages.items()):
+        if now - created > _ARTIFACT_PAGE_TTL_SECONDS:
+            _artifact_pages.pop(token, None)
+
+    def mine() -> list[str]:
+        return [token for token, entry in _artifact_pages.items() if entry[3] == subject]
+
+    def size(tokens) -> int:
+        return sum(len(_artifact_pages[token][1]) for token in tokens)
+
+    own = mine()
+    while own and (
+        len(own) >= _ARTIFACT_PAGE_MAX_PAGES
+        or size(own) + incoming > _ARTIFACT_PAGE_MAX_SUBJECT_BYTES
+    ):
+        _artifact_pages.pop(own.pop(0))
+    while _artifact_pages and (
+        len(_artifact_pages) >= _ARTIFACT_PAGE_MAX_TOTAL_PAGES
+        or size(_artifact_pages) + incoming > _ARTIFACT_PAGE_MAX_TOTAL_BYTES
+    ):
+        _artifact_pages.pop(next(iter(_artifact_pages)))
+
+
+class ArtifactPreviewPageRequest(BaseModel):
+    html: str
+    allow_network: bool = False
+
+
+@studio_router.post("/artifact-preview-page", include_in_schema = False)
+async def create_artifact_preview_page(
+    request: ArtifactPreviewPageRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stage chat HTML for the user's own browser; returns the path that serves it."""
+    body = _artifact_page_with_prelude(request.html).encode("utf-8")
+    if len(body) > _ARTIFACT_PAGE_MAX_BYTES:
+        raise HTTPException(status_code = 413, detail = "This page is too large to open")
+    now = time.monotonic()
+    _prune_artifact_pages(now, current_subject, len(body))
+    token = _secrets.token_urlsafe(24)
+    _artifact_pages[token] = (now, body, request.allow_network, current_subject)
+    return {"path": f"/api/inference/artifact-preview-page/{token}"}
+
+
+@studio_router.get("/artifact-preview-page/{token}", include_in_schema = False)
+async def artifact_preview_page(token: str):
+    """Unauthenticated: an outside browser has no Studio session, so the token is the capability."""
+    entry = _artifact_pages.get(token)
+    if entry is None or time.monotonic() - entry[0] > _ARTIFACT_PAGE_TTL_SECONDS:
+        _artifact_pages.pop(token, None)
+        return Response(
+            content = "This preview has expired. Open it again from the chat in Unsloth Studio.",
+            status_code = 404,
+            media_type = "text/plain; charset=utf-8",
+            headers = {"Cache-Control": "no-store"},
+        )
+    _, body, allow_network, _ = entry
+    return Response(
+        content = body,
+        media_type = "text/html; charset=utf-8",
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": _artifact_page_csp(allow_network),
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
         },
@@ -27216,14 +27349,18 @@ async def _proxy_to_external_provider(
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
     api_type = payload.provider_api_type
+    reasoning_config = normalize_provider_reasoning_config(payload.provider_reasoning_config)
     saved_provider_snapshot: Optional[dict] = None
 
     if managed is not None:
         provider_type = managed.provider_type
         base_url = managed.base_url
         api_type = "chat_completions"
-    elif payload.provider_id and not payload.encrypted_api_key:
-        # Saved-provider SQLite reads must not block the event loop.
+        reasoning_config = None
+    elif payload.provider_id and (
+        not payload.encrypted_api_key or payload.provider_reasoning_config is not None
+    ):
+        # Legacy explicit-key requests retain editable routing; reasoning opt-ins use the saved contract.
         config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
             raise HTTPException(
@@ -27241,6 +27378,7 @@ async def _proxy_to_external_provider(
         provider_type = config["provider_type"]
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
+        reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
 
     if not provider_type:
         raise HTTPException(
@@ -27248,6 +27386,13 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
     _refuse_decision_connection(provider_type, api_type)
+    if provider_type == "custom":
+        try:
+            validate_provider_reasoning_contract(provider_type, api_type, reasoning_config)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+    else:
+        reasoning_config = None
 
     # Unsloth's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
@@ -27795,7 +27940,13 @@ async def _proxy_to_external_provider(
     elif saved_provider_snapshot is not None:
         async with provider_config_guard(payload.provider_id):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
-            routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
+            routing_fields = (
+                "provider_type",
+                "base_url",
+                "api_type",
+                "is_enabled",
+                "reasoning_config",
+            )
             if current is None or any(
                 current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
             ):
@@ -27806,7 +27957,7 @@ async def _proxy_to_external_provider(
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
-                None,
+                payload.encrypted_api_key,
                 allow_saved_key = (
                     not _request_has_api_key(request)
                     or _request_is_saved_credential_workflow(request)
@@ -27876,6 +28027,7 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = api_type,
+        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
     _non_stream_custom_responses = (
