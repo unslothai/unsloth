@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which nav rows sit on the sidebar and which go behind "More". The Audio page surfaces its own
-// row while it is open, without pinning it.
+// active pages surface their unpinned row without changing its stored pin state.
 
 import assert from "node:assert/strict";
 import test from "node:test";

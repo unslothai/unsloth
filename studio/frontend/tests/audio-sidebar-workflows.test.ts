@@ -136,7 +136,7 @@ test("clicking Audio in More opens the page, and the open page keeps the row out
     "function AudioMoreSubmenu(",
     "export function AppSidebar()",
   );
-  // The click is taken before Radix opens the submenu; keys keep the standard submenu parent.
+  // preventing the click stops Radix from opening the submenu; keys keep the parent behavior.
   assert.match(
     submenu,
     /onClick=\{\(event\) => \{\s*if \(disabled\) return;\s*event\.preventDefault\(\);\s*onOpen\(\);\s*\}\}/,
@@ -148,7 +148,7 @@ test("clicking Audio in More opens the page, and the open page keeps the row out
     more,
     /onOpen=\{\(\) => \{\s*setMoreOpen\(false\);\s*row\.onClick\(\);\s*\}\}/,
   );
-  // Same navigation as an inline Audio row: no workflow request, so the page keeps its own.
+  // omitting a workflow request preserves the page's current workflow.
   assert.match(
     SIDEBAR,
     /audio: \{[\s\S]*?onClick: \(\) => \{\s*navigateFromRow\(\{ to: "\/audio" \}\);\s*closeMobileIfOpen\(\);\s*\}/,
