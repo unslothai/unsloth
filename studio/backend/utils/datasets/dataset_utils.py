@@ -385,6 +385,11 @@ def format_dataset(
             "multimodal_info": multimodal_info,
             "warnings": [notice.message for notice in raw_result.notices],
             "raw_text_column": raw_result.source_column,
+            "run_warnings": [
+                notice.message
+                for notice in raw_result.notices
+                if notice.level == "warning" and notice.update_status
+            ],
         }
 
     if custom_format_mapping:
@@ -1061,6 +1066,7 @@ def format_and_template_dataset(
                 "errors": [],
                 "summary": summary,
                 "raw_text_column": dataset_info.get("raw_text_column"),
+                "run_warnings": dataset_info.get("run_warnings", []),
             }
 
         detected = dataset_info.get("detected_format", "unknown")

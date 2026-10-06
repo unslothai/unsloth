@@ -69,4 +69,6 @@ def test_raw_format_eval_split_reuses_the_train_column():
         raw_text_column = train["raw_text_column"],
     )
     assert train["raw_text_column"] == "body"
+    assert any("auto-selecting 'body'" in w for w in train["run_warnings"])
+    assert not any("auto-selecting" in w for w in eval_["run_warnings"])
     assert list(eval_["dataset"]["text"]) == ["Short."]
