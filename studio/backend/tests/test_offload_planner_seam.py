@@ -2171,3 +2171,20 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
     assert llama_mod._spilled_decode_threads() == 12
+
+
+def test_a_larger_micro_batch_compute_buffer_spills_more_experts():
+    """The MoE expert-spill raise (ubatch 512 -> 2048) grows the compute buffer by
+    ~0.5-0.9 GiB. Priced into compute_buffer_flat, that VRAM has to come out of the
+    experts kept on the GPU rather than turning into a graph_reserve OOM."""
+    stub = _Stub(moe = 40)
+    at_512 = _plan(
+        stub, model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, compute_flat = 300 * MIB
+    )
+    at_2048 = _plan(
+        stub, model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, compute_flat = 1100 * MIB
+    )
+
+    assert at_512.spills_anything and at_2048.spills_anything
+    assert len(at_2048.spilled_blocks) > len(at_512.spilled_blocks)
+    assert at_2048.vram_bytes < at_512.vram_bytes
