@@ -264,7 +264,11 @@ def quantize_text_encoders(
     mode = normalize_te_quant(mode)
     if mode is None:
         # A supplied int8 ConvRot text-encoder file (diffusion_comfy_components) stays as stored: report what runs.
-        present = [getattr(pipe, a, None) for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
+        present = [
+            getattr(pipe, a, None)
+            for a in _TEXT_ENCODER_ATTRS
+            if getattr(pipe, a, None) is not None
+        ]
         if present and all(_hosted_te_scheme(e) == TE_QUANT_INT8 for e in present):
             return TEQuantOutcome(
                 TE_QUANT_INT8,

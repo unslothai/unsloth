@@ -223,7 +223,9 @@ def read_safetensors_header(path: str) -> tuple[dict[str, dict], dict]:
     try:
         header, _ = _read_header(str(path))
     except Exception as exc:  # noqa: BLE001
-        raise ComponentFileError(f"'{os.path.basename(path)}' is not a readable safetensors file: {exc}")
+        raise ComponentFileError(
+            f"'{os.path.basename(path)}' is not a readable safetensors file: {exc}"
+        )
     metadata = header.pop("__metadata__", None) or {}
     return header, metadata if isinstance(metadata, dict) else {}
 
@@ -231,13 +233,13 @@ def read_safetensors_header(path: str) -> tuple[dict[str, dict], dict]:
 def weight_keys(header: dict[str, Any]) -> list[str]:
     """The header's weight tensors: quant companions, tokenizer blobs and markers left out."""
     return [
-        k
-        for k in header
-        if k not in _NON_WEIGHT_KEYS and not k.endswith(_QUANT_COMPANION_SUFFIXES)
+        k for k in header if k not in _NON_WEIGHT_KEYS and not k.endswith(_QUANT_COMPANION_SUFFIXES)
     ]
 
 
-def classify_text_encoder(keys: Iterable[str], shapes: Optional[dict[str, Sequence[int]]] = None) -> Optional[str]:
+def classify_text_encoder(
+    keys: Iterable[str], shapes: Optional[dict[str, Sequence[int]]] = None
+) -> Optional[str]:
     """The text-encoder kind of a ComfyUI / original-layout header, or None when it is not one."""
     keyset = set(keys)
 
@@ -252,7 +254,9 @@ def classify_text_encoder(keys: Iterable[str], shapes: Optional[dict[str, Sequen
         return "clip_g" if width == 1280 else "clip_l"
     if has("encoder.block.") and ("shared.weight" in keyset or has("encoder.embed_tokens.")):
         umt5 = any(
-            re.match(r"^encoder\.block\.[1-9]\d*\.layer\.0\.SelfAttention\.relative_attention_bias\.", k)
+            re.match(
+                r"^encoder\.block\.[1-9]\d*\.layer\.0\.SelfAttention\.relative_attention_bias\.", k
+            )
             for k in keyset
         )
         return "umt5" if umt5 else "t5"
@@ -261,10 +265,17 @@ def classify_text_encoder(keys: Iterable[str], shapes: Optional[dict[str, Sequen
         return None
     q_norm = has(lm_prefix + "layers.0.self_attn.q_norm.")
     if has(lm_prefix + "layers.0.pre_feedforward_layernorm."):
-        return "gemma3" if (q_norm or has("vision_model.") or has("model.vision_tower.")) else "gemma2"
+        return (
+            "gemma3" if (q_norm or has("vision_model.") or has("model.vision_tower.")) else "gemma2"
+        )
     if has("visual.") or has("model.visual."):
         return "qwen3_vl" if q_norm else "qwen2_5_vl"
-    if has("vision_tower.") or has("model.vision_tower.") or has("multi_modal_projector.") or "tekken_model" in keyset:
+    if (
+        has("vision_tower.")
+        or has("model.vision_tower.")
+        or has("multi_modal_projector.")
+        or "tekken_model" in keyset
+    ):
         return "mistral3"
     if q_norm:
         return "qwen3"
@@ -277,7 +288,10 @@ def classify_vae(keys: Iterable[str]) -> Optional[str]:
     def has(prefix: str) -> bool:
         return any(k.startswith(prefix) for k in keyset)
 
-    if any(re.match(r"^(encoder\.downsamples|decoder\.upsamples)\.\d+\.(downsamples|upsamples)\.", k) for k in keyset):
+    if any(
+        re.match(r"^(encoder\.downsamples|decoder\.upsamples)\.\d+\.(downsamples|upsamples)\.", k)
+        for k in keyset
+    ):
         return "wan_nested"
     if has("decoder.upsamples.") or has("encoder.downsamples."):
         return "wan"
@@ -305,7 +319,12 @@ def _rule_strip_model(key: str) -> Optional[str]:
     return key
 
 
-_VL_KEEP = ("model.visual.", "model.language_model.", "model.vision_tower.", "model.multi_modal_projector.")
+_VL_KEEP = (
+    "model.visual.",
+    "model.language_model.",
+    "model.vision_tower.",
+    "model.multi_modal_projector.",
+)
 
 
 def _rule_nest_language_model(key: str) -> str:
@@ -375,7 +394,9 @@ def match_keys(
             continue
         reverse = {v: k for k, v in mapping.items()}
         missing = [
-            k for k in expected if k not in reverse and k not in tied and not _is_dead(k, _DEAD_MISSING)
+            k
+            for k in expected
+            if k not in reverse and k not in tied and not _is_dead(k, _DEAD_MISSING)
         ]
         unexpected = [
             k for k, v in mapping.items() if v not in expected and not _is_dead(v, _DEAD_UNEXPECTED)
@@ -383,7 +404,8 @@ def match_keys(
         mismatched = [
             f"{k} {list(file_shapes[k])} != {list(expected[v])}"
             for k, v in mapping.items()
-            if v in expected and tuple(int(d) for d in file_shapes[k]) != tuple(int(d) for d in expected[v])
+            if v in expected
+            and tuple(int(d) for d in file_shapes[k]) != tuple(int(d) for d in expected[v])
         ]
         score = len(missing) + len(unexpected) + len(mismatched)
         if score == 0:
@@ -456,7 +478,12 @@ def _numel(shape: Sequence[int]) -> int:
     return n
 
 
-def resident_bytes(path: str, *, dtype_itemsize: int = 2, kind: str = "text_encoder") -> int:
+def resident_bytes(
+    path: str,
+    *,
+    dtype_itemsize: int = 2,
+    kind: str = "text_encoder",
+) -> int:
     """What the loaded component holds: int8 ConvRot Linears at stored size (+ scales), every other weight
     (dequantized fp8 included) at the compute dtype. Header-only."""
     header, _ = read_safetensors_header(path)
@@ -482,7 +509,6 @@ def resident_bytes(path: str, *, dtype_itemsize: int = 2, kind: str = "text_enco
 
 def _fp8_view(codes: Any, fmt: str) -> Any:
     import torch
-
     if codes.dtype == torch.uint8:
         return codes.view(torch.float8_e5m2 if fmt == "float8_e5m2" else torch.float8_e4m3fn)
     return codes
@@ -577,7 +603,6 @@ def build_text_encoder(
                 if layer.convrot and isinstance(existing, torch.nn.Linear):
                     if convrot_cls is None:
                         from .video_minimax_h3_te import _int8_convrot_linear_class
-
                         convrot_cls = _int8_convrot_linear_class()
                     has_bias = (stem + ".bias") in mapping.mapping
                     setattr(
@@ -592,7 +617,10 @@ def build_text_encoder(
                     )
                     state[dst] = codes.to(torch.int8)
                     state[dst[: -len(".weight")] + ".weight_scale"] = (
-                        scale.to(torch.float32).reshape(-1, 1).expand(codes.shape[0], 1).contiguous()
+                        scale.to(torch.float32)
+                        .reshape(-1, 1)
+                        .expand(codes.shape[0], 1)
+                        .contiguous()
                     )
                     kept_int8 += 1
                 else:
@@ -617,7 +645,11 @@ def build_text_encoder(
     # T5 / UMT5: ``encoder.embed_tokens`` IS ``shared``; re-point a meta leftover rather than trust tie_weights.
     inner = getattr(encoder, "encoder", None)
     shared = getattr(encoder, "shared", None)
-    if inner is not None and shared is not None and getattr(inner, "embed_tokens", None) is not None:
+    if (
+        inner is not None
+        and shared is not None
+        and getattr(inner, "embed_tokens", None) is not None
+    ):
         if inner.embed_tokens.weight.is_meta:
             inner.embed_tokens = shared
     stranded = _strip_meta(encoder)
@@ -661,7 +693,9 @@ def _convert_wan_nested_vae(state: dict) -> dict:
     naming. Each ``downsamples.<i>`` stage nests its residual blocks and its resampler as numbered children; the
     residual children become ``resnets.<n>`` in order and the resampler ``downsampler`` / ``upsampler``."""
     out: dict = {}
-    stage = re.compile(r"^(encoder|decoder)\.(downsamples|upsamples)\.(\d+)\.(downsamples|upsamples)\.(\d+)\.(.+)$")
+    stage = re.compile(
+        r"^(encoder|decoder)\.(downsamples|upsamples)\.(\d+)\.(downsamples|upsamples)\.(\d+)\.(.+)$"
+    )
     residual_children: dict[tuple[str, int], list[int]] = {}
     for key in state:
         m = stage.match(key)
@@ -695,7 +729,11 @@ def _convert_wan_nested_vae(state: dict) -> dict:
                 m3 = re.match(r"^(encoder|decoder)\.(conv1|head\.0|head\.2)\.(.+)$", key)
                 if m3:
                     side, part, rest = m3.groups()
-                    new = f"{side}." + {"conv1": "conv_in", "head.0": "norm_out", "head.2": "conv_out"}[part] + f".{rest}"
+                    new = (
+                        f"{side}."
+                        + {"conv1": "conv_in", "head.0": "norm_out", "head.2": "conv_out"}[part]
+                        + f".{rest}"
+                    )
                 elif key.startswith("conv1."):
                     new = "quant_conv." + key[len("conv1.") :]
                 elif key.startswith("conv2."):
@@ -733,12 +771,18 @@ def convert_vae_state_dict(state: dict, kind: str, config: dict) -> dict:
         return converted
     if kind == "wan":
         from diffusers.loaders.single_file_utils import convert_wan_vae_to_diffusers
-
         return convert_wan_vae_to_diffusers(state)
     return dict(state)
 
 
-def build_vae(path: str, *, vae_cls: Any, config: dict, dtype: Any, logger: Any = None) -> Any:
+def build_vae(
+    path: str,
+    *,
+    vae_cls: Any,
+    config: dict,
+    dtype: Any,
+    logger: Any = None,
+) -> Any:
     """``vae_cls`` from ``config``, loaded strictly from the supplied VAE file."""
     from accelerate import init_empty_weights
     from safetensors.torch import load_file
@@ -746,7 +790,9 @@ def build_vae(path: str, *, vae_cls: Any, config: dict, dtype: Any, logger: Any 
     name = os.path.basename(path)
     header, _ = read_safetensors_header(path)
     if quant_layers(path):
-        raise ComponentFileError(f"'{name}': quantized VAE files are not supported; use the bf16/fp32 VAE")
+        raise ComponentFileError(
+            f"'{name}': quantized VAE files are not supported; use the bf16/fp32 VAE"
+        )
     kind = classify_vae(weight_keys(header))
     if kind is None or vae_cls.__name__ not in VAE_KIND_CLASSES.get(kind, ()):
         raise ComponentFileError(
@@ -765,7 +811,9 @@ def build_vae(path: str, *, vae_cls: Any, config: dict, dtype: Any, logger: Any 
             rules = (("identity", _rule_identity),),
         )
     except ComponentFileError as exc:
-        raise ComponentFileError(f"'{name}' does not fit this pipeline's {vae_cls.__name__}: {exc}") from None
+        raise ComponentFileError(
+            f"'{name}' does not fit this pipeline's {vae_cls.__name__}: {exc}"
+        ) from None
     state = {}
     for key, tensor in converted.items():
         if key not in expected:
@@ -776,11 +824,15 @@ def build_vae(path: str, *, vae_cls: Any, config: dict, dtype: Any, logger: Any 
     vae.load_state_dict(state, strict = True, assign = True)
     stranded = _strip_meta(vae)
     if stranded:
-        raise ComponentFileError(f"'{name}': {len(stranded)} VAE tensor(s) not in the file, e.g. {stranded[0]}")
+        raise ComponentFileError(
+            f"'{name}': {len(stranded)} VAE tensor(s) not in the file, e.g. {stranded[0]}"
+        )
     vae.requires_grad_(False)
     vae.eval()
     if logger is not None:
-        logger.info("diffusion.comfy_components: %s -> %s (%s layout)", name, vae_cls.__name__, kind)
+        logger.info(
+            "diffusion.comfy_components: %s -> %s (%s layout)", name, vae_cls.__name__, kind
+        )
     return vae
 
 
@@ -943,7 +995,9 @@ def plan_component_overrides(
         parse_component_file(s, model_path = model_path, trusted_repo = trusted_repo) for s in te_specs
     ]
     vae_ref = (
-        parse_component_file(vae_file, model_path = model_path, trusted_repo = trusted_repo, what = "vae_file")
+        parse_component_file(
+            vae_file, model_path = model_path, trusted_repo = trusted_repo, what = "vae_file"
+        )
         if vae_file
         else None
     )
@@ -1010,7 +1064,9 @@ def load_override_modules(
                 cache_dir = cache_dir,
                 local_files_only = local_files_only,
             )
-            overrides.modules[component] = build_vae(path, vae_cls = vae_cls, config = config, dtype = dtype, logger = logger)
+            overrides.modules[component] = build_vae(
+                path, vae_cls = vae_cls, config = config, dtype = dtype, logger = logger
+            )
             continue
         encoder_cls = getattr(transformers, class_name, None)
         if encoder_cls is None:
@@ -1095,7 +1151,9 @@ def validate_component_specs(
             if kind is None:
                 vae_kind = classify_vae(keys)
                 hint = " (it looks like a VAE; pass it as vae_file)" if vae_kind else ""
-                raise ComponentFileError(f"'{ref.name}' is not a recognised text-encoder file{hint}")
+                raise ComponentFileError(
+                    f"'{ref.name}' is not a recognised text-encoder file{hint}"
+                )
             quant_layers(ref.local_path)
         refs.append(ref)
     if vae_file:

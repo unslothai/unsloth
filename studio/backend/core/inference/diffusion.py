@@ -1113,7 +1113,6 @@ def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
 def _hub_file_size(repo_id: str, filename: str, hf_token: Optional[str]) -> int:
     try:
         from huggingface_hub import HfApi
-
         for info in HfApi().get_paths_info(repo_id, [filename], token = hf_token):
             return int(getattr(info, "size", 0) or 0)
     except Exception:  # noqa: BLE001 - a size is a progress-bar hint, never a refusal
@@ -1123,7 +1122,6 @@ def _hub_file_size(repo_id: str, filename: str, hf_token: Optional[str]) -> int:
 
 def _active_component_summary() -> Optional[dict]:
     from .diffusion_comfy_components import active_component_overrides
-
     overrides = active_component_overrides()
     return overrides.summary() if overrides is not None and overrides.files else None
 
@@ -3022,7 +3020,9 @@ class DiffusionBackend:
                 "(or a whole-pipeline single file) already carries its own text encoders and VAE."
             )
         if vae_file and fam.name == KREA2_FAMILY_NAME:
-            raise ValueError(f"a separate VAE file is not supported for '{fam.name}' yet; omit vae_file.")
+            raise ValueError(
+                f"a separate VAE file is not supported for '{fam.name}' yet; omit vae_file."
+            )
         validate_component_specs(
             list(text_encoder_files or ()),
             vae_file,
@@ -3060,7 +3060,6 @@ class DiffusionBackend:
 
         def _resolve_hub(ref: Any) -> str:
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
-
             return hf_hub_download_with_xet_fallback(
                 ref.repo_id,
                 ref.filename,
@@ -4497,7 +4496,9 @@ class DiffusionBackend:
         # Supplied text-encoder / VAE files: their base components are not staged; a Hub-hosted file is (header
         # read from the Hub, nothing downloaded here).
         component_overrides = None
-        if (load_kwargs.get("text_encoder_files") or load_kwargs.get("vae_file")) and fam is not None:
+        if (
+            load_kwargs.get("text_encoder_files") or load_kwargs.get("vae_file")
+        ) and fam is not None:
             self._validate_component_files(
                 fam,
                 kind,
@@ -4793,7 +4794,7 @@ class DiffusionBackend:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
             add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
-        for ref in (component_overrides.files.values() if component_overrides else ()):
+        for ref in component_overrides.files.values() if component_overrides else ():
             if not ref.is_hub:
                 continue
             ref_size = _hub_file_size(ref.repo_id, ref.filename, hf_token)
@@ -9184,7 +9185,9 @@ class DiffusionBackend:
                 companions_from_cache = True
                 # Supplied text-encoder / VAE files replace those components: drop whatever the base-repo scan saw
                 # for them (a cache from an earlier load) and price the files instead.
-                supplied = self._supplied_component_mib(fetch_base or base, base_local_dir, load_dtype)
+                supplied = self._supplied_component_mib(
+                    fetch_base or base, base_local_dir, load_dtype
+                )
                 if supplied is not None:
                     scanned_mib, scanned_te_mib, supplied_mib, supplied_te_mib = supplied
                     companion_mib = max(0, int(companion_mib or 0) - scanned_mib) + supplied_mib

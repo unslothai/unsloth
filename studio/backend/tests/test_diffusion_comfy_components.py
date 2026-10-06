@@ -24,10 +24,16 @@ transformers = pytest.importorskip("transformers")
 import core.inference.diffusion_comfy_components as C  # noqa: E402
 
 
-def _save(path: Path, tensors: dict, metadata: dict | None = None) -> str:
+def _save(
+    path: Path,
+    tensors: dict,
+    metadata: dict | None = None,
+) -> str:
     path.parent.mkdir(parents = True, exist_ok = True)
     safetensors_torch.save_file(
-        {k: v.detach().clone().contiguous() for k, v in tensors.items()}, str(path), metadata = metadata
+        {k: v.detach().clone().contiguous() for k, v in tensors.items()},
+        str(path),
+        metadata = metadata,
     )
     return str(path)
 
@@ -65,7 +71,8 @@ def test_parse_refuses_non_safetensors_missing_and_untrusted(tmp_path):
             "someone/repo/te.safetensors", trusted_repo = lambda r: r.startswith("unsloth/")
         )
     hub = C.parse_component_file(
-        "unsloth/X-ComfyUI/split_files/te.safetensors", trusted_repo = lambda r: r.startswith("unsloth/")
+        "unsloth/X-ComfyUI/split_files/te.safetensors",
+        trusted_repo = lambda r: r.startswith("unsloth/"),
     )
     assert (hub.repo_id, hub.filename) == ("unsloth/X-ComfyUI", "split_files/te.safetensors")
 
@@ -85,7 +92,13 @@ def test_normalize_text_encoder_files():
 @pytest.mark.parametrize(
     "keys, kind",
     [
-        (["text_model.encoder.layers.0.mlp.fc1.weight", "text_model.embeddings.token_embedding.weight"], "clip_l"),
+        (
+            [
+                "text_model.encoder.layers.0.mlp.fc1.weight",
+                "text_model.embeddings.token_embedding.weight",
+            ],
+            "clip_l",
+        ),
         (["encoder.block.0.layer.0.SelfAttention.q.weight", "shared.weight"], "t5"),
         (
             [
@@ -96,10 +109,22 @@ def test_normalize_text_encoder_files():
             "umt5",
         ),
         (["model.layers.0.self_attn.q_norm.weight", "model.embed_tokens.weight"], "qwen3"),
-        (["model.layers.0.self_attn.q_proj.weight", "visual.blocks.0.attn.qkv.weight"], "qwen2_5_vl"),
-        (["model.layers.0.self_attn.q_norm.weight", "model.visual.blocks.0.attn.qkv.weight"], "qwen3_vl"),
+        (
+            ["model.layers.0.self_attn.q_proj.weight", "visual.blocks.0.attn.qkv.weight"],
+            "qwen2_5_vl",
+        ),
+        (
+            ["model.layers.0.self_attn.q_norm.weight", "model.visual.blocks.0.attn.qkv.weight"],
+            "qwen3_vl",
+        ),
         (["model.layers.0.self_attn.q_proj.weight", "tekken_model"], "mistral3"),
-        (["model.layers.0.self_attn.q_proj.weight", "model.layers.0.pre_feedforward_layernorm.weight"], "gemma2"),
+        (
+            [
+                "model.layers.0.self_attn.q_proj.weight",
+                "model.layers.0.pre_feedforward_layernorm.weight",
+            ],
+            "gemma2",
+        ),
         (["model.layers.0.self_attn.q_proj.weight"], "llama"),
         (["decoder.conv_in.weight"], None),
     ],
@@ -109,7 +134,10 @@ def test_classify_text_encoder(keys, kind):
 
 
 def test_classify_clip_g_by_width():
-    keys = ["text_model.encoder.layers.0.mlp.fc1.weight", "text_model.embeddings.token_embedding.weight"]
+    keys = [
+        "text_model.encoder.layers.0.mlp.fc1.weight",
+        "text_model.embeddings.token_embedding.weight",
+    ]
     shapes = {"text_model.embeddings.token_embedding.weight": [49408, 1280]}
     assert C.classify_text_encoder(keys, shapes) == "clip_g"
 
@@ -119,7 +147,13 @@ def test_classify_clip_g_by_width():
     [
         (["decoder.up.0.block.0.conv1.weight", "encoder.down.0.block.0.conv1.weight"], "ldm_kl"),
         (["decoder.upsamples.0.residual.0.gamma", "encoder.downsamples.0.residual.0.gamma"], "wan"),
-        (["decoder.upsamples.0.upsamples.0.residual.0.gamma", "encoder.downsamples.0.downsamples.1.resample.1.weight"], "wan_nested"),
+        (
+            [
+                "decoder.upsamples.0.upsamples.0.residual.0.gamma",
+                "encoder.downsamples.0.downsamples.1.resample.1.weight",
+            ],
+            "wan_nested",
+        ),
         (["decoder.up_blocks.0.resnets.0.conv1.weight"], "diffusers"),
         (["model.layers.0.self_attn.q_proj.weight"], None),
     ],
@@ -146,7 +180,10 @@ def test_match_keys_vl_nest_strict_and_dead_lm_head():
     assert km.rule == "nest_language_model"
     assert km.dead_unexpected == ["lm_head.weight"]
     # Qwen2.5-VL keeps its vision tower at the top level in ComfyUI files.
-    comfy25 = {("visual." + k[len("model.visual."):] if k.startswith("model.visual.") else k): v for k, v in comfy.items()}
+    comfy25 = {
+        ("visual." + k[len("model.visual.") :] if k.startswith("model.visual.") else k): v
+        for k, v in comfy.items()
+    }
     assert C.match_keys(comfy25, expected).rule == "nest_language_model"
 
 
@@ -155,14 +192,18 @@ def test_match_keys_refuses_missing_extra_and_shape():
     with pytest.raises(C.ComponentFileError, match = "missing"):
         C.match_keys({"model.layers.0.w.weight": (4, 4)}, expected)
     with pytest.raises(C.ComponentFileError, match = "unexpected"):
-        C.match_keys({"layers.0.w.weight": (4, 4), "norm.weight": (4,), "extra.weight": (1,)}, expected)
+        C.match_keys(
+            {"layers.0.w.weight": (4, 4), "norm.weight": (4,), "extra.weight": (1,)}, expected
+        )
     with pytest.raises(C.ComponentFileError, match = "shape"):
         C.match_keys({"layers.0.w.weight": (4, 8), "norm.weight": (4,)}, expected)
 
 
 def test_match_keys_tied_lm_head_may_be_missing():
     expected = {"model.embed_tokens.weight": (10, 4), "lm_head.weight": (10, 4)}
-    km = C.match_keys({"model.embed_tokens.weight": (10, 4)}, expected, tied_missing = ("lm_head.weight",))
+    km = C.match_keys(
+        {"model.embed_tokens.weight": (10, 4)}, expected, tied_missing = ("lm_head.weight",)
+    )
     assert km.dead_missing == ["lm_head.weight"]
     with pytest.raises(C.ComponentFileError):
         C.match_keys({"model.embed_tokens.weight": (10, 4)}, expected)
@@ -192,8 +233,12 @@ def test_clip_l_full_clip_export_loads_strictly_and_matches(tmp_path):
     # A full-CLIP export also carries the projection and logit scale CLIPTextModel never reads.
     state["text_projection.weight"] = torch.randn(32, 32)
     state["logit_scale"] = torch.tensor(4.6)
-    path = _save(tmp_path / "clip_l.safetensors", {k: v.to(torch.float16) for k, v in state.items()})
-    enc = C.build_text_encoder(path, encoder_cls = transformers.CLIPTextModel, config = cfg, dtype = torch.float32)
+    path = _save(
+        tmp_path / "clip_l.safetensors", {k: v.to(torch.float16) for k, v in state.items()}
+    )
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.CLIPTextModel, config = cfg, dtype = torch.float32
+    )
     ids = torch.tensor([[1, 5, 9, 2]])
     with torch.no_grad():
         got = enc(input_ids = ids).last_hidden_state
@@ -233,7 +278,9 @@ def test_t5_legacy_scaled_fp8_dequantizes_strictly(tmp_path):
             out[key] = value
     out["scaled_fp8"] = torch.zeros(0, dtype = torch.float8_e4m3fn)
     path = _save(tmp_path / "t5xxl_fp8_e4m3fn_scaled.safetensors", out)
-    enc = C.build_text_encoder(path, encoder_cls = transformers.T5EncoderModel, config = cfg, dtype = torch.float32)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.T5EncoderModel, config = cfg, dtype = torch.float32
+    )
     loaded = enc.state_dict()
     for key, want in dequant_ref.items():
         assert torch.equal(loaded[key], want), key
@@ -241,7 +288,9 @@ def test_t5_legacy_scaled_fp8_dequantizes_strictly(tmp_path):
     ids = torch.tensor([[3, 7, 11, 1]])
     with torch.no_grad():
         cos = torch.nn.functional.cosine_similarity(
-            enc(input_ids = ids).last_hidden_state.flatten(), ref(input_ids = ids).last_hidden_state.flatten(), dim = 0
+            enc(input_ids = ids).last_hidden_state.flatten(),
+            ref(input_ids = ids).last_hidden_state.flatten(),
+            dim = 0,
         )
     assert cos > 0.99
 
@@ -290,7 +339,9 @@ def test_qwen3_comfy_layout_int8_convrot_stays_int8(tmp_path):
         else:
             out[comfy_key] = value.to(torch.bfloat16)
     path = _save(tmp_path / "qwen_3_4b_int8_convrot.safetensors", out)
-    enc = C.build_text_encoder(path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.bfloat16)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.bfloat16
+    )
     assert type(enc.layers[0].mlp.gate_proj).__name__ == "Int8ConvRotLinear"
     assert enc.layers[0].mlp.gate_proj.weight.dtype == torch.int8
     assert getattr(enc, "_unsloth_te_prequant_scheme", None) == "int8"
@@ -307,10 +358,14 @@ def test_qwen3_bf16_strip_model_prefix_and_dead_lm_head(tmp_path):
     out = {"model." + k: v for k, v in ref.state_dict().items()}
     out["lm_head.weight"] = torch.randn(64, 64)
     path = _save(tmp_path / "qwen_3_4b.safetensors", out)
-    enc = C.build_text_encoder(path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.float32)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.float32
+    )
     ids = torch.tensor([[1, 2, 3]])
     with torch.no_grad():
-        assert torch.allclose(enc(input_ids = ids).last_hidden_state, ref(input_ids = ids).last_hidden_state)
+        assert torch.allclose(
+            enc(input_ids = ids).last_hidden_state, ref(input_ids = ids).last_hidden_state
+        )
 
 
 @pytest.mark.parametrize(
@@ -340,18 +395,30 @@ def test_wrong_class_refused_with_diagnostics(tmp_path):
     path = _save(tmp_path / "clip.safetensors", dict(ref.state_dict()))
     qcfg, _ = _tiny_qwen3()
     with pytest.raises(C.ComponentFileError, match = "does not fit"):
-        C.build_text_encoder(path, encoder_cls = transformers.Qwen3Model, config = qcfg, dtype = torch.float32)
+        C.build_text_encoder(
+            path, encoder_cls = transformers.Qwen3Model, config = qcfg, dtype = torch.float32
+        )
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 # VAEs
 
 
-def _ldm_vae_header(ch=32, mult=(1, 2), z=4, layers=2) -> dict:
+def _ldm_vae_header(
+    ch = 32,
+    mult = (1, 2),
+    z = 4,
+    layers = 2,
+) -> dict:
     """The original (``ae.safetensors``) LDM VAE naming for a tiny config."""
     t: dict = {}
 
-    def conv(name, o, i, k=3):
+    def conv(
+        name,
+        o,
+        i,
+        k = 3,
+    ):
         t[name + ".weight"] = (o, i, k, k)
         t[name + ".bias"] = (o,)
 
@@ -424,11 +491,14 @@ def test_ldm_ae_vae_loads_strictly_into_autoencoderkl(tmp_path):
     header = _ldm_vae_header()
     state = {k: torch.randn(shape) * 0.02 for k, shape in header.items()}
     path = _save(tmp_path / "ae.safetensors", state)
-    vae = C.build_vae(path, vae_cls = diffusers.AutoencoderKL, config = _tiny_kl_config(), dtype = torch.float32)
+    vae = C.build_vae(
+        path, vae_cls = diffusers.AutoencoderKL, config = _tiny_kl_config(), dtype = torch.float32
+    )
     loaded = vae.state_dict()
     assert torch.equal(loaded["encoder.conv_in.weight"], state["encoder.conv_in.weight"])
     assert torch.equal(
-        loaded["encoder.mid_block.attentions.0.to_q.weight"], state["encoder.mid.attn_1.q.weight"].squeeze(-1).squeeze(-1)
+        loaded["encoder.mid_block.attentions.0.to_q.weight"],
+        state["encoder.mid.attn_1.q.weight"].squeeze(-1).squeeze(-1),
     )
     with torch.no_grad():
         assert vae.decode(torch.randn(1, 4, 8, 8)).sample.shape == (1, 3, 16, 16)
@@ -440,7 +510,9 @@ def test_vae_missing_tensor_refused(tmp_path):
     header.pop("decoder.conv_out.weight")
     path = _save(tmp_path / "ae.safetensors", {k: torch.zeros(s) for k, s in header.items()})
     with pytest.raises(C.ComponentFileError, match = "missing"):
-        C.build_vae(path, vae_cls = diffusers.AutoencoderKL, config = _tiny_kl_config(), dtype = torch.float32)
+        C.build_vae(
+            path, vae_cls = diffusers.AutoencoderKL, config = _tiny_kl_config(), dtype = torch.float32
+        )
 
 
 def test_wan_nested_vae_names_and_time_axis_squeeze():
@@ -473,7 +545,9 @@ def test_wan_nested_vae_names_and_time_axis_squeeze():
         "quant_conv.weight": 10,
         "post_quant_conv.bias": 11,
     }
-    fitted = C.fit_conv_shapes({"a": torch.zeros(4, 2, 1, 3, 3), "b": torch.zeros(4, 2, 1, 3, 3)}, {"a": (4, 2, 3, 3)})
+    fitted = C.fit_conv_shapes(
+        {"a": torch.zeros(4, 2, 1, 3, 3), "b": torch.zeros(4, 2, 1, 3, 3)}, {"a": (4, 2, 3, 3)}
+    )
     assert tuple(fitted["a"].shape) == (4, 2, 3, 3) and tuple(fitted["b"].shape) == (4, 2, 1, 3, 3)
 
 
@@ -488,16 +562,25 @@ FLUX_INDEX = {
 }
 
 
-def _hdr(*keys, shape=(4, 4)):
+def _hdr(*keys, shape = (4, 4)):
     return {k: {"dtype": "BF16", "shape": list(shape)} for k in keys}
 
 
 def test_assign_flux_clip_t5_vae_in_any_order():
-    t5 = (C.ComponentFileRef("t5"), _hdr("encoder.block.0.layer.0.SelfAttention.q.weight", "shared.weight"))
+    t5 = (
+        C.ComponentFileRef("t5"),
+        _hdr("encoder.block.0.layer.0.SelfAttention.q.weight", "shared.weight"),
+    )
     clip = (C.ComponentFileRef("clip"), _hdr("text_model.encoder.layers.0.mlp.fc1.weight"))
     ae = (C.ComponentFileRef("ae"), _hdr("decoder.up.0.block.0.conv1.weight"))
-    assigned, kinds = C.assign_components([t5, clip], ae, C.component_classes_from_index(FLUX_INDEX))
-    assert {c: r.spec for c, r in assigned.items()} == {"text_encoder_2": "t5", "text_encoder": "clip", "vae": "ae"}
+    assigned, kinds = C.assign_components(
+        [t5, clip], ae, C.component_classes_from_index(FLUX_INDEX)
+    )
+    assert {c: r.spec for c, r in assigned.items()} == {
+        "text_encoder_2": "t5",
+        "text_encoder": "clip",
+        "vae": "ae",
+    }
     assert kinds["vae"] == "ldm_kl"
 
 
@@ -506,7 +589,10 @@ def test_assign_refuses_wrong_family_and_double_slot():
     qwen = (C.ComponentFileRef("qwen_3_4b"), _hdr("model.layers.0.self_attn.q_norm.weight"))
     with pytest.raises(C.ComponentFileError, match = "qwen3 text encoder"):
         C.assign_components([qwen], None, classes, family = "flux.1")
-    t5 = (C.ComponentFileRef("t5"), _hdr("encoder.block.0.layer.0.SelfAttention.q.weight", "shared.weight"))
+    t5 = (
+        C.ComponentFileRef("t5"),
+        _hdr("encoder.block.0.layer.0.SelfAttention.q.weight", "shared.weight"),
+    )
     with pytest.raises(C.ComponentFileError, match = "already taken"):
         C.assign_components([t5, t5], None, classes)
     wan = (C.ComponentFileRef("wan"), _hdr("decoder.upsamples.0.residual.0.gamma"))
@@ -518,7 +604,9 @@ def test_resident_bytes_prices_int8_at_stored_size_and_fp8_dequantized(tmp_path)
     out = {
         "a.weight": torch.zeros(64, 64, dtype = torch.int8),
         "a.weight_scale": torch.ones(64),
-        "a.comfy_quant": _quant_blob({"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": 16}),
+        "a.comfy_quant": _quant_blob(
+            {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": 16}
+        ),
         "b.weight": torch.zeros(64, 64, dtype = torch.float8_e4m3fn),
         "b.weight_scale": torch.ones(()),
         "b.comfy_quant": _quant_blob({"format": "float8_e4m3fn"}),
@@ -532,10 +620,18 @@ def test_planner_replaces_scanned_component_with_supplied_file(tmp_path):
     from core.inference.diffusion import DiffusionBackend
 
     base = tmp_path / "base"
-    _save(base / "text_encoder" / "model.safetensors", {"w": torch.zeros(1024, 1024, dtype = torch.bfloat16)})
-    _save(base / "vae" / "diffusion_pytorch_model.safetensors", {"w": torch.zeros(512, 512, dtype = torch.bfloat16)})
+    _save(
+        base / "text_encoder" / "model.safetensors",
+        {"w": torch.zeros(1024, 1024, dtype = torch.bfloat16)},
+    )
+    _save(
+        base / "vae" / "diffusion_pytorch_model.safetensors",
+        {"w": torch.zeros(512, 512, dtype = torch.bfloat16)},
+    )
     (base / "model_index.json").write_text("{}")
-    supplied = _save(tmp_path / "te.safetensors", {"w": torch.zeros(2048, 1024, dtype = torch.bfloat16)})
+    supplied = _save(
+        tmp_path / "te.safetensors", {"w": torch.zeros(2048, 1024, dtype = torch.bfloat16)}
+    )
     ov = C.ComponentOverrides(
         files = {"text_encoder": C.ComponentFileRef(supplied, local_path = supplied)},
         paths = {"text_encoder": supplied},
@@ -543,7 +639,9 @@ def test_planner_replaces_scanned_component_with_supplied_file(tmp_path):
     )
     token = C.set_active_component_overrides(ov)
     try:
-        scanned, scanned_te, got, got_te = DiffusionBackend._supplied_component_mib(str(base), None, torch.bfloat16)
+        scanned, scanned_te, got, got_te = DiffusionBackend._supplied_component_mib(
+            str(base), None, torch.bfloat16
+        )
     finally:
         C.reset_active_component_overrides(token)
     assert (scanned, scanned_te, got, got_te) == (2, 2, 4, 4)
@@ -561,7 +659,9 @@ def test_te_prequant_kwargs_inject_supplied_and_skip_precast(monkeypatch):
     monkeypatch.setattr(
         tp,
         "te_prequant_sources_for_base",
-        lambda *a, **k: {"text_encoder": types.SimpleNamespace(kind = "repo", location = "r", filename = "f")},
+        lambda *a, **k: {
+            "text_encoder": types.SimpleNamespace(kind = "repo", location = "r", filename = "f")
+        },
     )
 
     def _boom(*a, **k):
@@ -571,7 +671,11 @@ def test_te_prequant_kwargs_inject_supplied_and_skip_precast(monkeypatch):
     token = C.set_active_component_overrides(ov)
     try:
         got = tp.te_prequant_pipe_kwargs(
-            types.SimpleNamespace(name = "qwen-image-2.1"), "base", te_quant_mode = "fp8", target = None, dtype = None
+            types.SimpleNamespace(name = "qwen-image-2.1"),
+            "base",
+            te_quant_mode = "fp8",
+            target = None,
+            dtype = None,
         )
     finally:
         C.reset_active_component_overrides(token)
@@ -594,7 +698,9 @@ def test_request_model_normalizes_and_validates():
     assert req.text_encoder_file == ["/a.safetensors"] and req.vae_file is None
     assert req.supplied_text_encoder_files() == ["/a.safetensors"]
     with pytest.raises(Exception):
-        DiffusionLoadRequest(model_path = "/x", text_encoder_file = ["/a.safetensors", "/a.safetensors"])
+        DiffusionLoadRequest(
+            model_path = "/x", text_encoder_file = ["/a.safetensors", "/a.safetensors"]
+        )
     assert DiffusionLoadRequest(model_path = "/x").supplied_text_encoder_files() is None
 
 
@@ -603,13 +709,21 @@ def test_validate_load_request_refuses_pipeline_kind_and_missing_files(tmp_path)
 
     fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False, pipeline_only = False)
     with pytest.raises(ValueError, match = "single-file or GGUF"):
-        DiffusionBackend._validate_component_files(fam, "pipeline", "unsloth/FLUX.1-schnell", ["/x.safetensors"], None)
+        DiffusionBackend._validate_component_files(
+            fam, "pipeline", "unsloth/FLUX.1-schnell", ["/x.safetensors"], None
+        )
     with pytest.raises(ValueError, match = "does not exist"):
-        DiffusionBackend._validate_component_files(fam, "gguf", str(tmp_path), [str(tmp_path / "nope.safetensors")], None)
+        DiffusionBackend._validate_component_files(
+            fam, "gguf", str(tmp_path), [str(tmp_path / "nope.safetensors")], None
+        )
     sdxl = types.SimpleNamespace(name = "sdxl", single_file_is_pipeline = True, pipeline_only = False)
     with pytest.raises(ValueError, match = "whole-pipeline"):
-        DiffusionBackend._validate_component_files(sdxl, "single_file", str(tmp_path), None, "/v.safetensors")
-    vae_as_te = _save(tmp_path / "ae.safetensors", {"decoder.up.0.block.0.conv1.weight": torch.zeros(2, 2)})
+        DiffusionBackend._validate_component_files(
+            sdxl, "single_file", str(tmp_path), None, "/v.safetensors"
+        )
+    vae_as_te = _save(
+        tmp_path / "ae.safetensors", {"decoder.up.0.block.0.conv1.weight": torch.zeros(2, 2)}
+    )
     with pytest.raises(ValueError, match = "pass it as vae_file"):
         DiffusionBackend._validate_component_files(fam, "gguf", str(tmp_path), [vae_as_te], None)
 
@@ -623,6 +737,9 @@ def test_supplied_int8_encoder_reported_as_int8_without_a_request():
     outcome = quantize_text_encoders(pipe, types.SimpleNamespace(device = "cpu"), mode = None)
     assert outcome.mode == "int8" and "supplied file" in outcome.reason
     # A dense encoder with no request stays unreported, exactly as before.
-    assert quantize_text_encoders(
-        types.SimpleNamespace(text_encoder = torch.nn.Linear(2, 2)), None, mode = None
-    ).mode is None
+    assert (
+        quantize_text_encoders(
+            types.SimpleNamespace(text_encoder = torch.nn.Linear(2, 2)), None, mode = None
+        ).mode
+        is None
+    )
