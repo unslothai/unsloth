@@ -1423,6 +1423,18 @@ class FastDecisionModel:
         if hasattr(model.encoder, "peft_config"):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
         if getattr(model, "is_clef", False):
+            unsupported = {
+                "use_dora": use_dora,
+                "layers_to_transform": layers_to_transform,
+                "layers_pattern": layers_pattern,
+                "loftq_config": loftq_config,
+                "init_lora_weights": init_lora_weights is not True,
+            }
+            unsupported = [name for name, value in unsupported.items() if value]
+            if unsupported:
+                raise NotImplementedError(
+                    f"Unsloth: Clef LoRA does not support {', '.join(unsupported)} yet."
+                )
             return _clef_peft_model(
                 model,
                 r = r,

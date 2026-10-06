@@ -825,6 +825,24 @@ def test_clef_encoding_is_token_identical_to_cloudflares():
             ]
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"use_dora": True},
+        {"layers_to_transform": [0]},
+        {"layers_pattern": "layers"},
+        {"loftq_config": {"loftq_bits": 4}},
+        {"init_lora_weights": "gaussian"},
+    ],
+)
+def test_clef_lora_refuses_options_it_would_drop(monkeypatch, option):
+    monkeypatch.setattr(decision, "_clef_peft_model", lambda model, **kwargs: "plain lora")
+    model = types.SimpleNamespace(is_clef = True, encoder = types.SimpleNamespace())
+    with pytest.raises(NotImplementedError, match = next(iter(option))):
+        FastDecisionModel.get_peft_model(model, **option)
+    assert FastDecisionModel.get_peft_model(model) == "plain lora"
+
+
 def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
     seen = []
 
