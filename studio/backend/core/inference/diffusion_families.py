@@ -1233,13 +1233,11 @@ def _first_variant(rows: Any, identifiers: tuple[Optional[str], ...]) -> Optiona
 
 
 def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
-    """ComfyUI's static shift for the loaded checkpoint: its variant's, else the family default."""
     row = _first_variant(getattr(fam, "comfy_flow_shift_variants", ()), identifiers)
     return row[1] if row else getattr(fam, "comfy_flow_shift", None)
 
 
 def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> dict[str, Any]:
-    """Config overrides of the first variant named by an identifier."""
     row = _first_variant(getattr(fam, "transformer_config_variants", ()), identifiers)
     return dict(row[1]) if row else {}
 
@@ -1247,8 +1245,7 @@ def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> d
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
-    """True when the checkpoint and ``base`` name different variants, so ``base``'s transformer/ is another
-    model. A base naming no variant (a local directory) is unknown, not different."""
+    """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
     rows = getattr(fam, "transformer_config_variants", ())
     base_row = _first_variant(rows, (base,))
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)

@@ -5671,8 +5671,7 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
-                # A Qwen-Image-Edit 2509 / original GGUF resolves to the 2511 base: its transformer/ (dense or
-                # pre-quantised) is another model, so only the GGUF runs the picked variant.
+                # 2509 / original Edit GGUFs resolve to the 2511 base, whose transformer/ is another model.
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
