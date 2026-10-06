@@ -159,11 +159,54 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
     assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
     FastDecisionModel.calibrate(model, processor, holdout)
 
+    state, questions = _rows(1)[0]["state"], _rows(1)[0]["questions"]
+    answers = FastDecisionModel.predict(model, processor, state, questions)
+    assert answers["outage"]["type"] == "noul" and 0 <= answers["outage"]["noul"] <= 1
+    assert answers["team"]["choice"] in ("billing", "tech")
+    assert sum(answers["team"]["probabilities"].values()) == pytest.approx(1, abs = 1e-3)
+    assert answers["mood"]["legend"] == {"0": "calm", "1": "annoyed", "2": "angry"}
+
+    # save_pretrained: only the adapters, the head and the configs; reloaded onto the base.
+    adapters = tmp_path / "adapters"
+    model.save_pretrained(str(adapters))
+    assert (adapters / "adapter_config.json").is_file()
+    assert (adapters / "joint_head.safetensors").is_file()
+    assert not (adapters / "config.json").exists() and not list(adapters.glob("model*.safetensors"))
+    assert (
+        json.loads((adapters / "adapter_config.json").read_text())["base_model_name_or_path"]
+        == base
+    )
+    from_adapters, adapter_processor = FastDecisionModel.from_pretrained(
+        str(adapters), max_seq_length = 512
+    )
+    assert hasattr(from_adapters.encoder, "peft_config")
+    assert from_adapters.decision_config["base_model"] == base
+    again = FastDecisionModel.predict(from_adapters, adapter_processor, state, questions)
+    # The head is stored in bf16; the adapters keep their own dtype.
+    for name in questions:
+        for key, value in answers[name].get("probabilities", {}).items():
+            assert again[name]["probabilities"][key] == pytest.approx(value, abs = 0.03)
+    assert again["outage"]["noul"] == pytest.approx(answers["outage"]["noul"], abs = 0.03)
+    # A merged save from the adapter reload is a complete Clef folder again.
+    remerged = tmp_path / "remerged"
+    from_adapters.save_pretrained_merged(str(remerged))
+    assert (remerged / "config.json").is_file() and not (remerged / "adapter_config.json").exists()
+    del from_adapters
+
     out = tmp_path / "out"
     model.save_pretrained_merged(str(out))
+    # Saving adapters over a merged folder (or the reverse) leaves no stale weights behind.
+    model.save_pretrained(str(out / "swap"))
+    model.save_pretrained_merged(str(out / "swap"))
+    assert not (out / "swap" / "adapter_config.json").exists()
+    model.save_pretrained(str(out / "swap"))
+    assert not (out / "swap" / "config.json").exists()
+    assert not list((out / "swap").glob("model*.safetensors"))
     assert json.loads((out / "joint_head_config.json").read_text())["hidden_size"] == hidden
-    reloaded, _ = FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
+    reloaded, reloaded_processor = FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
     assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
+    merged_answers = FastDecisionModel.predict(reloaded, reloaded_processor, state, questions)
+    assert merged_answers["outage"]["noul"] == pytest.approx(answers["outage"]["noul"], abs = 0.05)
     # calibrate() fits a head temperature that the save folds into the head weights.
     head_temperature = model.decision_config.get("head_temperature", 1.0)
     assert reloaded.decision_config.get("folded_temperature", 1.0) == pytest.approx(

@@ -42,6 +42,8 @@ CLEF_RECIPE = {}
 _FILES = ("rl_agent_config.json", "model.safetensors")
 _DIRS = ("encoder", "tokenizer")
 _CLEF_HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
+_ADAPTER_CONFIG = "adapter_config.json"
+_DECISION_CONFIG = "unsloth_decision_config.json"
 # Copied byte for byte from the checkpoint a Clef fine-tune started from: Cloudflare's loader and
 # license, and the tokenizer / processor files, which transformers would otherwise rewrite (a
 # re-saved tokenizer_config.json trips transformers' "incorrect regex pattern" warning).
@@ -97,9 +99,17 @@ def is_decision_checkpoint(folder) -> bool:
 
 
 def is_clef_checkpoint(folder) -> bool:
-    # Cloudflare's Clef layout: a Qwen3.5 backbone plus a joint schema head.
+    # Cloudflare's Clef layout: a backbone (merged, or LoRA adapters over a base) plus a joint schema head.
     folder = Path(folder)
-    return all((folder / name).is_file() for name in ("config.json", *_CLEF_HEAD_FILES))
+    return all((folder / name).is_file() for name in _CLEF_HEAD_FILES) and (
+        (folder / "config.json").is_file() or (folder / _ADAPTER_CONFIG).is_file()
+    )
+
+
+def _is_clef_adapter(folder) -> bool:
+    # Merged weights win when a folder has both.
+    folder = Path(folder)
+    return not (folder / "config.json").is_file() and (folder / _ADAPTER_CONFIG).is_file()
 
 
 def _is_clef_repo(model_name, prefix, token, revision) -> Optional[bool]:
@@ -601,6 +611,96 @@ def _decision_logits(model, tokenizer, items: list) -> tuple:
     return _logits(model, items, pad_token_id), items
 
 
+@torch.no_grad()
+def _clef_decide(
+    model,
+    tokenizer,
+    state,
+    questions: dict,
+    max_length = None,
+) -> dict:
+    # One Decision API request over every question in one prefill, at served temperatures.
+    from .clef import encode_record, systemone_answer
+
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    max_length = int(max_length or model.decision_config.get("max_len", CLEF_MAX_LEN))
+    encoded = encode_record(
+        tokenizer, {"state": state, "questions": questions}, max_length = max_length
+    )
+    device = next(model.parameters()).device
+    amp_dtype = _amp_dtype(device)
+    if amp_dtype != torch.bfloat16 or _clef_forced_float32(model):
+        amp_dtype = None
+    ids = torch.tensor([encoded.input_ids], device = device)
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
+            logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
+    finally:
+        model.train(was_training)
+    rows = [
+        row[: len(question.option_ids)]
+        for question, row in zip(encoded.questions, logits.float().cpu())
+    ]
+    scales = _served_temperatures(
+        model.decision_config,
+        rows,
+        [
+            {"qtype": QUESTION_TYPES.index(questions[q.question_id]["type"])}
+            for q in encoded.questions
+        ],
+    )
+    answers = {}
+    for question, row, scale in zip(encoded.questions, rows, scales):
+        probabilities = (row / scale).softmax(-1).tolist()
+        answers[question.question_id] = systemone_answer(
+            questions[question.question_id], dict(zip(question.option_ids, probabilities))
+        )
+    return {
+        "answers": answers,
+        "input_tokens": len(encoded.input_ids),
+        # encode_record cuts the state to fit, which only ever fills the budget exactly.
+        "truncated": len(encoded.input_ids) >= max_length,
+    }
+
+
+def _laya_decide(model, tokenizer, state, questions: dict) -> dict:
+    from .clef import systemone_answer
+
+    common = _laya().common
+    config = model.decision_config
+    max_len = int(config.get("max_len", 512))
+    items, keys = [], []
+    for name, question in questions.items():
+        internal = _internal(question)
+        ids, markers = common.build_sequence(
+            tokenizer, _parsed(state), internal, max_len, int(config.get("head_max_len", 192))
+        )
+        if len(markers) != len(_option_keys(internal)):
+            raise DecisionDataError(f'"{name}" has more options than fit in {max_len} tokens')
+        items.append(
+            {
+                "input_ids": ids,
+                "markers": markers,
+                "qtype": common.QTYPES[internal["t"]],
+                "target": [0.0] * len(markers),
+            }
+        )
+        keys.append(_option_keys(internal))
+    logits = _logits(model, items, tokenizer.pad_token_id)
+    temperatures = _served_temperatures(config, logits, items)
+    answers = {}
+    for (name, question), z, t, options in zip(questions.items(), logits, temperatures, keys):
+        probabilities = dict(zip(options, torch.softmax(z / t, -1).tolist()))
+        answers[name] = systemone_answer(question, probabilities)
+    return {
+        "answers": answers,
+        "input_tokens": max(len(item["input_ids"]) for item in items),
+        "truncated": any(len(item["input_ids"]) >= max_len for item in items),
+    }
+
+
 # Kept in 16-bit like unsloth/Qwen3.8-27B-unsloth-bnb-4bit: Clef's backbone is a merged
 # fine-tune, not stock Qwen, so it is quantized on load with the same dynamic list.
 CLEF_4BIT_SKIP_MODULES = (
@@ -639,12 +739,29 @@ def _load_clef(
     token,
     use_gradient_checkpointing,
     kwargs,
+    model_name = None,
 ):
     from safetensors.torch import load_file
 
     from .clef import JointSchemaHead
 
     max_len = int(max_seq_length or CLEF_MAX_LEN)
+    config = {"layout": "clef", "max_len": max_len, "temperature": [1.0] * 3}
+    saved = folder / _DECISION_CONFIG
+    if saved.is_file():
+        config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
+    adapter = _is_clef_adapter(folder)
+    if adapter:
+        # LoRA adapters over the base LLM: the base comes from where it was trained from.
+        base = config.get("base_model") or json.loads(
+            (folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8")
+        ).get("base_model_name_or_path")
+        if not base:
+            raise ValueError(f"Unsloth: {folder} has adapters but does not name their base model.")
+        config["base_model"] = str(base)
+    else:
+        # A later adapter save sits on these merged weights, not on what they were trained from.
+        config["base_model"] = str(model_name or folder)
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
@@ -652,6 +769,7 @@ def _load_clef(
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
         # which stores bfloat16 weights: the gated delta net NaNs in pure float16.
+        # An adapter folder loads its base and the adapters through Unsloth's own PEFT path.
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -665,15 +783,24 @@ def _load_clef(
     else:
         from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
+        source = config["base_model"] if adapter else str(folder)
         # Clef's own backbones are vision models; ones converted from a text-only LM are not.
-        if getattr(AutoConfig.from_pretrained(str(folder)), "vision_config", None) is not None:
+        if (
+            getattr(AutoConfig.from_pretrained(source, token = token), "vision_config", None)
+            is not None
+        ):
             from transformers import AutoModelForImageTextToText as AutoClass
         else:
             from transformers import AutoModelForCausalLM as AutoClass
             AutoProcessor = AutoTokenizer
-        backbone = AutoClass.from_pretrained(str(folder), dtype = dtype or torch.float32)
+        backbone = AutoClass.from_pretrained(source, dtype = dtype or torch.float32, token = token)
+        if adapter:
+            from peft import PeftModel
+            backbone = PeftModel.from_pretrained(
+                backbone, str(folder), is_trainable = not full_finetuning
+            )
         processor = AutoProcessor.from_pretrained(str(folder))
-        if not full_finetuning:
+        if not full_finetuning and not adapter:
             backbone.requires_grad_(False)
     backbone.config.use_cache = False
     head_config = json.loads((folder / _CLEF_HEAD_FILES[1]).read_text(encoding = "utf-8"))
@@ -682,19 +809,19 @@ def _load_clef(
     device = next(backbone.parameters()).device
     # The head trains in fp32 over the 16-bit backbone, as the Laya head does.
     model = ClefDecisionModel(backbone, head.to(device = device, dtype = torch.float32))
-    config = {"layout": "clef", "max_len": max_len, "temperature": [1.0] * 3}
-    saved = folder / "unsloth_decision_config.json"
-    if saved.is_file():
-        config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
+    config["load_in_4bit"] = bool(load_in_4bit)
     model.decision_config = config
     _mark_full_finetuning(model, full_finetuning)
     model._unsloth_forced_float32 = bool(getattr(backbone, "_unsloth_forced_float32", False))
     model._unsloth_fast_backbone = fast
     model._saved_temp_tokenizer = processor
-    model._unsloth_source_folder = str(folder)
+    source = folder
+    if adapter:
+        from .decision_from_lm import _source_folder
+        source = _source_folder(config["base_model"], token, None, False) or folder
+    model._unsloth_source_folder = str(source)
     model._unsloth_source_vocab = len(getattr(processor, "tokenizer", processor))
-    model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
-    model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+    _attach_clef_saving(model)
     return model, processor
 
 
@@ -803,12 +930,8 @@ def _stamp_transformers_version(config_file: Path) -> None:
         config_file.write_text(json.dumps(config, indent = 2) + "\n", encoding = "utf-8")
 
 
-def _save_clef(self, save_directory, tokenizer) -> None:
-    import shutil
-
-    from safetensors.torch import save_file
-
-    output = Path(save_directory)
+def _clef_head_weights(self) -> tuple:
+    # The decision config and head weights both save layouts write.
     config = {**self.decision_config, "fine_tuned": True}
     state = {k: v.detach().to("cpu", torch.float32) for k, v in self.head.state_dict().items()}
     # Folded in, so Cloudflare's loader serves calibrated confidences too; the per-type
@@ -829,6 +952,30 @@ def _save_clef(self, save_directory, tokenizer) -> None:
                 f"Unsloth: head weight {name} is not finite, so the model cannot be saved."
             )
         weights[name] = value
+    return config, weights
+
+
+def _write_clef_head(self, staging: Path, config: dict, weights: dict) -> None:
+    from safetensors.torch import save_file
+
+    (staging / _DECISION_CONFIG).write_text(json.dumps(config, indent = 2), encoding = "utf-8")
+    (staging / _CLEF_HEAD_FILES[1]).write_text(
+        json.dumps(self.head.config, indent = 2), encoding = "utf-8"
+    )
+    save_file(weights, str(staging / _CLEF_HEAD_FILES[0]))
+
+
+# Cloudflare's joint_schema_model.py, vendored unmodified.
+_REFERENCE_CODE = Path(__file__).resolve().parents[1] / "_vendor" / "clef" / "joint_schema_model.py"
+_MERGED_FILES = ("config.json", "model*.safetensors", "model.safetensors.index.json")
+_ADAPTER_FILES = (_ADAPTER_CONFIG, "adapter_model.safetensors", "adapter_model.bin")
+
+
+def _save_clef(self, save_directory, tokenizer) -> None:
+    import shutil
+
+    output = Path(save_directory)
+    config, weights = _clef_head_weights(self)
     source = Path(getattr(self, "_unsloth_source_folder", "") or output)
     with _staging(output) as staging:
         encoder = self.encoder
@@ -848,20 +995,79 @@ def _save_clef(self, save_directory, tokenizer) -> None:
                 continue
             if (source / name).is_file():
                 shutil.copyfile(source / name, staging / name)
+        # Cloudflare's loader is for Qwen3.5 vision backbones; ship it so the folder loads there too.
+        architectures = getattr(self._backbone().config, "architectures", None) or []
+        if (
+            "Qwen3_5ForConditionalGeneration" in architectures
+            and _REFERENCE_CODE.is_file()
+            and not (staging / "joint_schema_model.py").exists()
+        ):
+            shutil.copyfile(_REFERENCE_CODE, staging / "joint_schema_model.py")
         _stamp_transformers_version(staging / "config.json")
-        (staging / "unsloth_decision_config.json").write_text(
-            json.dumps(config, indent = 2), encoding = "utf-8"
-        )
-        (staging / _CLEF_HEAD_FILES[1]).write_text(
-            json.dumps(self.head.config, indent = 2), encoding = "utf-8"
-        )
-        save_file(weights, str(staging / _CLEF_HEAD_FILES[0]))
+        _write_clef_head(self, staging, config, weights)
         _commit_staged(
-            staging,
-            output,
-            _CLEF_HEAD_FILES[0],
-            stale = ("model*.safetensors", "model.safetensors.index.json"),
+            staging, output, _CLEF_HEAD_FILES[0], stale = _MERGED_FILES[1:] + _ADAPTER_FILES
         )
+
+
+def _save_clef_adapter(self, save_directory, tokenizer) -> None:
+    # Only the LoRA adapters, the head and the configs; from_pretrained puts them back on the base.
+    output = Path(save_directory)
+    config, weights = _clef_head_weights(self)
+    with _staging(output) as staging:
+        self.encoder.save_pretrained(str(staging))
+        adapter_config = staging / _ADAPTER_CONFIG
+        if not adapter_config.is_file():
+            raise RuntimeError(f"Unsloth: the adapters were not saved to {output}.")
+        # Named as the user loaded it, not a local snapshot path or a pre-quantized mirror.
+        if config.get("base_model"):
+            adapter = json.loads(adapter_config.read_text(encoding = "utf-8"))
+            adapter["base_model_name_or_path"] = config["base_model"]
+            adapter_config.write_text(json.dumps(adapter, indent = 2), encoding = "utf-8")
+        tokenizer.save_pretrained(str(staging))
+        # A processor save can write a config.json of its own; this folder holds no merged weights.
+        (staging / "config.json").unlink(missing_ok = True)
+        _write_clef_head(self, staging, config, weights)
+        _commit_staged(staging, output, _CLEF_HEAD_FILES[0], stale = _MERGED_FILES)
+
+
+def save_pretrained_clef(
+    self,
+    save_directory,
+    tokenizer = None,
+    **kwargs,
+) -> None:
+    # As for Unsloth's other models: LoRA adapters (plus the head) here, merged weights in
+    # save_pretrained_merged. A full finetune has no adapters, so it saves merged.
+    tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
+    if not hasattr(self.encoder, "peft_config"):
+        return _save_clef(self, save_directory, tokenizer)
+    return _save_clef_adapter(self, save_directory, tokenizer)
+
+
+def push_to_hub_clef(
+    self,
+    repo_id,
+    tokenizer = None,
+    token = None,
+    private = None,
+    **kwargs,
+) -> None:
+    from huggingface_hub import HfApi
+
+    api = HfApi(token = token)
+    repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    with tempfile.TemporaryDirectory() as folder:
+        self.save_pretrained(folder, tokenizer)
+        api.upload_folder(folder_path = folder, repo_id = repo_id)
+    print(f"Unsloth: Saved the decision model to https://huggingface.co/{repo_id}")
+
+
+def _attach_clef_saving(model) -> None:
+    model.save_pretrained = types.MethodType(save_pretrained_clef, model)
+    model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
+    model.push_to_hub = types.MethodType(push_to_hub_clef, model)
+    model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
 
 
 def _clef_mixed_precision(model, args) -> None:
@@ -1338,6 +1544,7 @@ class FastDecisionModel:
                 token,
                 use_gradient_checkpointing,
                 kwargs,
+                model_name = model_name,
             )
         config = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
         # The base model's training record does not describe the fine-tune.
@@ -1567,6 +1774,20 @@ class FastDecisionModel:
             [item for item in items if item["row"] not in held],
             [item for item in items if item["row"] in held],
         )
+
+    @staticmethod
+    def predict(model, tokenizer, state, questions: dict) -> dict:
+        """Answers one Decision API request: {name: answer}, each shaped like the API's answer
+        (choice / confidence / probabilities, score / legend, or noul) with calibrated probabilities.
+        Works for Laya, Clef and language models converted with decision_head = "clef"."""
+        if not isinstance(questions, dict) or not questions:
+            raise DecisionDataError("questions must be a non-empty dict of name to question")
+        state = _parsed(state)
+        if getattr(model, "is_clef", False):
+            questions = {str(name): _clef_question(q) for name, q in questions.items()}
+            return _clef_decide(model, tokenizer, state, questions)["answers"]
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+        return _laya_decide(model, tokenizer, state, questions)["answers"]
 
     @staticmethod
     def evaluate(model, tokenizer, items: list) -> dict:

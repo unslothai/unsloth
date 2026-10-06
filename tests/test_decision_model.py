@@ -419,10 +419,15 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     encoder_config = (checkpoint / "encoder" / "config.json").read_bytes()
     assert (tmp_path / "out" / "encoder" / "config.json").read_bytes() == encoder_config
     agent = laya.load(str(tmp_path / "out"), device = "cpu")
-    assert agent.predict("the server is down again", QUESTIONS)["answers"]["team"]["choice"] in (
-        "outage",
-        "billing",
-    )
+    served = agent.predict("the server is down again", QUESTIONS)["answers"]
+    assert served["team"]["choice"] in ("outage", "billing")
+    # predict() answers like the served checkpoint, from the model in memory.
+    ours = FastDecisionModel.predict(model, tokenizer, "the server is down again", QUESTIONS)
+    assert set(ours) == set(QUESTIONS)
+    for name, answer in served.items():
+        assert ours[name]["type"] == answer["type"]
+        for key, value in (answer.get("probabilities") or {}).items():
+            assert ours[name]["probabilities"][key] == pytest.approx(value, abs = 0.02)
 
     FastDecisionModel.for_inference(model)
     assert not model.training
@@ -855,6 +860,21 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert torch.allclose(served, reloaded_served, atol = 0.02)
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+    # predict() serves the same calibrated answer from memory, the merged reload and the adapters.
+    state = "the server is down again"
+    ours = FastDecisionModel.predict(model, processor, state, QUESTIONS)
+    merged = FastDecisionModel.predict(reloaded, processor, state, QUESTIONS)
+    model.save_pretrained(str(tmp_path / "adapters"))
+    from_adapters, _ = FastDecisionModel.from_pretrained(
+        str(tmp_path / "adapters"), max_seq_length = 512
+    )
+    assert from_adapters.decision_config["base_model"] == str(clef_checkpoint)
+    adapters = FastDecisionModel.predict(from_adapters, processor, state, QUESTIONS)
+    for name in QUESTIONS:
+        for other in (merged, adapters):
+            assert other[name]["type"] == ours[name]["type"]
+            for key, value in (ours[name].get("probabilities") or {}).items():
+                assert other[name]["probabilities"][key] == pytest.approx(value, abs = 0.03)
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
