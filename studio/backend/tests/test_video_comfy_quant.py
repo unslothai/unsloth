@@ -32,7 +32,11 @@ def _int8(weight: torch.Tensor) -> tuple:
     return torch.round(w / scale).clamp(-127, 127).to(torch.int8), scale
 
 
-def _save(path, tensors, metadata = None) -> str:
+def _save(
+    path,
+    tensors,
+    metadata = None,
+) -> str:
     safetensors_torch.save_file(
         {k: v.contiguous().clone() for k, v in tensors.items()}, str(path), metadata = metadata
     )
@@ -58,7 +62,9 @@ def test_h3_key_map_renames_and_splits_rows_only():
     ]
     assert m("final_layer.adaln_proj.linear.bias", (10752,)) == [("norm_out.linear.bias", None)]
     assert m("condition_proj.weight", (5376, 5120)) == [("context_embedder.weight", None)]
-    assert m("blocks.0.mlp.fc2.weight", (5376, 14336)) == [("transformer_blocks.0.ff.net.2.weight", None)]
+    assert m("blocks.0.mlp.fc2.weight", (5376, 14336)) == [
+        ("transformer_blocks.0.ff.net.2.weight", None)
+    ]
     assert m("blocks.0.attn.qkv_proj.weight", (21504, 5376)) == [
         ("transformer_blocks.0.attn.to_q.weight", [(0, 7168)]),
         ("transformer_blocks.0.attn.to_k.weight", [(7168, 7168)]),
@@ -163,10 +169,15 @@ def _h3like_map(key, shape):
 def h3like_file(tmp_path):
     torch.manual_seed(3)
     dense = _H3Like()
-    qkv = torch.cat([dense.attn.to_q.weight, dense.attn.to_k.weight, dense.attn.to_v.weight]).detach()
+    qkv = torch.cat(
+        [dense.attn.to_q.weight, dense.attn.to_k.weight, dense.attn.to_v.weight]
+    ).detach()
     value, gate = dense.ff.proj.weight.detach().chunk(2)
     fc1 = torch.cat([gate, value])  # ComfyUI's order
-    tensors = {"head.weight": dense.head.weight.detach().half(), "head.bias": dense.head.bias.detach()}
+    tensors = {
+        "head.weight": dense.head.weight.detach().half(),
+        "head.bias": dense.head.bias.detach(),
+    }
     for name, w in (("attn.qkv", qkv), ("fc1", fc1)):
         q, s = _int8(w)
         tensors[f"{name}.weight"], tensors[f"{name}.weight_scale"] = q, s
@@ -239,7 +250,9 @@ def test_a_key_map_row_selection_outside_the_tensor_is_refused(h3like_file):
             cq.refuse_comfy_quant(path),
             {"torch_dtype": torch.bfloat16, "config": "base/repo"},
             int8_backend = None,
-            key_map = lambda key, shape: [(key, [(0, int(shape[0]) + 1)])] if shape else [(key, None)],
+            key_map = lambda key, shape: [(key, [(0, int(shape[0]) + 1)])]
+            if shape
+            else [(key, None)],
         )
 
 
@@ -321,7 +334,9 @@ def test_ltx23_pre_convert_strips_the_prefix_and_renames_23_keys():
     assert ltx23_is_dit_key("model.diffusion_model.transformer_blocks.0.ff.net.0.proj.weight")
     assert not ltx23_is_dit_key("vae.decoder.conv_in.weight")
     assert not ltx23_is_dit_key("model.diffusion_model.video_embeddings_connector.x.weight")
-    assert ltx23_is_dit_or_connector_key("model.diffusion_model.video_embeddings_connector.x.weight")
+    assert ltx23_is_dit_or_connector_key(
+        "model.diffusion_model.video_embeddings_connector.x.weight"
+    )
     assert not ltx23_is_dit_or_connector_key("vocoder.conv.weight")
 
 
@@ -377,11 +392,23 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     monkeypatch.setattr(vid, "plan_keeps_transformer_resident", lambda p: p.resident)
     calls = []
 
-    def int8(target, family, base, *, offload = False):
+    def int8(
+        target,
+        family,
+        base,
+        *,
+        offload = False,
+    ):
         calls.append(("int8", offload))
         return "native" if offload else "torchao"
 
-    def fp8(target, family, base, *, offload = False):
+    def fp8(
+        target,
+        family,
+        base,
+        *,
+        offload = False,
+    ):
         calls.append(("fp8", offload))
         return None if offload else "torchao"
 
@@ -417,7 +444,9 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
     monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: "torchao")
     n = rows * cols
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2  # 1 MiB of codes + scale + config
+    assert (
+        vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    )  # 1 MiB of codes + scale + config
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
     # dequantized on load: twice the file
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
@@ -429,7 +458,10 @@ def test_h3_single_file_validation_accepts_a_comfy_denoiser_and_refuses_the_rest
     from core.inference.video import VideoBackend
 
     backend = VideoBackend()
-    for name in ("qwen3vl_32b_minimax_h3_bf16.safetensors", "minimax_h3_video_vae_fp16.safetensors"):
+    for name in (
+        "qwen3vl_32b_minimax_h3_bf16.safetensors",
+        "minimax_h3_video_vae_fp16.safetensors",
+    ):
         with pytest.raises(ValueError, match = "single .safetensors checkpoint"):
             backend.validate_load_request(
                 "MiniMaxAI/MiniMax-H3", gguf_filename = name, model_kind = "single_file"
@@ -440,7 +472,9 @@ def test_h3_single_file_validation_accepts_a_comfy_denoiser_and_refuses_the_rest
             gguf_filename = "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
             model_kind = "single_file",
         )
-    except ValueError as exc:  # later probes may refuse for unrelated reasons; never the modular refusal
+    except (
+        ValueError
+    ) as exc:  # later probes may refuse for unrelated reasons; never the modular refusal
         assert "single .safetensors checkpoint" not in str(exc)
 
 
@@ -489,8 +523,16 @@ def test_hv15_key_map_renames_splits_and_swaps_rows_only():
 
 
 def test_hv15_is_the_family_with_a_key_map():
-    assert vid._video_comfy_key_map(types.SimpleNamespace(transformer_class = "HunyuanVideo15Transformer3DModel")) is not None
-    assert vid._video_comfy_key_map(types.SimpleNamespace(transformer_class = "WanTransformer3DModel")) is None
+    assert (
+        vid._video_comfy_key_map(
+            types.SimpleNamespace(transformer_class = "HunyuanVideo15Transformer3DModel")
+        )
+        is not None
+    )
+    assert (
+        vid._video_comfy_key_map(types.SimpleNamespace(transformer_class = "WanTransformer3DModel"))
+        is None
+    )
 
 
 def test_original_layouts_are_found_by_class_name(tmp_path):

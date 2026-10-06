@@ -528,7 +528,8 @@ def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
     import torch
 
     sources = {
-        layer.name + ".weight": (codes, scale, layer.group, layer.format) for layer, codes, scale in kept
+        layer.name + ".weight": (codes, scale, layer.group, layer.format)
+        for layer, codes, scale in kept
     }
 
     def take(value: Any, rows: Any) -> Any:

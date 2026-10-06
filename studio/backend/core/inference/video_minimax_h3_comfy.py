@@ -99,7 +99,9 @@ def h3_comfy_key_map(key: str, shape: Any) -> list:
         if rows % 2:
             raise ValueError(f"{key}: gated fc1 with an odd row count {rows}")
         half = rows // 2
-        return [(name.replace(".mlp.fc1.weight", ".ff.net.0.proj.weight"), [(half, half), (0, half)])]
+        return [
+            (name.replace(".mlp.fc1.weight", ".ff.net.0.proj.weight"), [(half, half), (0, half)])
+        ]
     return [(name, None)]
 
 
@@ -107,7 +109,6 @@ def h3_comfy_keep_dtype(key: str) -> Optional[Any]:
     """float32 for the tensors the pruned H3 keeps at full precision, else None (compute dtype)."""
     if key.startswith(_FP32_PREFIXES) or _FP32_BLOCK.match(key):
         import torch
-
         return torch.float32
     return None
 

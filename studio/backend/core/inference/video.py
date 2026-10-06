@@ -348,7 +348,6 @@ def _video_comfy_key_map(fam: Any) -> Any:
     """The original-layout key map for a family diffusers has no single-file converter for, else None."""
     if getattr(fam, "transformer_class", None) == "HunyuanVideo15Transformer3DModel":
         from .video_hv15_comfy import hv15_comfy_key_map
-
         return hv15_comfy_key_map
     return None
 
@@ -359,7 +358,13 @@ def _video_comfy_resident(plan: Any, bf16_plan: Any = None) -> bool:
 
 
 def _video_comfy_backends(
-    fam: Any, base: str, target: Any, plan: Any, bf16_plan: Any = None, *, keep: bool = True
+    fam: Any,
+    base: str,
+    target: Any,
+    plan: Any,
+    bf16_plan: Any = None,
+    *,
+    keep: bool = True,
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
@@ -393,7 +398,6 @@ def _video_comfy_resident_mib(
     if keep:
         try:
             from .diffusion_transformer_quant import exclude_tokens_for_scheme
-
             exclude = exclude_tokens_for_scheme(TQ_INT8, name)
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
@@ -5767,7 +5771,9 @@ class VideoBackend:
         # format name, when Studio cannot run it faithfully.
         comfy_scan = None
         # Whether its quantized layers keep their codes (False: the user asked for the bf16 DiT, so they dequantize).
-        comfy_keep = transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
+        comfy_keep = (
+            transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
+        )
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
@@ -5779,7 +5785,6 @@ class VideoBackend:
                     # No diffusers converter for this family: even an unquantized original-layout file loads
                     # through the same key map, with nothing to keep quantized.
                     from .diffusion_comfy_quant import ComfyQuantScan
-
                     comfy_scan = ComfyQuantScan()
             if kind == "gguf":
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
@@ -6166,7 +6171,6 @@ class VideoBackend:
                     # A ComfyUI-quantized 2.3 file: its DiT keeps its int8 / fp8 codes and goes in as the override;
                     # the assembly reads the connectors, VAEs and vocoder from the same file (or the extras).
                     from .video_ltx2 import load_ltx23_comfy_transformer
-
                     ltx23_override = load_ltx23_comfy_transformer(
                         checkpoint_path,
                         comfy_scan,
@@ -6175,7 +6179,9 @@ class VideoBackend:
                         hf_token = hf_token,
                         cache_dir = hub_cache_dir(),
                         local_files_only = local_files_only,
-                        **_video_comfy_backends(fam, base, target, plan, bf16_plan, keep = comfy_keep),
+                        **_video_comfy_backends(
+                            fam, base, target, plan, bf16_plan, keep = comfy_keep
+                        ),
                         family = fam.name,
                         target = target,
                         logger = logger,
@@ -7144,7 +7150,6 @@ class VideoBackend:
             if comfy_scan is None:
                 # An unquantized ComfyUI denoiser (the pruned bf16 file) loads through the same key map, dense.
                 from .diffusion_comfy_quant import ComfyQuantScan
-
                 comfy_scan = ComfyQuantScan()
             file_task = h3_comfy_task(comfy_checkpoint)
             if h3_task and h3_task != file_task:
@@ -7192,11 +7197,7 @@ class VideoBackend:
         if comfy_scan is not None:
             counts = comfy_scan.counts()
             comfy_scheme = (
-                TQ_INT8
-                if any(k.startswith("int8") for k in counts)
-                else TQ_FP8
-                if counts
-                else None
+                TQ_INT8 if any(k.startswith("int8") for k in counts) else TQ_FP8 if counts else None
             )
             scheme = None
         if transformer_quant_is_auto and comfy_scan is None:
