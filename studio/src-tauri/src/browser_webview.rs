@@ -808,18 +808,24 @@ fn remember_staged<R: Runtime>(app: &AppHandle<R>, path: &Path) {
 }
 
 /// Delete the staged files a previous run left (kept or discarded ones are already gone). Only
-/// paths the app noted, and only under the name it gave them.
-fn remove_staged_leftovers(paths: &[PathBuf]) {
-    for path in paths {
-        let ours = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(is_staged_name);
-        let plain = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file());
-        if ours && plain {
-            let _ = std::fs::remove_file(path);
-        }
-    }
+/// paths the app noted, and only under the name it gave them. Returns those still there (Windows:
+/// a scanner holding one), to try again next launch.
+fn remove_staged_leftovers(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter(|path| {
+            let ours = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_staged_name);
+            let plain =
+                std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file());
+            ours && plain
+                && std::fs::remove_file(path)
+                    .is_err_and(|error| error.kind() != std::io::ErrorKind::NotFound)
+        })
+        .cloned()
+        .collect()
 }
 
 /// Once per run, before this run stages anything.
@@ -834,8 +840,8 @@ fn clean_staged_leftovers<R: Runtime>(app: &AppHandle<R>) {
         if paths.is_empty() {
             return;
         }
-        remove_staged_leftovers(&paths);
-        write_staged_list(&list, &[]);
+        let left = remove_staged_leftovers(&paths);
+        write_staged_list(&list, &left);
     });
 }
 
@@ -2694,12 +2700,34 @@ mod tests {
             for file in [&ours, &theirs, &lookalike] {
                 std::fs::write(file, b"x").unwrap();
             }
-            remove_staged_leftovers(&[ours.clone(), kept, theirs.clone(), lookalike.clone()]);
-            assert!(!ours.exists());
+            let left =
+                remove_staged_leftovers(&[ours.clone(), kept, theirs.clone(), lookalike.clone()]);
+            assert!(!ours.exists() && left.is_empty());
             assert!(theirs.exists() && lookalike.exists());
             let list = dir.path().join("list.json");
             write_staged_list(&list, &[ours.clone()]);
             assert_eq!(read_staged_list(&list), vec![ours]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn a_leftover_that_cannot_be_deleted_stays_listed() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let locked_dir = dir.path().join("locked");
+            std::fs::create_dir(&locked_dir).unwrap();
+            let staged = locked_dir.join("Unconfirmed 00000000000000ff.download");
+            std::fs::write(&staged, b"x").unwrap();
+            // A read-only folder refuses the unlink, like a file a scanner holds on Windows.
+            std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let refused = std::fs::write(locked_dir.join("probe"), b"").is_err();
+            let left = remove_staged_leftovers(&[staged.clone()]);
+            std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // Root ignores the read-only bit, so this can only be checked as a normal user.
+            if refused {
+                assert_eq!(left, vec![staged.clone()]);
+                assert!(staged.exists());
+            }
         }
 
         #[test]
