@@ -261,7 +261,8 @@ def test_omlx_root_registered_as_a_scan_folder_is_listed_once(monkeypatch, tmp_p
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
-    assert [(row.source, row.path) for row in rows] == [("omlx", str(model))]
+    # Trainable, so the custom twin wins: the train picker refuses oMLX rows.
+    assert [(row.source, row.path) for row in rows] == [("custom", str(model))]
 
 
 def test_compat_omlx_root_registered_as_a_scan_folder_is_listed_once(tmp_path):
@@ -277,7 +278,29 @@ def test_compat_omlx_root_registered_as_a_scan_folder_is_listed_once(tmp_path):
         empty, custom_folders = [{"path": str(root)}], sources = sources
     )
 
-    assert [(row.source, row.path) for row in rows] == [("omlx", str(model))]
+    assert [(row.source, row.path) for row in rows] == [("custom", str(model))]
+
+
+def test_compat_custom_symlink_alias_into_an_omlx_root_is_kept(tmp_path):
+    root = tmp_path / "omlx"
+    model = _write_mlx_model(root, "mlx-community", "Qwen3-4bit")
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "alias").symlink_to(model, target_is_directory = True)
+    empty = tmp_path / "_empty"
+    empty.mkdir()
+    sources = models_route._CompatLocalInventorySources(
+        empty, empty, empty, (), (), omlx_dirs = (root,)
+    )
+
+    rows = models_route.collect_local_models(
+        empty, custom_folders = [{"path": str(custom)}], sources = sources
+    )
+
+    assert sorted((row.source, Path(row.path).name) for row in rows) == [
+        ("custom", "alias"),
+        ("omlx", "Qwen3-4bit"),
+    ]
 
 
 def test_resolver_index_scans_omlx_roots(monkeypatch, tmp_path):
