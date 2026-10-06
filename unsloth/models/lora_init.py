@@ -119,12 +119,13 @@ def randomized_svd(
     with _tf32(False):
         torch.matmul(A.mT, Y, out = Z)  # Z = (Q^T A)^T, N x q
     # From q = 128, eigh of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma) beats cuSOLVER's fp32 SVD (~60x accuracy).
-    # cuSOLVER's syevd can refuse rank-deficient J (many repeated zeros), so the safe rerun uses SVD.
+    # cuSOLVER's syevd and rocSOLVER's gesvd can refuse degenerate R2 (rank 0 / 1), so the safe rerun
+    # solves the q x q problem with LAPACK.
     Q2, R2 = torch.linalg.qr(Z)
     try:
         if q < 128 or _safe:
-            Ur, S, Vrh = torch.linalg.svd(R2)
-            Ur, S, Vr = Ur[:, :rank], S[:rank], Vrh[:rank].mT
+            Ur, S, Vrh = torch.linalg.svd(R2.cpu() if _safe else R2)
+            Ur, S, Vr = (x.to(R2.device) for x in (Ur[:, :rank], S[:rank], Vrh[:rank].mT))
         else:
             J = R2.new_zeros(2 * q, 2 * q)
             J[:q, q:] = R2
