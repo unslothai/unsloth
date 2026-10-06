@@ -224,3 +224,17 @@ test("back to a new tab and forward again keeps the page's zoom", async () => {
   assert.equal(zoom(), 2);
   useBrowserPrefsStore.getState().setDefaultZoom(1);
 });
+
+test("a new site's icon survives the prune its first visit triggers", () => {
+  const now = Date.now();
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(30);
+  useBrowserHistoryStore.setState({
+    history: [{ id: "old", url: "https://gone.com/", title: "Gone", visitedAt: now - 40 * DAY_MS }],
+    icons: { "gone.com": "https://gone.com/icon.png" },
+  });
+  // As a page load does: the icon first, then the visit.
+  useBrowserHistoryStore.getState().recordIcon("fresh.com", "https://fresh.com/icon.png");
+  useBrowserHistoryStore.getState().recordVisit("https://fresh.com/", "Fresh");
+  assert.deepEqual(useBrowserHistoryStore.getState().icons, { "fresh.com": "https://fresh.com/icon.png" });
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
+});

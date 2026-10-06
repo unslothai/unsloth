@@ -113,14 +113,15 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const cutoff = retentionCutoff();
           const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
-          const icons = kept.length < state.history.length ? iconsFor(kept, state.icons) : state.icons;
           const [latest, ...rest] = kept;
           // A reload or title update of the same page is one visit.
-          if (latest?.url === url) {
-            return { history: [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest], icons };
-          }
-          const item = { id: newId(), url, title, visitedAt: Date.now() };
-          return { history: [item, ...kept].slice(0, MAX_HISTORY), icons };
+          const history =
+            latest?.url === url
+              ? [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest]
+              : [{ id: newId(), url, title, visitedAt: Date.now() }, ...kept].slice(0, MAX_HISTORY);
+          // Pruned against the new visit too: its icon was recorded just before it.
+          const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
+          return { history, icons };
         }),
       recordDownload: (item) =>
         set((state) => {
