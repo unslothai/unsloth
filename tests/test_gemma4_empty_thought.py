@@ -31,7 +31,7 @@ CHAT_TEMPLATES_PATH = os.path.join(
     "unsloth",
     "chat_templates.py",
 )
-_SOURCE = open(CHAT_TEMPLATES_PATH, encoding="utf-8").read()
+_SOURCE = open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read()
 _TREE = ast.parse(_SOURCE)
 
 EMPTY = "<|channel>thought\n<channel|>"
@@ -50,7 +50,7 @@ def _load():
     exec(
         open(
             CHAT_TEMPLATES_PATH.replace("chat_templates.py", "ollama_template_mappers.py"),
-            encoding="utf-8",
+            encoding = "utf-8",
         ).read(),
         mappers,
     )
@@ -70,7 +70,7 @@ NS = _load()
 
 def _render(template, messages, **kwargs):
     # Same environment transformers renders chat templates with
-    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(TemplateError(msg))
     ctx = {"messages": messages, "add_generation_prompt": False, "bos_token": "<bos>"}
     ctx.update(kwargs)
@@ -161,10 +161,10 @@ def test_multi_turn_with_system_prompt():
 
 def test_generation_prompt_matches_google_26b():
     msgs = [{"role": "user", "content": "Hi"}]
-    out = _render(NS["gemma4_empty_thought_template"], msgs, add_generation_prompt=True)
+    out = _render(NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True)
     assert out == f"<bos><|turn>user\nHi<turn|>\n<|turn>model\n{EMPTY}"
     out = _render(
-        NS["gemma4_empty_thought_template"], msgs, add_generation_prompt=True, enable_thinking=True
+        NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True, enable_thinking = True
     )
     assert out == "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n"
 
@@ -172,7 +172,7 @@ def test_generation_prompt_matches_google_26b():
 def test_training_text_is_prefix_consistent_with_generation_prompt():
     # The trained answer must sit exactly where generation continues from
     full = _render(NS["gemma4_empty_thought_template"], CONVO[:3])
-    prompt = _render(NS["gemma4_empty_thought_template"], CONVO[:2], add_generation_prompt=True)
+    prompt = _render(NS["gemma4_empty_thought_template"], CONVO[:2], add_generation_prompt = True)
     assert full == prompt + "Hello!<turn|>\n"
 
 
@@ -231,8 +231,8 @@ def test_ollama_generation_prompt_has_the_empty_channel():
 
 
 def test_enable_thinking_is_unchanged():
-    new = _render(NS["gemma4_empty_thought_template"], CONVO, enable_thinking=True)
-    old = _render(NS["gemma4_thinking_template"], CONVO, enable_thinking=True)
+    new = _render(NS["gemma4_empty_thought_template"], CONVO, enable_thinking = True)
+    old = _render(NS["gemma4_thinking_template"], CONVO, enable_thinking = True)
     assert new == old
     assert EMPTY not in new
 
