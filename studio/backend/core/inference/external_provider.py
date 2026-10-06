@@ -2515,12 +2515,20 @@ class ExternalProviderClient:
                     [
                         block
                         for block in native_content
-                        if block.get("type") != "text"
-                        or _anthropic_text_is_sendable(block.get("text"))
+                        if (
+                            block.get("type") != "text"
+                            or _anthropic_text_is_sendable(block.get("text"))
+                        )
+                        and (
+                            block.get("type") != "compaction"
+                            or _anthropic_supports_compaction(model)
+                        )
                     ]
                     if msg.get("role") == "assistant" and isinstance(native_content, list)
                     else []
                 )
+                if any(part.get("type") == "compaction" for part in anthropic_parts):
+                    compaction_replayed = True
                 for part in content:
                     if part.get("type") == "text" and _anthropic_text_is_sendable(part.get("text")):
                         anthropic_parts.append({"type": "text", "text": part["text"]})

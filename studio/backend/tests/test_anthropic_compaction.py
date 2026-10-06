@@ -709,3 +709,64 @@ def test_a_model_without_compaction_is_never_sent_a_compaction_block(monkeypatch
     assistant = captured["body"]["messages"][1]
     assert [part["type"] for part in assistant["content"]] == ["text"]
     assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
+
+
+def _native_replay(monkeypatch, model: str, threshold) -> dict:
+    captured: dict = {}
+
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
+    )
+    client = _make_client()
+    native = [
+        {"type": "compaction", "content": "PRIOR SUMMARY"},
+        {"type": "text", "text": "answer"},
+    ]
+
+    async def run():
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "turn 1"},
+                {
+                    "role": "assistant",
+                    "content": "answer",
+                    "extra_content": {"anthropic": {"content": native}},
+                },
+                {"role": "user", "content": "turn 2"},
+            ],
+            model = model,
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 32,
+            compaction_threshold = threshold,
+        ):
+            pass
+
+    _drive(run())
+    _drive(client.close())
+    return captured
+
+
+def test_a_replayed_native_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
+    captured = _native_replay(monkeypatch, "claude-sonnet-4-6", None)
+    assistant = captured["body"]["messages"][1]
+    assert assistant["content"][0] == {"type": "compaction", "content": "PRIOR SUMMARY"}
+    assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
+
+
+def test_a_model_without_compaction_is_never_sent_a_native_compaction_block(monkeypatch):
+    captured = _native_replay(monkeypatch, "claude-haiku-4-5", 150_000)
+    assistant = captured["body"]["messages"][1]
+    assert [part["type"] for part in assistant["content"]] == ["text"]
+    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
