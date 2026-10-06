@@ -135,6 +135,7 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
         smi_stdout,
         env = None,
         returncode = 0,
+        probe = get_parent_visible_gpu_ids,
     ):
         with (
             patch.dict(
@@ -146,12 +147,27 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
             mock_run.return_value = SimpleNamespace(returncode = returncode, stdout = smi_stdout)
-            return get_parent_visible_gpu_ids(), mock_run.call_count
+            return probe(), mock_run.call_count
 
     def test_uuid_mask_resolves_to_physical_ids_in_mask_order(self):
         smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
         ids, _ = self._uuid_mask_ids("GPU-2f902962-578c,GPU-d18a14b7", smi)
         self.assertEqual(ids, [1, 0])
+
+    def test_llama_backend_inherits_the_resolved_uuid_mask(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
+        mask = "GPU-2f902962-578c,GPU-d18a14b7"
+        with patch.object(LlamaCppBackend, "_torch_is_rocm", return_value = False):
+            ids, _ = self._uuid_mask_ids(
+                mask, smi, probe = LlamaCppBackend._resolve_visible_physical_ids
+            )
+            self.assertEqual(ids, [1, 0])
+            ids, _ = self._uuid_mask_ids(
+                "GPU-ffff", smi, probe = LlamaCppBackend._resolve_visible_physical_ids
+            )
+            self.assertIsNone(ids)
 
     def test_unresolvable_uuid_mask_stays_unresolved(self):
         smi = "0, GPU-aaa1\n1, GPU-aaa2\n"

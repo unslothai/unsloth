@@ -10687,7 +10687,14 @@ class LlamaCppBackend:
         try:
             return [int(x.strip()) for x in cvd.split(",") if x.strip()]
         except ValueError:
+            pass
+        # A resolvable CUDA UUID mask, else the GPU auto-pick escapes the mask onto hidden cards (#8873).
+        try:
+            from utils.hardware.hardware import _get_parent_visible_gpu_spec
+            spec = _get_parent_visible_gpu_spec()
+        except Exception:
             return None
+        return spec["numeric_ids"] if spec.get("raw") == cvd.strip() else None
 
     @staticmethod
     def _visibility_mask_is_unmappable() -> bool:
