@@ -575,7 +575,7 @@ def install(vae: Any, logger: Any = None) -> bool:
                 _release_cache(z)
                 ratio, tile, _ = _geometry(self)
                 if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
-                    break  # the floor itself ran out
+                    break
         _log_stock_fallback(self, reason)
         return _stock(z, return_dict)
 

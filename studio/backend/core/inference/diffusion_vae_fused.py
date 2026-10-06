@@ -1639,7 +1639,7 @@ def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
     tiled_decode._unsloth_vae_fused = True
     if wide:
         vae._unsloth_wide_stock_decode = tiled_decode
-        return False  # ``tiled_decode`` itself stays the wide tiles'
+        return False
     vae.tiled_decode = tiled_decode
     return True
 

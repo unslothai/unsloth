@@ -363,7 +363,6 @@ def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed
     assert vt.decode_tile_budget(kl, torch.zeros(1, 4, 64, 64)) == int(
         vt.FREE_FRACTION * 1000 / (0.09 if fused else 0.17)
     )
-    # a fused path that fell back is unfused again
     qi._unsloth_vae_fused_failed = True
     assert vt.decode_tile_budget(qi, z) == int(vt.FREE_FRACTION * 1000 / 0.27)
 
@@ -592,7 +591,7 @@ def test_geometry_and_blend_weights_are_cached_per_vae(monkeypatch):
     monkeypatch.setattr(vt, "compression_ratio", lambda v: pytest.fail("ratio re-read per decode"))
     z = torch.randn(1, 4, 1, 48, 48, generator = torch.Generator().manual_seed(1))
     first = _decode_with(vae, z)
-    assert len(built) == 1  # one axis layout, shared by height and width
+    assert len(built) == 1
     second = _decode_with(vae, z)
     assert len(built) == 1 and torch.equal(first, second)
     vt.uninstall(vae)
@@ -667,7 +666,7 @@ def test_stock_fallback_keeps_the_fused_batched_loop_on_the_wan_family(monkeypat
     vae = _qwen_image_21()
     assert vt.install(vae)
     ours = vae.__dict__["tiled_decode"]
-    assert fused.install_wan_tile_batch(vae) is False  # ``tiled_decode`` stays the wide tiles'
+    assert fused.install_wan_tile_batch(vae) is False
     assert vae.__dict__["tiled_decode"] is ours
     batched = vae.__dict__["_unsloth_wide_stock_decode"]
     assert getattr(batched, "_unsloth_vae_fused", False)
