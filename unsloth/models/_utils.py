@@ -5733,9 +5733,8 @@ def snapshot_residual_lora_init(model, init_lora_weights):
 
 @contextlib.contextmanager
 def lora_relative_to_original_base(model):
-    # Residual inits trained against W - s * B0 @ A0, but merge_and_overwrite_lora adds the adapter to the
-    # checkpoint's original W, so merge the rank-2r adapter [B, -B0] @ [A; A0] (PEFT's
-    # path_initial_model_for_weight_conversion formula).
+    # Training saw W - s * B0 @ A0 but the merge reads the original W: merge [B, -B0] @ [A; A0] instead
+    # (PEFT's path_initial_model_for_weight_conversion).
     swapped = []
     try:
         for module in model.modules():

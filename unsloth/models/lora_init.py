@@ -78,13 +78,11 @@ def randomized_svd(
     q = min(rank + (max(rank, 10) if n_oversamples is None else n_oversamples), N)
     Z = torch.randn(N, q, device = A.device, dtype = A.dtype, generator = generator)
     failures = []
-    # Narrow sketches are launch-bound: one Householder QR beats CholeskyQR's ~8 small kernels below
-    # q = 32 (r = 16 is the default rank). Householder cannot fail on finite input, so no check sync.
+    # Below q = 32 one Householder QR beats CholeskyQR's ~8 launches, and cannot fail (no check sync).
     householder = _safe or q < 32
 
     def _power(k):
-        # Orthonormalize both half steps: skipping one squares the sketch's dynamic range, and real
-        # weights reach cond(Y) ~ 2e3 at r = 128, where fp32 no longer resolves the squared range.
+        # Both half steps: skipping one squares cond(Y) (~2e3 on real r = 128 weights), past fp32.
         for _ in range(k):
             _orthonormalize_(Y, True, failures, householder)
             torch.matmul(A.mT, Y, out = Z)
@@ -102,9 +100,8 @@ def randomized_svd(
             _orthonormalize_(Y, False, failures, householder)
     with _tf32(False):
         torch.matmul(A.mT, Y, out = Z)  # Z = (Q^T A)^T, N x q
-    # Z = Q2 R2 (Householder, backward stable), then the SVD of the q x q R2. From q = 128 the eigenpairs
-    # of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma, nothing squared) are faster and ~60x more accurate
-    # than cuSOLVER's fp32 SVD; below it cuSOLVER's SVD has ~3x less launch latency.
+    # From q = 128, eigh of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma) beats cuSOLVER's fp32 SVD on speed
+    # and accuracy (~60x); below it the SVD has less launch latency.
     Q2, R2 = torch.linalg.qr(Z)
     if q < 128:
         try:
@@ -195,9 +192,7 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         parts = init_lora_weights.split("_niter_")
         if len(parts) != 2:
             return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
-        # Same iteration count as PEFT's svd_lowrank(q = r, niter = N). Below r = 64, and on GPUs
-        # without TF32 (T4, sm < 8.0), extra columns cost more than they buy: sketch width r, PEFT's
-        # accuracy. Otherwise a r/4 oversampled sketch is still faster and ~2x more accurate.
+        # PEFT's svd_lowrank(q = r, niter = N); r/4 oversampling only pays off from r = 64 with TF32.
         tf32 = (
             weight.device.type != "cuda" or torch.cuda.get_device_capability(weight.device)[0] >= 8
         )
@@ -266,9 +261,8 @@ def fast_lora_init():
         _ORIGINAL.clear()
 
 
-# Data-driven inits calibrate with forward hooks (EVA, CorDA) or backward passes (LoRA-GA). Dynamo does not
-# guard on hooks added after compilation (skip_nnmodule_hook_guards), so a module compiled by an earlier
-# forward silently skips them: CorDA then divides by a zero sample count.
+# Calibration hooks added after compilation are not guarded on (skip_nnmodule_hook_guards), so compiled
+# modules silently skip them: CorDA then divides by a zero sample count.
 _CALIBRATION_FUNCTIONS = (
     ("peft.tuners.lora.corda", "preprocess_corda"),
     ("peft.tuners.lora.eva", "initialize_lora_eva_weights"),

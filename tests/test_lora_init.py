@@ -25,7 +25,6 @@ def _weight(
     in_features,
     seed = 0,
 ):
-    # Slowly decaying spectrum, like LLM projections.
     g = torch.Generator().manual_seed(seed)
     k = min(out_features, in_features)
     U = torch.linalg.qr(torch.randn(out_features, k, generator = g, dtype = torch.float64)).Q
@@ -94,7 +93,6 @@ def test_mica_basis_matches_fp64_svd(shape):
     B = lora_init.mica_basis(W.float(), r)
     U = torch.linalg.svd(W, full_matrices = False)[0][:, -r:]
     assert torch.linalg.matrix_norm(U @ U.T - B.double() @ B.double().T, ord = 2) < 1e-4
-    # Same column order as PEFT's U[:, -r:].
     assert torch.nn.functional.cosine_similarity(B.double(), U, dim = 0).abs().min() > 0.999
 
 
