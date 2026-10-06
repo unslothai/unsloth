@@ -139,8 +139,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
         command = f"env -0 > {shlex.quote(target)}"
         probe = probe_command(shell, command)
         returncode = _run_login_shell(shell, probe, timeout)
-        # A non-POSIX shell missing from the list rejects the probe; the plain command
-        # still worked. Not on a timeout, and not after a run that succeeded.
+        # A non-POSIX shell missing from the list rejects the probe; never after a timeout.
         if returncode not in (0, None) and probe != command:
             returncode = _run_login_shell(shell, command, timeout)
         if returncode != 0:

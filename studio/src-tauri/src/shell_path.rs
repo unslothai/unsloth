@@ -69,9 +69,8 @@ fn read_login_shell_path(shell: &str, command: &str) -> Option<Option<String>> {
     env_block_path(&out.stdout)
 }
 
-/// A shell missing from NON_POSIX_SHELLS (Plan 9 rc, a renamed fish) rejects the probe:
-/// fall back to the old command rather than lose PATH. Only on rejection: a probe that
-/// ran without PATH (`export -n PATH`) must not rerun the history-rewriting command.
+/// Old command only if the shell rejected the probe (Plan 9 rc, a renamed fish); a probe
+/// that ran without PATH (`export -n PATH`) must not rerun the history-rewriting one.
 #[cfg(not(windows))]
 fn login_shell_path(shell: &str) -> Option<String> {
     let probe = probe_command(shell);
