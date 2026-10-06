@@ -140,10 +140,20 @@ def needs_tool_confirmation(
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
     if permission_mode == "off":
-        return off_mode_still_gates(name, sandbox_level) and is_high_risk(name, arguments)
+        return off_mode_still_gates(name, sandbox_level) and _classify(
+            is_high_risk, name, arguments, sandbox_level
+        )
     if permission_mode == "auto":
-        return is_high_risk(name, arguments)
+        return _classify(is_high_risk, name, arguments, sandbox_level)
     return True
+
+
+def _classify(is_high_risk, name: str, arguments, sandbox_level: Optional[str]) -> bool:
+    """The risk check, told the level: under Low the Terminal's shell is the host's."""
+    from core.inference.tools import classifying_under
+
+    with classifying_under(sandbox_level):
+        return bool(is_high_risk(name, arguments))
 
 
 def requires_os_isolation(
@@ -167,7 +177,7 @@ def requires_os_isolation(
         return False
     if is_high_risk is None:
         from core.inference.tools import is_high_risk_tool_call as is_high_risk
-    return bool(is_high_risk(name, arguments))
+    return _classify(is_high_risk, name, arguments, sandbox_level)
 
 
 def account_tool_stream(stream):

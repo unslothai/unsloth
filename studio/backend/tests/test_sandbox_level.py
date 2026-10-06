@@ -312,6 +312,33 @@ def test_windows_low_launches_on_the_host_shell(windows_cmd_host, monkeypatch):
     assert seen == [False, True]
 
 
+@pytest.mark.parametrize("level,expected", [("high", [False]), ("low", [True])])
+def test_the_risk_check_reads_the_terminal_shell_of_the_requested_level(
+    windows_cmd_host, monkeypatch, level, expected
+):
+    from state import tool_policy
+
+    seen = []
+    real = tools._terminal_profile
+
+    def profile(disable_sandbox = False):
+        seen.append(disable_sandbox)
+        return real(disable_sandbox)
+
+    monkeypatch.setattr(tools, "_terminal_profile", profile)
+    # cmd reads ' and ^ unlike bash, so only the isolated cmd profile looks twice.
+    tool_policy.needs_tool_confirmation(
+        confirm_tool_calls = True,
+        bypass_permissions = False,
+        permission_mode = "auto",
+        name = "terminal",
+        arguments = {"command": "echo 'a ^& b'"},
+        sandbox_level = level,
+    )
+    assert seen[:1] == expected
+    assert tools._classifying_sandbox_level.get() is None
+
+
 class _ModeRecordingExecuteTool:
     def __init__(self):
         self.calls = []
