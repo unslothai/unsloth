@@ -31,7 +31,7 @@ export function providerCompactionPart(
   return compaction.content || compaction.encrypted_content ? compaction : null;
 }
 
-export function providerCompactionMatchesTarget(
+function providerCompactionMatchesTarget(
   metadata: unknown,
   providerType: string | undefined,
   modelId: string | undefined,
@@ -43,6 +43,17 @@ export function providerCompactionMatchesTarget(
     custom?.providerCompactionProviderType === providerType &&
     custom.providerCompactionModelId === modelId
   );
+}
+
+export function providerCompactionForTarget(
+  metadata: unknown,
+  providerType: string | undefined,
+  modelId: string | undefined,
+): ProviderCompactionContentPart | null {
+  if (!providerCompactionMatchesTarget(metadata, providerType, modelId)) {
+    return null;
+  }
+  return providerCompactionPart(record(metadata)?.providerCompaction);
 }
 
 /** Count only persisted calls that the OpenAI replay serializer will retain. */

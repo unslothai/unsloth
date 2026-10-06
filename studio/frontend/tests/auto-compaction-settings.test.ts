@@ -204,7 +204,7 @@ test("a provider compaction is kept on the turn and replayed only to API models"
 });
 
 test("provider compaction persistence keeps summary and encrypted state together", async () => {
-  const { providerCompactionMatchesTarget, providerCompactionPart } =
+  const { providerCompactionForTarget, providerCompactionPart } =
     await import("../src/features/chat/utils/provider-compaction.ts");
 
   assert.deepEqual(
@@ -220,24 +220,29 @@ test("provider compaction persistence keeps summary and encrypted state together
     },
   );
   const origin = {
+    providerCompaction: {
+      type: "compaction",
+      content: "summary",
+      encrypted_content: "opaque-compaction",
+    },
     providerCompactionProviderType: "anthropic",
     providerCompactionModelId: "claude-opus-4-7",
   };
-  assert.equal(
-    providerCompactionMatchesTarget(origin, "anthropic", "claude-opus-4-7"),
-    true,
+  assert.deepEqual(
+    providerCompactionForTarget(origin, "anthropic", "claude-opus-4-7"),
+    origin.providerCompaction,
   );
   assert.equal(
-    providerCompactionMatchesTarget(origin, "openai", "gpt-5.4"),
-    false,
+    providerCompactionForTarget(origin, "openai", "gpt-5.4"),
+    null,
   );
   assert.equal(
-    providerCompactionMatchesTarget(origin, "anthropic", "claude-sonnet-5"),
-    false,
+    providerCompactionForTarget(origin, "anthropic", "claude-sonnet-5"),
+    null,
   );
   assert.equal(
-    providerCompactionMatchesTarget({}, "anthropic", "claude-opus-4-7"),
-    false,
+    providerCompactionForTarget({}, "anthropic", "claude-opus-4-7"),
+    null,
   );
 });
 

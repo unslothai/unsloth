@@ -111,7 +111,7 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
-  providerCompactionMatchesTarget,
+  providerCompactionForTarget,
   providerCompactionPart,
 } from "../utils/provider-compaction";
 import {
@@ -1311,17 +1311,10 @@ function withProviderCompaction(
   const custom = (
     message as { metadata?: { custom?: Record<string, unknown> } }
   ).metadata?.custom;
-  if (
-    !providerCompactionMatchesTarget(
-      custom,
-      target.providerType,
-      target.modelId,
-    )
-  ) {
-    return serialized;
-  }
-  const compaction = providerCompactionPart(
-    custom?.providerCompaction,
+  const compaction = providerCompactionForTarget(
+    custom,
+    target.providerType,
+    target.modelId,
   );
   const assistant = providerCompactionAssistant(
     serialized,
@@ -5178,11 +5171,25 @@ export function createOpenAIStreamAdapter(
         });
         throw new Error("A response that stopped mid-thought cannot be resumed here.");
       }
+      const continuationCompaction = continuation
+        ? providerCompactionForTarget(
+            continuation,
+            toExternalBackendProviderType(externalProvider?.providerType),
+            externalSelection?.modelId,
+          )
+        : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
-          content: continuation.partial,
+          content: continuationCompaction
+            ? [
+                continuationCompaction,
+                ...(continuation.partial
+                  ? [{ type: "text" as const, text: continuation.partial }]
+                  : []),
+              ]
+            : continuation.partial,
           ...(resumedThought ? { reasoning_content: resumedThought } : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
@@ -5672,10 +5679,20 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
-      let providerCompaction: ProviderCompactionContentPart | undefined;
-      let providerCompactionAfterToolCalls: number | undefined;
-      let providerCompactionProviderType: string | undefined;
-      let providerCompactionModelId: string | undefined;
+      let providerCompaction: ProviderCompactionContentPart | undefined =
+        continuationCompaction ?? undefined;
+      let providerCompactionAfterToolCalls: number | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionAfterToolCalls
+          : undefined;
+      let providerCompactionProviderType: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionProviderType
+          : undefined;
+      let providerCompactionModelId: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionModelId
+          : undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
