@@ -47,9 +47,7 @@ def is_hub_safetensors_single_file(filename: Optional[str]) -> bool:
     return leaf.lower().endswith(SAFETENSORS_SUFFIX) and len(leaf) > len(SAFETENSORS_SUFFIX)
 
 
-def single_file_load_allowed(
-    repo_trusted: bool, kind: str, filename: Optional[str]
-) -> bool:
+def single_file_load_allowed(repo_trusted: bool, kind: str, filename: Optional[str]) -> bool:
     """The non-GGUF trust decision shared by the image and video validators. A trusted repo keeps
     every kind it had; an untrusted one gains exactly a ``single_file`` load of a ``.safetensors``
     name. GGUF is not decided here (it was never repo-gated)."""
@@ -88,13 +86,17 @@ def assert_safetensors_file(path: Union[str, os.PathLike]) -> None:
             f"'{label}' is not a valid safetensors checkpoint: the header is not JSON"
         ) from exc
     if not isinstance(header, dict):
-        raise ValueError(f"'{label}' is not a valid safetensors checkpoint: the header is not an object")
+        raise ValueError(
+            f"'{label}' is not a valid safetensors checkpoint: the header is not an object"
+        )
     data_len = size - 8 - header_len
     tensors = 0
     for name, entry in header.items():
         if name == "__metadata__":
             if entry is not None and not isinstance(entry, dict):
-                raise ValueError(f"'{label}' is not a valid safetensors checkpoint: bad __metadata__")
+                raise ValueError(
+                    f"'{label}' is not a valid safetensors checkpoint: bad __metadata__"
+                )
             continue
         offsets = entry.get("data_offsets") if isinstance(entry, dict) else None
         if (

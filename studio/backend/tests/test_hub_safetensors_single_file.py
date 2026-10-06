@@ -37,10 +37,16 @@ PICKLE_NAMES = (
 )
 
 
-def _write_safetensors(path, header = None, data = b"\x00\x00\x80\x3f"):
-    header = header if header is not None else {
-        "w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}
-    }
+def _write_safetensors(
+    path,
+    header = None,
+    data = b"\x00\x00\x80\x3f",
+):
+    header = (
+        header
+        if header is not None
+        else {"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}
+    )
     raw = json.dumps(header).encode()
     path.write_bytes(len(raw).to_bytes(8, "little") + raw + data)
     return path

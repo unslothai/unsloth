@@ -14736,7 +14736,13 @@ def _hub_single_file_load(monkeypatch, tmp_path, file_bytes_writer, *, card_tag)
     file_bytes_writer(checkpoint)
     downloads = []
 
-    def _fake_download(self, repo_id, filename, hf_token, local_files_only = False):
+    def _fake_download(
+        self,
+        repo_id,
+        filename,
+        hf_token,
+        local_files_only = False,
+    ):
         downloads.append((repo_id, filename))
         return str(checkpoint)
 
@@ -14777,7 +14783,9 @@ def test_untrusted_hub_single_file_with_a_malformed_header_is_refused_before_any
     fake_runtime, tmp_path, monkeypatch
 ):
     """A .safetensors NAME over pickle bytes never reaches from_single_file or the comfy scan."""
-    pickle_bytes = b"\x80\x04\x95" + b"\x00" * 64  # a pickle protocol-4 prefix, not a safetensors header
+    pickle_bytes = (
+        b"\x80\x04\x95" + b"\x00" * 64
+    )  # a pickle protocol-4 prefix, not a safetensors header
 
     with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
         _hub_single_file_load(
