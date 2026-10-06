@@ -10,7 +10,6 @@ import {
 import {
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
-  llamaUpdateSnapshotIsStale,
 } from "@/lib/llama-job-lifecycle";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -238,12 +237,6 @@ export function useLlamaUpdateCheck({
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Serializes /update-status fetches so a poll that left while the job was
-  // still running cannot land after a later poll already observed success and
-  // re-pin the applying toast with the timer already cleared.
-  const pollInFlight = useRef(false);
-  const pollGeneration = useRef(0);
-  const adoptedJob = useRef<LlamaUpdateJob | null>(null);
   // Read through a ref so startJobPoll stays stable (apply/surfaceIfAvailable
   // depend on it) while still calling the latest callback.
   const onReloadRequiredRef = useRef(onReloadRequired);
@@ -290,56 +283,40 @@ export function useLlamaUpdateCheck({
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
-      const generation = ++pollGeneration.current;
-      pollInFlight.current = false;
-      pollTimer.current = setInterval(async () => {
-        if (pollInFlight.current) return;
-        pollInFlight.current = true;
-        try {
-          const s = await fetchStatus();
-          if (!s || generation !== pollGeneration.current) return;
-          if (
-            adoptedJob.current &&
-            llamaUpdateSnapshotIsStale(adoptedJob.current, s.job)
-          ) {
-            return;
-          }
-          adoptedJob.current = s.job;
-          setStatus(s);
-          const presentation = llamaUpdatePresentation(
-            llamaUpdateOffered(s),
-            s.job,
-          );
-          setApplying(presentation.applying);
-          setVisible(presentation.visible);
-          if (presentation.running) return;
-          pollGeneration.current += 1;
-          clearPollTimer();
-          if (s.job.state === "success") {
-            void refreshHardwareInfo();
-            // The update unloads the running model server-side, so the chat runtime still points at a
-            // model that now 400s on send. Let the consumer drop the selector to "select model"
-            // instead of waiting for a page reload. Fires here (not just from apply's onDone) so a
-            // cross-tab update mirrored through this poll is covered too.
-            notifyReloadIfNeeded(s.job);
-            onDone?.({
-              ok: true,
-              tag: s.job.to_tag,
-              reloadRequired: s.job.reload_required,
-              message: s.job.message,
-            });
-          } else if (s.job.state === "error") {
-            // Keep the banner visible so retry is available. A partial chained
-            // update can still have unloaded the llama server before failing.
-            notifyReloadIfNeeded(s.job);
-            onDone?.({ ok: false, error: s.job.error });
-          } else {
-            onDone?.({ ok: false, error: "update did not complete" });
-          }
-        } finally {
-          pollInFlight.current = false;
+      const timer = setInterval(async () => {
+        const s = await fetchStatus();
+        // Polls overlap: a "running" answer landing after a later poll saw the job
+        // finish would re-set applying with no timer left to clear it.
+        if (!s || pollTimer.current !== timer) return;
+        setStatus(s);
+        const presentation = llamaUpdatePresentation(llamaUpdateOffered(s), s.job);
+        setApplying(presentation.applying);
+        setVisible(presentation.visible);
+        if (presentation.running) return;
+        clearPollTimer();
+        if (s.job.state === "success") {
+          void refreshHardwareInfo();
+          // The update unloads the running model server-side, so the chat runtime still points at a
+          // model that now 400s on send. Let the consumer drop the selector to "select model"
+          // instead of waiting for a page reload. Fires here (not just from apply's onDone) so a
+          // cross-tab update mirrored through this poll is covered too.
+          notifyReloadIfNeeded(s.job);
+          onDone?.({
+            ok: true,
+            tag: s.job.to_tag,
+            reloadRequired: s.job.reload_required,
+            message: s.job.message,
+          });
+        } else if (s.job.state === "error") {
+          // Keep the banner visible so retry is available. A partial chained
+          // update can still have unloaded the llama server before failing.
+          notifyReloadIfNeeded(s.job);
+          onDone?.({ ok: false, error: s.job.error });
+        } else {
+          onDone?.({ ok: false, error: "update did not complete" });
         }
       }, JOB_POLL_INTERVAL_MS);
+      pollTimer.current = timer;
     },
     [clearPollTimer, notifyReloadIfNeeded],
   );
@@ -347,13 +324,6 @@ export function useLlamaUpdateCheck({
   const surfaceIfAvailable = useCallback(
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
-      if (
-        adoptedJob.current &&
-        llamaUpdateSnapshotIsStale(adoptedJob.current, next.job)
-      ) {
-        return;
-      }
-      adoptedJob.current = next.job;
       setStatus(next);
       const presentation = llamaUpdatePresentation(
         llamaUpdateOffered(next),
@@ -445,7 +415,6 @@ export function useLlamaUpdateCheck({
 
   const apply = useCallback(async (): Promise<LlamaApplyResult> => {
     if (applying) return { ok: false, error: "already running" };
-    adoptedJob.current = null;
     setApplying(true);
     setVisible(true);
     let action: {
