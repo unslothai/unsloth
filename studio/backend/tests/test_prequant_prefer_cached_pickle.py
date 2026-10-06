@@ -776,7 +776,12 @@ def test_dit_planner_stages_the_twin_only_when_nothing_is_cached(hub, monkeypatc
 
 def test_a_cached_trailing_fp8_twin_is_used_before_an_uncached_own_file(hub):
     """fp8 twins trail Studio's own artifact; one that is already cached still wins over downloading the other."""
-    fp8 = _dit("Model-FP8.safetensors", "Model-FP8.pt", "Model-FP8-ComfyUI.safetensors", "transformer_fp8.pt")
+    fp8 = _dit(
+        "Model-FP8.safetensors",
+        "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
+        "transformer_fp8.pt",
+    )
     hub.cache("Model-FP8-ComfyUI.safetensors")
     assert _resolve(fp8) == hub.cached[(REPO, "Model-FP8-ComfyUI.safetensors")]
     assert hub.fetched == ["Model-FP8-ComfyUI.safetensors"]

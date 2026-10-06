@@ -2908,7 +2908,6 @@ def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, t
 
 def _own_names(names):
     from core.inference.diffusion_prequant import is_comfy_prequant_filename
-
     return tuple(n for n in names if not is_comfy_prequant_filename(n))
 
 
@@ -2966,8 +2965,13 @@ def test_comfy_twin_names():
         with_comfy_twins,
     )
 
-    assert comfy_prequant_filename("Z-Image-Turbo-FP8.safetensors") == "Z-Image-Turbo-FP8-ComfyUI.safetensors"
-    assert comfy_prequant_filename("Z-Image-Turbo-INT8.pt") == "Z-Image-Turbo-INT8-ComfyUI.safetensors"
+    assert (
+        comfy_prequant_filename("Z-Image-Turbo-FP8.safetensors")
+        == "Z-Image-Turbo-FP8-ComfyUI.safetensors"
+    )
+    assert (
+        comfy_prequant_filename("Z-Image-Turbo-INT8.pt") == "Z-Image-Turbo-INT8-ComfyUI.safetensors"
+    )
     # the legacy names, nested paths and the twin itself have none
     assert comfy_prequant_filename("transformer_int8.pt") is None
     assert comfy_prequant_filename("text_encoders/x.safetensors") is None
@@ -2980,7 +2984,9 @@ def test_comfy_twin_names():
         "A-INT8.pt",
         "transformer_int8.pt",
     ]
-    assert with_comfy_twins(["A-FP8.safetensors", "A-FP8.pt", "transformer_fp8.pt"], lead = False) == [
+    assert with_comfy_twins(
+        ["A-FP8.safetensors", "A-FP8.pt", "transformer_fp8.pt"], lead = False
+    ) == [
         "A-FP8.safetensors",
         "A-FP8.pt",
         "A-FP8-ComfyUI.safetensors",

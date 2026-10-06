@@ -14,7 +14,6 @@ import core.inference.diffusion_transformer_quant as tq
 from core.inference.diffusion_convrot import CONVROT_ATTR, is_rotated_linear
 
 
-
 def candidate_filenames_of(source):
     """Studio's own containers in resolver order; the ComfyUI-format twins have their own tests."""
     from core.inference.diffusion_prequant import candidate_filenames_of as names_of
