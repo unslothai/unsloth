@@ -1664,12 +1664,15 @@ def _variant_rank(variant: AudioCppVariant) -> tuple:
 
 
 def match_variant(
-    variants: Sequence[AudioCppVariant], wanted: Optional[str]
+    variants: Sequence[AudioCppVariant],
+    wanted: Optional[str],
+    folder: str = "",
 ) -> Optional[AudioCppVariant]:
     """The variant ``wanted`` names: its key, its file, or a quant that picks one row.
 
     A bare quant shared by several rows (ACE-Step ``turbo/Q8_0`` and ``base/Q8_0``) picks the default
-    ordering's first, which is what the folder row loads by default.
+    ordering's first, which is what the folder row loads by default. ``folder`` is the row's folder in
+    the repo, whose own name never counts as a scope word.
     """
     text = (wanted or "").strip().replace("\\", "/")
     if not text:
@@ -1695,10 +1698,14 @@ def match_variant(
     scoped = [v for v in variants if v.key.lower().startswith(low + "/")]
     if scoped:
         return sorted(scoped, key = _variant_rank)[0]
-    return _match_by_words(variants, low)
+    return _match_by_words(variants, low, folder)
 
 
-def _match_by_words(variants: Sequence[AudioCppVariant], low: str) -> Optional[AudioCppVariant]:
+def _match_by_words(
+    variants: Sequence[AudioCppVariant],
+    low: str,
+    folder: str = "",
+) -> Optional[AudioCppVariant]:
     """A key named by the words of its file (``tiny/Q8_0`` or ``tiny``), whatever the listing keyed it.
 
     Which rows need a name beyond their quant depends on the listing: with only Moonshine tiny in
@@ -1713,10 +1720,15 @@ def _match_by_words(variants: Sequence[AudioCppVariant], low: str) -> Optional[A
     if not scopes:
         return None
 
+    prefix = f"{folder}/".lower() if folder else ""
+
     def named(path: str, scope: str) -> bool:
         # A scope of several words (``v3-ctc``, ``v4.1-anime``) runs together in the file's name, so
-        # ``multilingual-ctc`` does not pick ``multilingual-large-ctc``.
-        words = "-".join(re.split(r"[-_./]", path.lower()))
+        # ``multilingual-ctc`` does not pick ``multilingual-large-ctc``. The row's folder is left out:
+        # ``Irodori-TTS-v4-Small-GGUF`` must not make every file in it ``v4-small``.
+        path = path.lower()
+        path = path[len(prefix) :] if prefix and path.startswith(prefix) else path
+        words = "-".join(re.split(r"[-_./]", path))
         return f"-{'-'.join(re.split(r'[-_.]', scope))}-" in f"-{words}-"
 
     matches = [
@@ -2283,10 +2295,11 @@ def _resolve_uncached(
     network: bool,
     tags: tuple[str, ...],
 ) -> Optional[AudioCppModel]:
+    from_hub = False
     if ref.local_path:
         files = [RepoFile(Path(ref.local_path).name, _size(ref.local_path))]
     else:
-        files, _from_hub = list_files(ref.repo_id, ref.folder, hf_token, network = network)
+        files, from_hub = list_files(ref.repo_id, ref.folder, hf_token, network = network)
     files = [f for f in files if not _SKIP_FILE_RE.search(f.path)]
     ggufs = [f for f in files if f.path.lower().endswith(".gguf")]
     if not ggufs:
@@ -2347,8 +2360,13 @@ def _resolve_uncached(
         )
         variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
     default = variants[0]
-    chosen = match_variant(variants, wanted) if wanted else default
-    if chosen is not None and wanted and chosen.key.lower() != wanted.lower():
+    chosen = match_variant(variants, wanted, ref.folder) if wanted else default
+    if (
+        chosen is not None
+        and wanted
+        and (not from_hub or "/" not in chosen.key)
+        and chosen.key.lower() != wanted.lower()
+    ):
         # A partial cache listing names the row by quant alone, or by the words that tell the cached
         # files apart (``ctc/F16`` for ``v3-ctc/F16``); keep the name the full listing gives it
         # (``tiny/Q8_0``), so status and /gguf-variants agree on the variant that is loaded.
@@ -2492,7 +2510,7 @@ def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
     for companion in policy.companions:
         sub = companion.id[len(_UMBRELLA_PREFIX) :]
         files = [RepoFile(name, 0) for name in names if name.startswith(f"{sub}/")]
-        variant = match_variant(_single_file_variants(files, sub), companion.variant)
+        variant = match_variant(_single_file_variants(files, sub), companion.variant, sub)
         if variant is not None:
             found.append(variant.primary)
     return tuple(found)

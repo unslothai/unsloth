@@ -901,6 +901,22 @@ def test_a_hub_variant_key_loads_its_file_from_a_partial_cache(
         assert model.variant.key == key
 
 
+def test_the_folder_name_never_names_a_variant(hub):
+    # Irodori-TTS-v4-Small-GGUF carries the words of v4-small: with only the anime model cached,
+    # v4-small/Q8_0 is missing, not the anime file under that name.
+    folder = "Irodori-TTS-v4-Small-GGUF"
+    spec = {"family": "irodori_tts", "tasks": ["tts"]}
+    _put(
+        _snapshot(hub),
+        f"{folder}/irodori-tts-v4.1-anime-q8_0.gguf",
+        _gguf_bytes(family = "irodori_tts", spec = spec),
+    )
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4-small/Q8_0", network = False)
+    assert "not found" in model.unsupported
+    anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
+    assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
 MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"
 
 
