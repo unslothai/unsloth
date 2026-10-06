@@ -15,6 +15,7 @@ import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import type { NativeDownloadEvent } from "./native-downloads";
 import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
@@ -35,16 +36,7 @@ type NativeEvent =
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
-  | {
-      kind: "download";
-      tabId: string;
-      url: string;
-      name: string;
-      path: string | null;
-      size: number | null;
-      done: boolean;
-      success: boolean;
-    };
+  | NativeDownloadEvent;
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -106,6 +98,15 @@ function listenOnce(): void {
 }
 
 function onNativeEvent(event: NativeEvent): void {
+  // A download outlives its page: the tab may have closed or moved on, and a staged file still needs an answer.
+  // Loaded on the first download; one module promise keeps a download's events in order.
+  if (event.kind === "download") {
+    void import("./native-downloads").then(({ handleNativeDownload }) => {
+      const record = useBrowserHistoryStore.getState().recordDownload;
+      handleNativeDownload(event, { call, toast, record, t });
+    });
+    return;
+  }
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === event.tabId);
   if (!tab || currentEntry(tab).kind !== "web") return;
@@ -163,16 +164,6 @@ function onNativeEvent(event: NativeEvent): void {
         label: t("browser.native.open"),
         onClick: () => openExternalLink(event.url),
       });
-      break;
-    case "download":
-      if (!event.done) {
-        toast(t("browser.native.downloading", { name: event.name }));
-      } else if (event.success) {
-        history.recordDownload({ name: event.name, url: event.url, size: event.size ?? 0, contentType: "" });
-        toast.success(t("browser.native.downloaded", { name: event.name }));
-      } else {
-        toast.error(t("browser.native.downloadFailed", { name: event.name }));
-      }
       break;
   }
 }

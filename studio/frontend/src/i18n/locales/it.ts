@@ -282,6 +282,17 @@ export const it = {
       upload: "Il caricamento di file non funziona in questa vista. Apri la pagina nel browser di sistema per inviarlo.",
       scriptNavigation: "Questa pagina ha provato ad andare a un altro indirizzo tramite script, cosa che questa vista non può seguire. Aprila nel browser di sistema.",
     },
+    downloadSafety: {
+      stagedDownloading: "Download di {name} in corso. Può eseguire codice, quindi ti verrà chiesto prima di conservarlo.",
+      notMarked: "{name} è stato salvato ma non è stato possibile contrassegnarlo come scaricato da Internet, quindi il sistema non avviserà prima di aprirlo.",
+      keepPrompt: "{name} può danneggiare il computer. Conservarlo?",
+      keepFailed: "Impossibile conservare {name}",
+      keep: "Conserva",
+      discard: "Elimina",
+      savePrompt: "{name} può danneggiare il computer. Salvarlo comunque?",
+      saveAnyway: "Salva comunque",
+      cancel: "Annulla",
+    },
     native: {
       externalPrompt: "{host} vuole aprire {url}",
       open: "Apri",

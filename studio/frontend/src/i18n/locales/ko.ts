@@ -283,6 +283,17 @@ export const ko = {
       upload: "이 보기에서는 파일 업로드가 작동하지 않습니다. 보내려면 시스템 브라우저에서 페이지를 여세요.",
       scriptNavigation: "이 페이지가 스크립트로 다른 주소로 이동하려 했지만 이 보기에서는 따라갈 수 없습니다. 시스템 브라우저에서 여세요.",
     },
+    downloadSafety: {
+      stagedDownloading: "{name}을(를) 다운로드하는 중입니다. 코드를 실행할 수 있는 파일이므로 보관하기 전에 확인합니다.",
+      notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
+      keepPrompt: "{name}은(는) 컴퓨터에 해를 끼칠 수 있습니다. 보관할까요?",
+      keepFailed: "{name}을(를) 보관하지 못했습니다",
+      keep: "보관",
+      discard: "삭제",
+      savePrompt: "{name}은(는) 컴퓨터에 해를 끼칠 수 있습니다. 그래도 저장할까요?",
+      saveAnyway: "그래도 저장",
+      cancel: "취소",
+    },
     native: {
       externalPrompt: "{host}에서 {url}을(를) 열려고 합니다",
       open: "열기",

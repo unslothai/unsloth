@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { sanitizedSource } from "./download-source";
 
 export type HistoryItem = { id: string; url: string; title: string; visitedAt: number };
 export type DownloadItem = {
@@ -51,6 +52,12 @@ function deferredLocalStorage(): StateStorage {
       localStorage.removeItem(name);
     },
   };
+}
+
+/** A download's address as kept: no sign-in, signed query or fragment, and not overlong. */
+function storedSource(url: string | null): string | null {
+  const source = sanitizedSource(url);
+  return source !== null && source.length <= MAX_URL_CHARS ? source : null;
 }
 
 let nextId = 0;
@@ -103,7 +110,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const entry = {
             ...item,
             name: item.name.slice(0, MAX_TITLE_CHARS),
-            url: item.url !== null && item.url.length <= MAX_URL_CHARS ? item.url : null,
+            url: storedSource(item.url),
             contentType: item.contentType.slice(0, MAX_TITLE_CHARS),
             id: newId(),
             downloadedAt: Date.now(),
@@ -119,8 +126,16 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
     {
       // Per account: a write still deferred at a switch lands under the account that made it.
       name: accountDatabaseName("unsloth_browser_history"),
-      version: 1,
+      version: 2,
       storage: createJSONStorage(deferredLocalStorage),
+      // 1 kept downloads' full addresses, signed links included.
+      migrate: (persisted, version) => {
+        const state = persisted as Partial<BrowserHistoryState>;
+        if (version < 2 && Array.isArray(state.downloads)) {
+          state.downloads = state.downloads.map((item) => ({ ...item, url: storedSource(item.url) }));
+        }
+        return state as BrowserHistoryState;
+      },
     },
   ),
 );

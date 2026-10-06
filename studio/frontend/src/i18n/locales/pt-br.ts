@@ -283,6 +283,17 @@ export const ptBR = {
       upload: "O envio de arquivos não funciona nesta visualização. Abra a página no navegador do sistema para enviá-lo.",
       scriptNavigation: "Esta página tentou ir para outro endereço por script, o que esta visualização não consegue acompanhar. Abra-a no navegador do sistema.",
     },
+    downloadSafety: {
+      stagedDownloading: "Baixando {name}. Ele pode executar código, então você será consultado antes de mantê-lo.",
+      notMarked: "{name} foi salvo, mas não pôde ser marcado como baixado da internet, então seu sistema não avisará antes de abri-lo.",
+      keepPrompt: "{name} pode danificar seu computador. Manter?",
+      keepFailed: "Não foi possível manter {name}",
+      keep: "Manter",
+      discard: "Descartar",
+      savePrompt: "{name} pode danificar seu computador. Salvar mesmo assim?",
+      saveAnyway: "Salvar mesmo assim",
+      cancel: "Cancelar",
+    },
     native: {
       externalPrompt: "{host} quer abrir {url}",
       open: "Abrir",

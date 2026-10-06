@@ -283,6 +283,17 @@ export const fr = {
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
       scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
     },
+    downloadSafety: {
+      stagedDownloading: "Téléchargement de {name}. Ce fichier peut exécuter du code : votre accord sera demandé avant de le conserver.",
+      notMarked: "{name} a été enregistré mais n'a pas pu être marqué comme téléchargé depuis Internet ; votre système n'avertira donc pas avant de l'ouvrir.",
+      keepPrompt: "{name} peut endommager votre ordinateur. Le conserver ?",
+      keepFailed: "Impossible de conserver {name}",
+      keep: "Conserver",
+      discard: "Supprimer",
+      savePrompt: "{name} peut endommager votre ordinateur. L'enregistrer quand même ?",
+      saveAnyway: "Enregistrer quand même",
+      cancel: "Annuler",
+    },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",
       open: "Ouvrir",

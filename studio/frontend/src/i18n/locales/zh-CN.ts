@@ -283,6 +283,17 @@ export const zhCN = {
       upload: "此视图不支持上传文件。请在系统浏览器中打开该页面后再提交。",
       scriptNavigation: "此页面尝试通过脚本跳转到其他地址，此视图无法跟随。请在系统浏览器中打开。",
     },
+    downloadSafety: {
+      stagedDownloading: "正在下载 {name}。此文件可以运行代码,因此保留前会先询问你。",
+      notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
+      keepPrompt: "{name} 可能会损害你的电脑。要保留吗?",
+      keepFailed: "无法保留 {name}",
+      keep: "保留",
+      discard: "丢弃",
+      savePrompt: "{name} 可能会损害你的电脑。仍要保存吗?",
+      saveAnyway: "仍要保存",
+      cancel: "取消",
+    },
     native: {
       externalPrompt: "{host} 想要打开 {url}",
       open: "打开",

@@ -283,6 +283,17 @@ export const es = {
       upload: "Las subidas de archivos no funcionan en esta vista. Abre la página en el navegador del sistema para enviarla.",
       scriptNavigation: "Esta página intentó ir a otra dirección mediante un script, algo que esta vista no puede seguir. Ábrela en el navegador del sistema.",
     },
+    downloadSafety: {
+      stagedDownloading: "Descargando {name}. Puede ejecutar código, así que se te preguntará antes de conservarlo.",
+      notMarked: "{name} se guardó, pero no se pudo marcar como descargado de internet, así que tu sistema no avisará antes de abrirlo.",
+      keepPrompt: "{name} puede dañar tu equipo. ¿Conservarlo?",
+      keepFailed: "No se pudo conservar {name}",
+      keep: "Conservar",
+      discard: "Descartar",
+      savePrompt: "{name} puede dañar tu equipo. ¿Guardarlo de todos modos?",
+      saveAnyway: "Guardar de todos modos",
+      cancel: "Cancelar",
+    },
     native: {
       externalPrompt: "{host} quiere abrir {url}",
       open: "Abrir",

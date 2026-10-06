@@ -280,6 +280,17 @@ export const en = {
       upload: "File uploads don't work in this view. Open the page in your system browser to send it.",
       scriptNavigation: "This page tried to go to another address by script, which this view can't follow. Open it in your system browser instead.",
     },
+    downloadSafety: {
+      stagedDownloading: "Downloading {name}. It can run code, so you'll be asked before it's kept.",
+      notMarked: "{name} was saved but couldn't be marked as downloaded from the internet, so your system won't warn before opening it.",
+      keepPrompt: "{name} can harm your computer. Keep it?",
+      keepFailed: "Couldn't keep {name}",
+      keep: "Keep",
+      discard: "Discard",
+      savePrompt: "{name} can harm your computer. Save it anyway?",
+      saveAnyway: "Save anyway",
+      cancel: "Cancel",
+    },
     native: {
       externalPrompt: "{host} wants to open {url}",
       open: "Open",

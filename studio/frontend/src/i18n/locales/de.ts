@@ -283,6 +283,17 @@ export const de = {
       upload: "Datei-Uploads funktionieren in dieser Ansicht nicht. Öffne die Seite im Systembrowser, um sie zu senden.",
       scriptNavigation: "Diese Seite wollte per Skript zu einer anderen Adresse wechseln, was diese Ansicht nicht nachvollziehen kann. Öffne sie stattdessen im Systembrowser.",
     },
+    downloadSafety: {
+      stagedDownloading: "{name} wird heruntergeladen. Die Datei kann Code ausführen, daher wirst du gefragt, bevor sie behalten wird.",
+      notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
+      keepPrompt: "{name} kann deinem Computer schaden. Behalten?",
+      keepFailed: "{name} konnte nicht behalten werden",
+      keep: "Behalten",
+      discard: "Verwerfen",
+      savePrompt: "{name} kann deinem Computer schaden. Trotzdem speichern?",
+      saveAnyway: "Trotzdem speichern",
+      cancel: "Abbrechen",
+    },
     native: {
       externalPrompt: "{host} möchte {url} öffnen",
       open: "Öffnen",

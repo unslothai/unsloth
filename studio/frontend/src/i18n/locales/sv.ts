@@ -307,6 +307,17 @@ export const sv = {
       scriptNavigation:
         "Sidan försökte gå till en annan adress via skript, vilket den här vyn inte kan följa. Öppna den i systemets webbläsare i stället.",
     },
+    downloadSafety: {
+      stagedDownloading: "Laddar ned {name}. Filen kan köra kod, så du tillfrågas innan den behålls.",
+      notMarked: "{name} sparades men kunde inte markeras som nedladdad från internet, så systemet varnar inte innan den öppnas.",
+      keepPrompt: "{name} kan skada datorn. Behålla den?",
+      keepFailed: "Det gick inte att behålla {name}",
+      keep: "Behåll",
+      discard: "Kasta",
+      savePrompt: "{name} kan skada datorn. Spara ändå?",
+      saveAnyway: "Spara ändå",
+      cancel: "Avbryt",
+    },
     native: {
       externalPrompt: "{host} vill öppna {url}",
       open: "Öppna",
