@@ -1513,7 +1513,7 @@ export function AudioPage({
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
       <SaveVoiceDialog
-        open={savingVoice}
+        open={active && savingVoice}
         onOpenChange={setSavingVoice}
         mode="create"
         initial={{

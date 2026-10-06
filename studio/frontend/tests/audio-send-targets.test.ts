@@ -116,6 +116,8 @@ test("the Audio page wires every send, and waits out a running task first", () =
   const music = readSrc("features/audio/hooks/use-music-generation.ts");
   assert.match(music, /editWaiting\s*\? MUSIC_PREVIEW_WITH_EDIT/);
   assert.match(host, /source: \{ clip_id: voiceClip\.id \}/);
+  // The page stays mounted off-route; like its other overlays, the dialog closes with it.
+  assert.match(host, /<SaveVoiceDialog\s+open=\{active && savingVoice\}/);
   // Sending a transcript never starts a transcription.
   const transcriptSend = host.slice(
     host.indexOf("const sendTranscriptHandlersFor"),
