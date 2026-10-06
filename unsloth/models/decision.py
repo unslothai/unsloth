@@ -898,7 +898,14 @@ def _clef_mixed_precision(model, args) -> None:
     elif args.fp16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
         args.fp16, args.bf16 = False, True
-    # transformers 5 reads the accelerator's precision from here (4.x from fp16 / bf16).
+    elif not args.bf16 and _clef_amp_dtype(model, next(model.parameters()).device) is not None:
+        # Train under the autocast evaluate and serving use, as Unsloth's trainers default a
+        # bfloat16 model to: float32 norms (UNSLOTH_HIGH_PRECISION_LAYERNORM) next to bfloat16
+        # projections only run under it.
+        args.bf16 = True
+    # transformers 5 reads the accelerator's precision from args.mixed_precision; 4.x from this
+    # variable, which TrainingArguments set before the switches above.
+    os.environ["ACCELERATE_MIXED_PRECISION"] = "bf16" if args.bf16 else "no"
     if hasattr(args, "mixed_precision"):
         args.mixed_precision = "bf16" if args.bf16 else "no"
 

@@ -1269,6 +1269,22 @@ def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypat
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
 
 
+@pytest.mark.parametrize("forced", [False, True])
+def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, forced):
+    # A previous trainer leaves fp16 in ACCELERATE_MIXED_PRECISION, which transformers 4.x reads.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.bfloat16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = forced
+    args = _args(tmp_path)
+    assert not args.bf16 and not args.fp16
+    decision._clef_mixed_precision(model, args)
+    expected = "no" if forced else "bf16"
+    assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
+    assert getattr(args, "mixed_precision", expected) == expected
+
+
 def test_clef_calibration_with_every_holdout_decision_from_one_row():
     # A holdout row with many questions passes the item minimum with nothing to cross-validate on.
     logits = [torch.tensor([1.0, 0.0, -1.0]) for _ in range(12)]
