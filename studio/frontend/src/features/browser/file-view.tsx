@@ -5,13 +5,25 @@ import { CodeSourceView } from "@/components/code-source-view";
 import { DocumentView, MAX_DOCUMENT_PREVIEW_BYTES, documentKind } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Spinner } from "@/components/ui/spinner";
-import { ArtifactHtmlFrame, attachmentTextLanguage, truncateAttachmentPreviewText } from "@/features/chat";
+import {
+  ArtifactHtmlFrame,
+  attachmentTextLanguage,
+  truncateAttachmentPreviewText,
+  useChatArtifactsStore,
+} from "@/features/chat";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
+import { browserPanelAvailable } from "./panel-availability";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
+
+// With no chat beside the browser, stage the fix and close the overlay so the composer shows.
+function stageFix(prompt: string): void {
+  useChatArtifactsStore.getState().stageFixPrompt(prompt);
+  if (!browserPanelAvailable()) useBrowserStore.getState().closePanel();
+}
 
 // The preview shows at most 200,000 chars (4 bytes each at most): a 50 MB body is never decoded whole.
 const MAX_TEXT_BYTES = 1024 * 1024;
@@ -65,6 +77,9 @@ function TextFile({
   const [text, setText] = useState<string | null>(null);
   const view = useBrowserStore((state) => (tabId ? state.fileViews[tabId] : undefined)) ?? DEFAULT_FILE_VIEW;
   const requestEdits = useBrowserStore((state) => state.requestEdits);
+  // HTML runs only once previewed, so opening to source does not run it.
+  const [previewed, setPreviewed] = useState(view.mode === "preview");
+  if (!previewed && view.mode === "preview") setPreviewed(true);
   useEffect(() => {
     let active = true;
     void blob.slice(0, MAX_TEXT_BYTES).text().then((value) => active && setText(value));
@@ -110,7 +125,8 @@ function TextFile({
   if (kind === "html") {
     return (
       <>
-        {/* Kept mounted behind the source, as the canvas does, so the console keeps its output. */}
+        {/* Kept mounted behind the source, so the console keeps its output. */}
+        {previewed ? (
         <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
           <ArtifactHtmlFrame
             code={preview.text}
@@ -120,9 +136,10 @@ function TextFile({
             consoleOpen={view.consoleOpen}
             onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
             onOutputCountChange={tabId ? onOutputCountChange : undefined}
-            onFixWithModel={requestEdits ?? undefined}
+            onFixWithModel={requestEdits ?? stageFix}
           />
         </div>
+        ) : null}
         {source ? sourceView : null}
       </>
     );

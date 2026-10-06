@@ -17,7 +17,6 @@ export const it = {
     openDefaultApp: "Apri nell’app predefinita",
     openWith: "Apri con",
     unslothBrowser: "Browser di Unsloth",
-    canvas: "Canvas",
     newChat: "Nuova chat",
     browserTab: "Nuova scheda del browser",
     saveAs: "Salva con nome…",
@@ -207,7 +206,6 @@ export const it = {
       copied: "Copiato",
       copyFailed: "Impossibile copiare il file.",
       wrap: "A capo automatico",
-      canvas: "Canvas",
     },
     pages: {
       history: "Cronologia",
@@ -2332,23 +2330,11 @@ export const it = {
           "Include immagini nei risultati di ricerca.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "Comprimi i blocchi HTML",
-        collapseHtmlBlocksDescription:
-          "La modalità Canvas comprime automaticamente l'HTML completo. Attiva questa opzione per comprimere anche i documenti HTML in blocchi di codice quando Canvas è disattivato.",
-        allowNetworkAccess: "Consenti a Canvas di accedere alla rete",
-        allowNetworkAccessDescription:
-          "Consenti alle anteprime di Canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia l'opzione disattivata per anteprime completamente offline.",
         blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
         blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
-        blockedBannerAction: "Consenti per questo Canvas",
-        blockedTitle: "L'accesso alla rete del Canvas è disattivato",
-        blockedHint:
-          "Attiva “{setting}” in Impostazioni → Chat per consentire ai Canvas di caricare risorse esterne, oppure consentilo solo per questo Canvas.",
         blockedSettingsAction: "Apri impostazioni",
         blockedDismiss: "Ignora",
-        errorTitle: "Questo Canvas ha generato un errore",
-        errorTitlePlural: "Questo Canvas ha generato {count} errori",
         errorHint: "«Correggi con il modello» mette l'errore nella casella del messaggio. Non viene inviato nulla finché non invii tu.",
         errorBannerAction: "Correggi con il modello",
         errorConsoleAction: "Apri console",

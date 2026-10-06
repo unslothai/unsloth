@@ -18,7 +18,6 @@ export const hi = {
     openDefaultApp: "डिफ़ॉल्ट ऐप में खोलें",
     openWith: "इसके साथ खोलें",
     unslothBrowser: "Unsloth ब्राउज़र",
-    canvas: "कैनवस",
     newChat: "नई चैट",
     browserTab: "नया ब्राउज़र टैब",
     saveAs: "इस रूप में सहेजें…",
@@ -208,7 +207,6 @@ export const hi = {
       copied: "कॉपी हो गया",
       copyFailed: "फ़ाइल कॉपी नहीं हो सकी।",
       wrap: "लाइनें रैप करें",
-      canvas: "कैनवस",
     },
     pages: {
       history: "हिस्ट्री",
@@ -2343,23 +2341,11 @@ export const hi = {
           "खोज के नतीजों में छवियाँ शामिल करें।",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "HTML ब्लॉक संक्षिप्त करें",
-        collapseHtmlBlocksDescription:
-          "Canvas मोड स्वतः पूर्ण HTML को संक्षिप्त कर देता है। Canvas बंद होने पर फेंस्ड HTML दस्तावेज़ों को भी संक्षिप्त करने के लिए इसे चालू करें।",
-        allowNetworkAccess: "canvas नेटवर्क एक्सेस की अनुमति दें",
-        allowNetworkAccessDescription:
-          "canvas पूर्वावलोकन को CDN से स्क्रिप्ट, स्टाइल, फ़ॉन्ट, मीडिया, और नेटवर्क संसाधन लोड करने दें। पूरी तरह ऑफ़लाइन पूर्वावलोकन के लिए बंद रखें।",
         blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
         blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
-        blockedBannerAction: "इस Canvas के लिए अनुमति दें",
-        blockedTitle: "Canvas नेटवर्क एक्सेस बंद है",
-        blockedHint:
-          "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
         blockedSettingsAction: "सेटिंग्स खोलें",
         blockedDismiss: "खारिज करें",
-        errorTitle: "इस Canvas में एक त्रुटि आई",
-        errorTitlePlural: "इस Canvas में {count} त्रुटियाँ आईं",
         errorHint: "“मॉडल से ठीक करें” त्रुटि को संदेश बॉक्स में रख देता है। जब तक आप न भेजें, कुछ नहीं भेजा जाता।",
         errorBannerAction: "मॉडल से ठीक करें",
         errorConsoleAction: "कंसोल खोलें",

@@ -18,7 +18,6 @@ export const fr = {
     openDefaultApp: "Ouvrir dans l’app par défaut",
     openWith: "Ouvrir avec",
     unslothBrowser: "Navigateur Unsloth",
-    canvas: "Canevas",
     newChat: "Nouveau chat",
     browserTab: "Nouvel onglet du navigateur",
     saveAs: "Enregistrer sous…",
@@ -208,7 +207,6 @@ export const fr = {
       copied: "Copié",
       copyFailed: "Impossible de copier le fichier.",
       wrap: "Retour à la ligne",
-      canvas: "Canevas",
     },
     pages: {
       history: "Historique",
@@ -2372,23 +2370,11 @@ export const fr = {
           "Inclut des images dans les résultats de recherche.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "Réduire les blocs HTML",
-        collapseHtmlBlocksDescription:
-          "Le mode Canvas réduit automatiquement les pages HTML complètes. Activez cette option pour réduire également les documents HTML placés dans des blocs de code lorsque Canvas est désactivé.",
-        allowNetworkAccess: "Autoriser l'accès réseau du canvas",
-        allowNetworkAccessDescription:
-          "Permettre aux aperçus Canvas de charger des scripts, des styles, des polices, des médias et d'autres ressources depuis des CDN. Laissez cette option désactivée pour des aperçus entièrement hors ligne.",
         blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
         blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
-        blockedBannerAction: "Autoriser pour ce Canvas",
-        blockedTitle: "L'accès réseau du Canvas est désactivé",
-        blockedHint:
-          "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
         blockedSettingsAction: "Ouvrir les paramètres",
         blockedDismiss: "Ignorer",
-        errorTitle: "Ce Canvas a rencontré une erreur",
-        errorTitlePlural: "Ce Canvas a rencontré {count} erreurs",
         errorHint: "« Corriger avec le modèle » place l'erreur dans la zone de message. Rien n'est envoyé tant que vous n'envoyez pas.",
         errorBannerAction: "Corriger avec le modèle",
         errorConsoleAction: "Ouvrir la console",

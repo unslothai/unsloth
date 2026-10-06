@@ -18,7 +18,6 @@ export const ar = {
     openDefaultApp: "فتح في التطبيق الافتراضي",
     openWith: "فتح باستخدام",
     unslothBrowser: "متصفح Unsloth",
-    canvas: "اللوحة",
     newChat: "دردشة جديدة",
     browserTab: "علامة تبويب جديدة في المتصفح",
     saveAs: "حفظ باسم…",
@@ -208,7 +207,6 @@ export const ar = {
       copied: "تم النسخ",
       copyFailed: "تعذّر نسخ الملف.",
       wrap: "التفاف الأسطر",
-      canvas: "اللوحة",
     },
     pages: {
       history: "السجل",
@@ -2337,23 +2335,11 @@ export const ar = {
           "تضمين الصور في نتائج البحث.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "طي كتل HTML",
-        collapseHtmlBlocksDescription:
-          "يطوي وضع Canvas ملفات HTML الكاملة تلقائيًا. فعّل هذا لطي مستندات HTML المُحاطة بأسوار أيضًا عند إيقاف Canvas.",
-        allowNetworkAccess: "السماح بوصول Canvas إلى الشبكة",
-        allowNetworkAccessDescription:
-          "اسمح لمعاينات Canvas بتحميل النصوص البرمجية والأنماط والخطوط والوسائط وموارد الشبكة من شبكات CDN. أبقِه معطّلاً للمعاينات دون اتصال بالكامل.",
         blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
         blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
-        blockedBannerAction: "السماح لهذا الـ Canvas",
-        blockedTitle: "الوصول إلى الشبكة لـ Canvas معطّل",
-        blockedHint:
-          "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
         blockedSettingsAction: "فتح الإعدادات",
         blockedDismiss: "تجاهل",
-        errorTitle: "واجه هذا الـ Canvas خطأ",
-        errorTitlePlural: "واجه هذا الـ Canvas {count} أخطاء",
         errorHint: "«الإصلاح مع النموذج» يضع الخطأ في مربع الرسالة. لا يُرسل شيء حتى ترسله أنت.",
         errorBannerAction: "الإصلاح مع النموذج",
         errorConsoleAction: "فتح وحدة التحكم",

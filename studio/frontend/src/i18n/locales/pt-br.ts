@@ -18,7 +18,6 @@ export const ptBR = {
     openDefaultApp: "Abrir no app padrão",
     openWith: "Abrir com",
     unslothBrowser: "Navegador do Unsloth",
-    canvas: "Canvas",
     newChat: "Novo chat",
     browserTab: "Nova aba do navegador",
     saveAs: "Salvar como…",
@@ -208,7 +207,6 @@ export const ptBR = {
       copied: "Copiado",
       copyFailed: "Não foi possível copiar o arquivo.",
       wrap: "Quebrar linhas",
-      canvas: "Canvas",
     },
     pages: {
       history: "Histórico",
@@ -2353,23 +2351,11 @@ export const ptBR = {
           "Inclui imagens nos resultados de busca.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
-        collapseHtmlBlocksDescription:
-          "O modo Canvas recolhe automaticamente páginas HTML completas. Ative esta opção para também recolher documentos HTML em blocos de código delimitados quando o Canvas estiver desativado.",
-        allowNetworkAccess: "Permitir acesso à rede no canvas",
-        allowNetworkAccessDescription:
-          "Permite que as pré-visualizações do canvas carreguem scripts, estilos, fontes, mídia e recursos de rede de CDNs. Mantenha desativado para pré-visualizações totalmente offline.",
         blockedBanner: "{count} recurso externo de {hosts} bloqueado.",
         blockedBannerPlural: "{count} recursos externos de {hosts} bloqueados.",
-        blockedBannerAction: "Permitir neste Canvas",
-        blockedTitle: "O acesso à rede do Canvas está desativado",
-        blockedHint:
-          "Ative “{setting}” em Configurações → Chat para que os Canvas carreguem recursos externos, ou permita apenas neste Canvas.",
         blockedSettingsAction: "Abrir configurações",
         blockedDismiss: "Dispensar",
-        errorTitle: "Este Canvas encontrou um erro",
-        errorTitlePlural: "Este Canvas encontrou {count} erros",
         errorHint: "“Corrigir com o modelo” coloca o erro na caixa de mensagem. Nada é enviado até você enviar.",
         errorBannerAction: "Corrigir com o modelo",
         errorConsoleAction: "Abrir console",

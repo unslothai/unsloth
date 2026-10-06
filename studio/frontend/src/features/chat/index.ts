@@ -442,10 +442,7 @@ export {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
-export {
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "./artifacts/store";
+export { useChatArtifactsStore } from "./artifacts/store";
 export {
   downloadArchivedChatExport,
   downloadChatExport,

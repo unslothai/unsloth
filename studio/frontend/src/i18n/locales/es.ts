@@ -18,7 +18,6 @@ export const es = {
     openDefaultApp: "Abrir en la app predeterminada",
     openWith: "Abrir con",
     unslothBrowser: "Navegador de Unsloth",
-    canvas: "Lienzo",
     newChat: "Nuevo chat",
     browserTab: "Nueva pestaña del navegador",
     saveAs: "Guardar como…",
@@ -208,7 +207,6 @@ export const es = {
       copied: "Copiado",
       copyFailed: "No se pudo copiar el archivo.",
       wrap: "Ajustar líneas",
-      canvas: "Lienzo",
     },
     pages: {
       history: "Historial",
@@ -2366,23 +2364,11 @@ export const es = {
           "Incluye imágenes en los resultados de búsqueda.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "Contraer bloques HTML",
-        collapseHtmlBlocksDescription:
-          "El modo Canvas contrae el HTML completo automáticamente. Activa esta opción para contraer también los documentos HTML delimitados por bloques de código cuando Canvas esté desactivado.",
-        allowNetworkAccess: "Permitir acceso de red en Canvas",
-        allowNetworkAccessDescription:
-          "Permite que las vistas previas de Canvas carguen scripts, estilos, fuentes, medios y recursos de red desde CDNs. Mantenlo desactivado para vistas previas totalmente sin conexión.",
         blockedBanner: "Se bloqueó {count} recurso externo de {hosts}.",
         blockedBannerPlural: "Se bloquearon {count} recursos externos de {hosts}.",
-        blockedBannerAction: "Permitir en este Canvas",
-        blockedTitle: "El acceso a la red del Canvas está desactivado",
-        blockedHint:
-          "Activa “{setting}” en Ajustes → Chat para que los Canvas carguen recursos externos, o permítelo solo en este Canvas.",
         blockedSettingsAction: "Abrir ajustes",
         blockedDismiss: "Descartar",
-        errorTitle: "Este Canvas ha dado un error",
-        errorTitlePlural: "Este Canvas ha dado {count} errores",
         errorHint: "«Corregir con el modelo» pone el error en el cuadro de mensaje. No se envía nada hasta que lo envíes.",
         errorBannerAction: "Corregir con el modelo",
         errorConsoleAction: "Abrir consola",

@@ -4062,13 +4062,6 @@ html[data-chat-font] .aui-root {
 		@apply gap-1.5 pl-2.5 pr-2.5;
 		white-space: nowrap;
 	}
-	.artifact-panel-shell {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
-	}
-
-	.dark .artifact-panel-shell {
-		box-shadow: none;
-	}
 
 	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
 		transition:
@@ -4123,69 +4116,6 @@ html[data-chat-font] .aui-root {
 		transform: translate3d(-125%, 0, 0) scaleX(0.78);
 		transform-origin: center center;
 		animation: artifact-loading-line 1.7s linear infinite;
-	}
-
-	.artifact-panel-shell::before,
-	.artifact-panel-shell::after {
-		content: "";
-		position: absolute;
-		z-index: 20;
-		pointer-events: none;
-		transition:
-			border-color 150ms var(--ease-out-cubic),
-			background-color 150ms var(--ease-out-cubic),
-			box-shadow 150ms var(--ease-out-cubic),
-			transform 150ms var(--ease-out-cubic);
-	}
-
-	.artifact-panel-shell::before {
-		inset: 0;
-		border: 2px solid transparent;
-		border-radius: inherit;
-		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
-		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
-	}
-
-	.artifact-panel-shell::after {
-		top: 50%;
-		left: -2px;
-		height: calc(28px * var(--ui-space-scale, 1));
-		width: 4px;
-		border-radius: 999px;
-		background: transparent;
-		transform: translateY(-50%);
-	}
-
-	[data-slot="resizable-handle"]:hover
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"]:active
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before {
-		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
-	}
-
-	[data-slot="resizable-handle"]:hover
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"]:active
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after {
-		background: color-mix(in oklch, var(--primary) 58%, var(--border));
-		box-shadow: none;
-		transform: translateY(-50%) scaleY(1.06);
 	}
 
 	@keyframes artifact-card-shimmer {
@@ -5886,7 +5816,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 }
 
 .browser-file-toolbar > :not([aria-hidden]) {
-	box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
 }
 
 .dark .browser-file-toolbar > :not([aria-hidden]) {

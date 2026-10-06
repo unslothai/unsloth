@@ -18,7 +18,6 @@ export const ru = {
     openDefaultApp: "Открыть в приложении по умолчанию",
     openWith: "Открыть с помощью",
     unslothBrowser: "Браузер Unsloth",
-    canvas: "Холст",
     newChat: "Новый чат",
     browserTab: "Новая вкладка браузера",
     saveAs: "Сохранить как…",
@@ -208,7 +207,6 @@ export const ru = {
       copied: "Скопировано",
       copyFailed: "Не удалось скопировать файл.",
       wrap: "Переносить строки",
-      canvas: "Холст",
     },
     pages: {
       history: "История",
@@ -2349,23 +2347,11 @@ export const ru = {
           "Добавляет изображения в результаты поиска.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "Сворачивать блоки HTML",
-        collapseHtmlBlocksDescription:
-          "Режим Canvas автоматически сворачивает полный HTML. Включите, чтобы также сворачивать HTML-документы в блоках кода, когда Canvas выключен.",
-        allowNetworkAccess: "Разрешить сетевой доступ Canvas",
-        allowNetworkAccessDescription:
-          "Позволяет предпросмотрам Canvas загружать скрипты, стили, шрифты, медиа и сетевые ресурсы из CDN. Оставьте выключенным для полностью офлайн-предпросмотров.",
         blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
         blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
-        blockedBannerAction: "Разрешить для этого Canvas",
-        blockedTitle: "Доступ Canvas к сети отключён",
-        blockedHint:
-          "Включите «{setting}» в разделе Настройки → Чат, чтобы Canvas мог загружать внешние ресурсы, или разрешите только для этого Canvas.",
         blockedSettingsAction: "Открыть настройки",
         blockedDismiss: "Закрыть",
-        errorTitle: "В этом Canvas произошла ошибка",
-        errorTitlePlural: "В этом Canvas произошло ошибок: {count}",
         errorHint: "«Исправить с моделью» помещает ошибку в поле сообщения. Ничего не отправляется, пока вы не отправите сами.",
         errorBannerAction: "Исправить с моделью",
         errorConsoleAction: "Открыть консоль",

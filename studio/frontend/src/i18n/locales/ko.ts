@@ -18,7 +18,6 @@ export const ko = {
     openDefaultApp: "기본 앱에서 열기",
     openWith: "다음으로 열기",
     unslothBrowser: "Unsloth 브라우저",
-    canvas: "캔버스",
     newChat: "새 채팅",
     browserTab: "새 브라우저 탭",
     saveAs: "다른 이름으로 저장…",
@@ -208,7 +207,6 @@ export const ko = {
       copied: "복사됨",
       copyFailed: "파일을 복사하지 못했습니다.",
       wrap: "줄 바꿈",
-      canvas: "캔버스",
     },
     pages: {
       history: "방문 기록",
@@ -2332,23 +2330,11 @@ export const ko = {
           "검색 결과에 이미지를 포함합니다.",
       },
       artifacts: {
-        title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",
-        collapseHtmlBlocksDescription:
-          "Canvas 모드는 전체 HTML을 자동으로 접습니다. Canvas가 꺼져 있을 때도 펜스로 감싼 HTML 문서를 접으려면 이 옵션을 켜세요.",
-        allowNetworkAccess: "Canvas 네트워크 접근 허용",
-        allowNetworkAccessDescription:
-          "Canvas 미리보기가 CDN에서 스크립트, 스타일, 폰트, 미디어 및 네트워크 리소스를 불러올 수 있게 합니다. 완전한 오프라인 미리보기를 위해서는 꺼 두세요.",
         blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
-        blockedBannerAction: "이 Canvas에서 허용",
-        blockedTitle: "Canvas 네트워크 액세스가 꺼져 있습니다",
-        blockedHint:
-          "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
         blockedSettingsAction: "설정 열기",
         blockedDismiss: "닫기",
-        errorTitle: "이 Canvas에서 오류가 발생했습니다",
-        errorTitlePlural: "이 Canvas에서 오류 {count}개가 발생했습니다",
         errorHint: "“모델로 수정”은 오류를 메시지 입력창에 넣기만 합니다. 직접 보내기 전에는 아무것도 전송되지 않습니다.",
         errorBannerAction: "모델로 수정",
         errorConsoleAction: "콘솔 열기",

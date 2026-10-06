@@ -109,7 +109,6 @@ import {
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -791,9 +790,6 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
-  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -989,7 +985,6 @@ export function SharedComposer({
     (showImagePill ? 1 : 0) +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
-    (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
   // Under the count threshold the row still overflows on long labels, wrapping onto a second line
   // inside the action bar, so measuring collapses just enough to keep it beside send.
@@ -2558,19 +2553,6 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    // Hidden by default; enabled from Settings > Chat > Canvas.
-    canvas: showCanvasMenuItem ? (
-      <DropdownMenuItem
-        className={artifactsEnabled ? "text-primary font-medium" : undefined}
-        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-      >
-        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-        Canvas
-        {artifactsEnabled ? (
-          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-        ) : null}
-      </DropdownMenuItem>
-    ) : null,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -3028,25 +3010,6 @@ export function SharedComposer({
               <span>Fetch</span>
             </button>
           )}
-          {artifactsEnabled ? (
-            <button
-              type="button"
-              onClick={() => setArtifactsEnabled(false)}
-              className="composer-pill-btn"
-              data-pill-label="Canvas"
-              data-active="true"
-              aria-label="Disable canvas"
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={PencilRulerIcon}
-                  className="size-[calc(15.5px*var(--ui-space-scale,1))]"
-                  strokeWidth={2}
-                />
-              </PillGlyph>
-              <span>Canvas</span>
-            </button>
-          ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
           <SkillsComposerButton side="top" />
         </div>

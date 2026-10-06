@@ -72,6 +72,7 @@ from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
 import re as _re
+from pydantic import BaseModel
 from urllib.parse import quote as _urlquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
@@ -4254,6 +4255,115 @@ async def artifact_preview_frame(allow_network: bool = False):
         headers = {
             "Cache-Control": "no-store",
             "Content-Security-Policy": csp,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+# Chat HTML opened in the user's own browser, at a one-off URL. Same CSP as the in-app frame, so
+# the page keeps an opaque origin and the network setting.
+_ARTIFACT_PAGE_TTL_SECONDS = 60 * 60
+_ARTIFACT_PAGE_MAX_PAGES = 32
+_ARTIFACT_PAGE_MAX_BYTES = 8 * 1024 * 1024
+_ARTIFACT_PAGE_SANDBOX = "sandbox allow-scripts allow-modals allow-popups allow-pointer-lock"
+_artifact_pages: dict[str, tuple[float, bytes, bool]] = {}
+# Storage and randomUUID fallbacks for the opaque origin, as in _ARTIFACT_PREVIEW_FRAME_HTML.
+_ARTIFACT_PAGE_PRELUDE = """<script>(() => {
+  const memory = () => { const data = new Map(); return {
+    get length() { return data.size; },
+    key: (index) => Array.from(data.keys())[index] ?? null,
+    getItem: (key) => data.has(String(key)) ? data.get(String(key)) : null,
+    setItem: (key, value) => data.set(String(key), String(value)),
+    removeItem: (key) => data.delete(String(key)),
+    clear: () => data.clear(),
+  }; };
+  for (const name of ["localStorage", "sessionStorage"]) {
+    try { void window[name]; continue; } catch {}
+    try { Object.defineProperty(window, name, { value: memory(), configurable: true }); } catch {}
+  }
+  if (window.crypto && typeof crypto.randomUUID !== "function") {
+    const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+    crypto.randomUUID = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+      (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
+  }
+})();</script>"""
+# Inserted after <head>, else <html>, else the doctype: before the doctype means quirks mode.
+_ARTIFACT_PAGE_PRELUDE_AT = tuple(
+    _re.compile(pattern, _re.IGNORECASE)
+    for pattern in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype[^>]*>")
+)
+
+
+def _artifact_page_csp(allow_network: bool) -> str:
+    base = (
+        _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+    )
+    directives = [
+        part.strip()
+        for part in base.split(";")
+        if part.strip() and not part.strip().startswith(("frame-ancestors", "sandbox"))
+    ]
+    return "; ".join([*directives, "frame-ancestors 'none'", _ARTIFACT_PAGE_SANDBOX])
+
+
+def _artifact_page_with_prelude(html: str) -> str:
+    at = 0
+    for pattern in _ARTIFACT_PAGE_PRELUDE_AT:
+        match = pattern.search(html, 0, 4096)
+        if match:
+            at = match.end()
+            break
+    return html[:at] + _ARTIFACT_PAGE_PRELUDE + html[at:]
+
+
+def _prune_artifact_pages(now: float) -> None:
+    for token, (created, _, _) in list(_artifact_pages.items()):
+        if now - created > _ARTIFACT_PAGE_TTL_SECONDS:
+            _artifact_pages.pop(token, None)
+    while len(_artifact_pages) >= _ARTIFACT_PAGE_MAX_PAGES:
+        _artifact_pages.pop(next(iter(_artifact_pages)))
+
+
+class ArtifactPreviewPageRequest(BaseModel):
+    html: str
+    allow_network: bool = False
+
+
+@studio_router.post("/artifact-preview-page", include_in_schema = False)
+async def create_artifact_preview_page(
+    request: ArtifactPreviewPageRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Stage chat HTML for the user's own browser; returns the path that serves it."""
+    body = _artifact_page_with_prelude(request.html).encode("utf-8")
+    if len(body) > _ARTIFACT_PAGE_MAX_BYTES:
+        raise HTTPException(status_code = 413, detail = "This page is too large to open")
+    now = time.monotonic()
+    _prune_artifact_pages(now)
+    token = _secrets.token_urlsafe(24)
+    _artifact_pages[token] = (now, body, request.allow_network)
+    return {"path": f"/api/inference/artifact-preview-page/{token}"}
+
+
+@studio_router.get("/artifact-preview-page/{token}", include_in_schema = False)
+async def artifact_preview_page(token: str):
+    """Unauthenticated: an outside browser has no Studio session, so the token is the capability."""
+    entry = _artifact_pages.get(token)
+    if entry is None or time.monotonic() - entry[0] > _ARTIFACT_PAGE_TTL_SECONDS:
+        _artifact_pages.pop(token, None)
+        return Response(
+            content = "This preview has expired. Open it again from the chat in Unsloth Studio.",
+            status_code = 404,
+            media_type = "text/plain; charset=utf-8",
+            headers = {"Cache-Control": "no-store"},
+        )
+    _, body, allow_network = entry
+    return Response(
+        content = body,
+        media_type = "text/html; charset=utf-8",
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": _artifact_page_csp(allow_network),
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
         },

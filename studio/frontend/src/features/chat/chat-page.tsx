@@ -144,15 +144,11 @@ import {
   notifyChatHistoryUpdated,
 } from "./api/chat-api";
 import { codeToolCanRun } from "./api/code-tool-placement";
-import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
   useChatArtifactsStore,
-  useSelectedChatArtifact,
 } from "./artifacts/store";
 import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
-import { createChatArtifact } from "./artifacts/types";
-import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
@@ -315,6 +311,26 @@ const FullViewChatButton = lazy(() =>
   })),
 );
 
+/** The browser over the chat, where it cannot sit beside it. */
+function BrowserOverlay(): ReactElement {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm sm:p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          useBrowserStore.getState().closePanel();
+        }
+      }}
+    >
+      <div className="size-full overflow-hidden border-border bg-background sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-2xl sm:border sm:shadow-xl">
+        <Suspense fallback={null}>
+          <BrowserPanel active={true} />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
     default: module.ProjectSourcesPanel,
@@ -456,16 +472,9 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
   threadId,
-  artifact,
-  artifactSurface,
-  onCloseArtifact,
 }: {
   threadId?: string;
-  artifact?: ChatArtifact | null;
-  artifactSurface: ChatArtifactSurface;
-  onCloseArtifact: () => void;
 }): ReactElement {
-  const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
@@ -484,17 +493,6 @@ const SingleContent = memo(function SingleContent({
     useBrowserStore.setState({
       requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
       sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
-      // The canvas and the browser share the side panel, so the file leaves the browser for it.
-      openInCanvas: ({ title, code }) => {
-        const artifact = createChatArtifact({
-          title,
-          code,
-          source: "fence",
-          threadId: useChatRuntimeStore.getState().activeThreadId,
-        });
-        useBrowserStore.getState().closePanel();
-        useChatArtifactsStore.getState().openArtifact(artifact, { surface: "panel" });
-      },
       attachToChat: (file) =>
         aui
           .composer()
@@ -508,7 +506,7 @@ const SingleContent = memo(function SingleContent({
     return () => {
       setBrowserPanelAvailable(false);
       setInAppLinkHandler(null);
-      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null, attachToChat: null });
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
     };
   }, [chatActive, isMobile, aui]);
   useEffect(() => {
@@ -521,7 +519,7 @@ const SingleContent = memo(function SingleContent({
         ? `${current}\n\n${pendingFixPrompt}`
         : pendingFixPrompt,
     );
-    // The overlay returns focus to its opener on unmount, so focus the composer after that.
+    // Focus the composer after the overlay returns focus to its opener.
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
@@ -548,14 +546,13 @@ const SingleContent = memo(function SingleContent({
   const rememberArtifactPanelWidth = useCallback(() => {
     const size = artifactPanelRef.current?.getSize().asPercentage;
     if (size == null) return;
-    // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
+    // Dragged shut means closed.
     if (size <= 5) {
-      if (useBrowserStore.getState().open) closeBrowser();
-      else onCloseArtifact();
+      closeBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [onCloseArtifact, closeBrowser]);
+  }, [closeBrowser]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -582,16 +579,7 @@ const SingleContent = memo(function SingleContent({
       ? BROWSER_PANEL_DEFAULT_SIZE
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = !showResearchPanel && !showBrowserPanel && Boolean(
-    artifact &&
-      artifactSurface === "panel" &&
-      (threadId
-        ? !artifact.threadId || artifact.threadId === threadId
-        : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
-  );
-  const showContextPanel =
-    showResearchPanel || showArtifactPanel || showBrowserPanel;
+  const showContextPanel = showResearchPanel || showBrowserPanel;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -605,29 +593,16 @@ const SingleContent = memo(function SingleContent({
     artifactPanelWidthRef.current = null;
   }, [artifactPanelThread]);
 
-  const artifactOpenSequence = useChatArtifactsStore(
-    (state) => state.openSequence,
-  );
-  const seenArtifactOpenSequenceRef = useRef(artifactOpenSequence);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequence is the re-expand trigger
   useEffect(() => {
-    if (seenArtifactOpenSequenceRef.current === artifactOpenSequence) return;
-    seenArtifactOpenSequenceRef.current = artifactOpenSequence;
-    closeBrowser();
-  }, [artifactOpenSequence, closeBrowser]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequences are the re-expand triggers
-  useEffect(() => {
-    if (
-      !showContextPanel ||
-      (artifactOpenSequence === 0 && browserOpenSequence === 0)
-    )
-      return;
+    if (!showContextPanel || browserOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
     panel.resize(artifactPanelWidthRef.current ?? defaultPanelSizeRef.current);
-  }, [artifactOpenSequence, browserOpenSequence, showContextPanel]);
+  }, [browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
     const panel = artifactPanelRef.current;
@@ -680,10 +655,9 @@ const SingleContent = memo(function SingleContent({
 
   useEffect(() => {
     if (!researchMatchesThread) return;
-    onCloseArtifact();
     closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
-  }, [researchMatchesThread, onCloseArtifact, closeBrowser]);
+  }, [researchMatchesThread, closeBrowser]);
 
   // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
   const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -885,7 +859,7 @@ const SingleContent = memo(function SingleContent({
                 ? "58%"
                 : "0%"
           }
-          collapsible={showArtifactPanel || showBrowserPanel}
+          collapsible={showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -915,15 +889,6 @@ const SingleContent = memo(function SingleContent({
               <Suspense fallback={null}>
                 <BrowserPanel active={chatActive} />
               </Suspense>
-            ) : showArtifactPanel && artifact ? (
-              <ArtifactSurface
-                artifact={artifact}
-                variant="panel"
-                onClose={onCloseArtifact}
-                onOpenFullscreen={() =>
-                  openArtifact(artifact, { surface: "overlay" })
-                }
-              />
             ) : null}
           </div>
         </ResizablePanel>
@@ -2736,7 +2701,6 @@ export function ChatPage({
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
-  const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const latestResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
@@ -2831,7 +2795,6 @@ export function ChatPage({
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
     if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
-      resetArtifacts();
       clearCheckpoint();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -2844,7 +2807,6 @@ export function ChatPage({
     clearCheckpoint,
     connectionsEnabled,
     inferenceParams.checkpoint,
-    resetArtifacts,
   ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
@@ -3270,11 +3232,7 @@ export function ChatPage({
     }
   }, [view, incognito, setIncognito]);
 
-  const selectedArtifact = useSelectedChatArtifact();
-  const artifactSurface = useChatArtifactsStore((state) => state.surface);
-  const closeArtifactSurface = useChatArtifactsStore(
-    (state) => state.closeArtifactSurface,
-  );
+  const browserOpen = useBrowserStore((state) => state.open);
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
@@ -3316,22 +3274,10 @@ export function ChatPage({
   const projectRuntimeReady =
     projectLandingId !== null && projectRuntimeReadyFor === projectLandingId;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view is the reset
   useEffect(() => {
     clearAutoOpenedArtifacts();
-    closeArtifactSurface();
-  }, [artifactViewKey, closeArtifactSurface]);
-
-  useEffect(() => {
-    if (view.mode !== "single") return;
-    if (view.threadId || !selectedArtifact) return;
-    // Close any canvas that does not belong to the active thread.
-    if (
-      selectedArtifact.threadId &&
-      selectedArtifact.threadId === activeThreadId
-    )
-      return;
-    closeArtifactSurface();
-  }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
+  }, [artifactViewKey]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
@@ -3958,14 +3904,13 @@ export function ChatPage({
   );
   const handleEject = useCallback(
     (modelId?: string) => {
-      const ejectedSelected = !modelId || modelId === inferenceParams.checkpoint;
-      void ejectModel(modelId).then((ok) => ok && ejectedSelected && resetArtifacts());
+      void ejectModel(modelId);
     },
-    [ejectModel, inferenceParams.checkpoint, resetArtifacts],
+    [ejectModel],
   );
   const handleEjectAll = useCallback(() => {
-    void ejectAllModels().then((ok) => ok && resetArtifacts());
-  }, [ejectAllModels, resetArtifacts]);
+    void ejectAllModels();
+  }, [ejectAllModels]);
 
   // Pins the picker open so a stray click cannot dismiss the step under it. Tour steps only: the
   // effect below shuts anything left pinned once the tour is gone.
@@ -4463,10 +4408,9 @@ export function ChatPage({
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
-  const showArtifactOverlay = Boolean(
-    selectedArtifact &&
-      (view.mode === "compare" || artifactSurface === "overlay"),
-  );
+  // Compare and phones show the browser over the chat.
+  const showBrowserOverlay =
+    active && browserOpen && (view.mode === "compare" || isMobile);
 
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
@@ -4694,7 +4638,6 @@ export function ChatPage({
                         return;
                       }
                       setSettingsOpen(false);
-                      closeArtifactSurface();
                       openResearchPanel(latestResearchRunId);
                     }}
                     className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
@@ -4807,12 +4750,7 @@ export function ChatPage({
                     value={baseAttachmentTargetKey}
                   >
                     <TemporaryChatSaveBridge />
-                    <SingleContent
-                      threadId={baseView.threadId}
-                      artifact={selectedArtifact}
-                      artifactSurface={artifactSurface}
-                      onCloseArtifact={closeArtifactSurface}
-                    />
+                    <SingleContent threadId={baseView.threadId} />
                   </NativeAttachmentTargetContext.Provider>
                 )}
               </ChatRuntimeProvider>
@@ -4835,13 +4773,7 @@ export function ChatPage({
           />
         ) : null}
 
-        {active && showArtifactOverlay && selectedArtifact ? (
-          <ArtifactSurface
-            artifact={selectedArtifact}
-            variant="overlay"
-            onClose={closeArtifactSurface}
-          />
-        ) : null}
+        {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 
       <ChatSettingsPanel
