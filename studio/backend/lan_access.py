@@ -266,8 +266,10 @@ def start_lan_listener(
     loop,
     port: int,
     fallback_ports: tuple[int, ...] = (),
+    selected_addresses: Optional[tuple[str, ...]] = None,
 ) -> tuple[str, ...]:
-    """Serve ``app`` on LAN addresses at the first bindable candidate port."""
+    """Serve ``app`` on LAN addresses at the first bindable candidate port. ``selected_addresses`` narrows the
+    detected set to the user's choice; ``None`` binds everything detected."""
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
     with _lock:
@@ -278,6 +280,22 @@ def start_lan_listener(
         if not candidates:
             _error = "no_lan_address"
             raise RuntimeError(_error)
+        if selected_addresses is not None:
+            # never widened back to the detected set: that would bind the addresses the user excluded
+            missing = [address for address in selected_addresses if address not in candidates]
+            candidates = [address for address in candidates if address in selected_addresses]
+            if not candidates:
+                _error = "selected_address_unavailable"
+                logger.warning(
+                    "LAN access found none of the chosen addresses on this machine: %s",
+                    ", ".join(selected_addresses),
+                )
+                raise RuntimeError(_error)
+            if missing:
+                logger.info(
+                    "LAN access skipped chosen addresses not on this machine: %s",
+                    ", ".join(missing),
+                )
 
         sockets: list[socket.socket] = []
         bound: list[str] = []

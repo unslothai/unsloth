@@ -22,6 +22,10 @@ LAN_ACCESS_PORT_KEY = "lan_access_port"
 DEFAULT_LAN_ACCESS_PORT = 8888
 LAST_LAN_ACCESS_PORT = 8908
 
+# ``None`` is Automatic: every detected address, public ones included, as before this setting existed
+LAN_ACCESS_ADDRESSES_KEY = "lan_access_addresses"
+_MAX_LAN_ACCESS_ADDRESSES = 64
+
 
 _management_lock = threading.RLock()
 
@@ -232,6 +236,102 @@ def lan_access_port_candidates() -> tuple[int, ...]:
     return tuple(range(DEFAULT_LAN_ACCESS_PORT, LAST_LAN_ACCESS_PORT + 1))
 
 
+def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
+    """``None`` stays Automatic. Anything else must be a non-empty list of IPv4 literals the listener could bind,
+    returned de-duplicated in canonical form. An address need not be detected right now: a Tailscale or VPN
+    interface that is down at save time is still a legitimate choice, and the start skips it until it is up."""
+    if addresses is None:
+        return None
+    if not isinstance(addresses, (list, tuple)):
+        raise ValueError("LAN access addresses must be a list of IPv4 addresses.")
+    normalized: list[str] = []
+    for value in addresses:
+        if not isinstance(value, str):
+            raise ValueError("LAN access addresses must be a list of IPv4 addresses.")
+        try:
+            parsed = ipaddress.IPv4Address(value.strip())
+        except ValueError:
+            raise ValueError(f"{value!r} is not an IPv4 address.") from None
+        # the same addresses detect_lan_addresses drops: no other device can open them
+        if (
+            parsed.is_loopback
+            or parsed.is_link_local
+            or parsed.is_multicast
+            or parsed.is_unspecified
+            or parsed.is_reserved
+        ):
+            raise ValueError(f"{value!r} cannot be reached from another device.")
+        if str(parsed) not in normalized:
+            normalized.append(str(parsed))
+    if not normalized:
+        raise ValueError("Choose at least one LAN access address, or Automatic.")
+    if len(normalized) > _MAX_LAN_ACCESS_ADDRESSES:
+        raise ValueError(f"At most {_MAX_LAN_ACCESS_ADDRESSES} LAN access addresses can be chosen.")
+    return tuple(normalized)
+
+
+def _read_lan_access_addresses(*, strict: bool) -> Optional[tuple[str, ...]]:
+    """The saved selection. Strict reads come from a start, which must fail closed: falling back to Automatic on an
+    unreadable selection would bind the very public addresses the user excluded."""
+    try:
+        from storage.studio_db import get_app_setting
+        stored = get_app_setting(LAN_ACCESS_ADDRESSES_KEY, None)
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("lan_access_addresses_unavailable") from exc
+        return None
+    try:
+        return normalize_lan_access_addresses(stored)
+    except ValueError:
+        if strict:
+            raise RuntimeError("lan_access_addresses_invalid") from None
+        return None
+
+
+def get_lan_access_addresses() -> Optional[tuple[str, ...]]:
+    """The valid saved selection, or ``None`` for Automatic/status fallback."""
+    return _read_lan_access_addresses(strict = False)
+
+
+def set_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
+    normalized = normalize_lan_access_addresses(addresses)
+    from storage.studio_db import upsert_app_settings
+
+    upsert_app_settings(
+        {LAN_ACCESS_ADDRESSES_KEY: list(normalized) if normalized is not None else None}
+    )
+    return normalized
+
+
+def save_lan_access_addresses(app, addresses: Any) -> dict:
+    """Validated before the running check, so a malformed choice is refused whatever the listener state."""
+    normalized = normalize_lan_access_addresses(addresses)
+    with _management_lock:
+        status = lan_access_status(app)
+        if bool(getattr(app.state, "lan_access_is_colab", False)):
+            raise RuntimeError("colab")
+        if status["state"] == "online":
+            raise RuntimeError("lan_access_running")
+        set_lan_access_addresses(normalized)
+        from lan_access import clear_lan_listener_error
+
+        clear_lan_listener_error()
+        return lan_access_status(app)
+
+
+def _available_lan_addresses() -> list[dict]:
+    """What the address picker offers: every bindable address detected now, flagged when it is internet-routable.
+    Status must render whatever detection does, so a failure offers nothing rather than an error."""
+    try:
+        from lan_access import detect_lan_addresses, is_public_address
+        return [
+            {"address": address, "public": is_public_address(address)}
+            for address in detect_lan_addresses()
+        ]
+    except Exception:
+        return []
+
+
 def save_lan_access_port(app, port: Optional[int]) -> dict:
     with _management_lock:
         status = lan_access_status(app)
@@ -386,6 +486,7 @@ def lan_access_status(app) -> dict:
 
     running = bool(listener["running"])
     configured_port = get_lan_access_port()
+    configured_addresses = get_lan_access_addresses()
     if launch_managed:
         state, urls, managed_by = "online", _launch_urls(app_state), "launch"
         active_port = getattr(app_state, "lan_access_port", None)
@@ -416,6 +517,11 @@ def lan_access_status(app) -> dict:
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
         "configured_port": configured_port,
+        "configured_addresses": list(configured_addresses)
+        if configured_addresses is not None
+        else None,
+        # a launch-managed bind is fixed by -H, so there is nothing to choose and nothing to detect for it
+        "available_addresses": [] if launch_managed else _available_lan_addresses(),
         "active_port": active_port,
         "managed_by": managed_by,
         "can_start": controllable and not running,
@@ -449,11 +555,13 @@ def start_lan_access(app) -> dict:
             raise RuntimeError(status["block_reason"] or "operation_in_progress")
 
         ports = lan_access_port_candidates()
+        selected = _read_lan_access_addresses(strict = True)
         addresses = start_lan_listener(
             app,
             _server_loop(app.state),
             ports[0],
             ports[1:],
+            selected,
         )
         logger.info("LAN access started on %s", ", ".join(addresses))
         return lan_access_status(app)
