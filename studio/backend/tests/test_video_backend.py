@@ -2587,6 +2587,40 @@ _LTX2_SIBLINGS = [
 ]
 
 
+@pytest.mark.parametrize("picked", ["high", "low"])
+def test_wan_a14b_gguf_pair_loads_high_as_transformer_and_low_as_transformer_2(
+    fake_runtime, tmp_path, monkeypatch, picked
+):
+    # Either expert of a pair loads both, and the high-noise one always serves the early (transformer) steps.
+    high = tmp_path / "HighNoise" / "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf"
+    low = tmp_path / "LowNoise" / "Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf"
+    for path in (high, low):
+        path.parent.mkdir(parents = True)
+        path.write_bytes(b"weights")
+    loaded = []
+
+    def _from_single_file(path, **kwargs):
+        loaded.append((Path(path).name, kwargs["subfolder"], kwargs.get("quantization_config")))
+        return f"dit:{Path(path).name}"
+
+    monkeypatch.setattr(_FakeTransformer, "from_single_file", staticmethod(_from_single_file))
+    pick = high if picked == "high" else low
+    VideoBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = str(pick.relative_to(tmp_path)),
+        base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        family_override = "wan2.2-t2v-a14b",
+    )
+    assert [(name, sub) for name, sub, _ in loaded] == [
+        (high.name, "transformer"),
+        (low.name, "transformer_2"),
+    ]
+    assert all(q is not None for _, _, q in loaded)
+    last = _FakeWanPipelineSingle.last
+    assert last["transformer"] == f"dit:{high.name}"
+    assert last["transformer_2"] == f"dit:{low.name}"
+
+
 def test_base_download_files_scopes_pipeline_pull():
     # A pipeline load skips the packaged root checkpoint, duplicate encoder shards and non-weight assets.
     info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)
