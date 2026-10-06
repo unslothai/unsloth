@@ -52,7 +52,11 @@ def _all_denormalized(processor: Any, image: Any, do_denormalize: Optional[list]
     return len(do_denormalize) == int(image.shape[0]) and all(bool(d) for d in do_denormalize)
 
 
-def to_pil_on_device(processor: Any, image: Any, do_denormalize: Optional[list] = None) -> Optional[list]:
+def to_pil_on_device(
+    processor: Any,
+    image: Any,
+    do_denormalize: Optional[list] = None,
+) -> Optional[list]:
     """The PIL list stock ``postprocess(image, "pil", do_denormalize)`` returns, or None when the stock path must run."""
     import torch
 
@@ -77,7 +81,6 @@ def uint8_hwc(image: Any) -> Any:
     """Stock's ``.permute(0, 2, 3, 1).float()`` then numpy ``(x * 255).round().astype("uint8")``, as torch ops on
     ``image``'s own device. Values must already lie in [0, 1] (the uint8 cast of anything else is undefined)."""
     import torch
-
     return (image.float() * 255).round().to(torch.uint8).permute(0, 2, 3, 1).contiguous()
 
 
@@ -87,11 +90,19 @@ def install(pipe: Any, logger: Any = None) -> bool:
     if disabled():
         return False
     processor = getattr(pipe, "image_processor", None)
-    if processor is None or getattr(processor, _MARK, False) or not _stock_postprocess_class(processor):
+    if (
+        processor is None
+        or getattr(processor, _MARK, False)
+        or not _stock_postprocess_class(processor)
+    ):
         return False
     stock = processor.postprocess
 
-    def postprocess(image: Any, output_type: str = "pil", do_denormalize: Optional[list] = None) -> Any:
+    def postprocess(
+        image: Any,
+        output_type: str = "pil",
+        do_denormalize: Optional[list] = None,
+    ) -> Any:
         if output_type == "pil":
             try:
                 out = to_pil_on_device(processor, image, do_denormalize)

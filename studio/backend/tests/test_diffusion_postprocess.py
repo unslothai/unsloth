@@ -32,7 +32,14 @@ def _env(monkeypatch):
     monkeypatch.delenv(dp.DEVICE_POSTPROCESS_ENV, raising = False)
 
 
-def _decoded(dtype, batch = 1, size = 64, channels_last = False, device = "cpu", channels = 3):
+def _decoded(
+    dtype,
+    batch = 1,
+    size = 64,
+    channels_last = False,
+    device = "cpu",
+    channels = 3,
+):
     g = torch.Generator().manual_seed(0)
     x = torch.randn(batch, channels, size, size, generator = g) * 0.7
     # Exact rounding ties after the denormalize: (v * 0.5 + 0.5) * 255 == k + 0.5.
@@ -43,8 +50,14 @@ def _decoded(dtype, batch = 1, size = 64, channels_last = False, device = "cpu",
     return x.contiguous(memory_format = torch.channels_last) if channels_last else x
 
 
-def _stock(processor, image, do_denormalize = None):
-    return VaeImageProcessor.postprocess(processor, image, output_type = "pil", do_denormalize = do_denormalize)
+def _stock(
+    processor,
+    image,
+    do_denormalize = None,
+):
+    return VaeImageProcessor.postprocess(
+        processor, image, output_type = "pil", do_denormalize = do_denormalize
+    )
 
 
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
@@ -69,7 +82,12 @@ def test_device_postprocess_is_bit_identical_to_stock(dtype, channels_last, chan
     """4 channels is Qwen-Image-2.1's VAE output; stock returns RGBA for it."""
     proc = VaeImageProcessor(vae_scale_factor = 16)
     image = _decoded(
-        getattr(torch, dtype), batch = 2, size = 128, channels_last = channels_last, device = "cuda", channels = channels
+        getattr(torch, dtype),
+        batch = 2,
+        size = 128,
+        channels_last = channels_last,
+        device = "cuda",
+        channels = channels,
     )
     stock = _stock(proc, image)
     assert dp.install(_Pipe(proc))
@@ -86,7 +104,9 @@ def test_device_path_actually_runs(monkeypatch, channels):
     proc = VaeImageProcessor()
     calls = []
     real = dp.uint8_hwc
-    monkeypatch.setattr(dp, "uint8_hwc", lambda image: calls.append(image.device.type) or real(image))
+    monkeypatch.setattr(
+        dp, "uint8_hwc", lambda image: calls.append(image.device.type) or real(image)
+    )
     dp.install(_Pipe(proc))
     proc.postprocess(_decoded(torch.bfloat16, device = "cuda", channels = channels), output_type = "pil")
     assert calls == ["cuda"]
@@ -145,7 +165,12 @@ def test_kill_switch(monkeypatch):
 
 def test_processor_that_overrides_postprocess_is_left_alone():
     class Custom(VaeImageProcessor):
-        def postprocess(self, image, output_type = "pil", do_denormalize = None):
+        def postprocess(
+            self,
+            image,
+            output_type = "pil",
+            do_denormalize = None,
+        ):
             return "custom"
 
     proc = Custom()
@@ -160,17 +185,26 @@ def test_generate_installs_it_on_the_render_pipe():
     src = Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
     tree = ast.parse(src.read_text(encoding = "utf-8"))
     gen = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "generate"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "generate"
         and any(a.arg == "prompt" for a in n.args.kwonlyargs)
     )
     calls = [
-        n for n in ast.walk(gen)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "install_device_postprocess"
+        n
+        for n in ast.walk(gen)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "install_device_postprocess"
     ]
     assert len(calls) == 1
     assert isinstance(calls[0].args[0], ast.Name) and calls[0].args[0].id == "pipe"
     protect = next(
-        n for n in ast.walk(gen)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "protect_generation"
+        n
+        for n in ast.walk(gen)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "protect_generation"
     )
     assert calls[0].lineno < protect.lineno
