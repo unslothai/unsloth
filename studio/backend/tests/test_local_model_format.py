@@ -287,14 +287,13 @@ def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
-def test_compat_inventory_lists_a_registered_hf_home(tmp_path, registered):
+def test_compat_inventory_lists_a_registered_hf_home_as_custom(tmp_path, registered):
     repo = tmp_path / "hf_home" / "hub" / "models--Org--Model-GGUF"
-    blob = repo / "blobs" / ("a" * 64)
-    blob.parent.mkdir(parents = True)
-    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
     snapshot = repo / "snapshots" / ("0" * 40)
     snapshot.mkdir(parents = True)
-    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
+    # Plain files, no symlinks: HF supports symlinkless caches on Windows, and this keeps the
+    # test independent of the host's symbolic-link privileges.
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text("0" * 40)
 
@@ -305,7 +304,11 @@ def test_compat_inventory_lists_a_registered_hf_home(tmp_path, registered):
         materialize_ollama_links = False,
     )
 
-    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+    # A cache-layout copy parked in a scan folder outside the configured caches becomes the
+    # user's custom row, so the same-repo cache entry cannot collapse it away. The repo id moves
+    # off the relabeled row (see _merge_scan_folder_row). A folder registered over a CONFIGURED
+    # cache keeps the hf_cache label: test_cached_gguf_routes.py covers that side.
+    assert [(row.source, row.model_id) for row in rows] == [("custom", None)]
 
 
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):

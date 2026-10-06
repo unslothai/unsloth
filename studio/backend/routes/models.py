@@ -858,6 +858,37 @@ def _scan_nested_compat_rows(
     return found
 
 
+def _merge_scan_folder_row(
+    m: LocalModelInfo, configured_cache_roots: tuple[Path, ...]
+) -> LocalModelInfo:
+    """Source attribution for a row a registered scan folder contributed.
+
+    Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the
+    HF cache) must not re-stamp its rows as generic custom entries. A cache-layout copy parked
+    outside the configured caches becomes the user's custom row, so the dedupe below keys it by
+    its own path instead of collapsing it by repo id into the active-cache entry, which can be a
+    weightless skeleton of an aborted download while the parked copy is the loadable one -- the
+    same cached-plus-parked listing the Hub inventory side keeps (#12258).
+
+    ``model_id`` is cleared with the relabel: the media index maps names to picks, and two rows
+    of one repo both answering to the repo id would read as ambiguous and resolve for nobody.
+    The cache row keeps the repo id; a parked-only copy answers to its display name.
+    ``active_cache`` is cleared too, like the Hub promotion: the row is not a cache entry
+    anymore.
+    """
+    from hub.utils.paths import path_is_same_or_child
+
+    if m.source in ("hf_cache", "ollama", "hermes"):
+        if m.source == "hf_cache" and not any(
+            path_is_same_or_child(Path(m.path), root) for root in configured_cache_roots
+        ):
+            return m.model_copy(
+                update = {"source": "custom", "model_id": None, "active_cache": None}
+            )
+        return m
+    return m.model_copy(update = {"source": "custom"})
+
+
 def collect_local_models(
     models_root: Path,
     *,
@@ -909,6 +940,14 @@ def collect_local_models(
             continue
         seen_hf.add(cache_key)
         hf_sources.append((cache_dir, cache_key == active_cache_key))
+
+    # Real roots of every configured HF cache, for the scan-folder merge below: a folder registered
+    # over one of them keeps the cache attribution for its rows, a parked copy elsewhere does not.
+    configured_cache_roots = tuple(
+        Path(resolved)
+        for resolved in map(_safe_resolve, [cache_dir for cache_dir, _active in hf_sources])
+        if resolved
+    )
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
@@ -1034,13 +1073,8 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
-        # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
-        # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
-            m
-            if m.source in ("hf_cache", "ollama", "hermes")
-            else m.model_copy(update = {"source": "custom"})
-            for m in custom_models
+            _merge_scan_folder_row(m, configured_cache_roots) for m in custom_models
         ]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
