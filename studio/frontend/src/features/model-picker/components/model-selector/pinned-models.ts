@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 
+import { mirrorPins, onPinsRestored } from "./pins-mirror.ts";
+
 const KEY = "unsloth_pinned_models";
 
 // Entries are stored as strings: "repoId" pins a whole (non-GGUF) repo, "repoId::quant" pins
@@ -76,10 +78,11 @@ function readPinned(): string[] {
 }
 
 function writePinned(pinned: string[]): void {
+  mirrorPins("pinned", pinned);
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
   } catch {
-    // Ignore unavailable storage; pins stay session-only.
+    // Ignore unavailable storage; the server copy still has them.
   }
 }
 
@@ -129,7 +132,7 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
   togglePinned: (repoId, quant) =>
     set((state) => {
       const key = pinKey(repoId, quant);
-      // Newest pin first, so "Pin to top" literally lands on top of the pinned group rather than under earlier pins.
+      // Newest pin first, so a new pin lands on top of the pinned group rather than under earlier pins.
       const next = state.pinned.includes(key)
         ? state.pinned.filter((id) => id !== key)
         : [key, ...state.pinned];
@@ -194,6 +197,10 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       return { pinned: base };
     }),
 }));
+
+onPinsRestored("pinned", () =>
+  usePinnedModelsStore.setState({ pinned: readPinned() }),
+);
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {

@@ -19,6 +19,7 @@ import {
   DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
+  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import {
@@ -41,6 +42,7 @@ import {
   getBlocksForKind,
   type BlockType,
   type SeedBlockType,
+  type ValidatorBlockType,
 } from "../blocks/registry";
 import {
   RECIPE_STUDIO_ONBOARDING_ICON_TONE,
@@ -52,6 +54,7 @@ type SheetView =
   | "sampler"
   | "seed"
   | "llm"
+  | "model"
   | "validator"
   | "expression"
   | "note"
@@ -85,7 +88,7 @@ type BlockSheetProps = {
   onAddToolProfile: () => void;
   onAddExpression: () => void;
   onAddValidator: (
-    type: "validator_python" | "validator_sql" | "validator_oxc",
+    type: ValidatorBlockType,
   ) => void;
   onAddMarkdownNote: () => void;
   onOpenProcessors: () => void;
@@ -122,6 +125,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "processor") {
     return "Processor blocks";
   }
+  if (sheetView === "model") {
+    return "Models";
+  }
   return "AI generation";
 }
 
@@ -130,6 +136,7 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   sampler: "sampler",
   seed: "seed",
   llm: "llm",
+  model: "llm",
   validator: "validator",
   expression: "expression",
   note: "note",
@@ -137,8 +144,16 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
 };
 
 const ROOT_GROUPS: RootGroup[] = [...BLOCK_GROUPS];
+const MODEL_ROOT_GROUP: RootGroup = {
+  kind: "model",
+  title: "Models",
+  description: "Connect a provider and pick which model powers your AI steps.",
+  icon: Settings02Icon,
+};
+const MODEL_SETUP_TYPES = new Set<BlockType>(["model_provider", "model_config"]);
 const ROOT_GROUPS_WITH_SEED_FIRST: RootGroup[] = [
   ...ROOT_GROUPS.filter((group) => group.kind === "seed"),
+  MODEL_ROOT_GROUP,
   ...ROOT_GROUPS.filter((group) => group.kind !== "seed"),
 ];
 const SEARCHABLE_KINDS: SheetKind[] = [
@@ -295,7 +310,11 @@ export function BlockSheet({
     if (!isScopedBlockView) {
       return [];
     }
-    const blocks = getBlocksForKind(VIEW_KIND[sheetView] ?? "sampler");
+    const kindBlocks = getBlocksForKind(VIEW_KIND[sheetView] ?? "sampler");
+    const blocks =
+      sheetView === "model"
+        ? kindBlocks.filter((item) => MODEL_SETUP_TYPES.has(item.type))
+        : kindBlocks;
     if (!hasSearch) {
       return blocks;
     }
@@ -329,8 +348,12 @@ export function BlockSheet({
       if (group.kind === "processor") {
         return matchesSearch(PROCESSOR_TITLE, PROCESSOR_DESCRIPTION);
       }
-      return getBlocksForKind(group.kind).some((item) =>
-        matchesSearch(item.title, item.description),
+      const blockKind = VIEW_KIND[group.kind];
+      return (
+        blockKind !== null &&
+        getBlocksForKind(blockKind).some((item) =>
+          matchesSearch(item.title, item.description),
+        )
       );
     });
   }, [hasSearch, matchesSearch]);
@@ -379,7 +402,7 @@ export function BlockSheet({
     }
     if (kind === "validator") {
       onAddValidator(
-        type as "validator_python" | "validator_sql" | "validator_oxc",
+        type as ValidatorBlockType,
       );
       return;
     }

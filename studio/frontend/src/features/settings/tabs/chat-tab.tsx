@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -19,7 +20,6 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
-  useSidebarOrganizationStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
@@ -27,18 +27,20 @@ import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
+  LibrariesIcon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
@@ -119,17 +121,6 @@ const PLUS_MENU_SETTINGS: {
     ),
   },
   {
-    id: "canvas",
-    labelKey: "settings.chat.artifacts.title",
-    icon: (
-      <HugeiconsIcon
-        icon={PencilRulerIcon}
-        strokeWidth={2}
-        className={PLUS_MENU_ICON_CLASS}
-      />
-    ),
-  },
-  {
     id: "projects",
     labelKey: "shell.navigation.projects",
     icon: (
@@ -144,6 +135,7 @@ const PLUS_MENU_SETTINGS: {
 
 export function ChatTab() {
   const t = useT();
+  const navigate = useNavigate();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -170,42 +162,8 @@ export function ChatTab() {
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
-  const showCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.showCanvasMenuItem,
-  );
-  const setShowCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.setShowCanvasMenuItem,
-  );
-  const collapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.collapseHtmlArtifacts,
-  );
-  const setCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.setCollapseHtmlArtifacts,
-  );
-  const allowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.allowArtifactNetworkAccess,
-  );
-  const setAllowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.setAllowArtifactNetworkAccess,
-  );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
-  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
-  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  const consumeScrollTarget = useSettingsDialogStore(
-    (s) => s.consumeScrollTarget,
-  );
-  useEffect(() => {
-    if (scrollTarget !== "chat-canvas-network") return;
-    const frame = window.requestAnimationFrame(() => {
-      networkAccessRowRef.current?.scrollIntoView({
-        block: "center",
-        behavior: "smooth",
-      });
-      consumeScrollTarget("chat-canvas-network");
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -225,19 +183,11 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
-  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
-  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
-  );
-  const showInlineReadAloud = useChatPreferencesStore(
-    (state) => state.showInlineReadAloud,
-  );
-  const setShowInlineReadAloud = useChatPreferencesStore(
-    (state) => state.setShowInlineReadAloud,
   );
   const showInlineEditResponse = useChatPreferencesStore(
     (state) => state.showInlineEditResponse,
@@ -247,6 +197,18 @@ export function ChatTab() {
   );
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
+  );
+  const autoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.autoScrollWhileGenerating,
+  );
+  const setAutoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.setAutoScrollWhileGenerating,
+  );
+  const showScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.showScrollToBottomButton,
+  );
+  const setShowScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.setShowScrollToBottomButton,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -345,6 +307,25 @@ export function ChatTab() {
         </h1>
       </header>
 
+      <SettingsSection title={t("settings.chat.library.label")} hideHeading>
+        <SettingsRow
+          label={t("settings.chat.library.label")}
+          description={t("settings.chat.library.description")}
+        >
+          <Button
+            variant="outline"
+            className="px-3.5"
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              void navigate({ to: "/library", search: { show: "chats" } });
+            }}
+          >
+            <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
+            {t("settings.chat.library.action")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <ComposerSettings embedded={true} />
         <SettingsRow
@@ -392,6 +373,47 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
+            aria-label={t("settings.chat.autoScroll")}
+          >
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.scrollToBottomButton")}
+          description={t("settings.chat.scrollToBottomButtonDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.scrollToBottomButton")}
+            checked={showScrollToBottomButton}
+            onCheckedChange={setShowScrollToBottomButton}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
@@ -409,23 +431,23 @@ export function ChatTab() {
         <SettingsRow
           label={t("settings.chat.currentDate.label")}
           description={t("settings.chat.currentDate.description")}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              aria-label={t("settings.chat.currentDate.label")}
-              checked={currentDatePrompt?.enabled ?? false}
-              disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
-              onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
-            />
-            {currentDatePromptError ? (
+          below={
+            currentDatePromptError ? (
               <span
                 role="alert"
                 className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
               >
                 {currentDatePromptError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            aria-label={t("settings.chat.currentDate.label")}
+            checked={currentDatePrompt?.enabled ?? false}
+            disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
+            onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.projectAttachments")}
@@ -548,16 +570,6 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.inlineReadAloud")}
-          description={t("settings.chat.inlineReadAloudDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.inlineReadAloud")}
-            checked={showInlineReadAloud}
-            onCheckedChange={setShowInlineReadAloud}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.chat.inlineEditResponse")}
           description={t("settings.chat.inlineEditResponseDescription")}
         >
@@ -565,18 +577,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.inlineEditResponse")}
             checked={showInlineEditResponse}
             onCheckedChange={setShowInlineEditResponse}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.projectsSection")}
-          description={t("settings.chat.projectsSectionDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.projectsSection")}
-            checked={organizeBy === "project"}
-            onCheckedChange={(checked) =>
-              setOrganizeBy(checked ? "project" : "list")
-            }
           />
         </SettingsRow>
         <SettingsRow
@@ -639,46 +639,13 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.chat.artifacts.title")}>
-        <div ref={networkAccessRowRef}>
-          <SettingsRow
-            label={t("settings.chat.artifacts.allowNetworkAccess")}
-            description={t(
-              "settings.chat.artifacts.allowNetworkAccessDescription",
-            )}
-          >
-            <Switch
-              checked={allowArtifactNetworkAccess}
-              onCheckedChange={setAllowArtifactNetworkAccess}
-            />
-          </SettingsRow>
-        </div>
-        <SettingsRow
-          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
-          description={t(
-            "settings.chat.artifacts.collapseHtmlBlocksDescription",
-          )}
-        >
-          <Switch
-            checked={collapseHtmlArtifacts}
-            onCheckedChange={setCollapseHtmlArtifacts}
-          />
-        </SettingsRow>
-      </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.menu.title")}>
         {PLUS_MENU_SETTINGS.map((item) => (
           <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
-            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
-              checked={
-                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
-              }
-              onCheckedChange={
-                item.id === "canvas"
-                  ? setShowCanvasMenuItem
-                  : () => togglePlusPin(item.id)
-              }
+              checked={plusPins[item.id]}
+              onCheckedChange={() => togglePlusPin(item.id)}
             />
           </SettingsRow>
         ))}

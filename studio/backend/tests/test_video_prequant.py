@@ -38,9 +38,11 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(
         _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
+    monkeypatch.setattr(_pq, "torchao_group_offload_supported", lambda: True)
 
 
 from core.inference.video_families import (
@@ -374,7 +376,8 @@ def test_a_modular_family_refuses_a_single_file_load_before_anything_downloads()
     with pytest.raises(ValueError) as excinfo:
         backend.validate_load_request(
             "MiniMaxAI/MiniMax-H3",
-            gguf_filename = "minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
+            # A ComfyUI-quantized denoiser file is the one H3 single file Studio loads; anything else is refused.
+            gguf_filename = "qwen3vl_32b_minimax_h3_bf16.safetensors",
             model_kind = "single_file",
         )
     message = str(excinfo.value)
@@ -956,12 +959,16 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
     assert ask() is None
 
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
-    # An unreadable card decides nothing.
+    # Unanswerable memory still takes the hosted checkpoint (it streams) ...
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
-    assert ask() is None
-    # Neither does an unanswerable size estimate.
+    assert ask() == vid.H3_AUTO_FALLBACK_SCHEME
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     monkeypatch.setattr(vid, "_h3_planned_denoiser_bytes", lambda *a, **k: None)
+    assert ask() == vid.H3_AUTO_FALLBACK_SCHEME
+    # ... unless this diffusers cannot stream torchao, leaving only the pin.
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: False)
     assert ask() is None
     monkeypatch.undo()
 
@@ -1032,20 +1039,16 @@ def test_the_automatic_substitution_needs_the_exact_base_model(monkeypatch):
     assert ask(None) is None
 
 
-def test_the_fallback_is_declined_when_the_hosted_denoiser_cannot_be_pinned(monkeypatch):
-    """Taking the hosted checkpoint means PINNING it -- a torchao module does not survive the
-    offload rotation's mid-block move -- and a pinned denoiser turns the memory floor from a max
-    into a sum.
-
-    With text_encoder_quant="none" the conditioner stays dense, so that sum is BIGGER than the
-    rotation it replaces: the card renders today and would refuse every generation afterwards.
-    Where the replacement does not fit either, the released denoiser in the rotation is the
-    configuration that still runs, so auto keeps it."""
+def test_auto_keeps_int8_on_every_card_size_and_lets_the_fit_pick_the_placement(monkeypatch):
+    """The fit decides the TIER, not the precision. A 32 GB card is exactly where the released
+    denoiser costs the most (it rides the CPU-offload rotation uncompiled and the generate-time
+    floor then refuses it outright), so a small card is never a reason to take bf16. The hosted
+    denoiser streams block by block through group offloading where it cannot be pinned."""
     fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
-    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
-    def ask(te_scheme):
+    def ask(free_gb, te_scheme):
+        monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: int(free_gb * 1000**3))
         return vid._h3_auto_denoiser_scheme(
             fam,
             target = None,
@@ -1056,10 +1059,80 @@ def test_the_fallback_is_declined_when_the_hosted_denoiser_cannot_be_pinned(monk
             base_repo = fam.base_repo,
         )
 
-    # Dense conditioner: 107.1 GB pinned against 80 GB free, so the substitution buys a refusal.
-    assert ask(None) is None
-    # Quantized conditioner: 67.5 GB pinned, which is what the fallback exists for.
-    assert ask("int8") == vid.H3_AUTO_FALLBACK_SCHEME
+    for free_gb in (24, 32, 48, 80, 141):
+        for te_scheme in ("int8", None):
+            assert ask(free_gb, te_scheme) == vid.H3_AUTO_FALLBACK_SCHEME, (free_gb, te_scheme)
+
+
+def test_without_group_offload_the_hosted_denoiser_still_has_to_fit_pinned(monkeypatch):
+    """A diffusers that cannot stream a torchao module leaves PINNING as the only placement, and a
+    pinned denoiser adds to the larger rotating component. There the old rule stands: where the
+    pin does not fit, the released denoiser in the rotation is the configuration that runs."""
+    import core.inference.diffusion_prequant as pq
+
+    fam, torch, vid = _shared_setup_1()
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: False)
+
+    def ask(free_gb, te_scheme):
+        monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: int(free_gb * 1000**3))
+        return vid._h3_auto_denoiser_scheme(
+            fam,
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = te_scheme,
+            task = "fl2va",
+            base_repo = fam.base_repo,
+        )
+
+    # Pinned int8 needs 20.3 + max(27.2 conditioner, 11.1 VAEs) + headroom, not the sum of all three.
+    pinned = vid._h3_planned_denoiser_bytes(
+        fam, te_scheme = "int8", dtype = torch.bfloat16, rotating = True
+    )
+    need_gb = (20.3 * 1000**3 + pinned[1]) / 1000**3
+    assert ask(need_gb + 0.1, "int8") == vid.H3_AUTO_FALLBACK_SCHEME
+    assert ask(need_gb - 0.1, "int8") is None
+    assert ask(32, "int8") is None
+    # Dense conditioner: 66.7 GB rotating beside a pinned denoiser does not fit 80 GB either.
+    assert ask(80, None) is None
+    assert ask(141, None) == vid.H3_AUTO_FALLBACK_SCHEME
+
+
+def test_a_pinned_denoiser_is_sized_beside_the_larger_rotating_component_not_their_sum():
+    """The conditioner and the VAEs stay in the rotation beside a pinned denoiser, and its 40 GB
+    reserve margin evicts one before the other is placed. Summing them over-counted by the whole
+    VAE term (~11 GB) and refused pins that fit. Only the whole-set-resident question sums."""
+    import torch
+
+    from core.inference.video import _h3_dense_denoiser_resident_bytes, _h3_planned_denoiser_bytes
+
+    fam = _h3_family()
+    te_gb, vae_gb = 27.2, fam.bf16_components_gb[2]
+
+    class _Real:
+        def parameters(self):
+            return iter(())
+
+        def buffers(self):
+            return iter([torch.empty(1024, dtype = torch.uint8)])
+
+    for sizer in (
+        lambda **kw: _h3_planned_denoiser_bytes(fam, te_scheme = "int8", dtype = torch.bfloat16, **kw),
+        lambda **kw: _h3_dense_denoiser_resident_bytes(
+            fam, denoiser = _Real(), te_scheme = "int8", dtype = torch.bfloat16, **kw
+        ),
+    ):
+        whole = sizer()[1]
+        rotating = sizer(rotating = True)[1]
+        assert whole - rotating == int((te_gb + vae_gb) * 1000**3) - int(
+            max(te_gb, vae_gb) * 1000**3
+        )
+    whole = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16)[1]
+    rotating = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16, rotating = True)[
+        1
+    ]
+    assert abs((whole - rotating) - vae_gb * 1000**3) < 1000
 
 
 def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
@@ -1385,7 +1458,7 @@ def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monk
     assert probe("int8") is False
     half = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
     assert _video_auto(monkeypatch, scheme = "nvfp4", fam = half) is None
-    assert _video_auto.calls[-1]["has_prequant"]("nvfp4") is False
+    assert _video_auto.calls == []
 
 
 def test_speed_off_and_the_modular_workflow_are_never_seeded_here(monkeypatch):
@@ -1801,8 +1874,13 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     fired.clear()
     assert ask(speed_mode = "off") is None and fired == []
     assert ask(base_repo = "someone/MiniMax-H3") is None and fired == []
+    # A too-small card now streams, so the unreadable checkpoint is the reason again.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 10 * 1000**3)
+    assert ask() is None and fired == [True]
+    fired.clear()
+    monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: False)
     assert ask() is None and fired == []
+    monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: True)
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []

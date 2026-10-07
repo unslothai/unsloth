@@ -671,6 +671,13 @@ class UnslothTrainingArguments(TrainingArguments):
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
+        if self.eval_steps is not None and self.eval_strategy != "steps":
+            warnings.warn(
+                f"Unsloth: `eval_steps = {self.eval_steps}` is ignored because `eval_strategy` is "
+                f"{getattr(self.eval_strategy, 'value', self.eval_strategy)!r}. "
+                'Set `eval_strategy = "steps"` to evaluate every `eval_steps` steps.',
+                stacklevel = 2,
+            )
 
 
 def _create_unsloth_optimizer(
@@ -745,6 +752,15 @@ def _create_unsloth_optimizer(
             )
             group_roles.append(group)
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+    # Same as Trainer.create_optimizer: keep embedding optimizer state in 32 bits under 8-bit bnb.
+    if "bitsandbytes" in str(optimizer_cls) and optimizer_kwargs.get("optim_bits", None) == 8:
+        import bitsandbytes
+        from torch import nn
+
+        manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
+        for module in model.modules():
+            if isinstance(module, nn.Embedding):
+                manager.register_module_override(module, "weight", {"optim_bits": 32})
     _install_legacy_resume(
         optimizer,
         legacy_params = list(param_groups["non_embeddings"].values())

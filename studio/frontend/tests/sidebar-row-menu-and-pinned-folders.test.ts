@@ -95,8 +95,6 @@ test("an empty open folder says it is empty", () => {
     APP_SIDEBAR,
     /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
-  // And it is a row, so the bottom fade has to count it like the "Show more" one.
-  assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
 // A chat's "Move to" holds projects and sections, each its own group under a heading: its New
@@ -111,7 +109,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
     trigger: sub.indexOf('<span>{t("shell.sections.moveTo")}</span>'),
     projects: sub.indexOf('<P.Label>{t("shell.navigation.projects")}</P.Label>'),
     newProject: sub.indexOf("<span>New project</span>"),
-    destinations: sub.indexOf("{projects.filter((project) => project.id !== item.projectId).map((project) => ("),
+    destinations: sub.indexOf("{moveProjects.map((project) => ("),
     removeProject: sub.indexOf('t("shell.sections.removeFromProject")'),
     rule: sub.indexOf("<P.Separator />"),
     sections: sub.indexOf("{renderSectionItems(P, {"),
@@ -134,7 +132,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
   const newSection = items.indexOf('t("shell.sections.newSection")');
   const list = items.indexOf("{destinations.map((section) => (");
   // The project or section the row is already in is left out, not offered greyed out.
-  assert.match(items, /const destinations = customSections\.filter\(\(section\) => section\.id !== config\.current\);/);
+  assert.match(items, /const destinations = recentSections\n\s*\.filter\(\(section\) => section\.id !== config\.current\)\n\s*\.slice\(0, MOVE_TO_MAX\);/);
   assert.doesNotMatch(APP_SIDEBAR, /disabled=\{config\.current === section\.id\}|disabled=\{item\.projectId === project\.id\}/);
   const remove = items.indexOf("{config.anyFiled && (");
   assert.ok(newSection < list && list < remove, "the Sections group is out of order");
@@ -351,8 +349,7 @@ test("the project page edits through the same dialog the sidebar opens", async (
   const page = await readSrcAsync("features/chat/chat-page.tsx");
   assert.ok(!page.includes("Rename project"), "the rename-only dialog is still there");
   assert.ok(!page.includes("commitProjectRename"), "the rename call is still there");
-  assert.match(page, /onSelect=\{\(\) => setEditingProject\(true\)\}/);
-  assert.match(page, /<span>Edit project<\/span>/);
+  assert.match(page, /onEdit=\{\(\) => setEditingProject\(true\)\}/);
   // The record behind the header, and the dialog it feeds.
   assert.match(
     page,
@@ -416,11 +413,6 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
   ]) {
     assert.match(APP_SIDEBAR, gated);
   }
-  // And the row count the scroll fade measures counts nothing where nothing is drawn.
-  assert.match(
-    APP_SIDEBAR,
-    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
-  );
 });
 
 // "Remove from <name>", and lists that scroll: forty projects ran the submenu off the window,
@@ -455,5 +447,34 @@ test("a sidebar menu heading has more room above it than below", async () => {
   assert.match(
     css,
     /\.unsloth-plus-menu\.sidebar-row-menu :is\(\n\s*\[data-slot="dropdown-menu-label"\],\n\s*\[data-slot="context-menu-label"\]\n\s*\) \{\n\s*@apply pl-2\.5 pr-2\.5 pt-2 pb-1 text-ui-11;/,
+  );
+});
+
+// A long list of projects or sections made "Move to" slow to open, so each group lists at most the
+// 12 most recently active. Neither a project's updatedAt (edits only) nor section order (drags)
+// is recency, so both rank by their chats' activity.
+test("Move to lists at most the 12 most recently active projects and sections", () => {
+  assert.match(APP_SIDEBAR, /const MOVE_TO_MAX = 12;/);
+  const activity = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const projectActivityAt = useMemo("),
+    APP_SIDEBAR.indexOf("const recentProjects = useMemo("),
+  );
+  assert.match(activity, /chatsByProjectId\.get\(project\.id\)\?\.\[0\]\?\.updatedAt/);
+  assert.match(
+    APP_SIDEBAR,
+    /\[\.\.\.projects\]\.sort\(\n\s*\(a, b\) => \(projectActivityAt\.get\(b\.id\) \?\? 0\) - \(projectActivityAt\.get\(a\.id\) \?\? 0\),/,
+  );
+  // The sidebar's own folder order reads the same activity.
+  assert.match(APP_SIDEBAR, /const lastActivityAt = \(project: ProjectRecord\) => projectActivityAt\.get\(project\.id\) \?\? 0;/);
+  const sections = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const recentSections = useMemo("),
+    APP_SIDEBAR.indexOf("const sidebarProjectRecords = useMemo("),
+  );
+  assert.match(sections, /Math\.max\(section\.createdAt \?\? 0, section\.modifiedAt \?\? 0\)/);
+  assert.match(sections, /touch\(sectionByChatId\[item\.id\], item\.updatedAt\)/);
+  assert.match(sections, /touch\(sectionId, projectActivityAt\.get\(projectId\) \?\? 0\)/);
+  assert.match(
+    APP_SIDEBAR,
+    /const moveProjects = recentProjects\n\s*\.filter\(\(project\) => project\.id !== item\.projectId\)\n\s*\.slice\(0, MOVE_TO_MAX\);/,
   );
 });

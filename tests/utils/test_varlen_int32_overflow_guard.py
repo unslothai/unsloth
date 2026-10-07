@@ -84,7 +84,7 @@ def _context(
         n_heads = n_heads,
         head_dim = head_dim,
         requires_grad = requires_grad,
-        seq_info = (lengths, None, 1),
+        seq_info = (lengths, torch.zeros(n_docs + 1, dtype = torch.int32), 1),
         attention_mask = None,
         causal_mask = None,
     )
@@ -165,6 +165,47 @@ def test_softcap_of_none_or_zero_still_falls_back(monkeypatch, backend):
 def test_softcapped_model_under_the_bound_is_untouched(monkeypatch, backend):
     """A softcapped model that does not overflow must keep its fast kernel, not raise."""
     assert _run(monkeypatch, backend, n_docs = 64, requires_grad = True, softcap = 50.0) == backend
+
+
+@pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
+def test_padded_tail_segment_counts_toward_the_bound(monkeypatch, backend):
+    # 8127 one-token documents padded to 8192 tokens: the tail is the 8128th segment, which puts
+    # dq_accum at exactly 2**31 elements for 16 heads / head_dim 128.
+    from unsloth.utils import packing as packing_utils
+
+    n_docs, total = 8127, 8192
+    assert not ad._varlen_backward_overflows_int32(n_docs, total, 16, 128)
+    assert ad._varlen_backward_overflows_int32(n_docs + 1, total, 16, 128)
+
+    packing_utils.clear_packed_caches()
+    taken = []
+    monkeypatch.setattr(
+        ad, "xformers_attention", lambda *a, **k: taken.append(ad.XFORMERS), raising = False
+    )
+    monkeypatch.setattr(
+        ad, "flash_attn_varlen_func", lambda *a, **k: taken.append(ad.FLASH_VARLEN), raising = False
+    )
+    monkeypatch.setattr(
+        ad,
+        "scaled_dot_product_attention",
+        lambda Q, *a, **k: taken.append(ad.SDPA) or torch.zeros_like(Q),
+    )
+    monkeypatch.setattr(ad, "build_xformers_block_causal_mask", lambda *a, **k: object())
+    monkeypatch.setattr(ad, "build_sdpa_packed_attention_mask", lambda *a, **k: None)
+    monkeypatch.setattr(ad, "_VARLEN_INT32_GUARD_DISABLED", False)
+    monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", True)
+    ad._VARLEN_INT32_WARNED[0] = False
+
+    context = _context(n_docs, total, True)
+    context.seq_info = (
+        torch.ones(n_docs, dtype = torch.int32),
+        torch.arange(n_docs + 1, dtype = torch.int32),
+        1,
+    )
+    q = torch.zeros((1, 16, total, 128), requires_grad = True)
+    config = ad.AttentionConfig(backend = backend, n_kv_heads = 16, n_groups = 1)
+    ad.run_attention(config = config, context = context, Q = q, K = q, V = q)
+    assert taken == [ad.SDPA]
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])

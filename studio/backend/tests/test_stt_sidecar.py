@@ -368,6 +368,37 @@ def test_english_only_model_rejects_non_english_before_decode(monkeypatch, tmp_p
         )
 
 
+def test_translation_asks_whisper_for_its_translate_task(monkeypatch):
+    sidecar = WhisperSttSidecar()
+    infer = _CaptureInference()
+    monkeypatch.setattr(sidecar, "_transcribe_decoded", infer)
+
+    sidecar.transcribe(b"encoded audio", task = "translate")
+
+    assert infer.generate_kwargs["task"] == "translate"
+    assert "language" not in infer.generate_kwargs
+
+
+def test_english_only_model_refuses_to_translate_before_decode(monkeypatch, tmp_path):
+    # Its generation config pins the transcribe task, so the request would quietly transcribe.
+    (tmp_path / "config.json").write_text('{"model_type": "whisper"}')
+    (tmp_path / "generation_config.json").write_text('{"is_multilingual": false}')
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(
+        stt_sidecar_module,
+        "_find_complete_cached_snapshot",
+        lambda _model: tmp_path,
+    )
+    monkeypatch.setattr(
+        stt_sidecar_module,
+        "_decode_audio_bounded",
+        lambda *_: pytest.fail("an English-only translation must be refused before decode"),
+    )
+
+    with pytest.raises(SttLanguageError, match = "cannot translate"):
+        sidecar.transcribe(b"encoded audio", model = "owner/whisper-small.en", task = "translate")
+
+
 def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
     calls = []
 
@@ -381,7 +412,7 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
             _cancel_event = None,
         ):
             calls.append(generate_kwargs)
-            return "hello"
+            return "hello", 160
 
     sidecar = WhisperSttSidecar()
     monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
@@ -399,6 +430,141 @@ def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
 
     assert text == "hello"
     assert calls == [{"condition_on_prev_tokens": False, "num_beams": 1}]
+
+
+def test_long_audio_uses_a_quiet_boundary_without_merging_repeated_text(monkeypatch):
+    lengths = []
+    calls = []
+
+    class FakeWorker:
+        generation_config = SimpleNamespace(is_multilingual = True)
+
+        def transcribe_window(
+            self,
+            pcm,
+            generate_kwargs,
+            _cancel_event = None,
+        ):
+            window = np.frombuffer(pcm, dtype = np.float32)
+            lengths.append(len(window))
+            calls.append(generate_kwargs)
+            text = (
+                "turn left right now" if len(calls) == 1 else "turn left right now after the pause"
+            )
+            return text, len(window)
+
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
+    audio = np.ones(50 * 16000, dtype = np.float32)
+    audio[1::2] = -1
+    audio += 0.04
+    hum = 0.04 * np.sin(2 * np.pi * 60 * np.arange(len(audio)) / 16000)
+    audio += hum
+    audio[28 * 16000 : 28 * 16000 + 3200] = 0.04 + hum[28 * 16000 : 28 * 16000 + 3200]
+
+    text = sidecar._transcribe_decoded("small", audio, {"num_beams": 5})
+
+    assert text == "turn left right now turn left right now after the pause"
+    assert lengths == [448800, 351200]
+    assert calls == [{"num_beams": 5}, {"num_beams": 5}]
+
+
+def test_quiet_boundary_handles_a_long_pause_before_resumed_speech():
+    audio = np.ones(50 * 16000, dtype = np.float32)
+    audio[1::2] = -1
+    audio[27 * 16000 : 29 * 16000] = 0
+
+    assert stt_sidecar_module._stt_quiet_window_end(audio, 0, 30 * 16000) == 432800
+
+
+def test_quiet_boundary_rejects_lower_energy_speech():
+    audio = np.ones(50 * 16000, dtype = np.float32)
+    audio[1::2] = -1
+    audio[28 * 16000 : 28 * 16000 + 3200] *= 0.4
+
+    assert stt_sidecar_module._stt_quiet_window_end(audio, 0, 30 * 16000) is None
+
+
+def test_long_audio_without_a_quiet_boundary_uses_timestamp_seek(monkeypatch):
+    starts = []
+    calls = []
+
+    class FakeWorker:
+        generation_config = SimpleNamespace(is_multilingual = True)
+
+        def transcribe_window(
+            self,
+            pcm,
+            generate_kwargs,
+            _cancel_event = None,
+        ):
+            window = np.frombuffer(pcm, dtype = np.float32)
+            starts.append(int(window[0]))
+            calls.append(generate_kwargs)
+            consumed = 454400 if len(calls) == 1 else len(window)
+            return f"part {len(calls)}", consumed
+
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
+
+    text = sidecar._transcribe_decoded(
+        "small", np.arange(50 * 16000, dtype = np.float32), {"num_beams": 5}
+    )
+
+    assert text == "part 1 part 2"
+    assert starts == [0, 454400]
+    assert calls == [{"num_beams": 5, "return_timestamps": True}, {"num_beams": 5}]
+
+
+def test_short_timestamp_seek_resumes_at_the_last_finished_segment(monkeypatch):
+    starts = []
+
+    class FakeWorker:
+        generation_config = SimpleNamespace(is_multilingual = True)
+
+        def transcribe_window(
+            self,
+            pcm,
+            _generate_kwargs,
+            _cancel_event = None,
+        ):
+            window = np.frombuffer(pcm, dtype = np.float32)
+            starts.append(int(window[0]))
+            return "part", 8000 if len(starts) == 1 else len(window)
+
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
+
+    sidecar._transcribe_decoded("small", np.arange(round(30.5 * 16000), dtype = np.float32), {})
+
+    assert starts == [0, 8000]
+
+
+def test_long_audio_without_timestamp_metadata_keeps_fixed_windows(monkeypatch):
+    lengths = []
+    calls = []
+
+    class FakeWorker:
+        generation_config = SimpleNamespace(is_multilingual = True, supports_timestamps = False)
+
+        def transcribe_window(
+            self,
+            pcm,
+            generate_kwargs,
+            _cancel_event = None,
+        ):
+            window = np.frombuffer(pcm, dtype = np.float32)
+            lengths.append(len(window))
+            calls.append(generate_kwargs)
+            return "part", len(window)
+
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
+
+    sidecar._transcribe_decoded("owner/custom-whisper", np.ones(50 * 16000, dtype = np.float32), {})
+
+    assert lengths == [30 * 16000, 20 * 16000]
+    assert calls == [{}, {}]
 
 
 def test_unknown_language_is_rejected_before_decode_or_model_load(monkeypatch):
@@ -1927,3 +2093,14 @@ def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
     cancelled.set()
     with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
         stt_sidecar_module._decode_audio_bounded(buf.getvalue(), cancelled)
+
+
+def test_unloading_an_empty_sidecar_skips_the_collection(monkeypatch):
+    # The registry releases idle engines on every other engine's transcription; a full
+    # gc.collect there cost each audio.cpp / GGUF dictation request ~130 ms.
+    collected = []
+    monkeypatch.setattr(stt_sidecar_module.gc, "collect", lambda *a: collected.append(1))
+    sidecar = stt_sidecar_module.WhisperSttSidecar()
+    sidecar.unload(wait = False)
+    sidecar.unload()
+    assert collected == []

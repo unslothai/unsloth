@@ -8,6 +8,14 @@
 
 import assert from "node:assert/strict";
 
+import {
+  AUDIO_CPP_MODELS,
+  AUDIO_CPP_REPO,
+  AUDIO_CPP_UNOFFERED_FOLDERS,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
+
 import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   AUDIO_CATALOG,
@@ -946,6 +954,53 @@ assert.equal(
     .format,
   "bf16",
 );
+// The 30 GiB tier streams an int8 denoiser, which needs group offload that swaps torchao weights
+// (diffusers >= 0.40). Unknown or unsupported keeps the host on the runnable GGUF row.
+for (const quantisedStreaming of [undefined, false]) {
+  assert.equal(
+    pickDefaultArtifact(h3, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+      isDownloaded: notDownloaded,
+    }).format,
+    "gguf",
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+    }),
+    false,
+  );
+}
+assert.equal(
+  pickDefaultArtifact(h3, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+    isDownloaded: notDownloaded,
+  }).format,
+  "bf16",
+);
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+  }),
+  true,
+);
+// The resident tiers need no streaming.
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 74,
+    systemRamGb: 140,
+    quantisedStreaming: false,
+  }),
+  true,
+);
 
 // Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget but fits an 80 GB GPU (budget 56)
 // and wins there.
@@ -1158,16 +1213,16 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo needs 42.9 GB of card dense and 34.9 GB pre-quantised under the 70% rule.
+// Z-Image-Turbo: 27.3 GB card dense (bf16, not the fp32 download), 19.3 GB pre-quantised, under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
-  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
   false,
 );
 for (const schemes of [["fp8"], ["int8"]]) {
   assert.equal(
     curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-      gpuGb: 40,
+      gpuGb: 24,
       systemRamGb: 128,
       denseQuantSchemes: schemes,
     }),
@@ -1177,11 +1232,15 @@ for (const schemes of [["fp8"], ["int8"]]) {
 }
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     denseQuantSchemes: [],
   }),
   false,
+);
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 32, systemRamGb: 128 }),
+  true,
 );
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
@@ -1274,7 +1333,7 @@ const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     isDownloaded: notDownloaded,
   }).format,
@@ -1292,6 +1351,15 @@ assert.equal(
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
     gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  zTurboId,
+);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 16,
     systemRamGb: 128,
     denseQuantSchemes: ["fp8"],
     isDownloaded: notDownloaded,
@@ -1427,13 +1495,15 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
-  // One metadata call per repo id, however many artifacts share it.
+  // One metadata call per repo id, however many artifacts share it. A package folder id names a folder
+  // of one shared repo, so every one of them is checked against that repo.
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
-      const bucket = artifactsByRepo.get(artifact.repoId);
+      const hubRepo = isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId;
+      const bucket = artifactsByRepo.get(hubRepo);
       if (bucket) bucket.push(artifact);
-      else artifactsByRepo.set(artifact.repoId, [artifact]);
+      else artifactsByRepo.set(hubRepo, [artifact]);
     }
   }
 
@@ -1476,6 +1546,40 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
       }
     }
 
+    for (const artifact of artifacts) {
+      if (!isAudioCppFolderId(artifact.repoId)) continue;
+      // The package folder is the id's first segment past the repo.
+      const folder = artifact.repoId.slice(AUDIO_CPP_REPO.length + 1).split("/")[0];
+      if (!(repo.siblings ?? []).some((s) => s.rfilename.startsWith(`${folder}/`))) {
+        failures.push(`${artifact.repoId}: ${repoId} has no '${folder}/' folder`);
+      }
+    }
+
+    if (repoId === AUDIO_CPP_REPO) {
+      const folders = new Set(
+        (repo.siblings ?? [])
+          .map((s) => s.rfilename.split("/"))
+          .filter((parts) => parts.length > 1)
+          .map((parts) => parts[0]),
+      );
+      const offered = AUDIO_CPP_MODELS.filter((m) => isAudioCppFolderId(m.id)).map((m) =>
+        audioCppDisplayName(m.id),
+      );
+      const unoffered = Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS);
+      for (const folder of folders) {
+        if (!offered.includes(folder) && !unoffered.includes(folder)) {
+          failures.push(
+            `${repoId}: '${folder}/' is in neither AUDIO_CPP_MODELS nor AUDIO_CPP_UNOFFERED_FOLDERS -- classify it`,
+          );
+        }
+      }
+      for (const folder of unoffered) {
+        if (!folders.has(folder)) {
+          failures.push(`${repoId}: AUDIO_CPP_UNOFFERED_FOLDERS lists '${folder}', which the repo no longer has`);
+        }
+      }
+    }
+
     const declaredFiles = [
       ...new Set(artifacts.map((a) => a.filename).filter((f): f is string => Boolean(f))),
     ];
@@ -1505,7 +1609,9 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
   // Advisory only. A canonicalId is a display/grouping key and 15 are deliberately not repos;
   // but one that is both `unsloth/*`-shaped and dead clears every owner guard in the app.
-  const artifactIds = new Set([...artifactsByRepo.keys()].map((id) => id.toLowerCase()));
+  const artifactIds = new Set(
+    groups.flatMap((g) => g.artifacts.map((a) => a.repoId.toLowerCase())),
+  );
   const orphans = groups
     .map((g) => g.canonicalId)
     .filter((id) => !artifactIds.has(id.toLowerCase()));
@@ -1524,7 +1630,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
 if (process.argv.includes("--network")) {
   console.log("model-catalog check: --network, asking the Hub about every declared artifact...");
-  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG]);
+  const audioCppGroups = AUDIO_CATALOG.filter((group) =>
+    group.artifacts.some((artifact) => isAudioCppFolderId(artifact.repoId)),
+  );
+  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG, audioCppGroups]);
   if (failures.length > 0) {
     for (const failure of failures) console.error(`::error::${failure}`);
     console.error(`model-catalog network check: ${failures.length} problem(s)`);

@@ -69,6 +69,7 @@ if "httpx" not in sys.modules:
         sys.modules["httpx"] = module
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_path_var
+import core.inference.llama_cpp as llama_cpp_module
 
 _REAL_POPEN = subprocess.Popen
 
@@ -1007,6 +1008,86 @@ def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
     return backend, gguf, sidecar
 
 
+def _tight_embedded_mtp_backend(tmp_path: Path, monkeypatch, *, architecture: str, floor: int):
+    """Embedded MLA head (8 GB at 8192) that misses the 24 GB card at 8192 and fits at half."""
+    gb = 1024**3
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 0.0)
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._kv_lora_rank = 512
+        backend._architecture = architecture
+        backend._context_length = 8192
+
+    backend._read_gguf_metadata = read_metadata
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(8 * gb * n_ctx / 8192)
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        requested // 2 if mtp_engaged else requested
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(llama_cpp_module, "_FAST_MTP_MIN_CTX", floor)
+    return backend, gguf
+
+
+def test_auto_shrinks_context_to_keep_a_fast_mla_mtp_head(tmp_path, monkeypatch):
+    """Auto pays context for a NextN-only head instead of dropping it."""
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = "glm5-next", floor = 4096
+    )
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0)
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+    assert cmd[cmd.index("-c") + 1] == "4096"
+    assert backend.spec_fallback_reason != "drafter_no_vram"
+
+
+@pytest.mark.parametrize(
+    "architecture, floor",
+    [
+        ("glm5-next", 8192),  # the context that keeps the head is below the floor
+        ("deepseek2", 4096),  # not a NextN-only head: the usual drop
+    ],
+)
+def test_auto_still_drops_mla_mtp_past_the_floor_or_off_the_list(
+    tmp_path, monkeypatch, architecture, floor
+):
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = architecture, floor = floor
+    )
+    monkeypatch.setenv("UNSLOTH_MLA_MTP_ENABLED", "1")
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0)
+
+    cmd = result["cmd"]
+    assert "draft-mtp" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_auto_still_drops_a_sidecar_drafter_on_a_fast_mla_target(tmp_path, monkeypatch):
+    """The context exception is for the embedded head, not a DSpark sidecar Auto picked."""
+    backend, gguf = _tight_embedded_mtp_backend(
+        tmp_path, monkeypatch, architecture = "glm5-next", floor = 4096
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    caps = backend.probe_server_capabilities()
+    backend.probe_server_capabilities = lambda _binary = None: {**caps, "supports_dspark": True}
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0, dspark_draft_path = str(sidecar))
+
+    cmd = result["cmd"]
+    assert "draft-dspark" not in cmd and "draft-mtp" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
 def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     """Model fits, drafter does not: Auto keeps the context and runs without it.
 
@@ -1402,6 +1483,155 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
     # a drafter that is not launching.
     assert cmd[cmd.index("-c") + 1] == "8192"
     assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def _replayed_context_mtp_backend(tmp_path: Path):
+    gb = 1024**3
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 45_914, 46_080), (1, 8_032, 8_176)]
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 262_144
+
+    backend._read_gguf_metadata = read_metadata
+    backend._get_gguf_size_bytes = lambda _path: 31 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 106_000
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 20_000
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def _launched_ctx(result) -> int:
+    return int(result["cmd"][result["cmd"].index("-c") + 1])
+
+
+def _replayed_auto_context(tmp_path: Path) -> int:
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    assert auto["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    return _launched_ctx(auto)
+
+
+def test_forcing_the_drafter_refits_a_context_replayed_from_auto(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert _launched_ctx(fresh) < replayed
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert result["cmd"][result["cmd"].index("--spec-type") + 1] == "draft-mtp"
+    assert backend._requested_n_ctx == _launched_ctx(result)
+
+
+def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path):
+    def slot_bound_backend():
+        backend, gguf = _replayed_context_mtp_backend(tmp_path)
+        backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 45_914, 46_080)]
+        backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 45_914)]
+        backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 16_000
+        backend._estimate_mtp_overhead_bytes = (
+            lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: n_ctx * 5_000
+            + int(_np or n_parallel or 4) * 3 * 1024**3
+        )
+        caps = backend.probe_server_capabilities()
+        backend.probe_server_capabilities = lambda _binary = None: {
+            **caps,
+            "supports_kv_unified": True,
+        }
+        return backend, gguf
+
+    backend, gguf = slot_bound_backend()
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    backend, gguf = slot_bound_backend()
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = slot_bound_backend()
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = _launched_ctx(auto),
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert fresh["cmd"][fresh["cmd"].index("--parallel") + 1] != "4"
+    assert _launched_ctx(fresh) > 8192
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert (
+        result["cmd"][result["cmd"].index("--parallel") + 1]
+        == (fresh["cmd"][fresh["cmd"].index("--parallel") + 1])
+    )
+
+
+def test_a_drafter_forced_through_extra_args_also_refits(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "auto",
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    assert _launched_ctx(result) == _launched_ctx(fresh) < replayed
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_forcing_the_drafter_keeps_a_ctx_size_passed_through_extra_args(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+        extra_args = ["-c", str(replayed)],
+    )
+
+    assert _launched_ctx(result) == replayed
+
+
+def test_forcing_the_drafter_keeps_a_typed_context(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(backend, gguf, n_ctx = replayed, n_parallel = 4, speculative_type = "mtp")
+
+    assert _launched_ctx(result) == replayed
+    assert backend._requested_n_ctx == replayed
 
 
 def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_path):

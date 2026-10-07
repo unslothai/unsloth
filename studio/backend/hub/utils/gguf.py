@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
@@ -77,9 +78,9 @@ _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|TQ[0-9]+_[0-9]+"
+    r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|Q[0-9]+_[0-9]+"
+    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,
@@ -268,8 +269,20 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
         by_quant.setdefault(extract_quant_label(name).upper(), name)
     for quant in GGUF_QUANT_PREFERENCE:
         filename = by_quant.get(quant.upper())
-        if filename is not None:
-            return filename
+        if filename is None:
+            continue
+        if quant in _FLOAT_PRECISION_QUANTS:
+            # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
+            filename = next(
+                (
+                    name
+                    for name in by_quant.values()
+                    if (token := extract_quant_token(name))
+                    and token.upper() not in _FLOAT_PRECISION_QUANTS
+                ),
+                filename,
+            )
+        return filename
     return gguf_files[0]
 
 
@@ -1144,10 +1157,14 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
 
     try:
-        info = HfApi(token = hf_token).model_info(
-            repo_id,
-            files_metadata = True,
-            timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+        # A refused credential retries once anonymously: a public listing still answers.
+        info = call_with_anonymous_retry(
+            lambda token: HfApi(token = token).model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+            ),
+            hf_token,
         )
     except Exception as exc:
         if type(exc).__name__ in (

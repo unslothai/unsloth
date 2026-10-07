@@ -454,7 +454,7 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(
             run_module,
             "_verify_global_reachability",
-            lambda display_host, port: calls["reachability"].append((display_host, port)),
+            lambda display_host, port, **_: calls["reachability"].append((display_host, port)),
         )
         return calls
 
@@ -3785,7 +3785,7 @@ class TestPublishedRocmBundleCoverage:
 
         # Read the table from source; importing the installer pulls a heavy dependency chain this suite does not need.
         stack = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-        body = re.search(r"_GFX_TO_AMD_INDEX_ARCH.*?=\s*\{(.*?)\n\}", stack, re.S)
+        body = re.search(r"^_GFX_TO_AMD_INDEX_ARCH[^=\n]*=\s*\{(.*?)\n\}", stack, re.S | re.M)
         assert body, "_GFX_TO_AMD_INDEX_ARCH not found in install_python_stack.py"
         routed = set(re.findall(r'"(gfx[0-9a-z]+)":', body.group(1)))
         assert routed, "parsed no arches out of _GFX_TO_AMD_INDEX_ARCH"

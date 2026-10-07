@@ -20,6 +20,8 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":
@@ -170,6 +172,7 @@ export function buildCachedInventoryRow(
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
+    artifact_kind?: import("./api").LocalArtifactKind | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -206,6 +209,7 @@ export function buildCachedInventoryRow(
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
+    artifact: row.artifact_kind ?? "unknown",
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
@@ -236,6 +240,7 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
     case "custom":
       return 1;
     case "lmstudio":
+    case "omlx":
       return 2;
     case "ollama":
       return 3;
@@ -289,6 +294,7 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
+        artifact: model.artifact_kind ?? "unknown",
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,

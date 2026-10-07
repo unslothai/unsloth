@@ -3,15 +3,16 @@
 
 "use client";
 
+import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileTextIcon, TerminalIcon } from "lucide-react";
+import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
-import { memo, useMemo } from "react";
+import { type ComponentType, memo, useMemo } from "react";
 import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
@@ -109,9 +110,9 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
 
   let runningLabel: string;
   let completedLabel: string;
-  let Icon = TerminalIcon;
+  let Icon: ComponentType<{ className?: string }> = TerminalIcon;
   if (kind === "text_editor") {
-    Icon = FileTextIcon;
+    Icon = FileGlyph;
     if (command === "view") {
       runningLabel = path ? `Viewing ${path}…` : "Viewing file…";
       completedLabel = path ? `Viewed ${path}` : "Viewed file";

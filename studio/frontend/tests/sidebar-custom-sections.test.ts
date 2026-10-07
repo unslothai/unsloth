@@ -117,6 +117,35 @@ test("rows file into a section, move between sections, and come back out", () =>
   assert.equal(useSidebarOrganizationStore.getState().sectionByChatId.c3, undefined);
 });
 
+test("a section records when it was made, and renames and filings stamp it", () => {
+  resetStore();
+  const store = useSidebarOrganizationStore.getState();
+  const a = store.createCustomSection("A")!;
+  const b = store.createCustomSection("B")!;
+  const stamp = (id: string, at: number) =>
+    useSidebarOrganizationStore.setState((state) => ({
+      customSections: state.customSections.map((section) =>
+        section.id === id ? { ...section, modifiedAt: at } : section,
+      ),
+    }));
+  const section = (id: string) =>
+    useSidebarOrganizationStore.getState().customSections.find((entry) => entry.id === id)!;
+  assert.ok(section(a).createdAt && section(a).modifiedAt);
+  stamp(a, 1);
+  stamp(b, 1);
+  store.renameCustomSection(a, "A");
+  store.setChatsSection(["c1"], a);
+  assert.ok(section(a).modifiedAt! > 1);
+  stamp(a, 1);
+  store.setChatsSection(["c1"], a);
+  assert.equal(section(a).modifiedAt, 1);
+  store.setChatsSection(["c1"], b);
+  assert.ok(section(a).modifiedAt! > 1 && section(b).modifiedAt! > 1);
+  stamp(a, 1);
+  store.setProjectsSection(["p1"], a);
+  assert.ok(section(a).modifiedAt! > 1);
+});
+
 test("deleting a section returns its rows and forgets its order and visibility", () => {
   resetStore();
   const store = useSidebarOrganizationStore.getState();
@@ -674,12 +703,12 @@ test("the sidebar and account menus share one flat surface and type; other menus
   );
   const tagged = ":is\\(\\.unsloth-plus-menu, \\.app-user-menu\\)\\.sidebar-menu\\[data-slot\\]";
   // No shadow in dark mode, over the shared menu shadow's !important. Light mode keeps it.
-  assert.match(css, new RegExp(`\\.dark ${tagged} \\{\\n\\s*box-shadow: none !important;`));
+  assert.match(css, new RegExp(`\\.dark ${tagged},\\n\\s*\\.dark \\.app-user-menu\\.menu-soft-surface-up \\{\\n\\s*box-shadow: none !important;`));
   assert.doesNotMatch(css, new RegExp(`\\n\\t${tagged} \\{\\n\\s*box-shadow: none`));
   assert.match(
     css,
     new RegExp(
-      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 7%\\);\\n\\s*color: #fff;`,
+      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 6\\.5%\\);\\n\\s*color: #fff;`,
     ),
   );
   // The system face at 14px, scaled, on sidebar rows and account rows alike.
@@ -690,7 +719,7 @@ test("the sidebar and account menus share one flat surface and type; other menus
   );
   assert.match(css, /\.app-user-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply text-ui-14;\n\s*font-weight: 400;/);
   // Every sidebar menu is marked, the account menu and its Help submenu included.
-  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 13);
+  assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 12);
   assert.match(APP_SIDEBAR, /className="app-user-menu sidebar-menu menu-soft-surface-up/);
 });
 
@@ -771,7 +800,7 @@ test("sidebar and account submenus open clear of their menu, first rows level", 
     /sideOffset: Math\.round\(SIDEBAR_MENU_PAD_X \* uiSpaceScale \+ SUBMENU_GAP_PX\),\n\s*alignOffset: -Math\.round\(SIDEBAR_MENU_PAD_Y \* uiSpaceScale \+ MENU_ROW_MARGIN_PX\),/,
   );
   assert.match(APP_SIDEBAR, /sideOffset: ACCOUNT_MENU_PAD_X \+ SUBMENU_GAP_PX,/);
-  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 5);
+  assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 4);
   assert.equal((APP_SIDEBAR.match(/\{\.\.\.accountSubmenuOffsets\}/g) ?? []).length, 1);
   // No sidebar submenu keeps a hand-set offset that would overlap its menu.
   assert.doesNotMatch(APP_SIDEBAR, /SubContent[^>]*sideOffset=\{[0-9]+\}[^>]*sidebar-menu/);
@@ -788,9 +817,9 @@ test("sidebar and account menus read white on a lighter surface in dark mode", a
 });
 
 
-test("undoing a removed section puts it back where it was drawn", () => {
-  const start = APP_SIDEBAR.indexOf("function removeCustomSection(");
-  const body = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("function renderSortSubmenu", start));
+test("undoing a removed section puts it back where it was drawn", async () => {
+  assert.match(APP_SIDEBAR, /const undo = removeCustomSectionWithUndo\(section\);/);
+  const body = await readSrcAsync("features/chat/stores/remove-custom-section.ts");
   assert.match(body, /const followers = drawnOrder\.slice\(drawnOrder\.indexOf\(section\.id\) \+ 1\);/);
   assert.match(body, /const follower = followers\.find\(\(key\) => sectionOrder\.includes\(key\)\);/);
   assert.match(body, /customSections: inSectionOrder\(restored, sectionOrder\),\n\s*sectionOrder,/);
@@ -912,13 +941,8 @@ test("a chat filed from its menu while its drop into a folder is in flight keeps
 });
 
 test("custom sections re-measure the bottom fade when they change the list's height", () => {
-  const deps = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf("// Recompute bottom-fade on mount"),
-    APP_SIDEBAR.indexOf("// Resizing changes clientHeight"),
-  );
-  for (const dep of ["visibleCustomSections.length", "collapsedSectionIds", "customSectionRowCount", "projectsSectionHidden"]) {
-    assert.ok(deps.includes(`    ${dep},\n`), dep);
-  }
+  // They draw inside the scroller, whose sections the fade observer watches.
+  assert.match(APP_SIDEBAR, /for \(const section of el\.children\) observer\.observe\(section\);/);
 });
 
 test("Alt + arrow on a section's header moves it, as it moves a row", async () => {

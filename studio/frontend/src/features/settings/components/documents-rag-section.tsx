@@ -352,8 +352,73 @@ export function DocumentsRagSection(): ReactElement {
           defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
         })}
         className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
+        below={
+          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
+            {embeddingModelError ? (
+              <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                {embeddingModelError}
+              </span>
+            ) : null}
+            <div className="flex min-h-7 w-full items-center justify-between gap-3">
+              <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                {statusTone ? (
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      statusTone === "pending"
+                        ? "animate-pulse bg-current"
+                        : statusTone === "ready"
+                          ? "bg-emerald-500"
+                          : "bg-destructive",
+                    )}
+                  />
+                ) : null}
+                <span className="truncate">{statusText}</span>
+              </span>
+              {forceCandidate ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2.5 text-xs"
+                  disabled={isSavingEmbeddingModel}
+                  onClick={() => void applyEmbeddingModel(forceCandidate, true)}
+                >
+                  {t("settings.general.rag.saveAnyway")}
+                </Button>
+              ) : canDownload ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2.5 text-xs"
+                  disabled={downloading || isSavingEmbeddingModel}
+                  onClick={() => resolution && void startDownload(resolution)}
+                >
+                  {downloading ? <Spinner className="mr-1.5" /> : null}
+                  {t("settings.general.rag.download")}
+                </Button>
+              ) : null}
+              {/* Outside the chain above: saving a new model does not release the old one, so while Download shows the previous model can still be resident. */}
+              {embeddingModel?.backendLoaded ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2.5 text-xs"
+                  disabled={isSavingEmbeddingModel}
+                  onClick={() => void unload()}
+                >
+                  {t("settings.general.rag.unload")}
+                </Button>
+              ) : null}
+            </div>
+            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
+              {t("settings.general.rag.reindexWarning")}
+            </span>
+          </div>
+        }
       >
-        <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
+        {/* Sets the trigger's width, since its own w-full outranks the 260px
+            class: 300px, as wide as the notes below it. */}
+        <div className="w-[calc(300px*var(--ui-space-scale,1))] max-[360px]:w-full">
           <EmbeddingModelPicker
             value={embeddingModel?.embeddingModel ?? ""}
             onSelect={(model) => void applyEmbeddingModel(model, false)}
@@ -364,65 +429,6 @@ export function DocumentsRagSection(): ReactElement {
             busy={isSavingEmbeddingModel}
             className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
           />
-          {embeddingModelError ? (
-            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-              {embeddingModelError}
-            </span>
-          ) : null}
-          <div className="flex min-h-7 w-full items-center justify-between gap-3">
-            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              {statusTone ? (
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    statusTone === "pending"
-                      ? "animate-pulse bg-current"
-                      : statusTone === "ready"
-                        ? "bg-emerald-500"
-                        : "bg-destructive",
-                  )}
-                />
-              ) : null}
-              <span className="truncate">{statusText}</span>
-            </span>
-            {forceCandidate ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
-                disabled={isSavingEmbeddingModel}
-                onClick={() => void applyEmbeddingModel(forceCandidate, true)}
-              >
-                {t("settings.general.rag.saveAnyway")}
-              </Button>
-            ) : canDownload ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
-                disabled={downloading || isSavingEmbeddingModel}
-                onClick={() => resolution && void startDownload(resolution)}
-              >
-                {downloading ? <Spinner className="mr-1.5" /> : null}
-                {t("settings.general.rag.download")}
-              </Button>
-            ) : null}
-            {/* Outside the chain above: saving a new model does not release the old one, so while Download shows the previous model can still be resident. */}
-            {embeddingModel?.backendLoaded ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
-                disabled={isSavingEmbeddingModel}
-                onClick={() => void unload()}
-              >
-                {t("settings.general.rag.unload")}
-              </Button>
-            ) : null}
-          </div>
-          <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
-            {t("settings.general.rag.reindexWarning")}
-          </span>
         </div>
       </SettingsRow>
     </SettingsSection>

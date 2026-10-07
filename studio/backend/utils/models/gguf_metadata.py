@@ -914,9 +914,15 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """True/False from ``general.type``; None means fall back to filename."""
+    """True/False from ``general.type``; None means fall back to filename.
+
+    ``general.architecture == "clip"`` is llama.cpp's projector arch and wins: older
+    converters wrote ``general.type`` values like ``clip-vision`` (#9286).
+    """
     if not meta:
         return None
+    if (meta.get("general.architecture") or "").lower() == "clip":
+        return True
     t = meta.get("general.type")
     if t is None:
         return None
@@ -1007,6 +1013,26 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
     if not weight_slug or not projector_slug:
         return False
     return _slug_extends_base(weight_slug, projector_slug)
+
+
+def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
+    """Gemma 4 only: pair by projector type + projection dim, not branding. None = unknown."""
+    if read_gguf_architecture(weight_path) != "gemma4":
+        return None, ""
+    projector_type = read_mmproj_vision_projector_type(mmproj_path)
+    if projector_type != "gemma4v":
+        return None, ""
+    embedding_length = read_gguf_embedding_length(weight_path)
+    dims = _parse_gguf_arch_uints(mmproj_path, frozenset({"vision.projection_dim"})) or {}
+    projection_dim = dims.get("vision.projection_dim")
+    if not embedding_length or not projection_dim:
+        return None, ""
+    if embedding_length != projection_dim:
+        return False, (
+            f"gemma4.embedding_length {embedding_length} != "
+            f"clip.vision.projection_dim {projection_dim}"
+        )
+    return True, ""
 
 
 def pairing_score(

@@ -23,8 +23,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-ToolExecutionMode = Literal["auto", "required", "full"]
-TOOL_EXECUTION_MODES = ("auto", "required", "full")
+# "software" is Sandbox Low: software safeguards without the OS sandbox, never Full access.
+ToolExecutionMode = Literal["auto", "required", "full", "software"]
+TOOL_EXECUTION_MODES = ("auto", "required", "full", "software")
 PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
@@ -213,7 +214,11 @@ class PreparedSandboxLaunch:
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
     if prepared.spawn_callback is not None:
         return prepared.spawn_callback(prepared, popen_kwargs)
-    proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+    argv = prepared.argv
+    if sys.platform == "win32":
+        from . import mxc_policy
+        argv = mxc_policy.host_spawn_args(argv)
+    proc = subprocess.Popen(argv, **popen_kwargs)
     if prepared.execution_record is not None:
         prepared.execution_record = replace(prepared.execution_record, execution_status = "started")
     return proc
@@ -829,6 +834,10 @@ def capability_snapshot(
             selected_executable = selected_executable,
             cancel_event = cancel_event,
         )
+    if force and sys.platform == "linux":
+        # A forced re-check (Settings > Refresh) also re-decides the /proc layout, which joins the identity.
+        from .sandbox_linux import forget_proc_layout
+        forget_proc_layout()
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -859,8 +868,9 @@ def capability_snapshot(
         reason = reason,
         environment = sys.platform,
         protection_state = "preview",
-        profile_id = backend.PROFILE_ID,
-        limitations = backend.LIMITATIONS,
+        # The Linux layout can vary per host (an empty /proc in containers); macOS has one profile.
+        profile_id = getattr(backend, "profile_id", lambda: backend.PROFILE_ID)(),
+        limitations = getattr(backend, "limitations", lambda: backend.LIMITATIONS)(),
         probe_generation = hashlib.sha256((identity + "available").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = (
@@ -868,6 +878,159 @@ def capability_snapshot(
             "call can still reach the internet."
         ),
     )
+
+
+# Last answer per tool; the "off" permission gate reads it on every call without probing.
+_TOOL_ISOLATION_TTL_SECONDS = 60.0
+ISOLATED_TOOLS = ("python", "terminal")
+_tool_isolation_lock = threading.Lock()
+_tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
+_tool_isolation_refreshing: set[str] = set()
+# Every check takes a number when it starts; a reset raises the floor. An answer from a check that
+# started before the reset, or before the one already recorded for that tool, is dropped.
+_tool_isolation_generation = 0
+_tool_isolation_floor = 0
+_tool_isolation_noted: dict[str, int] = {}
+
+
+# Set to 1: no startup or background probes; only real launches update the answer.
+WARMUP_DISABLE_ENV = "UNSLOTH_DISABLE_SANDBOX_WARMUP"
+
+
+def _background_probes_disabled() -> bool:
+    return os.environ.get(WARMUP_DISABLE_ENV, "").strip() == "1"
+
+
+def tool_isolation_target(tool: str) -> str | None:
+    if tool == "python":
+        return sys.executable
+    if sys.platform != "win32":
+        return shutil.which("bash") or "bash"
+    from . import tools
+
+    if tools._terminal_profile(False) == "cmd_isolated":
+        return tools._windows_system_cmd()
+    return tools._windows_bash() or tools._windows_system_cmd()
+
+
+def note_tool_isolation(
+    tool: str | None,
+    available: bool,
+    *,
+    backend: str = "",
+    reason: str = "",
+    generation: int | None = None,
+) -> None:
+    global _tool_isolation_generation
+    if tool not in ISOLATED_TOOLS:
+        return
+    with _tool_isolation_lock:
+        if generation is None:
+            _tool_isolation_generation += 1
+            generation = _tool_isolation_generation
+        elif generation < _tool_isolation_floor or generation < _tool_isolation_noted.get(tool, 0):
+            return
+        _tool_isolation_noted[tool] = generation
+        _tool_isolation[tool] = (time.monotonic(), bool(available), backend, reason)
+
+
+def tool_isolation_generation() -> int:
+    """Take before a check and pass to note_tool_isolation(generation=...): an older check stays out."""
+    global _tool_isolation_generation
+    with _tool_isolation_lock:
+        _tool_isolation_generation += 1
+        return _tool_isolation_generation
+
+
+def forget_tool_isolation() -> None:
+    global _tool_isolation_floor
+    with _tool_isolation_lock:
+        _tool_isolation.clear()
+        _tool_isolation_noted.clear()
+        _tool_isolation_floor = _tool_isolation_generation + 1
+
+
+def refresh_tool_isolation(tool: str, *, force: bool = False) -> bool:
+    """Blocking: the capability for one tool, remembered for cached_tool_isolation."""
+    generation = tool_isolation_generation()
+    try:
+        capability = capability_snapshot(
+            force = force,
+            execution_kind = tool,
+            selected_executable = tool_isolation_target(tool),
+        )
+        available, backend, reason = (
+            bool(capability.available),
+            capability.backend,
+            capability.reason,
+        )
+    except Exception as exc:  # noqa: BLE001 - an unknown answer reads as not isolated
+        logger.debug("tool isolation refresh for %s failed: %s", tool, exc)
+        available, backend, reason = False, "none", f"the capability check failed: {exc}"
+    note_tool_isolation(tool, available, backend = backend, reason = reason, generation = generation)
+    return available
+
+
+def _refresh_tool_isolation_in_background(tool: str) -> None:
+    try:
+        refresh_tool_isolation(tool)
+    finally:
+        with _tool_isolation_lock:
+            _tool_isolation_refreshing.discard(tool)
+
+
+def has_tool_isolation_answer(tool: str) -> bool:
+    with _tool_isolation_lock:
+        return tool in _tool_isolation
+
+
+def cached_tool_isolation(tool: str) -> bool | None:
+    """Never blocks: whether ``tool`` last qualified for OS isolation (None before the first answer)."""
+    cached = cached_tool_capability(tool)
+    return None if cached is None else cached[0]
+
+
+def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
+    """Never blocks: last (available, backend, reason) or None; stale starts a background refresh."""
+    now = time.monotonic()
+    with _tool_isolation_lock:
+        entry = _tool_isolation.get(tool)
+        start = (
+            tool in ISOLATED_TOOLS
+            and not _background_probes_disabled()
+            and (entry is None or now - entry[0] >= _TOOL_ISOLATION_TTL_SECONDS)
+            and tool not in _tool_isolation_refreshing
+        )
+        if start:
+            _tool_isolation_refreshing.add(tool)
+    if start:
+        try:
+            threading.Thread(
+                target = _refresh_tool_isolation_in_background,
+                args = (tool,),
+                name = f"unsloth-tool-isolation-{tool}",
+                daemon = True,
+            ).start()
+        except RuntimeError:
+            with _tool_isolation_lock:
+                _tool_isolation_refreshing.discard(tool)
+    return None if entry is None else (entry[1], entry[2], entry[3])
+
+
+def warm_tool_isolation() -> None:
+    for tool in ISOLATED_TOOLS:
+        refresh_tool_isolation(tool)
+
+
+def start_tool_isolation_warmup() -> threading.Thread | None:
+    """warm_tool_isolation on a daemon thread. Not on Windows: the MXC check launches a container."""
+    if _background_probes_disabled() or sys.platform == "win32":
+        return None
+    thread = threading.Thread(
+        target = warm_tool_isolation, name = "unsloth-sandbox-warmup", daemon = True
+    )
+    thread.start()
+    return thread
 
 
 def _record(
@@ -901,6 +1064,20 @@ def _software_only_limitations() -> tuple[str, ...]:
     if sys.platform != "win32":
         limitations.append("detached_descendant_cleanup_unverified")
     return tuple(limitations)
+
+
+def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> PreparedSandboxLaunch:
+    return PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = plan.env,
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = record,
+    )
 
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -937,10 +1114,41 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    if plan.requested_mode == "software":
+        # Chosen, not a fallback: no probe, so a host with a working OS sandbox is not checked for it.
+        return _software_launch(
+            plan,
+            ToolExecutionRecord(
+                requested_mode = plan.requested_mode,
+                effective_mode = "software_safeguards",
+                environment = sys.platform,
+                backend = "software-safeguards",
+                profile_id = "software-safeguards-v1",
+                probe_generation = "",
+                os_isolation = False,
+                retained_safeguards = tuple(
+                    item
+                    for item in _SOFTWARE_SAFEGUARDS
+                    if item != "timeout" or plan.timeout_seconds is not None
+                ),
+                limitations = _software_only_limitations(),
+            ),
+        )
+
+    # Taken before the check: a reset while it runs must not be undone by this launch's answer.
+    generation = tool_isolation_generation()
     capability = capability_snapshot(
         execution_kind = plan.execution_kind,
         selected_executable = plan.argv[0] if plan.argv else None,
         cancel_event = plan.cancel_event,
+    )
+
+    note_tool_isolation(
+        plan.execution_kind,
+        capability.available,
+        backend = capability.backend,
+        reason = capability.reason,
+        generation = generation,
     )
 
     if plan.cancel_event is not None and plan.cancel_event.is_set():
@@ -952,16 +1160,9 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
                 remediation = capability.remediation,
             )
-        return PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = plan.preexec_fn,
-            backend = "software-safeguards",
-            timeout_seconds = plan.timeout_seconds,
-            close_fds = plan.close_fds,
-            terminate_descendants = plan.terminate_descendants,
-            execution_record = _record(
+        return _software_launch(
+            plan,
+            _record(
                 plan,
                 capability,
                 effective_mode = "software_safeguards",
@@ -993,6 +1194,14 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 "and `required` cannot promise a boundary it did not verify. "
                 "Start a new chat, or use `auto` to run with software safeguards."
             )
+    except (WorkdirUnsafeError, SandboxBuildError):
+        raise  # can be tool-induced; says nothing about the backend itself
+    except SandboxUnavailableError:
+        # The cached pass is stale (bwrap removed or no longer trusted): the next call checks again,
+        # so "off" asks instead of skipping the prompt and failing until the cache expires.
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        raise
     except OSError as exc:
         # Must be typed: raw, tools.py's general except would fall back to software safeguards.
         raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc

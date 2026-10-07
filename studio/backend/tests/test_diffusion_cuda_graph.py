@@ -576,6 +576,19 @@ def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
     assert cg._POOL_BOX[0] == pool
 
 
+def test_a_graph_in_an_earlier_pool_does_not_keep_the_current_token(stub_torch):
+    """Liveness is per graph: a wrapper still holding a graph in a pool dropped earlier (a placement move re-recorded
+    another wrapper into a fresh pool) must not keep the current token alive after its own last graph is gone."""
+    first, second = _armed(), _armed()
+    first(_t(), timestep = _t((1,)), return_dict = False)
+    cg._POOL_BOX[0] = None  # what a drop of the first pool's token leaves
+    second(_t(), timestep = _t((1,)), return_dict = False)
+    current = cg._POOL_BOX[0]
+    assert current is not None and first.cache
+    cg.reset_all([second])
+    assert cg._POOL_BOX[0] is None
+
+
 def test_reset_all_forgets_the_pool_token_with_the_last_graph(stub_torch):
     """A reset that destroys the last graph in the shared pool must forget its token, or the next
     capture dies on the allocator's "use_count > 0 INTERNAL ASSERT FAILED"."""
@@ -673,10 +686,6 @@ def test_graph_eligible_happy_path(stub_torch, monkeypatch):
         ({"speed_mode": "eager"}, "speed tier eager"),
         ({"speed_mode": "off"}, "speed tier off"),
         ({"speed_mode": None}, "speed tier off"),
-        (
-            {"pipe": types.SimpleNamespace(unet = UNet2DConditionModel(), transformer = _FakeDiT())},
-            "denoiser is a U-Net",
-        ),
         ({"pipe": types.SimpleNamespace()}, "no denoiser transformer"),
         (
             {"family": types.SimpleNamespace(supports_cuda_graph = False)},
@@ -689,6 +698,79 @@ def test_graph_eligible_refusals(stub_torch, monkeypatch, overrides, reason):
     ok, got = _eligible(monkeypatch, **overrides)
     assert ok is False
     assert got == reason
+
+
+def test_graph_eligible_accepts_a_unet_denoiser(stub_torch, monkeypatch):
+    """A whole-compiled SDXL U-Net is captured at ``_compiled_call_impl`` (GraphedCompiledCall)."""
+    assert (
+        _eligible(monkeypatch, pipe = types.SimpleNamespace(unet = UNet2DConditionModel()))[0] is True
+    )
+    other = type("SomeOtherUNet", (), {})()
+    assert (
+        _eligible(monkeypatch, pipe = types.SimpleNamespace(unet = other))[1]
+        == "no denoiser transformer"
+    )
+
+
+class _CompiledUNet:
+    """``Module.compile``d stand-in: ``module(...)`` is served by ``_compiled_call_impl``."""
+
+    def __init__(self):
+        self.calls = 0
+
+        def compiled(
+            sample,
+            timestep = None,
+            return_dict = True,
+        ):
+            self.calls += 1
+            return (_FakeTensor((1, 4), value = ("out", self.calls), tag = "out"),)
+
+        self._compiled_call_impl = compiled
+
+    def forward(self, *args, **kwargs):  # pragma: no cover - a compiled module never reads the slot
+        raise AssertionError("the forward slot must not be used")
+
+
+_CompiledUNet.__name__ = "UNet2DConditionModel"  # the class NAME is what _denoiser_unet gates on
+
+
+def test_compiled_unet_is_graphed_at_the_compiled_call(stub_torch):
+    unet = _CompiledUNet()
+    compiled = unet._compiled_call_impl
+    pipe = types.SimpleNamespace(unet = unet)
+    handles = cg.install_cuda_graphs(pipe)
+    assert len(handles) == 1 and isinstance(handles[0], cg.GraphedCompiledCall)
+    assert unet._compiled_call_impl is handles[0]
+    assert "forward" not in unet.__dict__
+
+    for _ in range(2):
+        unet._compiled_call_impl(_t(), timestep = _t((1,)), return_dict = False)
+    assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 2
+    # Warm-ups plus the capture call, all through the COMPILED callable.
+    assert unet.calls == cg.WARMUP_ITERS + 1
+
+    unet._compiled_call_impl(_t(), timestep = _t((1,)))  # return_dict absent: eager, still compiled
+    assert unet.calls == cg.WARMUP_ITERS + 2
+
+    cg.uninstall_all(handles)
+    assert unet._compiled_call_impl is compiled
+
+
+def test_uncompiled_unet_is_graphed_at_the_forward_slot(stub_torch):
+    class UNet2DConditionModel(_FakeDiT):  # noqa: N801
+        pass
+
+    unet = UNet2DConditionModel()
+    handles = cg.install_cuda_graphs(types.SimpleNamespace(unet = unet))
+    assert len(handles) == 1 and type(handles[0]) is cg.GraphedForward
+    assert unet.__dict__["forward"] is handles[0]
+    cg.uninstall_all(handles)
+
+
+def test_graphed_compiled_call_needs_a_compiled_module(stub_torch):
+    with pytest.raises(RuntimeError):
+        cg.GraphedCompiledCall(_FakeDiT())
 
 
 def test_graph_eligible_refuses_under_the_kill_switch(stub_torch, monkeypatch):
@@ -718,6 +800,12 @@ def test_graph_eligible_family_opt_in_on_the_video_backend(stub_torch, monkeypat
     assert _eligible(monkeypatch, family = opted_in, family_default = False)[0] is True
     bare = types.SimpleNamespace()
     assert _eligible(monkeypatch, family = bare, family_default = False)[0] is False
+    # a family can opt in only for an offloaded denoiser
+    offload_only = types.SimpleNamespace(offload_cuda_graph = True)
+    assert _eligible(monkeypatch, family = offload_only, family_default = False)[0] is False
+    assert (
+        _eligible(monkeypatch, family = offload_only, family_default = False, offloaded = True)[0] is True
+    )
 
 
 def test_stats_and_describe_are_json_safe(stub_torch):
@@ -735,11 +823,20 @@ def test_stats_and_describe_are_json_safe(stub_torch):
         "eager_calls": 1,
         "fallbacks": 0,
         "cap_skips": 0,
+        "invalidations": 0,
+        "pool_bytes": aggregate["pool_bytes"],
+        "planned_eager": 0,
+        "shape_warmups": 0,
+        "evictions": 0,
+        "speed_eager": 0,
         "refused_float": 0,
         "refused_host_tensor": 0,
         "refused_object": 0,
+        "placements": ["resident"],
         "poisoned": False,
         "capture_error": None,
+        "eager_ms": None,
+        "replay_ms": None,
     }
     assert json.loads(json.dumps(aggregate)) == aggregate
 
@@ -1019,3 +1116,66 @@ def test_live_status_tolerates_a_record_without_the_control(stub_torch):
     handle(_t(), timestep = 0.5, return_dict = False)
     assert cg.live_status(None, ("cuda_graph",), (handle,)) == (None, [])
     assert cg.live_status({}, (), (handle,)) == ({}, [])
+
+
+def test_real_cuda_compiled_module_capture_matches_the_compiled_call():
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    try:
+        import triton  # noqa: F401
+    except Exception:
+        pytest.skip("needs triton for inductor")
+
+    import torch.nn as nn
+
+    class UNet2DConditionModel(nn.Module):  # noqa: N801
+        def __init__(self, dim):
+            super().__init__()
+            self.a = nn.Linear(dim, dim)
+            self.b = nn.Linear(dim, dim)
+
+        def forward(
+            self,
+            sample,
+            timestep,
+            return_dict = True,
+        ):
+            out = self.b(torch.nn.functional.silu(self.a(sample))) * timestep
+            return types.SimpleNamespace(sample = out) if return_dict else (out,)
+
+    torch.manual_seed(0)
+    unet = UNet2DConditionModel(64).to("cuda", torch.bfloat16).eval()
+    unet.compile(fullgraph = True, dynamic = False)
+    compiled = unet._compiled_call_impl
+    handles = cg.install_cuda_graphs(types.SimpleNamespace(unet = unet))
+    try:
+        assert isinstance(handles[0], cg.GraphedCompiledCall)
+        for _ in range(3):
+            x = torch.randn(2, 8, 64, device = "cuda", dtype = torch.bfloat16)
+            t = torch.randn((), device = "cuda", dtype = torch.bfloat16)
+            with torch.inference_mode():
+                want = compiled(x, t, return_dict = False)[0]
+                got = unet(x, t, return_dict = False)[0]
+            assert torch.equal(got, want)
+        assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 3
+    finally:
+        cg.uninstall_all(handles)
+    assert unet._compiled_call_impl is compiled
+
+
+@pytest.mark.parametrize("backend", ["sage", "sage_hub"])
+def test_graph_eligible_declines_a_sage_denoiser(stub_torch, monkeypatch, backend):
+    """SageAttention under a replayed graph renders noise (FLUX.1-schnell, A100), so a Sage load stays ungraphed; the
+    kernels-hub build (sage_hub) is the same kernel."""
+    dit = _FakeDiT()
+    dit._unsloth_attention_backend = backend
+    ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit))
+    assert (ok, reason) == (False, "SageAttention is not CUDA-graph safe")
+
+
+@pytest.mark.parametrize("backend", [None, "_native_cudnn", "flash", "native"])
+def test_graph_eligible_keeps_other_backends(stub_torch, monkeypatch, backend):
+    dit = _FakeDiT()
+    dit._unsloth_attention_backend = backend
+    assert _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit)) == (True, "eligible")

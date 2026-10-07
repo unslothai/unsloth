@@ -53,6 +53,7 @@ import {
 } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
+import { MAX_AUDIO_FILES } from "../src/lib/audio-utils.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
 import {
   VIDEO_ACCEPT,
@@ -535,22 +536,39 @@ test("a single audio file routes to chat audio attachments", () => {
   ]);
 });
 
-// One clip per message, so a larger batch is turned away before it is read.
-test("multi-audio drops are rejected before they are routed", () => {
+// Models like Gemma 4 take several clips in one message, so a batch routes whole.
+test("multi-audio drops route to chat audio attachments", () => {
   const dropped = classifyDropPaths([
     "/clips/take.WAV",
     "/clips/note.mp3",
     "/clips/voice.flac",
   ]);
-  assert.equal(dropped.kind, "unsupported");
+  assert.equal(dropped.kind, "audio");
+  assert.deepEqual(dropped.kind === "audio" ? dropped.paths : [], [
+    "/clips/take.WAV",
+    "/clips/note.mp3",
+    "/clips/voice.flac",
+  ]);
 });
 
-test("a second clip alongside other attachments is rejected too", () => {
+test("several clips alongside other attachments route together", () => {
   const dropped = classifyDropPaths([
     "/docs/a.pdf",
     "/clips/note.mp3",
     "/clips/voice.flac",
   ]);
+  assert.equal(dropped.kind, "attach");
+  assert.deepEqual(dropped.kind === "attach" ? dropped.audio : [], [
+    "/clips/note.mp3",
+    "/clips/voice.flac",
+  ]);
+});
+
+// Past the per-message cap a batch would attach only partly, so it is turned away before it is read.
+test("an audio batch over the per-message cap is rejected", () => {
+  const dropped = classifyDropPaths(
+    Array.from({ length: MAX_AUDIO_FILES + 1 }, (_, i) => `/clips/${i}.wav`),
+  );
   assert.equal(dropped.kind, "unsupported");
 });
 

@@ -219,3 +219,74 @@ test("the external body opts into the stream usage chunk", () => {
     include_usage: true,
   });
 });
+
+const {
+  isPromptCacheTtl,
+  promptCacheTtlAppliesToModel,
+  promptCachingAppliesToModel,
+  supportsProviderPromptCacheTtl,
+  supportsProviderPromptCaching,
+} = await import("../src/features/chat/external-providers.ts");
+
+// Evaluated from the top-level literal so a thread_id reachable only through the tool loop fails.
+const buildCacheFields = new Function(
+  "externalProvider",
+  "resolvedThreadId",
+  "supportsProviderPromptCaching",
+  "supportsProviderPromptCacheTtl",
+  "isPromptCacheTtl",
+  `return Object.assign({}, ${externalBodyLiteral()
+    .properties.filter(ts.isSpreadAssignment)
+    .map((property) => property.expression.getText())
+    .filter((text) => /PromptCach|^\(resolvedThreadId/.test(text))
+    .join(", ")});`,
+);
+
+function cacheFieldsFor(provider: Record<string, unknown>, threadId?: string) {
+  return buildCacheFields(
+    provider,
+    threadId,
+    supportsProviderPromptCaching,
+    supportsProviderPromptCacheTtl,
+    isPromptCacheTtl,
+  ) as Record<string, unknown>;
+}
+
+test("OpenRouter sends the caching toggle, its TTL and the thread on every external request", () => {
+  assert.deepEqual(cacheFieldsFor({ providerType: "openrouter" }, "thread-1"), {
+    enable_prompt_caching: true,
+    thread_id: "thread-1",
+  });
+  assert.deepEqual(
+    cacheFieldsFor({ providerType: "openrouter", promptCacheTtl: "1h" }),
+    { enable_prompt_caching: true, prompt_cache_ttl: "1h" },
+  );
+  assert.deepEqual(
+    cacheFieldsFor({ providerType: "openrouter", enablePromptCaching: false, promptCacheTtl: "1h" }),
+    { enable_prompt_caching: false },
+  );
+});
+
+test("the cache controls show for OpenRouter only on Claude models", () => {
+  for (const applies of [promptCachingAppliesToModel, promptCacheTtlAppliesToModel]) {
+    assert.equal(applies("anthropic", "claude-opus-5"), true);
+    assert.equal(applies("openrouter", "anthropic/claude-sonnet-4.6"), true);
+    assert.equal(applies("openrouter", "~anthropic/claude-opus-latest"), true);
+    assert.equal(applies("openrouter", "deepseek/deepseek-v3.2"), false);
+    assert.equal(applies("openrouter", undefined), false);
+    assert.equal(applies("gemini", "gemini-3-pro"), false);
+  }
+  assert.equal(promptCachingAppliesToModel("openai", "gpt-5.5"), true);
+  assert.equal(promptCacheTtlAppliesToModel("openai", "gpt-5.5"), false);
+  const sheet = readSrc("features/chat/chat-settings-sheet.tsx");
+  for (const name of ["promptCachingAppliesToModel", "promptCacheTtlAppliesToModel"]) {
+    assert.match(
+      sheet,
+      new RegExp(`${name}\\(\\s*activeExternalProvider\\.providerType,\\s*externalSelection\\?\\.modelId,?\\s*\\)`),
+    );
+  }
+});
+
+test("the live stream reads cache writes through the shared usage rule", () => {
+  assert.match(source, /const cacheWriteTokens = usageCacheWriteTokens\(meta\?\.usage\);/);
+});

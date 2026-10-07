@@ -36,7 +36,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -59,6 +59,9 @@ import {
   LibraryActionsProvider,
   type LibraryTarget,
 } from "./actions-context";
+import { ChatsLibrary } from "./chats/chats-library";
+import { useFavoriteChatMatches } from "./chats/favorites";
+import { useChatFavoritesStore } from "./chats/favorites-store";
 import { CardSelectionContext } from "./components/card-selection";
 import { FolderGrid, ItemCard, Masonry } from "./components/library-cards";
 import { ConfirmDeleteDialog, NameDialog } from "./components/library-dialogs";
@@ -70,6 +73,8 @@ import {
   LibraryToolbar,
   type NewAction,
 } from "./components/library-toolbar";
+import { audioWorkflowOptions, runSiblings } from "./audio-items";
+import { stopLibraryAudio, stopLibraryAudioUnlessShown } from "./audio-playback";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore } from "./store";
@@ -94,6 +99,7 @@ const TAB_LABELS: Record<LibraryTab, TranslationKey> = {
   audio: "library.tabs.audio",
   models: "library.tabs.models",
   all: "library.tabs.all",
+  chats: "library.tabs.chats",
 };
 
 type EmptyCopy = [icon: typeof Folder01Icon, title: TranslationKey, description: TranslationKey];
@@ -106,6 +112,7 @@ const EMPTY_COPY: Record<LibraryTab, EmptyCopy> = {
   audio: [AudioWave01Icon, "library.empty.audioTitle", "library.empty.audioDescription"],
   models: [TestTubeOutlineIcon, "library.empty.modelsTitle", "library.empty.modelsDescription"],
   all: [Upload01Icon, "library.empty.suggestedTitle", "library.empty.suggestedDescription"],
+  chats: [MessageCircleIcon, "library.chats.empty.chatsTitle", "library.chats.empty.chatsDescription"],
 };
 
 const EMPTY_LINKS = {
@@ -214,10 +221,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const view = useLibraryViewStore((s) => s.view);
   const setView = useLibraryViewStore((s) => s.setView);
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  useEffect(() => stopLibraryAudio, []);
 
   const [query, setQuery] = useState("");
   const [chosenFilters, setFilters] = useState<LibraryFilters>(() =>
-    search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
+    search.filter === "files" ? { ...EMPTY_FILTERS, types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
   );
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
@@ -235,9 +243,24 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [preferred] = useState(() =>
     settings.startTab === "last" ? settings.lastTab : settings.startTab,
   );
+  // No files or folders: open on Chats, since every file tab is empty. Decided once on load so
+  // the tab does not jump when a file lands later. Starred chats keep a Favorites start.
+  const [emptyOnLoad, setEmptyOnLoad] = useState<boolean | null>(null);
+  if (emptyOnLoad === null && loaded) setEmptyOnLoad(items.length === 0 && folders.length === 0);
+  const hasStarredChats = useChatFavoritesStore(
+    (s) => s.chatIds.length + s.projectIds.length + s.sectionIds.length > 0,
+  );
+  const nothingButChats =
+    emptyOnLoad === true &&
+    tabVisible("chats") &&
+    !(preferred === "favorites" && hasStarredChats);
   const tab: LibraryTab =
     search.show ??
-    (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
+    (nothingButChats
+      ? "chats"
+      : tabVisible(preferred)
+        ? preferred
+        : (LIBRARY_TABS.find(tabVisible) ?? "all"));
   const sort = SORT_STATES[search.sort ?? settings.sort];
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
@@ -294,11 +317,16 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }, [items, folders]);
 
   const needle = query.trim().toLowerCase();
+  const favoriteChats = useFavoriteChatMatches(query, tab === "favorites" && !folderId);
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
   // Folders have no filter menu, so tab filters do not apply inside them.
   const filterMode = folderId || tab === "folders" ? "none" : kindFilter ? "source" : "all";
   const filters = filterMode === "none" ? EMPTY_FILTERS : chosenFilters;
+  const workflowOptions = useMemo(
+    () => (tab === "audio" && !folderId ? audioWorkflowOptions(items) : []),
+    [tab, folderId, items],
+  );
 
   const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
 
@@ -322,6 +350,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     return [...pool].sort(compareBySort(sort));
   }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
+
+  // Only grid cards can pause a clip: stop it once its card is gone or the list view replaces them.
+  useEffect(() => {
+    if (view !== "grid") stopLibraryAudio();
+    else stopLibraryAudioUnlessShown(new Set(visibleItems.map((item) => item.id)));
+  }, [view, visibleItems]);
 
   const visibleFolders = useMemo(() => {
     const showsFolders = folderId || tab === "folders" || tab === "all";
@@ -363,6 +397,15 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pushedPreview.current = id;
     go({ ...search, item: id });
   };
+  // Another clip of the same run, in place of this one: Back still closes the preview.
+  const switchPreview = (id: string) => {
+    if (pushedPreview.current === search.item) pushedPreview.current = id;
+    go({ ...search, item: id }, true);
+  };
+  const previewRun = useMemo(
+    () => (previewItem ? runSiblings(items, previewItem) : []),
+    [items, previewItem],
+  );
   const closePreview = () => {
     if (!search.item) return;
     setClosingPreview(search.item);
@@ -658,7 +701,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ))}
     </nav>
   ) : (
-    <h1 className="text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
+    // truncate clips at the padding box, which the y overhangs; the margins give the padding back.
+    <h1 className="-my-[0.15em] min-w-0 truncate py-[0.15em] pr-[0.08em] text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       {t("shell.navigation.library")}
     </h1>
   );
@@ -735,6 +779,48 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     );
   }
 
+  function renderFavorites() {
+    return (
+      <ChatsLibrary
+        search={{}}
+        embedded={{
+          query,
+          view,
+          render: (entries) =>
+            view === "list" ? (
+              <div className="mt-6">
+                <LibraryList
+                  folders={[]}
+                  items={visibleItems}
+                  counts={counts}
+                  selection={selection}
+                  onSelectionChange={setSelection}
+                  sort={sort}
+                  onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
+                  activity={false}
+                  leading={entries.rows}
+                  favoriteMarks={false}
+                />
+              </div>
+            ) : (
+              <div className="mt-6">
+                <CardSelectionContext.Provider value={cardSelection}>
+                  <Masonry
+                    items={[
+                      ...entries.cards,
+                      ...visibleItems.map((item) => ({ key: item.id, node: <ItemCard item={item} /> })),
+                    ]}
+                    getKey={(entry) => entry.key}
+                    render={(entry) => entry.node}
+                  />
+                </CardSelectionContext.Provider>
+              </div>
+            ),
+        }}
+      />
+    );
+  }
+
   function renderBody() {
     if (status === "loading" || status === "idle") return <LoadingGrid />;
     if (status === "error") {
@@ -753,6 +839,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     }
     const empty = visibleItems.length === 0 && visibleFolders.length === 0;
     const narrowed = Boolean(needle) || filtersActive(filters);
+    if (favoriteChats > 0) return renderFavorites();
     if (empty && narrowed) {
       return (
         <EmptyState
@@ -794,6 +881,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             sort={sort}
             onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
             activity={tab === "suggested" && !folderId}
+            favoriteMarks={tab !== "favorites"}
           />
         </div>
       );
@@ -857,6 +945,17 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     selectedTargets().filter((t) => t.kind === "folder" || isDeletable(t.item));
   const deleteText = pendingDelete ? deleteCopy(pendingDelete) : null;
 
+  const headerTabs = {
+    items: shownTabs.map((key) => ({ key, label: t(TAB_LABELS[key]) })),
+    active: tab,
+    onChange: (next: string) => go({ show: next as LibraryTab }),
+  };
+
+  // Chats use their own view and data; the file listing, filters and selection never apply.
+  if (tab === "chats" && !folderId) {
+    return <ChatsLibrary search={search} title={title} tabs={headerTabs} />;
+  }
+
   return (
     <LibraryActionsProvider value={actions}>
       <main
@@ -881,6 +980,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               filters={filters}
               onFiltersChange={setFilters}
               filterMode={filterMode}
+              workflows={workflowOptions}
               view={view}
               onViewChange={setView}
               sort={view === "grid" && (folderId || tab !== "favorites") ? gridSort : undefined}
@@ -891,15 +991,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onSettings={() => openSettings("library")}
             />
           }
-          tabs={
-            folderId
-              ? null
-              : {
-                  items: shownTabs.map((key) => ({ key, label: t(TAB_LABELS[key]) })),
-                  active: tab,
-                  onChange: (next) => go({ show: next as LibraryTab }),
-                }
-          }
+          tabs={folderId ? null : headerTabs}
         />
         <div className="pl-3">{renderBody()}</div>
 
@@ -964,13 +1056,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="center" side="top" className="w-48">
+              <DropdownMenuContent align="center" side="top" className="library-menu w-48">
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2.5">
                     <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
                     {t("library.selection.move")}
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
+                  <DropdownMenuSubContent className="library-menu max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
                     <DropdownMenuItem onSelect={() => bulkMove(null)}>
                       <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                       {t("library.menu.noFolder")}
@@ -1019,6 +1111,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         onToggleFavorite={actions.toggleFavorite}
         onDelete={(item) => actions.remove({ kind: "item", item })}
         onSaved={() => void refresh()}
+        run={previewRun}
+        onOpenItem={switchPreview}
+        onDownloadRun={(run) => void downloadLibraryItems(run)}
       />
     </LibraryActionsProvider>
   );

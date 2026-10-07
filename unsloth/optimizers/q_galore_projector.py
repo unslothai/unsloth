@@ -217,7 +217,8 @@ class GaLoreProjector:
             current_vector = float_ortho[:, :1].flatten()
 
         if self.past_ortho_vector is not None:
-            cos_sim = torch.dot(self.past_ortho_vector, current_vector).item()
+            # Singular vectors are sign-ambiguous: a negated basis is the same subspace.
+            cos_sim = abs(torch.dot(self.past_ortho_vector, current_vector).item())
 
             self.queue.append(cos_sim)
 

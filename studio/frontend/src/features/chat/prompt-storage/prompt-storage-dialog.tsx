@@ -69,6 +69,7 @@ import {
   savePromptList,
 } from "../api/prompts-api";
 import {
+  getStoredChatThread,
   listStoredChatMessages,
   listStoredChatThreads,
   saveStoredChatThread,
@@ -77,6 +78,7 @@ import {
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
+import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -84,6 +86,7 @@ import {
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
+import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -96,6 +99,7 @@ import { orderByParentChain } from "../utils/message-order";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
+  CONVERSATION_MARKDOWN_MIME_TYPE,
   buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
@@ -124,10 +128,6 @@ async function downloadBlob(
   return downloadFile(content, filename, mimeType);
 }
 
-function csvEscape(val: string): string {
-  return `"${val.replace(/"/g, '""')}"`;
-}
-
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
   return downloadBlob(
     ndjsonBody([JSON.stringify({ name: entry.name, text: entry.text })]),
@@ -138,9 +138,9 @@ function exportPromptJsonl(entry: PromptEntry): Promise<void> {
 
 function exportPromptCsv(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
+    csvDocument(["name,text", `${csvEscape(entry.name)},${csvEscape(entry.text)}`]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -151,7 +151,7 @@ function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(csvDocument(["name,text", rows]), "prompts.csv", CSV_MIME);
 }
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
@@ -172,9 +172,9 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
   return downloadBlob(
-    `list_name,order,prompt_text\n${rows}`,
+    csvDocument(["list_name,order,prompt_text", rows]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -182,7 +182,7 @@ function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -247,13 +247,19 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
-  const storedIds = new Set(raw.map((m) => m.id));
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  const headId = liveBranch?.length
-    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
-    : undefined;
+  const headId = liveBranchHeadId(liveBranch, raw);
   return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+}
+
+// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+function liveBranchHeadId(
+  liveBranch: string[] | null,
+  raw: Array<{ id: string }>,
+): string | null | undefined {
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  if (!liveBranch?.length) return undefined;
+  const storedIds = new Set(raw.map((m) => m.id));
+  return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
 }
 
 function exportTs(): string {
@@ -337,20 +343,47 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
   ];
 
   if (role === "assistant") {
-    const textParts: string[] = [];
-    const toolCalls: OAIToolCall[] = [];
-    const toolResults: OAIMessage[] = [];
+    const out: OAIMessage[] = [];
+    let textParts: string[] = [];
+    let toolCalls: OAIToolCall[] = [];
+    let toolResults: OAIMessage[] = [];
+    let callCount = 0;
+    let roundId: number | null = null;
+
+    const flush = () => {
+      const content = textParts.join("\n\n") || null;
+      out.push(
+        toolCalls.length > 0
+          ? { role: "assistant", content, tool_calls: toolCalls }
+          : { role: "assistant", content: content ?? "" },
+        ...toolResults,
+      );
+      textParts = [];
+      toolCalls = [];
+      toolResults = [];
+      roundId = null;
+    };
+    const pushText = (text: string) => {
+      if (!text.trim()) return;
+      // A call with no result (stopped, provider-native) stays with this text: splitting would leave tool_calls unanswered.
+      if (toolResults.length > 0) flush();
+      textParts.push(text);
+    };
 
     for (const p of allParts) {
       if (p.type === "text" && typeof p.text === "string") {
-        textParts.push(p.text);
+        pushText(p.text);
       } else if (p.type === "reasoning" || p.type === "thinking") {
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
-        if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+        if (t) pushText(`<thinking>\n${t}\n</thinking>`);
       } else if (p.type === "image" && typeof p.image === "string" && p.image) {
-        textParts.push("[image attachment]");
+        pushText("[image attachment]");
       } else if (p.type === "tool-call") {
-        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
+        const callRoundId = codexLocalToolRoundId(p.provenance);
+        if (toolCalls.length > 0 && startsNewCodexToolRound(roundId, callRoundId)) flush();
+        if (callRoundId !== null) roundId = callRoundId;
+        const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${callCount}`;
+        callCount++;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
         const argsStr = toolCallReplayArguments(
           typeof p.argsText === "string" ? p.argsText : undefined,
@@ -363,18 +396,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
+          if (callRoundId === null && (p.provenance as { source?: unknown } | undefined)?.source === "local") flush();
         }
       }
     }
 
-    const content = textParts.join("\n\n") || null;
-    const assistantMsg: OAIMessage = toolCalls.length > 0
-      ? { role: "assistant", content, tool_calls: toolCalls }
-      : { role: "assistant", content: content ?? "" };
-
-    return toolResults.length > 0
-      ? [assistantMsg, ...toolResults]
-      : [assistantMsg];
+    if (out.length === 0 || textParts.length > 0 || toolCalls.length > 0) flush();
+    return out;
   }
 
   const contentParts: OAIContentPart[] = [];
@@ -461,9 +489,9 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    rows.join("\n"),
+    csvDocument(rows),
     "conversation-" + exportTs() + ".csv",
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -558,13 +586,19 @@ export async function buildChatItemMarkdown(item: {
   );
 }
 
-export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
+export type ConvExportFormat =
+  | "jsonl-raw"
+  | "jsonl-messages"
+  | "csv"
+  | "sharegpt"
+  | "markdown";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
   "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
+  markdown: "Markdown",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -604,6 +638,10 @@ async function buildThreadContent(
     return JSON.stringify({ conversations });
   }
 
+  if (format === "markdown") {
+    return await buildConversationMarkdownForThread(threadId);
+  }
+
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
@@ -618,11 +656,15 @@ function csvHeader(format: ConvExportFormat): string {
 }
 
 function exportExt(format: ConvExportFormat): string {
-  return format === "csv" ? "csv" : "jsonl";
+  if (format === "csv") return "csv";
+  if (format === "markdown") return "md";
+  return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
-  return format === "csv" ? "text/csv" : "application/x-ndjson";
+  if (format === "csv") return CSV_MIME;
+  if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  return "application/x-ndjson";
 }
 
 export async function exportBulkConversationsMerged(
@@ -633,6 +675,43 @@ export async function exportBulkConversationsMerged(
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
   if (!canMergeConversationExport(format) && threadIds.length > 1) {
     toast.info("Message JSONL is available per chat.");
+    return;
+  }
+
+  if (format === "markdown" && threadIds.length > 1) {
+    const conversations: Array<{ id: string; title: string }> = [];
+    const pairs = new Map<string, ThreadRecord[]>();
+    for (const id of threadIds) {
+      const thread = await getStoredChatThread(id);
+      conversations.push({ id, title: thread?.title?.trim() || id });
+      if (thread?.pairId) {
+        const halves = pairs.get(thread.pairId) ?? [];
+        halves.push(thread);
+        pairs.set(thread.pairId, halves);
+      }
+    }
+    const pairedTitles = new Map<string, string>();
+    for (const [pairId, halves] of pairs) {
+      if (halves.length < 2) continue;
+      const plans = planChatItemSources(
+        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+        halves,
+      );
+      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+    }
+    for (const conversation of conversations) {
+      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
+    }
+    const body = await buildNamedConversationsMarkdown(
+      conversations,
+      buildConversationMarkdownForThread,
+    );
+    if (!body) { toast.info("No exportable content."); return; }
+    await downloadBlob(
+      body,
+      `${basename}.md`,
+      CONVERSATION_MARKDOWN_MIME_TYPE,
+    );
     return;
   }
 
@@ -647,8 +726,10 @@ export async function exportBulkConversationsMerged(
   if (parts.length === 0) { toast.info("No exportable content."); return; }
 
   const body = header
-    ? header + "\n" + parts.join("\n")
-    : ndjsonBody(parts);
+    ? csvDocument([header, ...parts])
+    : format === "markdown"
+      ? parts[0] ?? ""
+      : ndjsonBody(parts);
 
   await downloadBlob(
     body,
@@ -672,7 +753,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : ndjsonBody([content]);
+    const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
@@ -881,13 +962,17 @@ export async function buildFineTuneJsonl(
   let conversations = 0;
   let skipped = 0;
   for (const id of ids) {
+    const liveBranch = liveThreadBranch(id);
     const raw = await listStoredChatMessages(id);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
     // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
     const ordered = hasParentIds
-      ? (orderByParentChain(raw, { includeSiblings: false }) as typeof raw)
+      ? (orderByParentChain(raw, {
+          includeSiblings: false,
+          headId: liveBranchHeadId(liveBranch, raw),
+        }) as typeof raw)
       : raw;
     const turns = messagesToFineTuneTurns(ordered);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
@@ -1790,6 +1875,9 @@ function PromptListDetail({
   pending: boolean;
   runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
+  const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
+  const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -1932,6 +2020,19 @@ function PromptListDetail({
         )}
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-t border-border/50 pt-3">
+        <button
+          type="button"
+          onClick={() => togglePinnedList(entry.id)}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            isPinned
+              ? "text-primary hover:bg-primary/10"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+          title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
+        >
+          <BookmarkIcon className={cn("size-4", isPinned && "fill-primary")} />
+        </button>
         <button
           type="button"
           onClick={() => onExport(exportValue)}
@@ -2108,6 +2209,7 @@ export function PromptStorageDialog({
   const [exportCtx, setExportCtx] = useState<ExportModalCtx | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
+  const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
 
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
@@ -2495,7 +2597,7 @@ export function PromptStorageDialog({
                 className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
-                <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
+                <div className="dropdown-surface absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
                   {suggestions.map((name) => (
                     <button
                       key={name}
@@ -2575,6 +2677,11 @@ export function PromptStorageDialog({
                       selected={!showNewList && entry.id === selectedListId}
                       current={entry.id === selectedListId}
                       dirty={listDrafts.has(entry.id)}
+                      leading={
+                        pinnedListIds.includes(entry.id) ? (
+                          <BookmarkIcon className="size-3 shrink-0 fill-primary text-primary" />
+                        ) : null
+                      }
                       onSelect={() => {
                         setShowNewList(false);
                         setSelectedListId(entry.id);

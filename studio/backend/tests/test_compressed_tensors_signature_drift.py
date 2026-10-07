@@ -5,9 +5,12 @@
 
 `test_compressed_tensors_load_error_message.py` runs the same check, but only where the
 whole backend imports, and `studio-backend-ci.yml` pins that environment to
-`transformers>=4.51,<5.5` -- outside the 5.10 rewording the matcher exists to survive.
-This file reads the signatures and `_diagnosis_text` out of `routes/inference.py` with
-`ast` instead, so it needs no fastapi and runs on any transformers.
+`transformers>=4.51,<=5.17.0`. That window now spans the 5.10 rewording the matcher exists
+to survive rather than stopping below it, but it still resolves ONE version per run, so it
+proves the matcher against whatever that run happened to pick and not against both sides of
+the rewording. This file reads the signatures and `_diagnosis_text` out of
+`routes/inference.py` with `ast` instead, so it needs no fastapi and runs on any
+transformers.
 """
 
 from __future__ import annotations
@@ -151,8 +154,9 @@ def test_this_guard_needs_no_studio_backend_dependency():
 def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_file():
     """The guard above is worth nothing in an environment that never runs it.
 
-    Every auto-discovering job pins `transformers>=4.51,<5.5`; the jobs that install a
-    modern one collect listed paths, not trees, so an unlisted file never runs.
+    Every auto-discovering job pins a transformers RANGE (`>=4.51,<=5.17.0` in
+    studio-backend-ci.yml) and so resolves a single version per run; the jobs that pin a
+    modern one exactly collect listed paths, not trees, so an unlisted file never runs.
     """
     workflow = (
         Path(__file__).resolve().parents[3] / ".github" / "workflows" / "consolidated-tests-ci.yml"

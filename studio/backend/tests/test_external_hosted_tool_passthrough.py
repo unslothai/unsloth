@@ -572,7 +572,9 @@ def test_b_the_external_and_codex_paths_derive_the_gate_identically():
         if node.arg == "confirm_calls":
             confirms.add(ast.unparse(node.value))
     assert modes == {"payload.permission_mode or 'auto'"}
-    assert confirms == {"_permission_mode_confirm(payload)"}
+    assert confirms == {
+        "_permission_mode_confirm(payload) or _off_mode_sandbox_gate(payload, _ui_events)"
+    }
 
     nudge_values = []
     for node in ast.walk(tree):
@@ -733,3 +735,59 @@ def test_a_request_without_tools_never_scans_the_skill_roots(monkeypatch):
     chunks = _run(inf, _payload(enable_tools = False))
     assert FakeExternalClient.last["passthrough"] is not None
     assert any("hi" in chunk for chunk in chunks)
+
+
+def test_the_conversation_id_reaches_the_provider_client(monkeypatch):
+    inf = _install(monkeypatch, "openrouter")
+    _run(inf, _payload(enable_tools = False, thread_id = "thread-7"))
+    assert FakeExternalClient.last["passthrough"]["thread_id"] == "thread-7"
+
+    def _loop_raiser(transport, **_):
+        raise LoopEntered(transport._request_kwargs)
+
+    monkeypatch.setattr(inf, "stream_with_studio_tools", _loop_raiser)
+    with pytest.raises(LoopEntered) as excinfo:
+        _run(inf, _payload(enable_tools = True, enabled_tools = ["python"], thread_id = "thread-7"))
+    assert excinfo.value.args[0]["thread_id"] == "thread-7"
+
+
+@pytest.mark.parametrize(
+    "provider_type, model, caching",
+    [
+        ("anthropic", "claude-sonnet-4-6", None),
+        ("openrouter", "anthropic/claude-sonnet-4.6", None),
+        ("openrouter", "~anthropic/claude-opus-latest", True),
+        ("anthropic", "claude-sonnet-4-6", False),
+        ("openrouter", "deepseek/deepseek-v3.2", None),
+    ],
+)
+def test_a_thread_from_yesterday_leaves_every_user_turn_verbatim(
+    monkeypatch, provider_type, model, caching
+):
+    inf = _install(monkeypatch, provider_type)
+    monkeypatch.setattr(
+        inf, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-16."
+    )
+    monkeypatch.setattr(inf, "_request_has_api_key", lambda _request: False)
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second"},
+    ]
+    _run(
+        inf,
+        _payload(
+            messages = history,
+            external_model = model,
+            enable_tools = False,
+            thread_id = "thread-7",
+            enable_prompt_caching = caching,
+        ),
+    )
+    sent = FakeExternalClient.last["passthrough"]
+    assert sent["thread_id"] == "thread-7"
+    assert [m["content"] for m in sent["messages"] if m["role"] != "system"] == [
+        "first",
+        "ok",
+        "second",
+    ]

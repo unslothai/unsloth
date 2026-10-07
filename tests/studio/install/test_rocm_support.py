@@ -852,6 +852,7 @@ def run_ensure_rocm_torch(
     isdir = True,
     timeout = False,
     attrs = None,
+    return_result = False,
     **stubs,
 ):
     """Run _ensure_rocm_torch() against a fully mocked host.
@@ -859,7 +860,8 @@ def run_ensure_rocm_torch(
     `stubs` maps a stack_mod probe function to its return value, `attrs` replaces plain
     module attributes (IS_WINDOWS and friends), `probe` is the torch-probe stdout after
     the marker ("" means no marker at all, i.e. CPU torch), and `timeout` makes the probe
-    subprocess time out. Returns the (pip_install, pip_install_try) mocks.
+    subprocess time out. Returns the (pip_install, pip_install_try) mocks and, when
+    requested, the repair verdict.
     """
     pip = MagicMock()
     pip_try = MagicMock(return_value = True)
@@ -882,8 +884,8 @@ def run_ensure_rocm_torch(
             )
         else:
             stack.enter_context(patch("subprocess.run", return_value = result))
-        _ensure_rocm_torch()
-    return pip, pip_try
+        repair_ok = _ensure_rocm_torch()
+    return (pip, pip_try, repair_ok) if return_result else (pip, pip_try)
 
 
 class TestEnsureRocmTorch:
@@ -998,7 +1000,11 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @staticmethod
-    def _windows_repair(installed_family, gfx = "gfx1200"):
+    def _windows_repair(
+        installed_family,
+        gfx = "gfx1200",
+        dists = (),
+    ):
         """Run the Windows ROCm repair with an already-ROCm torch on disk. Returns the
         pip_install_try mock so callers can assert on the reinstall."""
         probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
@@ -1021,6 +1027,7 @@ class TestEnsureRocmTorch:
                 patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
                 patch.object(stack_mod, "pip_install_try", pip_try),
                 patch("subprocess.run", return_value = probe),
+                patch("importlib.metadata.distributions", return_value = list(dists)),
             ):
                 _ensure_rocm_torch()
         return pip_try
@@ -1031,16 +1038,32 @@ class TestEnsureRocmTorch:
         # a ROCm build and stopped. setup.ps1 force-reinstalls, so this is `studio update`.
         pip_try = self._windows_repair("gfx103x-all")
         assert pip_try.call_count == 1
-        assert "gfx120X-all" in str(pip_try.call_args)
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "whl-multi-arch" in str(pip_try.call_args)
 
     def test_matching_wheel_family_is_left_alone(self):
         # Negative control: the right family must not be re-downloaded on every update.
-        assert self._windows_repair("gfx120x-all").call_count == 0
+        assert self._windows_repair("gfx103x-all", gfx = "gfx1033").call_count == 0
 
     def test_unknown_wheel_family_is_left_alone(self):
         # Older wheels predate the split runtime, so the family is unreadable and
         # guessing would force a multi-GB reinstall on every update.
-        assert self._windows_repair(None).call_count == 0
+        assert self._windows_repair(None, gfx = "gfx1033").call_count == 0
+
+    def test_swapped_card_on_a_multiarch_install_gets_its_device_pack(self):
+        dists = self._dists("amd-torch-device-gfx1151", "amd_torchvision_device_gfx1151")
+        pip_try = self._windows_repair(None, gfx = "gfx1200", dists = dists)
+        assert pip_try.call_count == 1
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "torchvision[device-gfx1200]" in str(pip_try.call_args)
+
+    def test_multiarch_install_with_this_cards_packs_is_left_alone(self):
+        dists = self._dists("amd-torch-device-gfx1200", "amd-torchvision-device-gfx1200")
+        assert self._windows_repair(None, gfx = "gfx1200", dists = dists).call_count == 0
+
+    def test_multiarch_install_without_the_torchvision_pack_is_repaired(self):
+        dists = self._dists("amd-torch-device-gfx1200")
+        assert self._windows_repair(None, gfx = "gfx1200", dists = dists).call_count == 1
 
     @staticmethod
     def _dists(*names):
@@ -1087,14 +1110,20 @@ class TestEnsureRocmTorch:
                 assert stack_mod._installed_rocm_wheel_family() is None
 
     def test_switched_host_does_not_reinstall_on_every_update(self):
-        # End to end: after the gfx103X -> gfx120X switch the orphan is still installed
-        # and the next `studio update` must do nothing.
-        reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
-        dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
-        with patch("importlib.metadata.requires", return_value = reqs):
-            with patch("importlib.metadata.distributions", return_value = dists):
-                family = stack_mod._installed_rocm_wheel_family()
-        assert self._windows_repair(family).call_count == 0
+        # A venv migrated to the multi-arch packs keeps its orphaned family runtimes; the next
+        # `studio update` must do nothing rather than chase the stale family.
+        dists = self._dists(
+            "rocm_sdk_libraries_gfx103X-all",
+            "rocm_sdk_libraries_gfx120X-all",
+            "amd-torch-device-gfx1200",
+            "amd-torchvision-device-gfx1200",
+        )
+        assert self._windows_repair("gfx103x-all", dists = dists).call_count == 0
+
+    def test_a_per_family_install_on_a_multiarch_arch_migrates_once(self):
+        pip_try = self._windows_repair("gfx120x-all")
+        assert pip_try.call_count == 1
+        assert "torchvision[device-gfx1200]" in str(pip_try.call_args)
 
     def test_torch_already_has_hip_skips(self):
         """If torch already has HIP, should skip ROCm reinstall."""
@@ -1131,6 +1160,26 @@ class TestEnsureRocmTorch:
         mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (6, 3))
         torch_call = mock_pip.call_args_list[0]
         assert "rocm6.3" in str(torch_call)
+
+    def test_query_pytorch_mirror_skips_the_generic_rocm_pin(self, monkeypatch):
+        """A synthesized rocm leaf after ?token= is neither usable nor a fallback license."""
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        attrs = {"_TORCH_BACKEND": "", "_PYTORCH_WHL_BASE": "https://mirror.example/whl?token=abc"}
+        mock_pip, _, repair_ok = run_ensure_rocm_torch(
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (6, 3),
+            attrs = attrs,
+            return_result = True,
+        )
+        mock_pip.assert_not_called()
+        assert repair_ok is False
+
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "rocm6.3")
+        _, _, repair_ok = run_ensure_rocm_torch(
+            _detect_rocm_version = (6, 3), attrs = attrs, return_result = True
+        )
+        assert repair_ok is False
 
     def test_old_rocm_skips(self):
         """ROCm version too old (below 6.0) should skip."""
@@ -1831,6 +1880,24 @@ class TestGfx906LegacyReroute:
         assert "torch>=2.4,<2.11.0" in torch_call
         # gfx906 has no prebuilt bnb -- the generic wheel must not be installed.
         assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
+
+    def test_query_pytorch_mirror_skips_the_gfx906_legacy_pin(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        mock_pip, mock_pip_try, repair_ok = run_ensure_rocm_torch(
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 2),
+            _detect_amd_gfx_codes = ["gfx906"],
+            attrs = {
+                "_TORCH_BACKEND": "",
+                "_PYTORCH_WHL_BASE": "https://mirror.example/whl?token=abc",
+            },
+            return_result = True,
+        )
+        mock_pip.assert_not_called()
+        mock_pip_try.assert_not_called()
+        assert repair_ok is False
 
     def test_gfx906_repairs_existing_rocm72_torch(self, monkeypatch):
         """An installed +rocm7.2 torch IS the broken combo: reinstall from rocm6.3
@@ -4475,30 +4542,36 @@ class TestIsRdnaExpansion:
 class TestWindowsRocmIndexUrl:
     """Verify GPU arch → AMD pip index URL mapping."""
 
-    def test_gfx1200_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1200")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.fixture(autouse = True)
+    def _no_mirror(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
 
-    def test_gfx1201_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1201")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201", "gfx1151", "gfx1150", "gfx1100"])
+    def test_rdna_maps_to_the_multiarch_index(self, gfx):
+        url = stack_mod._windows_rocm_index_url(gfx)
+        assert url == "https://repo.amd.com/rocm/whl-multi-arch/"
 
-    def test_gfx1151_maps_to_gfx1151(self):
-        url = stack_mod._windows_rocm_index_url("gfx1151")
-        assert url is not None
-        assert "gfx1151" in url
+    @pytest.mark.parametrize(
+        "gfx,leaf",
+        [
+            ("gfx1200", "gfx120X-all"),
+            ("gfx1201", "gfx120X-all"),
+            ("gfx1151", "gfx1151"),
+            ("gfx1150", "gfx1150"),
+            ("gfx1100", "gfx110X-all"),
+        ],
+    )
+    def test_family_mirror_keeps_the_family_leaf(self, gfx, leaf, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
+        assert stack_mod._windows_rocm_index_url(gfx) == f"https://mirror.example/whl/{leaf}/"
 
-    def test_gfx1150_maps_to_gfx1150(self):
-        url = stack_mod._windows_rocm_index_url("gfx1150")
-        assert url is not None
-        assert "gfx1150" in url
-
-    def test_gfx1100_maps_to_gfx110x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1100")
-        assert url is not None
-        assert "gfx110X-all" in url
+    def test_cdna_keeps_its_family(self):
+        assert (
+            stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
+        )
 
     def test_unknown_arch_returns_none(self):
         assert stack_mod._windows_rocm_index_url("gfx9999") is None
@@ -4631,16 +4704,16 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_unsupported_discrete_does_not_depose_a_supported_igpu(self, monkeypatch):
-        # A supported APU next to a discrete card with no Windows wheels (gfx1010 is absent
-        # from _GFX_TO_AMD_INDEX_ARCH): preferring the dGPU purely for being discrete
+        # A supported APU next to a discrete card with no Windows wheels (gfx803, Polaris, is absent
+        # from _GFX_TO_AMD_INDEX_ARCH; gfx1010 routes since #11755): preferring the dGPU purely for being discrete
         # resolves to no index and falls back to CPU, worse than the shadowing itself.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1010\n"
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx803\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
@@ -4654,14 +4727,14 @@ class TestDetectWindowsGfxArch:
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         assert stack_mod._windows_rocm_index_url("gfx1013") is None
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx1010\n"
+        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx803\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
-        assert result == "gfx1010"
+        assert result == "gfx803"
 
     def test_cuda_visible_devices_also_pins_the_igpu(self, monkeypatch):
         # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own masks, so a
@@ -4765,14 +4838,14 @@ class TestDetectWindowsGfxArch:
         assert self._hipinfo_pick(["gfx1036:xnack-", "gfx1200:xnack-"]) == "gfx1200"
 
     def test_prefers_a_wheel_backed_discrete_over_an_unsupported_one(self, monkeypatch):
-        # gfx1010 has no Windows wheel index, so stopping at the first non-integrated
+        # gfx803 (Polaris) has no Windows wheel index (gfx1010 routes since #11755), so stopping at the first non-integrated
         # token dropped a host with a perfectly good gfx1200 to CPU torch.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
-        assert stack_mod._windows_rocm_index_url("gfx1010") is None
-        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert stack_mod._windows_rocm_index_url("gfx803") is None
+        assert self._hipinfo_pick(["gfx1036", "gfx803", "gfx1200"]) == "gfx1200"
         # Same when the iGPU itself has no wheels: still prefer the supported card.
-        assert self._hipinfo_pick(["gfx1013", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert self._hipinfo_pick(["gfx1013", "gfx803", "gfx1200"]) == "gfx1200"
 
     def test_pinning_a_wheelless_gpu_says_why_torch_will_be_cpu(self, monkeypatch, capsys):
         # The pin is honoured, but silently installing CPU torch while another enumerated
@@ -4781,7 +4854,7 @@ class TestDetectWindowsGfxArch:
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
-        assert self._hipinfo_pick(["gfx1010", "gfx1036"]) == "gfx1010"
+        assert self._hipinfo_pick(["gfx803", "gfx1036"]) == "gfx803"
         out = capsys.readouterr().out
         assert "no AMD Windows wheels" in out
         assert "gfx1036" in out
@@ -4800,10 +4873,10 @@ class TestDetectWindowsGfxArch:
 
     def test_advisory_names_the_selected_gpus_real_index(self, monkeypatch, capsys):
         # Not always device 1: here it is device 2, and naming 1 would expose the
-        # gfx1010 the installed wheels do not target.
+        # gfx803 the installed wheels do not target.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
-        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        assert self._hipinfo_pick(["gfx1036", "gfx803", "gfx1200"]) == "gfx1200"
         out = capsys.readouterr().out
         assert "HIP_VISIBLE_DEVICES 2" in out
         assert "HIP_VISIBLE_DEVICES 1" not in out
@@ -5852,7 +5925,7 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
-    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+    def test_install_python_stack_installs_pypi_torchao_when_windows_rocm_torch_is_installed(
         self,
         mock_pip,
         mock_run,
@@ -5887,11 +5960,18 @@ class TestWindowsRocmTorchaoGuard:
             patch.object(stack_mod.install_manifest, "installed_versions", return_value = ["0"]),
             patch.object(stack_mod.install_manifest, "damaged_payload_files", return_value = []),
             patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+            patch.object(stack_mod, "pip_install_try", return_value = True) as mock_try,
         ):
             assert stack_mod.install_python_stack() == 0
 
-        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
-        assert not any("torchao" in arg for arg in installed_specs)
+        torchao_calls = [
+            [str(arg) for arg in call.args]
+            for call in mock_pip.call_args_list + mock_try.call_args_list
+            if any(str(arg).startswith("torchao") for arg in call.args)
+        ]
+        # From PyPI: download.pytorch.org's rocm leaves serve Linux only.
+        assert torchao_calls
+        assert all("--index-url" not in c for c in torchao_calls)
 
 
 class TestProgressStepCountMatchesTotal:
@@ -6116,9 +6196,9 @@ class TestWorkerWindowsRocmPatches:
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_export_worker_calls_shared_torchao_stub(self):
-        """export/worker.py must invoke the same shared torchao stub entrypoint."""
+        """export/worker.py loads real torchao when it can and otherwise the same shared stub."""
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
-        assert "install_torchao_windows_rocm_stub()" in source
+        assert "install_torchao_windows_rocm_real_or_stub()" in source
 
     def test_embedder_calls_shared_torchao_stub(self):
         """embeddings.py must install the stub before importing sentence-transformers:
@@ -7367,8 +7447,6 @@ class TestHipSdkInstalledButDeviceInaccessible:
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 forward their resolved gfx
 # arch to install_llama_prebuilt.py so the per-gfx prebuilt is picked.
 
-_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
-
 
 class TestNormalizeForwardedGfx:
     """A forwarded gfx string is reduced to a single clean gfx token."""
@@ -7718,7 +7796,6 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 # TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
 
 
-_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
 _LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
@@ -7996,6 +8073,7 @@ class TestRocmMiscomputingArchDemotion:
         env = None,
         codes_fn = None,
         kfd = (),
+        return_result = False,
     ):
         calls = []
         monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: list(kfd))
@@ -8021,14 +8099,39 @@ class TestRocmMiscomputingArchDemotion:
             monkeypatch.delenv(_var, raising = False)
         for _var, _val in (env or {}).items():
             monkeypatch.setenv(_var, _val)
-        stack_mod._ensure_cpu_torch()
-        return calls
+        result = stack_mod._ensure_cpu_torch()
+        return (calls, result) if return_result else calls
 
     def test_installed_rocm_torch_on_gfx1033_is_demoted(self, monkeypatch):
         calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1033"])
         assert len(calls) == 1, "gfx1033 kept its ROCm torch across the upgrade"
         assert "--force-reinstall" in calls[0][0]
         assert "download.pytorch.org/whl/cpu" in str(calls[0])
+
+    @pytest.mark.parametrize("family", ["cpu", "current"])
+    def test_an_unusable_non_rocm_family_still_requires_the_demotion(self, monkeypatch, family):
+        monkeypatch.setattr(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc")
+        calls, repair_ok = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            ["gfx1033"],
+            env = {"UNSLOTH_TORCH_INDEX_FAMILY": family},
+            return_result = True,
+        )
+        assert calls == []
+        assert repair_ok is False
+
+    def test_an_unusable_rocm_family_may_explicitly_retain_rocm(self, monkeypatch):
+        monkeypatch.setattr(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc")
+        calls, repair_ok = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            ["gfx1033"],
+            env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"},
+            return_result = True,
+        )
+        assert calls == []
+        assert repair_ok is not False
 
     def test_hsa_spoofed_gfx1033_is_still_demoted(self, monkeypatch):
         """HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh workaround and makes

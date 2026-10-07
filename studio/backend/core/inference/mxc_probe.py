@@ -15,7 +15,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from . import mxc_adapter, mxc_policy, mxc_runtime
+from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_read_grants, mxc_runtime
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, bool, str]] = {}
@@ -37,6 +37,21 @@ def invalidate_cache() -> None:
     with _lock:
         _cache.clear()
         _host_prep_cache.clear()
+    # Only when already loaded: the MXC child paths import this module without the tool stack.
+    os_sandbox = sys.modules.get(f"{__package__}.os_sandbox")
+    if os_sandbox is not None:
+        os_sandbox.forget_tool_isolation()
+
+
+def host_prep_command() -> list[str]:
+    """The elevated host preparation, as argv; Settings > Sandbox runs exactly this."""
+    return [
+        sys.executable,
+        str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
+        "--prepare-host",
+        "--install-dir",
+        str(mxc_runtime._installed_package_root()),
+    ]
 
 
 def host_prep_remediation() -> str | None:
@@ -52,15 +67,7 @@ def host_prep_remediation() -> str | None:
     steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
     advice = None
     if steps:
-        command = subprocess.list2cmdline(
-            [
-                sys.executable,
-                str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
-                "--prepare-host",
-                "--install-dir",
-                str(mxc_runtime._installed_package_root()),
-            ]
-        )
+        command = subprocess.list2cmdline(host_prep_command())
         reboot = (
             " (prepare-null-device is undone by every reboot)"
             if ("prepare-null-device" in steps)
@@ -68,21 +75,30 @@ def host_prep_remediation() -> str | None:
         )
         advice = (
             f"MXC reports missing host preparation: {', '.join(steps)}{reboot}. "
-            f"Run {command} and approve the administrator prompt."
+            f"Run {command} and approve the administrator prompt, or use Settings > Sandbox > "
+            "Prepare this PC."
         )
     with _lock:
         _host_prep_cache[identity] = (time.monotonic() + NEGATIVE_TTL, advice)
     return advice
 
 
+def _is_cmd(selected_executable: str) -> bool:
+    return Path(selected_executable).name.casefold() in mxc_policy._CMD_NAMES
+
+
 def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outside_write: Path):
     name = Path(selected_executable).name.casefold()
     read_capture = workdir / "outside-read.txt"
-    if name in {"cmd", "cmd.exe"}:
+    if _is_cmd(selected_executable):
+        # The quoted redirect is the positive control for quoting: a command line that mangles quotes
+        # also fails the denied read and write below, which would otherwise pass without isolation.
         command = (
             "echo ok>inside.txt"
+            ' & echo ok>"inside quoted.txt"'
             f' & type "{canary}" >"{read_capture}" 2>nul'
             f' & (echo bad>"{outside_write}") 2>nul'
+            " & cd"
             " & echo UNSLOTH_MXC_TERMINAL_PROBE_OK"
         )
         return (selected_executable, "/d", "/s", "/c", command)
@@ -223,8 +239,24 @@ def _probe(
             env = env,
         )
 
+        # Production runs a cmd Terminal from a drive alias of its workdir, so the probe must too.
+        lease = None
+        if execution_kind == "terminal" and _is_cmd(selected_executable):
+            try:
+                lease = mxc_drive_alias.acquire(
+                    mxc_policy._safe_canonical_path(str(workdir), directory = True)
+                )
+            except Exception:
+                lease = None
+        grant_lease = None
         try:
-            request = mxc_policy.build_launch_request(probe_plan)
+            # The probe reads Python through the same grants, so a revocation waits for it too.
+            grant_lease = mxc_read_grants.hold_if_needed()
+            request = (
+                mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
+                if lease
+                else mxc_policy.build_launch_request(probe_plan)
+            )
             proc = mxc_adapter.spawn(
                 request,
                 cancel_event = cancel_event,
@@ -261,6 +293,10 @@ def _probe(
                 if proc.poll() is None:
                     mxc_adapter.abort(proc)
                 mxc_adapter.release_runtime(proc)
+            if lease is not None:
+                lease.release()
+            if grant_lease is not None:
+                grant_lease.release()
         if (
             proc.returncode != 0
             or result.get("exitCode") != 0
@@ -281,6 +317,8 @@ def _probe(
                 or outside_write.exists()
                 or "outside-secret" in outside_read
                 or not (workdir / "inside.txt").is_file()
+                or (_is_cmd(selected_executable) and not (workdir / "inside quoted.txt").is_file())
+                or (lease is not None and lease.root.casefold() not in output.casefold().split())
             ):
                 return False, "the live MXC Terminal positive/negative controls failed"
             return True, "the selected Terminal passed the live MXC positive and negative controls"

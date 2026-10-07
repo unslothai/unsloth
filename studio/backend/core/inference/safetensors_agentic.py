@@ -20,6 +20,7 @@ from typing import Callable, Generator, Optional
 
 from loggers import get_logger
 
+from core.inference.llama_cpp import _has_answer_artifact
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
@@ -61,6 +62,7 @@ from core.inference.mcp_images import (
     trim_image_turns,
 )
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_READ_TOOLS,
     _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
@@ -72,7 +74,7 @@ from core.inference.tool_loop_controller import (
 )
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
-    trailing_assistant_text,
+    trailing_assistant_resume_kind,
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
@@ -356,24 +358,49 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
     return status_for_tool(tool_name, arguments)
 
 
-def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> str:
+def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
+    """``append_assistant_turn`` for raw-text turns: a resumed thought is replayed whole after the
+    re-emitted ``<think>``; text without that opener drops it."""
+    if not (
+        continue_final_message
+        and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        and isinstance(assistant_msg.get("content"), str)
+    ):
+        append_assistant_turn(
+            conversation, assistant_msg, continue_final_message = continue_final_message
+        )
+        return
+    thought = conversation[-1]["reasoning_content"]
+    merged = {**conversation[-1], **assistant_msg}
+    merged.pop("reasoning_content", None)
+    if merged["content"].startswith("<think>"):
+        merged["content"] = f"<think>{thought}{merged['content'][len('<think>'):]}"
+    conversation[-1] = merged
+
+
+def _reprompt_intent_text(
+    text: str,
+    *,
+    reasoning_prefilled: bool = False,
+    visible_only: bool = False,
+) -> str:
     """Return visible answer text for the plan-without-action classifier.
 
     Safetensors reasoning shares the cumulative text channel with the answer.
     Forward-looking phrases inside ``<think>`` / ``[THINK]`` are private
     planning, not a user-visible promise to call a tool. Match GGUF's behavior:
     classify visible content when present and fall back to reasoning only for a
-    reasoning-only stall.
+    reasoning-only stall. ``visible_only`` drops that fallback and returns "" instead.
     """
     prefilled_reasoning = ""
     if reasoning_prefilled:
         close = _THINK_CLOSE_RE.search(text)
         if close is None:
-            return text.strip()
+            return "" if visible_only else text.strip()
         prefilled_reasoning = text[: close.end()].strip()
         text = text[close.end() :].strip()
         if not text:
-            return prefilled_reasoning
+            return "" if visible_only else prefilled_reasoning
 
     spans = _think_spans_outside_tool_markup(text)
     if not spans:
@@ -390,7 +417,7 @@ def _reprompt_intent_text(text: str, *, reasoning_prefilled: bool = False) -> st
 
     visible_text = "".join(visible).strip()
     reasoning_text = "".join(reasoning).strip()
-    if visible_text:
+    if visible_text or visible_only:
         return visible_text
     return "\n".join(part for part in (prefilled_reasoning, reasoning_text) if part).strip()
 
@@ -601,8 +628,10 @@ def run_safetensors_tool_loop(
     thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
+    mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
     markup = None,
@@ -612,6 +641,7 @@ def run_safetensors_tool_loop(
     generation_stats_holder: Optional[dict] = None,
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
+    context_fitter: Optional[Callable[[list, list, list], dict]] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -640,11 +670,23 @@ def run_safetensors_tool_loop(
     # let the prompt carry a second full allowance. The route reserves the attachment's
     # slot by trimming replay to limit - 1 before interleaving it.
     caller_images = tuple(caller_image_indexes)
-    # The branch this request is on, before the loop appends anything. A GGUF-compacted
-    # thread keeps its archive across a switch to safetensors, so search_conversation is
-    # advertised here too and needs the same filtering: the stored rows are the whole
-    # DAG, and Retry leaves the replaced response in them.
-    request_branch = list(messages)
+    # The branch this request is on. A GGUF-compacted thread keeps its archive across a
+    # switch to safetensors, so search_conversation is advertised here too and needs the
+    # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
+    # response in them.
+    _live_branch = list(messages)
+    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
+    # own earlier tool exchange into the archive, where the client's messages alone would
+    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
+    # for the branch's last user turn, which has to stay the request.
+    _live_branch_ids = {id(message) for message in _live_branch}
+
+    def _extend_live_branch(current: list) -> list:
+        for message in current:
+            if id(message) not in _live_branch_ids and message.get("role") != "user":
+                _live_branch_ids.add(id(message))
+                _live_branch.append(message)
+        return _live_branch
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
     # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
@@ -652,12 +694,36 @@ def run_safetensors_tool_loop(
     # no mode is already resolved to "ask" at the request layer, so it never
     # arrives here as an ambiguous unset.
     from core.inference.tool_stream_exec import stream_tool_execution
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_sandbox_level,
+        normalize_tool_permissions,
+        requires_os_isolation,
+        runs_without_os_sandbox,
+        tool_call_may_prompt,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
+    sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    yield from load_mentioned_skills(
+        conversation,
+        tools if max_tool_iterations > 0 else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        context_length = context_length,
+        continue_final_message = continue_final_message,
+        # The downstream tokenizer owns fitting; only system context is guaranteed.
+        dedup_tool_context = False,
+    )
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask
@@ -670,7 +736,7 @@ def run_safetensors_tool_loop(
     # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    ) or bool(continue_final_message and trailing_assistant_text(conversation))
+    ) or bool(continue_final_message and trailing_assistant_resume_kind(conversation) is not None)
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
@@ -705,6 +771,8 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0
@@ -758,6 +826,15 @@ def run_safetensors_tool_loop(
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
+        # Refit every iteration: tool results grow the prompt after the first turn. Given
+        # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
+        if context_fitter is not None:
+            fit_result = context_fitter(
+                conversation, active_tools, _extend_live_branch(conversation)
+            )
+            conversation = list(fit_result.get("messages") or conversation)
+            yield from fit_result.get("events") or ()
+
         # This loop receives cumulative snapshots, so keep both whole-prefix scans
         # incremental: the stripper settles safe prefixes, the signal detector resumes
         # with enough overlap for a literal split across snapshots.
@@ -807,12 +884,11 @@ def run_safetensors_tool_loop(
         # as "running" before the user has approved it. Suppress the early card in that case. In auto mode render_html
         # is always safe and never prompts, so keep its early canvas card; mirrors the GGUF path's _confirm_gated
         # exemption.
-        from core.inference.tools import is_always_safe_tool
-
-        _provisional_confirm_gated = (
-            bool(confirm_tool_calls)
-            and not bypass_permissions
-            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        _provisional_confirm_gated = tool_call_may_prompt(
+            confirm_tool_calls = bool(confirm_tool_calls),
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            name = "render_html",
         )
 
         def _should_start_provisional_render_html(content: str) -> bool:
@@ -1210,6 +1286,18 @@ def run_safetensors_tool_loop(
                     and not any(record.executed for record in tool_controller.history)
                     and not is_reprompt_repeat(intent_text, last_reprompt_text)
                     and is_short_intent_without_action(intent_text)
+                    # Markup stripped first: a call fenced inside <tool_call> is not an answer.
+                    and not _has_answer_artifact(
+                        strip_tool_markup(
+                            _reprompt_intent_text(
+                                content_accum,
+                                reasoning_prefilled = reasoning_prefilled,
+                                visible_only = True,
+                            ),
+                            final = True,
+                            enabled_tool_names = _enabled_tool_names,
+                        )
+                    )
                 ):
                     reprompt_count += 1
                     last_reprompt_text = intent_text
@@ -1222,7 +1310,7 @@ def run_safetensors_tool_loop(
                     )
                     # Merges into a resumed partial: the nudge that follows is a user
                     # turn, so a second assistant turn breaks alternation.
-                    append_assistant_turn(
+                    _append_raw_turn(
                         conversation,
                         {"role": "assistant", "content": intent_text},
                         continue_final_message = continue_final_message,
@@ -1342,7 +1430,7 @@ def run_safetensors_tool_loop(
                     if _key in seen_keys:
                         if novel_kept <= novel_at_last_keep.get(_key, 0):
                             continue
-                    else:
+                    elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
                         novel_kept += 1
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key
@@ -1395,7 +1483,7 @@ def run_safetensors_tool_loop(
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    append_assistant_turn(
+                    _append_raw_turn(
                         conversation,
                         assistant_msg,
                         continue_final_message = continue_final_message,
@@ -1425,7 +1513,7 @@ def run_safetensors_tool_loop(
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
                 # Merges into a resumed partial, so a continued turn that calls a tool
                 # stays one assistant message.
-                append_assistant_turn(
+                _append_raw_turn(
                     conversation,
                     assistant_msg,
                     continue_final_message = continue_final_message,
@@ -1435,19 +1523,37 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins here too, so a direct internal caller with both flags
-            # never prompts. "auto" pauses only high-risk calls; "off" never
-            # prompts (sandbox stays on).
-            needs_confirm = (
-                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+            # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
+            # high-risk python/terminal call without OS isolation.
+            from core.inference.tools import mcp_image_share
+
+            needs_confirm = needs_tool_confirmation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                sandbox_level = sandbox_level,
             )
-            if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_high_risk_tool_call
-                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+            needs_confirm = needs_confirm or image_share is not None
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                prompted = needs_confirm,
+                sandbox_level = sandbox_level,
+            )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
 
             try:
                 # A gated call has not started: say waiting, not "Running" (GGUF parity).
@@ -1528,6 +1634,7 @@ def run_safetensors_tool_loop(
                     _output_callback,
                     _decision = decision,
                     _approved = _host_access_approved,
+                    _strict = strict_isolation,
                 ):
                     kwargs = dict(
                         cancel_event = cancel_event,
@@ -1537,8 +1644,15 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                    if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "required"
+                    elif runs_without_os_sandbox(
+                        _decision.tool_name, sandbox_level
+                    ) and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "software"
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
-                        kwargs["conversation_branch"] = request_branch
+                        kwargs["conversation_branch"] = _extend_live_branch(conversation)
                     if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
                         kwargs["host_access_approved"] = True
                     # And the room the model has left, as the GGUF loop does: without a
@@ -1635,6 +1749,8 @@ def run_safetensors_tool_loop(
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
+                    if image_share is not None:
+                        kwargs["mcp_image"] = image_share["image"]
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
 
                 try:

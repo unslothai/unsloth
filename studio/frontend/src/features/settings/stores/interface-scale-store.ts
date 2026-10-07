@@ -17,10 +17,8 @@ import {
 export { getAppliedInterfaceZoom };
 
 export const INTERFACE_SCALE_STORAGE_KEY = "unsloth_interface_scale";
-// The floor is 50, not the 25 Chrome and VS Code allow, because both of those ship
-// Cmd/Ctrl+0 and this does not yet. At 25% the Settings row you would use to undo it
-// renders around 3.5px, and the value is device-local in localStorage, so recovery means
-// clearing app data. Drop it back to 25 once a reset accelerator exists.
+// Floor is 50, not 25: in the browser Cmd/Ctrl+0 resets the browser's zoom, not this one, and at
+// 25% the Settings row that undoes it is about 3.5px tall.
 export const INTERFACE_SCALE_RANGE = {
   min: 50,
   max: 200,

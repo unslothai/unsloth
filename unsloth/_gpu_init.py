@@ -82,11 +82,17 @@ configure_amdgpu_asic_id_table_path()
 patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
+# Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
+fix_torchao_torch_symbol_skew()
+# Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
+from ._torchao_nodist import fix_torchao_without_torch_distributed
+
+fix_torchao_without_torch_distributed()
+del fix_torchao_without_torch_distributed
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
-fix_torchao_torch_symbol_skew()
 # The above fixes THIS process only; vLLM's model-architecture inspector is a subprocess that
 # imports torchao itself and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
@@ -166,6 +172,47 @@ del _nvd, _cgroup_pinned
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
+
+def _nvidia_smi_gpu_name():
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            # A UnicodeDecodeError here would replace the original error.
+            errors = "replace",
+            timeout = 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if smi.returncode != 0 or not smi.stdout.strip():
+        return None
+    return smi.stdout.strip().splitlines()[0].strip()
+
+
+def _reraise_device_type_error_with_gpu_hint(exception):
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
+    # An empty or "-1" mask hides every GPU on purpose.
+    if "ROCm" in str(exception) or (mask is not None and "".join(mask.split()) in ("", "-1")):
+        raise exception
+    gpu_name = _nvidia_smi_gpu_name()
+    if gpu_name is None:
+        raise exception
+    try:
+        import torch as _torch
+        torch_build = _torch.__version__  # local tag names the build: +cpu, +cu128, +rocm6.4, +xpu
+    except Exception:
+        torch_build = "unknown"
+    mask_note = "" if mask is None else f", CUDA_VISIBLE_DEVICES={mask!r}"
+    raise NotImplementedError(
+        f"Unsloth: nvidia-smi sees {gpu_name} but torch.cuda.is_available() is False "
+        f"(torch {torch_build}{mask_note}). PyTorch likely does not match this "
+        f"machine; reinstall it for {sys.executable} per "
+        f"https://github.com/unslothai/unsloth#-install"
+    ) from exception
+
+
 # Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
@@ -179,6 +226,8 @@ except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
     )
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
 except:
     raise
 del PackageNotFoundError, importlib_version
@@ -241,12 +290,18 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .device_type import (
-    arch_lacks_bf16,
-    arch_lacks_buffer_ops,
-    apply_gfx101x_triton_workaround,
-    hip_visible_archs,
-)
+
+# UNSLOTH_ZOO_DISABLE_GPU_INIT makes zoo answer "cpu", so unsloth's own check raises instead.
+try:
+    from .device_type import (
+        arch_lacks_bf16,
+        arch_lacks_buffer_ops,
+        apply_gfx101x_triton_workaround,
+        hip_visible_archs,
+    )
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
+del _reraise_device_type_error_with_gpu_hint, _nvidia_smi_gpu_name
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
@@ -254,15 +309,20 @@ from .import_fixes import (
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_untrusted_config_fields,
+    fix_transformers_chat_template_path_traversal,
     fix_transformers_chunked_mask_block_sequence_ids,
+    fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_fp8_modulelist_experts,
+    fix_transformers_fp8_unscaled_checkpoint_linears,
     fix_transformers_validate_rope_ignore_keys,
     fix_transformers5_remote_code_legacy_defaults,
     fix_transformers_config_only_remote_code,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
+    fix_transformers5_remote_code_model_api,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -273,6 +333,8 @@ from .import_fixes import (
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_cudnn_sdpa_d256_masked_backward,
+    fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     patch_trunc_normal_precision_issue,
@@ -283,6 +345,7 @@ from .import_fixes import (
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
+    patch_torch_export_pt2_unsafe_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
     fix_executorch,
@@ -290,10 +353,12 @@ from .import_fixes import (
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
     disable_broken_wandb,
+    fix_accelerate_dtensor_check_without_torch_distributed,
     fix_trl_vllm_ascend,
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_peft_float8_adapter_upcast,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -307,6 +372,10 @@ fix_transformers5_bare_annotation_configs()
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
+fix_transformers_flex_mask_graph_breaks()
+# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
+fix_transformers_untrusted_config_fields()
+fix_transformers_chat_template_path_traversal()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -325,6 +394,7 @@ del check_transformers_prequantized_vlm_quant_state
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
 fix_transformers_fp8_modulelist_experts()
+fix_transformers_fp8_unscaled_checkpoint_linears()
 fix_transformers_validate_rope_ignore_keys()
 fix_transformers5_remote_code_legacy_defaults()
 fix_transformers_config_only_remote_code()
@@ -336,6 +406,7 @@ fix_transformers_is_torch_fx_available()
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
 fix_transformers5_image_processing_reexports()
+fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -352,6 +423,9 @@ check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
+fix_cudnn_sdpa_d256_masked_backward()
+# Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
+fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -365,6 +439,7 @@ patch_datasets()
 patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
+patch_torch_export_pt2_unsafe_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()
@@ -372,12 +447,15 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
+# After unsloth_zoo, whose ROCm torchao loader must be in place before accelerate is imported.
+fix_accelerate_dtensor_check_without_torch_distributed()
 # Must run before patch_peft_weight_converter_compatibility: it stubs the transformers v5
 # submodules peft 0.19.x imports, so the next patch can wrap build_peft_weight_mapping instead of
 # being swallowed by its ImportError.
 fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_peft_float8_adapter_upcast()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -388,12 +466,16 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
+del fix_transformers_untrusted_config_fields
+del fix_transformers_chat_template_path_traversal
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_fp8_modulelist_experts
+del fix_transformers_fp8_unscaled_checkpoint_linears
 del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
+del fix_transformers5_remote_code_model_api
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
@@ -405,6 +487,8 @@ del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
+del fix_cudnn_sdpa_d256_masked_backward
+del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del patch_trunc_normal_precision_issue
@@ -422,9 +506,11 @@ del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_torchaudio_if_cuda_mismatched
 del disable_broken_wandb
+del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_peft_float8_adapter_upcast
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply

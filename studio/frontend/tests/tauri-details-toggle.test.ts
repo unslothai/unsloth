@@ -30,7 +30,7 @@ test("the shared detail toggle puts a custom down chevron after its label", asyn
   assert.match(summary, /\bflex\b/);
   assert.ok(
     summary.indexOf("<HugeiconsIcon") > summary.indexOf("Show {label}") &&
-      summary.includes("icon={ChevronDownIcon}"),
+      summary.includes("icon={ChevronDownStandardIcon}"),
     "the chevron must be on the right",
   );
 });

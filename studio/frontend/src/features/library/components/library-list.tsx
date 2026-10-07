@@ -9,6 +9,7 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { audioSummary } from "../audio-items";
 import { modelLabelKey } from "../file-kind";
 import { formatActivityTime, formatCardTime, formatItemCount, formatSize } from "../format";
 import type { LibrarySortKey, LibrarySortState } from "../settings-store";
@@ -22,6 +23,8 @@ function targetKey(target: LibraryTarget): string {
 }
 
 const ROW_INSET = "pl-4 pr-6";
+// Gap, not padding, so each row's hover area keeps its width.
+export const LIST_ROW_GAP = "gap-1";
 
 const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
 const ACTIVITY_COLUMN = "w-48 shrink-0";
@@ -30,6 +33,7 @@ const SIZE_COLUMN = "w-28 shrink-0";
 const ACTIVITY_COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.lastActivity", ACTIVITY_COLUMN],
 ];
+export const FILE_LIST_COLUMNS = { cell: CELL, modified: MODIFIED_COLUMN, size: SIZE_COLUMN };
 const COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.modifiedColumn", MODIFIED_COLUMN],
   ["size", "library.preview.size", SIZE_COLUMN],
@@ -176,6 +180,8 @@ export function LibraryList({
   sort,
   onSortChange,
   activity,
+  leading,
+  favoriteMarks = true,
 }: {
   folders: LibraryFolder[];
   items: LibraryItem[];
@@ -185,6 +191,9 @@ export function LibraryList({
   sort: LibrarySortState;
   onSortChange: (key: LibrarySortKey) => void;
   activity: boolean;
+  /** Rows listed first, with own menus and no selection (Favorites' starred chats). */
+  leading?: ReactNode;
+  favoriteMarks?: boolean;
 }) {
   const t = useT();
   const actions = useLibraryActions();
@@ -238,7 +247,8 @@ export function LibraryList({
           <span className="w-8 shrink-0" />
         </div>
       </div>
-      <div className="mt-1 flex flex-col">
+      <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
+        {leading}
         {folders.map((folder) => (
           <Row
             key={folder.id}
@@ -281,7 +291,12 @@ export function LibraryList({
                     {t(modelLabelKey(item)!)}
                   </span>
                 )}
-                {item.favorite && (
+                {item.audio && (
+                  <span className="shrink-0 text-muted-foreground text-sm tabular-nums">
+                    {audioSummary(item).join(" · ")}
+                  </span>
+                )}
+                {favoriteMarks && item.favorite && (
                   <HugeiconsIcon
                     icon={StarPointedIcon}
                     aria-label={t("library.list.favorite")}

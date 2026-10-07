@@ -8,7 +8,7 @@ import { useIsAccountOwner } from "@/features/auth";
 import { useT } from "@/i18n";
 import { DEFAULT_HF_ENDPOINT, type HubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type HubEndpointSettings,
   type HubSettings,
@@ -17,6 +17,7 @@ import {
   updateHubSettings,
   updateHubSource,
 } from "../api/hub-settings";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -32,6 +33,20 @@ export function HubSettingsSection() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+
+  useEffect(() => {
+    if (scrollTarget !== "general-hub") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("general-hub");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +104,7 @@ export function HubSettingsSection() {
   };
 
   const showEndpointRows = settings?.activeSource !== "modelscope";
+  const sourceFallback = settings && settings.source !== settings.activeSource;
   const errorNote = error ? (
     <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
       {error}
@@ -104,84 +120,84 @@ export function HubSettingsSection() {
     });
 
   return (
-    <SettingsSection title={t("settings.general.hub.sectionTitle")}>
+    <SettingsSection ref={sectionRef} title={t("settings.general.hub.sectionTitle")}>
       <SettingsRow
-        alignTop={true}
         label={t("settings.general.hub.source")}
         description={t("settings.general.hub.sourceDescription")}
+        below={
+          sourceFallback || (!showEndpointRows && errorNote) ? (
+            <div className="flex flex-col items-end gap-1">
+              {sourceFallback ? (
+                <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {t("settings.general.hub.sourceFallback")}
+                </span>
+              ) : null}
+              {showEndpointRows ? null : errorNote}
+            </div>
+          ) : null
+        }
       >
-        <div className="flex flex-col items-end gap-1">
-          <div
-            role="radiogroup"
-            aria-label={t("settings.general.hub.source")}
-            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-          >
-            {SOURCES.map((option) => {
-              const active = settings?.source === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  data-settings-label={option.label}
-                  aria-checked={active}
-                  disabled={locked}
-                  onClick={() => {
-                    if (!active) void saveSource(option.value);
-                  }}
-                  className={cn(
-                    "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed",
-                    active
-                      ? "hub-tab-toggle-pill text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <span className="relative z-10">{option.label}</span>
-                </button>
-              );
-            })}
-          </div>
-          {settings && settings.source !== settings.activeSource ? (
-            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-              {t("settings.general.hub.sourceFallback")}
-            </span>
-          ) : null}
-          {showEndpointRows ? null : errorNote}
+        <div
+          role="radiogroup"
+          aria-label={t("settings.general.hub.source")}
+          className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+        >
+          {SOURCES.map((option) => {
+            const active = settings?.source === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                data-settings-label={option.label}
+                aria-checked={active}
+                disabled={locked}
+                onClick={() => {
+                  if (!active) void saveSource(option.value);
+                }}
+                className={cn(
+                  "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed",
+                  active
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <span className="relative z-10">{option.label}</span>
+              </button>
+            );
+          })}
         </div>
       </SettingsRow>
       {showEndpointRows ? (
         <>
           <SettingsRow
-            alignTop={true}
             label={t("settings.general.hub.endpoint")}
             description={t("settings.general.hub.endpointDescription")}
+            below={errorNote}
           >
-            <div className="flex flex-col items-end gap-1">
-              <div className="flex items-center gap-2">
-                <Input
-                  type="url"
-                  value={draftEndpoint}
-                  placeholder={DEFAULT_HF_ENDPOINT}
-                  disabled={locked}
-                  aria-label={t("settings.general.hub.endpoint")}
-                  onChange={(event) => setDraftEndpoint(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && endpointChanged) {
-                      saveEndpoint();
-                    }
-                  }}
-                  className="h-8 w-60"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={locked || !endpointChanged}
-                  onClick={saveEndpoint}
-                >
-                  {saving ? t("common.saving") : t("common.save")}
-                </Button>
-              </div>
-              {errorNote}
+            <div className="flex items-center gap-2">
+              <Input
+                type="url"
+                value={draftEndpoint}
+                placeholder={DEFAULT_HF_ENDPOINT}
+                disabled={locked}
+                aria-label={t("settings.general.hub.endpoint")}
+                onChange={(event) => setDraftEndpoint(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && endpointChanged) {
+                    saveEndpoint();
+                  }
+                }}
+                className="h-8 w-60"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={locked || !endpointChanged}
+                onClick={saveEndpoint}
+              >
+                {saving ? t("common.saving") : t("common.save")}
+              </Button>
             </div>
           </SettingsRow>
           <SettingsRow

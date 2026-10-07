@@ -4,9 +4,15 @@
 "use client";
 
 // Avatar removed — caused circular crop on image thumbnails
+import {
+  AttachmentCardPreview,
+  attachmentPreview,
+} from "@/components/assistant-ui/attachment-card-preview";
 import { AttachmentPreviewDialog } from "@/components/assistant-ui/attachment-preview";
+import { useT } from "@/i18n";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useAttachmentImageSrc } from "@/components/assistant-ui/use-attachment-source";
 import {
   Dialog,
@@ -15,23 +21,21 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   ATTACHMENT_KIND_ICON_CLASS,
   ATTACHMENT_KIND_ICONS,
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentFileKind,
   attachmentKindLabel,
   composerAttachmentsOverflow,
-  isAudioAttachment,
   sentAttachmentLayout,
   type AttachmentFileKind,
   type SentAttachmentLayout,
+  type DocumentAnnotations,
+  annotationsOfFile,
+  isAnnotationsContent,
   isPastedTextContent,
   isPastedTextFile,
+  parseAnnotationsContent,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextPreview,
@@ -48,11 +52,10 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import {
-  AudioWave01Icon,
-  File01Icon,
-  File02Icon,
+  FileEmpty02Icon,
+  Comment01Icon,
+  InternetIcon,
   TextAlignLeft01Icon,
-  Video01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
@@ -65,52 +68,11 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { ScrollPane } from "./scroll-pane";
-
-// Before the audio names, which include .mp4 and .webm: the video adapter types every clip video/*.
-const isVideoAttachment = (attachment: unknown): boolean =>
-  /^video\//i.test((attachment as { contentType?: string }).contentType ?? "");
-
-const AttachmentThumb: FC = () => {
-  const src = useAttachmentImageSrc();
-  const name = useAuiState(({ attachment }) => attachment.name);
-  const isVideo = useAuiState(({ attachment }) => isVideoAttachment(attachment));
-  const contentType = useAuiState(
-    ({ attachment }) =>
-      (attachment as { file?: File }).file?.type ??
-      (attachment as { contentType?: string }).contentType ??
-      "",
-  );
-
-  if (src) {
-    return (
-      <img
-        src={src}
-        alt={name || "Attachment preview"}
-        className="h-full w-full object-cover"
-      />
-    );
-  }
-
-  return (
-    <div className="flex h-full w-full items-center justify-center">
-      <HugeiconsIcon
-        icon={
-          isVideo
-            ? Video01Icon
-            : isAudioAttachment(name, contentType)
-              ? AudioWave01Icon
-              : File02Icon
-        }
-        strokeWidth={2}
-        className="size-6 text-muted-foreground"
-      />
-    </div>
-  );
-};
 
 const CARD_SLOT =
   "shrink-0 w-[calc((100%_-_var(--spacing)*8)/5)] min-w-[calc(7rem*var(--ui-space-scale,1))]";
@@ -120,8 +82,9 @@ const SENT_IMAGE_SIZE_COMPACT = "size-[calc(5rem*var(--ui-space-scale,1))]";
 const SENT_ROW_WIDTH = "w-[calc(18rem*var(--ui-space-scale,1))]";
 const CARD_EDGE =
   "border border-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-edge-gain,1)),transparent)]";
+// No fill, so cards take the composer background; hover still tints.
 const CARD_SURFACE =
-  "bg-[color-mix(in_oklab,var(--foreground)_3%,transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]";
+  "hover:bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]";
 
 const useAttachmentKind = (): {
   name: string;
@@ -153,21 +116,28 @@ const AttachmentKindIcon: FC<{ kind: AttachmentFileKind; className?: string }> =
   />
 );
 
+const CardCenter: FC<{ children?: ReactNode }> = ({ children }) => (
+  <span className="flex h-full min-h-0 flex-1 items-center justify-center px-3 text-muted-foreground">
+    {children ?? <HugeiconsIcon icon={FileEmpty02Icon} strokeWidth={1.5} className="size-6" />}
+  </span>
+);
+
 const FileCardBody: FC<{
   name: string;
   kind: AttachmentFileKind;
   center?: ReactNode;
   icon?: ReactNode;
-}> = ({ name, kind, center, icon }) => (
+  preview?: ReactNode;
+}> = ({ name, kind, center, icon, preview }) => (
   <span className="flex h-full w-full flex-col">
-    <span className="flex min-h-0 flex-1 items-center justify-center px-3 text-muted-foreground">
-      {center ?? (
-        <HugeiconsIcon icon={File01Icon} strokeWidth={1.5} className="size-6" />
-      )}
-    </span>
-    <span className="flex min-w-0 items-center gap-1.5 px-3 pb-2.5">
-      {icon ?? <AttachmentKindIcon kind={kind} className="size-4" />}
-      <span className="min-w-0 truncate text-ui-13 leading-ui-18 text-foreground">
+    {preview ? (
+      <span className="min-h-0 flex-1 overflow-hidden">{preview}</span>
+    ) : (
+      <CardCenter>{center}</CardCenter>
+    )}
+    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-0.5px)]", preview && "pt-1.25")}>
+      {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
+      <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
         {name}
       </span>
     </span>
@@ -179,6 +149,7 @@ const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string 
   kind,
   src,
 }) => {
+  const file = useAuiState(({ attachment }) => (attachment as { file?: File }).file);
   if (src) {
     return (
       <img
@@ -188,7 +159,18 @@ const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string 
       />
     );
   }
-  return <FileCardBody name={name} kind={kind} />;
+  const preview = attachmentPreview(file, kind);
+  return (
+    <FileCardBody
+      name={name}
+      kind={kind}
+      preview={
+        file && preview ? (
+          <AttachmentCardPreview file={file} preview={preview} fallback={<CardCenter />} />
+        ) : undefined
+      }
+    />
+  );
 };
 
 type PastedTextAttachment = {
@@ -227,6 +209,79 @@ const readPastedTextPreview = async (
     return pastedTextContentPreview(attachment.sentText);
   }
   return pastedTextPreview(await readPastedText(attachment));
+};
+
+/** Annotations made on a document in the browser. Read off the File in the composer and off the
+ *  stored text once sent; the text is only parsed when its tag says it is one. */
+const useAnnotationsAttachment = (): DocumentAnnotations | null => {
+  const { file, sentText } = useAuiState(
+    useShallow(({ attachment }) => {
+      if (attachment.type !== "document") return { file: undefined, sentText: undefined };
+      const file = (attachment as { file?: File }).file;
+      const text = attachment.content?.flatMap((part) => (part.type === "text" ? [part.text] : []))[0];
+      return { file, sentText: isAnnotationsContent(text) ? text : undefined };
+    }),
+  );
+  return useMemo(() => annotationsOfFile(file) ?? parseAnnotationsContent(sentText), [file, sentText]);
+};
+
+/** "1 annotation", with what was marked and asked on hover, as ChatGPT shows it. */
+const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer: boolean }> = ({
+  annotations,
+  isComposer,
+}) => {
+  const t = useT();
+  const count = annotations.items.length;
+  const label = count === 1 ? t("browser.annotate.countOne") : t("browser.annotate.countMany", { count });
+  const kind = attachmentFileKind(annotations.file, undefined);
+  return (
+    <AttachmentPrimitive.Root className="aui-attachment-root group/attachment-card relative">
+      <HoverCard openDelay={120} closeDelay={80}>
+        <HoverCardTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={`${label}: ${annotations.file}`}
+            className={cn(
+              "aui-annotations-chip inline-flex h-9 cursor-default items-center gap-1.5 rounded-full px-3.5 text-sm transition-colors",
+              CARD_EDGE,
+              "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]",
+              isComposer && "pr-7",
+            )}
+          >
+            <HugeiconsIcon icon={Comment01Icon} strokeWidth={1.75} className="size-4 text-muted-foreground" />
+            {label}
+          </button>
+        </HoverCardTrigger>
+        {/* The menus' surface: their soft shadow and radius, no ring, rather than a hover card's lift. */}
+        <HoverCardContent
+          side="top"
+          align="start"
+          className="w-[min(26rem,calc(100vw-2rem))] rounded-[14px] p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
+        >
+          <div className="flex max-h-80 flex-col divide-y divide-border/60 overflow-y-auto">
+            {annotations.items.map((item, index) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: the list is fixed once sent
+              <div key={index} className="flex min-w-0 flex-col gap-1.5 px-4 py-3">
+                <span className="flex min-w-0 items-center gap-2 text-ui-13 text-primary">
+                  {annotations.url ? (
+                    <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4 text-muted-foreground" />
+                  ) : (
+                    <AttachmentKindIcon kind={kind} className={cn("size-4", ATTACHMENT_KIND_ICON_CLASS[kind])} />
+                  )}
+                  <span className="truncate" title={annotations.url}>
+                    {annotations.file}
+                  </span>
+                </span>
+                <span className="truncate text-ui-13 text-muted-foreground">{item.quote}</span>
+                <span className="whitespace-pre-wrap break-words text-ui-14 text-foreground">{item.request}</span>
+              </div>
+            ))}
+          </div>
+        </HoverCardContent>
+      </HoverCard>
+      {isComposer && <AttachmentCardRemove />}
+    </AttachmentPrimitive.Root>
+  );
 };
 
 const PastedTextPreviewDialog: FC<
@@ -276,14 +331,14 @@ const PastedTextPreviewDialog: FC<
   );
 };
 
-type PastedTextVariant = "chip" | "card" | "row" | "pill";
+type PastedTextVariant = "card" | "row" | "pill";
 
 const PastedTextAttachmentUI: FC<{
   attachment: PastedTextAttachment;
   isComposer: boolean;
   name: string;
-  variant?: PastedTextVariant;
-}> = ({ attachment, isComposer, name, variant = "chip" }) => {
+  variant: PastedTextVariant;
+}> = ({ attachment, isComposer, name, variant }) => {
   const aui = useAui();
   const attachmentId = useAuiState(({ attachment: state }) => state.id);
   const [inlining, setInlining] = useState(false);
@@ -297,6 +352,8 @@ const PastedTextAttachmentUI: FC<{
   // Read off the header, never measured: the paste can be megabytes and this
   // runs while the thread is trying to paint.
   const bytes = attachment.file?.size ?? attachment.sentBytes;
+  // A sent paste reopened for editing has no File to read back, so it previews instead.
+  const canInline = isComposer && attachment.file !== undefined;
 
   // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
@@ -326,7 +383,7 @@ const PastedTextAttachmentUI: FC<{
   }, [attachment, attachmentId, aui, inlining]);
 
   const sizeLabel = bytes === undefined ? "Pasted text" : formatBytes(bytes);
-  const ariaLabel = isComposer
+  const ariaLabel = canInline
     ? `Pasted text: ${name}. Show in text field`
     : `Pasted text: ${name}. Show contents`;
   const textIcon = (className: string) => (
@@ -340,7 +397,7 @@ const PastedTextAttachmentUI: FC<{
     variant === "card" ? (
       <button
         className={cn(
-          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[18px] text-left transition-colors",
+          "aui-pasted-text-card group flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
           CARD_SIZE,
           CARD_EDGE,
           CARD_SURFACE,
@@ -348,20 +405,20 @@ const PastedTextAttachmentUI: FC<{
         type="button"
         title={name}
         aria-label={ariaLabel}
-        onClick={isComposer ? showInTextField : undefined}
+        onClick={canInline ? showInTextField : undefined}
       >
         <FileCardBody
           name={name}
           kind="text"
-          icon={textIcon("size-4")}
+          icon={textIcon("size-3.25")}
           center={
             <span className="flex flex-col items-center gap-1 text-ui-11">
               {textIcon("size-6")}
               {/* Hover swaps the size for the action. */}
-              <span className={isComposer ? "group-hover:hidden" : undefined}>
+              <span className={canInline ? "group-hover:hidden" : undefined}>
                 {sizeLabel}
               </span>
-              {isComposer ? (
+              {canInline ? (
                 <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
                   Show in text field
                   <ChevronRightIcon className="size-3" />
@@ -391,7 +448,7 @@ const PastedTextAttachmentUI: FC<{
           </span>
         </span>
       </button>
-    ) : variant === "pill" ? (
+    ) : (
       <button
         className={cn(
           "aui-pasted-text-pill inline-flex h-9 max-w-[calc(16rem*var(--ui-space-scale,1))] cursor-pointer items-center gap-1.5 rounded-full px-3 text-sm transition-colors",
@@ -405,45 +462,6 @@ const PastedTextAttachmentUI: FC<{
         {textIcon("size-4")}
         <span className="truncate">{name}</span>
       </button>
-    ) : (
-    <button
-      className={cn(
-        // Borderless, and in dark mode a shade under the composer surface.
-        "aui-pasted-text-chip group flex h-14 max-w-[calc(15rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] bg-muted px-3 text-left transition-colors hover:bg-muted-foreground/15 dark:bg-background dark:hover:bg-muted",
-        // Keep the label clear of the remove button in the corner.
-        isComposer && "aui-pasted-text-chip-composer pr-6",
-      )}
-      type="button"
-      aria-label={
-        isComposer
-          ? `Pasted text: ${name}. Show in text field`
-          : `Pasted text: ${name}. Show contents`
-      }
-      onClick={isComposer ? showInTextField : undefined}
-    >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
-        <HugeiconsIcon
-          icon={TextAlignLeft01Icon}
-          strokeWidth={2}
-          className="size-4 text-muted-foreground"
-        />
-      </span>
-      <span className="flex min-w-0 flex-col">
-        <span className="truncate font-medium text-xs">{name}</span>
-        <span className="truncate text-ui-11 text-muted-foreground">
-          {/* Hover swaps the size for the action. */}
-          <span className={isComposer ? "group-hover:hidden" : undefined}>
-            {bytes === undefined ? "Pasted text" : formatBytes(bytes)}
-          </span>
-          {isComposer ? (
-            <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
-              Show in text field
-              <ChevronRightIcon className="size-3" />
-            </span>
-          ) : null}
-        </span>
-      </span>
-    </button>
     );
 
   return (
@@ -453,110 +471,15 @@ const PastedTextAttachmentUI: FC<{
         variant === "card" && cn("group/attachment-card", CARD_SLOT),
       )}
     >
-      {isComposer ? (
+      {canInline ? (
         chip
       ) : (
         <PastedTextPreviewDialog attachment={attachment} name={name}>
           {chip}
         </PastedTextPreviewDialog>
       )}
-      {isComposer &&
-        (variant === "card" ? <AttachmentCardRemove /> : <AttachmentRemove />)}
+      {isComposer && <AttachmentCardRemove />}
     </AttachmentPrimitive.Root>
-  );
-};
-
-const AttachmentUI: FC = () => {
-  const aui = useAui();
-  const isComposer = aui.attachment.source === "composer";
-  const pastedText = usePastedTextAttachment();
-
-  const isImage = useAuiState(({ attachment }) => attachment.type === "image");
-  const attachmentId = useAuiState(({ attachment }) => attachment.id);
-  const name = useAuiState(({ attachment }) => attachment.name);
-  const typeLabel = useAuiState(({ attachment }) => {
-    const type = attachment.type;
-    switch (type) {
-      case "image":
-        return "Image";
-      case "document":
-        return "Document";
-      case "file":
-        if (isVideoAttachment(attachment)) return "Video";
-        return isAudioAttachment(
-          attachment.name,
-          (attachment as { file?: File }).file?.type ?? "",
-        )
-          ? "Audio"
-          : "File";
-      default:
-        throw new Error(`Unknown attachment type: ${type as string}`);
-    }
-  });
-  // Filename in accessible name lets screen readers distinguish same-typed
-  // attachments. Sighted users get it via the tooltip.
-  const accessibleName = name
-    ? `${typeLabel} attachment: ${name}`
-    : `${typeLabel} attachment`;
-
-  if (pastedText) {
-    return (
-      <PastedTextAttachmentUI
-        key={attachmentId}
-        attachment={pastedText}
-        isComposer={isComposer}
-        name={name ?? "Pasted text"}
-      />
-    );
-  }
-
-  return (
-    <Tooltip>
-      <AttachmentPrimitive.Root
-        key={attachmentId}
-        className={cn(
-          "aui-attachment-root relative",
-          isImage &&
-            "aui-attachment-root-composer only:[&>#attachment-tile]:size-16",
-        )}
-      >
-        <AttachmentPreviewDialog redactFromReload={isComposer}>
-          <TooltipTrigger asChild={true}>
-            <button
-              className={cn(
-                "aui-attachment-tile size-14 cursor-pointer overflow-hidden rounded-[14px] border bg-muted transition-opacity hover:opacity-75",
-                isComposer &&
-                  "aui-attachment-tile-composer border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]",
-              )}
-              id="attachment-tile"
-              aria-label={accessibleName}
-              type="button"
-            >
-              <AttachmentThumb />
-            </button>
-          </TooltipTrigger>
-        </AttachmentPreviewDialog>
-        {isComposer && <AttachmentRemove />}
-      </AttachmentPrimitive.Root>
-      <TooltipContent side="top" className="tooltip-compact">
-        <AttachmentPrimitive.Name />
-      </TooltipContent>
-    </Tooltip>
-  );
-};
-
-const AttachmentRemove: FC = () => {
-  return (
-    <AttachmentPrimitive.Remove asChild={true}>
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="Remove file"
-        className="aui-attachment-tile-remove absolute top-1.5 right-1.5 size-3.5 rounded-full bg-white p-0 text-muted-foreground opacity-100 shadow-sm hover:bg-white! [&_svg]:text-black hover:[&_svg]:text-destructive"
-      >
-        <XIcon className="aui-attachment-remove-icon size-3 dark:stroke-[2.5px]" />
-      </Button>
-    </AttachmentPrimitive.Remove>
   );
 };
 
@@ -578,9 +501,18 @@ const AttachmentCardRemove: FC = () => {
 
 const ComposerAttachmentCard: FC = () => {
   const pastedText = usePastedTextAttachment();
+  const annotations = useAnnotationsAttachment();
   const src = useAttachmentImageSrc();
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const { name, kind } = useAttachmentKind();
+
+  if (annotations) {
+    return (
+      <div className={cn("flex items-end", CARD_SLOT)}>
+        <AnnotationsAttachmentUI key={attachmentId} annotations={annotations} isComposer={true} />
+      </div>
+    );
+  }
 
   if (pastedText) {
     return (
@@ -603,9 +535,9 @@ const ComposerAttachmentCard: FC = () => {
       <AttachmentPreviewDialog redactFromReload={true}>
         <button
           className={cn(
-            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[18px] text-left transition-colors",
+            "aui-attachment-card-tile flex cursor-pointer overflow-hidden rounded-[15px] text-left transition-colors",
             CARD_SIZE,
-            !src && CARD_EDGE,
+            CARD_EDGE,
             !src && CARD_SURFACE,
           )}
           type="button"
@@ -672,8 +604,13 @@ const SentImageThumb: FC<{ name: string; kind: AttachmentFileKind }> = ({
 const SentFileItem: FC = () => {
   const layout = useContext(SentAttachmentLayoutContext);
   const pastedText = usePastedTextAttachment();
+  const annotations = useAnnotationsAttachment();
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const { name, kind } = useAttachmentKind();
+
+  if (annotations) {
+    return <AnnotationsAttachmentUI key={attachmentId} annotations={annotations} isComposer={false} />;
+  }
 
   if (pastedText) {
     return (
@@ -748,7 +685,6 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-const COMPACT_COMPONENTS = { Attachment: AttachmentUI };
 const CARD_COMPONENTS = { Attachment: ComposerAttachmentCard };
 
 export const UserMessageAttachments: FC = () => {
@@ -782,7 +718,7 @@ export const UserMessageAttachments: FC = () => {
 };
 
 // The layout decision is a DOM data attribute, never state, so a resize or new card re-renders no card.
-const ComposerAttachmentCards: FC = () => {
+export const ComposerAttachments: FC<{ className?: string }> = ({ className }) => {
   const count = useAuiState(({ composer }) => composer.attachments.length);
   const ref = useRef<HTMLDivElement | null>(null);
   const previousCount = useRef(count);
@@ -833,24 +769,12 @@ const ComposerAttachmentCards: FC = () => {
     <div
       ref={ref}
       data-reload-snapshot-sensitive
-      className="aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain"
+      className={cn(
+        "aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
+        className,
+      )}
     >
       <ComposerPrimitive.Attachments components={CARD_COMPONENTS} />
-    </div>
-  );
-};
-
-export const ComposerAttachments: FC = () => {
-  const style = useAppearanceCustomStore(
-    (s) => s.customization.composerAttachments,
-  );
-  if (style === "cards") return <ComposerAttachmentCards />;
-  return (
-    <div
-      data-reload-snapshot-sensitive
-      className="aui-composer-attachments mb-4 flex w-full flex-row items-center gap-2 overflow-x-auto px-1.5 pt-0.5 pb-1 empty:hidden"
-    >
-      <ComposerPrimitive.Attachments components={COMPACT_COMPONENTS} />
     </div>
   );
 };

@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -28,6 +32,7 @@ from hub.utils.paths import (
     lmstudio_model_dirs,
     normalize_path,
     ollama_model_dirs,
+    omlx_model_dirs,
     outputs_root,
     path_is_same_or_child,
     studio_root,
@@ -58,6 +63,7 @@ class _LocalInventorySources(NamedTuple):
     ollama_dirs: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
+    omlx_dirs: tuple[Path, ...] = ()
 
 
 _LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...], int]
@@ -78,6 +84,7 @@ class _LocalCacheChanged(RuntimeError):
 
 
 # Local aliases keep the extracted code close to the original implementation.
+LocalModelSource = model_common.LocalModelSource
 _is_model_directory = model_common._is_model_directory
 _local_inventory_id = model_common._local_inventory_id
 _local_model_info = model_common._local_model_info
@@ -158,6 +165,166 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
     return has_config and _has_immediate_model_weight(path)
 
 
+_MAX_NESTED_SCAN_DEPTH = 8
+_MAX_NESTED_SCAN_DIRS = 500
+_MAX_NESTED_SCAN_ENTRIES = 20000
+# blobs: an Ollama store's content-addressed files, never a model folder.
+_NESTED_SCAN_SKIP_NAMES = frozenset({"ollama_links", "node_modules", "__pycache__", "blobs"})
+
+
+def _is_plain_dir_entry(entry: os.DirEntry) -> bool:
+    if not entry.is_dir(follow_symlinks = False):
+        return False
+    # A Windows junction is a directory to is_dir(follow_symlinks=False) before 3.12; other reparse
+    # points (OneDrive placeholders) are real folders and stay walkable.
+    tag = getattr(entry.stat(follow_symlinks = False), "st_reparse_tag", 0)
+    return tag != _IO_REPARSE_TAG_MOUNT_POINT
+
+
+def is_loadable_model_dir(path: Path) -> bool:
+    """A folder the scan lists as a loadable model. A config with no weights beside it is not one: its model may sit a level down."""
+    return _is_diffusers_pipeline_dir(path) or _has_immediate_model_weight(path)
+
+
+def nested_scan_roots(folder_path: Path) -> list[Path]:
+    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
+    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
+    # Same test _scan_models_dir uses to list the folder as one model; loose GGUFs beside sub-folders are not.
+    if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
+        return []
+    roots: list[Path] = []
+    visited = 0
+    stack: list[tuple[Path, int]] = [(folder_path, 0)]
+    while stack and len(roots) < _MAX_NESTED_SCAN_DIRS:
+        current, depth = stack.pop()
+        if depth >= _MAX_NESTED_SCAN_DEPTH:
+            continue
+        children: list[Path] = []
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    visited += 1
+                    if visited > _MAX_NESTED_SCAN_ENTRIES:
+                        break
+                    name = entry.name
+                    if (
+                        name.startswith((".", "models--", "datasets--", "spaces--"))
+                        or name in _NESTED_SCAN_SKIP_NAMES
+                    ):
+                        continue
+                    try:
+                        if not _is_plain_dir_entry(entry):
+                            continue
+                    except OSError:
+                        continue
+                    child = Path(entry.path)
+                    if not is_loadable_model_dir(child):
+                        children.append(child)
+        except OSError:
+            continue
+        children.sort()
+        roots.extend(children[: _MAX_NESTED_SCAN_DIRS - len(roots)])
+        stack.extend((child, depth + 1) for child in reversed(children))
+        if visited > _MAX_NESTED_SCAN_ENTRIES:
+            break
+    return roots
+
+
+_SHARD_EVIDENCE_RE = re.compile(r"-\d+-of-\d+\.|\.index\.json$", re.IGNORECASE)
+_PAYLOAD_SUFFIXES = (".safetensors", ".gguf", *model_common._LOCAL_CHECKPOINT_EXTENSIONS)
+_PAYLOAD_VERDICT_CACHE_MAX = 4096
+_payload_verdicts: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
+_payload_verdicts_lock = threading.Lock()
+
+
+def _payload_evidence(scan_path: Path) -> tuple[bool, bool, tuple]:
+    """Whether weights / quants could be torn (numbered shard, index, empty weight), plus a fingerprint of every file."""
+    weights = quants = False
+    fingerprint = []
+    for dirpath, _dirnames, filenames in os.walk(scan_path):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.stat(path)
+                entry = (path, st.st_size, st.st_mtime_ns, st.st_ino)
+                empty = st.st_size <= 0
+            except OSError:
+                entry = (path, -1, -1, -1)
+                empty = True
+            fingerprint.append(entry)
+            lower = name.lower()
+            torn = _SHARD_EVIDENCE_RE.search(name) is not None or (
+                empty and lower.endswith(_PAYLOAD_SUFFIXES)
+            )
+            if torn:
+                if lower.endswith(".gguf"):
+                    quants = True
+                else:
+                    weights = True
+    return weights, quants, tuple(sorted(fingerprint))
+
+
+def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
+    # Files are the judge's only input. Quants are not cached: their judge also reads the account's scan folders.
+    key = os.path.abspath(scan_path)
+    with _payload_verdicts_lock:
+        hit = _payload_verdicts.get(key)
+        if hit is not None and hit[0] == fingerprint:
+            _payload_verdicts.move_to_end(key)
+            return hit[1]
+    complete = hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False)
+    with _payload_verdicts_lock:
+        _payload_verdicts[key] = (fingerprint, complete)
+        _payload_verdicts.move_to_end(key)
+        while len(_payload_verdicts) > _PAYLOAD_VERDICT_CACHE_MAX:
+            _payload_verdicts.popitem(last = False)
+    return complete
+
+
+def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
+    """Local folders carry no downloader markers, so only the payload shows a torn download. ``unknown`` is skipped: a diffusers pipeline's weights live in component subdirs."""
+    if not rows:
+        return rows
+    if scan_path.is_file():
+        # A loose quant, split or not: llama-server opens every part, so a missing or empty one fails the load.
+        from utils.models.model_config import colocated_split_shards
+
+        candidates = [scan_path]
+        try:
+            if scan_path.is_symlink():
+                # Same fallback as _local_gguf_load_path: a lone link loads from its target's set.
+                candidates.append(scan_path.resolve())
+        except OSError:
+            pass
+        for candidate in candidates:
+            shards, complete = colocated_split_shards(candidate)
+            try:
+                if complete and all(shard.stat().st_size > 0 for shard in shards):
+                    return rows
+            except OSError:
+                continue
+        return _apply_format_aware_partial(rows, snapshot_partial = False, gguf_partial = True)
+    if not scan_path.is_dir():
+        return rows
+    judged = {row.model_format for row in rows} - {"unknown"}
+    if not judged:
+        return rows
+    weights, quants, fingerprint = _payload_evidence(scan_path)
+    snapshot_partial = (
+        weights and bool(judged - {"gguf"}) and not _weights_complete(scan_path, fingerprint)
+    )
+    gguf_partial = (
+        quants
+        and "gguf" in judged
+        and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True)
+    )
+    if not snapshot_partial and not gguf_partial:
+        return rows
+    return _apply_format_aware_partial(
+        rows, snapshot_partial = snapshot_partial, gguf_partial = gguf_partial
+    )
+
+
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
     return get_hf_cache_paths().hub_cache
@@ -173,6 +340,7 @@ def _local_inventory_sources() -> _LocalInventorySources:
         tuple(ollama_model_dirs()),
         tuple(hermes_model_dirs()),
         tuple(known_hf_hub_caches()),
+        tuple(omlx_model_dirs()),
     )
 
 
@@ -195,11 +363,12 @@ def _scan_models_dir(
             updated_at = models_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        return _classify_local_path(
+        rows = _classify_local_path(
             models_dir,
             "models_dir",
             updated_at = updated_at,
         )
+        return _apply_payload_partial(models_dir, rows)
 
     found: List[LocalModelInfo] = []
     visited = 0
@@ -237,6 +406,7 @@ def _scan_models_dir(
             "models_dir",
             updated_at = updated_at,
         )
+        rows = _apply_payload_partial(child, rows)
         if limit is not None:
             rows = rows[: max(0, limit - len(found))]
         found.extend(rows)
@@ -254,14 +424,54 @@ def _safe_is_dir(path: Path) -> bool:
 
 def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     blobs_dir = repo_dir / "blobs"
-    if not blobs_dir.is_dir():
-        return False
     try:
-        for entry in blobs_dir.iterdir():
-            if entry.is_file() or entry.is_symlink():
-                return True
+        if blobs_dir.is_dir():
+            for entry in blobs_dir.iterdir():
+                if entry.is_file() or entry.is_symlink():
+                    return True
     except OSError:
+        pass
+    return _hf_snapshots_hold_files(repo_dir)
+
+
+def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
+    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
+    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
+    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
+    before yielding); unreadable entries are skipped."""
+    snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+    if snapshot is None:
         return False
+    walked = 0
+    pending = [snapshot]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:
+            continue
+        with entries:
+            listing = iter(entries)
+            while True:
+                try:
+                    entry = next(listing)
+                except StopIteration:
+                    break
+                except OSError:
+                    break
+                walked += 1
+                if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
+                    return False
+                try:
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(Path(entry.path))
+                    elif (
+                        entry.is_file()
+                        and entry.name not in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE
+                        and not is_appledouble_metadata(Path(entry.path))
+                    ):
+                        return True
+                except OSError:
+                    continue
     return False
 
 
@@ -454,8 +664,14 @@ def _scan_hf_cache(
     return found
 
 
-def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
-    """Scan an LM Studio models dir (``publisher/model-name`` folders of GGUFs, or top-level standalone GGUFs)."""
+def _scan_lmstudio_dir(
+    lm_dir: Path,
+    *,
+    entry_limit: int | None = None,
+    source: LocalModelSource = "lmstudio",
+) -> List[LocalModelInfo]:
+    """Scan a ``publisher/model-name`` tree (or top-level standalone GGUFs); LM Studio and oMLX
+    share this layout, ``source`` names the app."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -465,11 +681,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             updated_at = lm_dir.stat().st_mtime
         except OSError:
             updated_at = None
-        return _classify_local_path(
+        rows = _classify_local_path(
             lm_dir,
-            "lmstudio",
+            source,
             updated_at = updated_at,
         )
+        return _apply_payload_partial(lm_dir, rows)
 
     found: List[LocalModelInfo] = []
     visited = 0
@@ -498,13 +715,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         updated_at = child.stat().st_mtime
                     except OSError:
                         updated_at = None
-                    found.extend(
-                        _classify_local_path(
-                            child,
-                            "lmstudio",
-                            updated_at = updated_at,
-                        )
+                    rows = _classify_local_path(
+                        child,
+                        source,
+                        updated_at = updated_at,
                     )
+                    found.extend(_apply_payload_partial(child, rows))
                 continue
 
             # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline counts, or its component subdirs are walked as models.
@@ -513,13 +729,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     updated_at = child.stat().st_mtime
                 except OSError:
                     updated_at = None
-                found.extend(
-                    _classify_local_path(
-                        child,
-                        "lmstudio",
-                        updated_at = updated_at,
-                    )
+                rows = _classify_local_path(
+                    child,
+                    source,
+                    updated_at = updated_at,
                 )
+                found.extend(_apply_payload_partial(child, rows))
                 continue
 
             # child is a publisher directory -- scan its sub-directories
@@ -537,15 +752,14 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
                             updated_at = None
-                        found.extend(
-                            _classify_local_path(
-                                model_dir,
-                                "lmstudio",
-                                display_name = model_dir.name,
-                                model_id = model_id,
-                                updated_at = updated_at,
-                            )
+                        rows = _classify_local_path(
+                            model_dir,
+                            source,
+                            display_name = model_dir.name,
+                            model_id = model_id,
+                            updated_at = updated_at,
                         )
+                        found.extend(_apply_payload_partial(model_dir, rows))
                     elif (
                         model_dir.suffix.lower() == ".gguf"
                         and model_dir.is_file()
@@ -555,14 +769,13 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
                             updated_at = None
-                        found.extend(
-                            _classify_local_path(
-                                model_dir,
-                                "lmstudio",
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                updated_at = updated_at,
-                            )
+                        rows = _classify_local_path(
+                            model_dir,
+                            source,
+                            model_id = f"{child.name}/{model_dir.stem}",
+                            updated_at = updated_at,
                         )
+                        found.extend(_apply_payload_partial(model_dir, rows))
                 except OSError:
                     continue
             if exhausted:
@@ -598,6 +811,86 @@ def _inventory_path_identity(raw_path: str) -> str:
 def _inventory_physical_identity(raw_path: str) -> str:
     """physical identity for an existing discovered path without lossy name folding."""
     return gguf.local_path_physical_identity(raw_path)
+
+
+_IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def _is_link_component(path: Path) -> bool:
+    # is_symlink() is False for a Windows junction (mklink /J needs no admin), so read the reparse tag too.
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or (
+        getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+    )
+
+
+def _local_model_path_is_symlink(raw_path: str) -> bool:
+    path = Path(raw_path)
+    return any(_is_link_component(p) for p in (path, *path.parents))
+
+
+def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelInfo) -> bool:
+    if candidate.partial != existing.partial:
+        return not candidate.partial
+    if (candidate.active_cache is True) != (existing.active_cache is True):
+        return candidate.active_cache is True
+    candidate_link = _local_model_path_is_symlink(candidate.path)
+    existing_link = _local_model_path_is_symlink(existing.path)
+    if candidate_link != existing_link:
+        return not candidate_link
+    return _prefer_complete_larger(
+        candidate.partial,
+        candidate.size_bytes,
+        existing.partial,
+        existing.size_bytes,
+    )
+
+
+def _custom_alias_key(model: LocalModelInfo) -> str:
+    # Resolve only the scan root: two registered roots reaching one folder are one alias, links below it are not.
+    root = model._scan_root
+    if not root:
+        return model.path
+    try:
+        return os.path.join(os.path.realpath(root), os.path.relpath(model.path, root))
+    except (OSError, ValueError):
+        return model.path
+
+
+def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
+    """Distinct symlink aliases of one model stay separate rows so each keeps its own settings (#10605)."""
+    by_physical: dict[tuple[str, str], list[LocalModelInfo]] = {}
+    for model in custom_models:
+        physical = _inventory_physical_identity(model.path)
+        by_physical.setdefault((physical, model.model_format), []).append(model)
+
+    kept: list[LocalModelInfo] = []
+    for group in by_physical.values():
+        by_alias_path: dict[str, list[LocalModelInfo]] = {}
+        for model in group:
+            by_alias_path.setdefault(_custom_alias_key(model), []).append(model)
+        unique_rows: list[LocalModelInfo] = []
+        for alias_group in by_alias_path.values():
+            winner = alias_group[0]
+            for candidate in alias_group[1:]:
+                if _prefer_local_inventory_row(candidate, winner):
+                    winner = candidate
+            unique_rows.append(winner)
+
+        symlinks = [m for m in unique_rows if _local_model_path_is_symlink(m.path)]
+        non_symlinks = [m for m in unique_rows if not _local_model_path_is_symlink(m.path)]
+        if len(symlinks) >= 2 and not non_symlinks:
+            kept.extend(unique_rows)
+            continue
+        winner = unique_rows[0]
+        for candidate in unique_rows[1:]:
+            if _prefer_local_inventory_row(candidate, winner):
+                winner = candidate
+        kept.append(winner)
+    return kept
 
 
 def _coerce_scan_folder_path(raw_path: str) -> str:
@@ -669,6 +962,7 @@ async def _collect_models_from_default_sources(
     hermes_dirs: tuple[Path, ...],
     known_hf_caches: tuple[Path, ...],
     custom_folders: list[dict],
+    omlx_dirs: tuple[Path, ...] = (),
 ) -> List[LocalModelInfo]:
     local_models = await _scan_source("models directory", _scan_models_dir, models_root)
     hf_sources = [("HF cache", hf_cache_dir, True)]
@@ -693,6 +987,12 @@ async def _collect_models_from_default_sources(
             continue
         seen_hf.add(key)
         hf_sources.append(("previous HF cache", previous_cache, False))
+    # oMLX also serves models--* repos kept under its own roots.
+    for omlx_dir in omlx_dirs:
+        key = os.path.normcase(str(omlx_dir.resolve(strict = False)))
+        if key not in seen_hf:
+            seen_hf.add(key)
+            hf_sources.append(("oMLX HF cache", omlx_dir, False))
 
     discovered_sources = []
     custom_sources = []
@@ -717,7 +1017,9 @@ async def _collect_models_from_default_sources(
                 ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
             )
         # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
-        custom_sources.append((folder_path, hf_caches, str(folder["path"])))
+        custom_sources.append(
+            (folder_path, hf_caches, str(folder["path"]), bool(folder.get("recursive")))
+        )
     try:
         variant_states = await asyncio.to_thread(
             download_manifest.build_variant_state_index,
@@ -743,6 +1045,13 @@ async def _collect_models_from_default_sources(
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
 
+    for omlx_dir in omlx_dirs:
+        local_models += await _scan_source(
+            "oMLX",
+            lambda path: _scan_lmstudio_dir(path, source = "omlx"),
+            omlx_dir,
+        )
+
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
 
@@ -750,14 +1059,18 @@ async def _collect_models_from_default_sources(
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
-    for folder_path, hf_caches, row_path in custom_sources:
+    for folder_path, hf_caches, row_path, recursive in custom_sources:
         try:
+            nested_roots = (
+                tuple(await asyncio.to_thread(nested_scan_roots, folder_path)) if recursive else ()
+            )
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
                 folder_path,
                 hf_caches = hf_caches,
                 variant_states = variant_states,
                 active_hub_cache = hf_cache_dir,
+                nested_roots = nested_roots,
             )
             if _inventory_physical_identity(str(folder_path)) in hermes_identities:
                 # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
@@ -784,9 +1097,45 @@ async def _collect_models_from_default_sources(
             continue
         # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
-        local_models.extend(_promote_to_custom_source(model) for model in custom_models)
+        for model in custom_models:
+            row = _promote_to_custom_source(model)
+            row._scan_root = str(folder_path)
+            local_models.append(row)
 
     return local_models
+
+
+def _scan_row_key(row: LocalModelInfo) -> tuple[str, str, Optional[str]]:
+    return (row.path, row.model_format, row.format_variant)
+
+
+def _scan_nested_roots(
+    nested_roots: tuple[Path, ...],
+    *,
+    seen: set[tuple[str, str, Optional[str]]],
+    active_hub_cache: Optional[Path],
+) -> List[LocalModelInfo]:
+    """Rows under a recursive folder's nested roots, minus any the folder's own scan already listed."""
+    found: List[LocalModelInfo] = []
+    for root in nested_roots:
+        if len(found) >= _MAX_MODELS_PER_CUSTOM_FOLDER:
+            break
+        rows = _scan_models_dir(
+            root,
+            limit = _MAX_MODELS_PER_CUSTOM_FOLDER - len(found),
+            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+        ) + _scan_hf_cache(
+            root,
+            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+            active_cache = False,
+            active_hub_cache = active_hub_cache,
+        )
+        for row in rows:
+            key = _scan_row_key(row)
+            if key not in seen:
+                seen.add(key)
+                found.append(row)
+    return found
 
 
 def _scan_custom_folder(
@@ -795,6 +1144,7 @@ def _scan_custom_folder(
     hf_caches: Optional[list[tuple[Path, Optional[list]]]] = None,
     variant_states: Optional[download_manifest.VariantStateIndex] = None,
     active_hub_cache: Optional[Path] = None,
+    nested_roots: tuple[Path, ...] = (),
 ) -> List[LocalModelInfo]:
     from utils.models.model_config import detect_gguf_model
 
@@ -833,6 +1183,16 @@ def _scan_custom_folder(
         if _is_supported(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
     ]
+    if nested_roots:
+        generic += [
+            m
+            for m in _scan_nested_roots(
+                nested_roots,
+                seen = {_scan_row_key(m) for m in generic},
+                active_hub_cache = active_hub_cache,
+            )
+            if _is_supported(m)
+        ]
     selectable = []
     for model in generic:
         if model.model_format != "gguf" or model.partial:
@@ -889,9 +1249,37 @@ async def _load_custom_folders() -> list[dict]:
         return []
 
 
+def _merge_custom_rows_listed_natively(
+    custom_models: List[LocalModelInfo], native_models: List[LocalModelInfo]
+) -> tuple[list[LocalModelInfo], list[LocalModelInfo]]:
+    """A custom folder overlapping the models dir, LM Studio or oMLX re-lists their models (#9164)."""
+    native: dict[tuple[str, str], LocalModelInfo] = {}
+    for model in native_models:
+        if model.source in ("models_dir", "lmstudio", "omlx"):
+            native.setdefault((_inventory_physical_identity(model.path), model.model_format), model)
+    if not native:
+        return list(native_models), list(custom_models)
+    replaced: set[int] = set()
+    kept_custom: list[LocalModelInfo] = []
+    for model in custom_models:
+        twin = native.get((_inventory_physical_identity(model.path), model.model_format))
+        # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
+        if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
+            kept_custom.append(model)
+        elif twin.source in ("lmstudio", "omlx") and model.capabilities.can_train:
+            # The train picker refuses LM Studio and oMLX rows, so the trainable custom row wins.
+            replaced.add(id(twin))
+            kept_custom.append(model)
+    return [m for m in native_models if id(m) not in replaced], kept_custom
+
+
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
+    custom_models: list[LocalModelInfo] = []
     for model in local_models:
+        if model.source == "custom":
+            custom_models.append(model)
+            continue
         if model.source == "hf_cache" and model.model_id:
             key = "\x00".join(
                 (
@@ -900,13 +1288,6 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                     model.model_format,
                     model.format_variant or "",
                 )
-            )
-        elif model.source == "custom":
-            key = _local_inventory_id(
-                "custom",
-                model.model_format,
-                _inventory_physical_identity(model.path),
-                None,
             )
         else:
             row_key = model.inventory_id or model.id
@@ -928,11 +1309,11 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    deduped_values = list(deduped.values())
-    custom_values = [model for model in deduped_values if model.source == "custom"]
+    native_values, custom_values = _merge_custom_rows_listed_natively(
+        _dedupe_custom_local_models(custom_models), list(deduped.values())
+    )
     return sorted(
-        [model for model in deduped_values if model.source != "custom"]
-        + gguf.suppress_grouped_gguf_file_rows(custom_values),
+        native_values + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -960,9 +1341,16 @@ async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, known_hf_caches = (
-        sources
-    )
+    (
+        hf_cache_dir,
+        legacy_hf,
+        hf_default,
+        lm_dirs,
+        ollama_dirs,
+        hermes_dirs,
+        known_hf_caches,
+        omlx_dirs,
+    ) = sources
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -987,6 +1375,7 @@ async def _scan_local_models_response(
             hermes_dirs,
             known_hf_caches,
             custom_folders,
+            omlx_dirs = omlx_dirs,
         )
         models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
@@ -1023,11 +1412,13 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             models = []
             for model in response.models:
                 task, audio_type = catalog_classification._local_model_classification(model)
+                workflows = catalog_classification.local_audio_workflows(model, audio_type)
                 models.append(
                     model.model_copy(
                         update = {
                             "task": task,
                             "audio_type": audio_type,
+                            **({"audio_workflows": workflows} if workflows else {}),
                         }
                     )
                 )
@@ -1059,7 +1450,9 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             _inventory_path_identity(models_dir),
             sources,
             tuple(
-                _inventory_path_identity(str(folder.get("path", ""))) for folder in custom_folders
+                _inventory_path_identity(str(folder.get("path", "")))
+                + ("\x00r" if folder.get("recursive") else "")
+                for folder in custom_folders
             ),
             epoch,
         )
@@ -1106,10 +1499,10 @@ def get_scan_folders_response() -> dict:
     return {"folders": annotate_scan_folders(folders)}
 
 
-def add_scan_folder_response(path: str) -> dict:
+def add_scan_folder_response(path: str, recursive: Optional[bool] = None) -> dict:
     path = _account_access().private_directory(path, "")
     try:
-        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
+        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path), recursive)
     except ValueError as e:
         logger.warning(
             "Scan folder rejected: %s (path=%s)", scrub_paths(e), short_path_for_log(path)
