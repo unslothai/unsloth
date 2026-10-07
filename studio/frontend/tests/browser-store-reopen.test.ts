@@ -216,6 +216,7 @@ test("a page's link that turns out to be a download leaves that page showing", (
   const later = currentEntry(tab());
   store.navigate(tabId, { url: "https://b.example/" });
   store.leaveDownload(tabId, later);
-  assert.equal(currentEntry(tab()).kind === "web" && currentEntry(tab()).url, "https://b.example/");
+  const after = currentEntry(tab());
+  assert.equal(after.kind === "web" && after.url, "https://b.example/");
   store.closeTab(tabId);
 });
