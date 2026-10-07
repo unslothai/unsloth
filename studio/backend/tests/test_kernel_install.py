@@ -109,15 +109,21 @@ class _Runner:
         self,
         loads,
         capability = "9 0",
+        triton = None,
     ):
         self.loads = list(loads)
         self.capability = capability
+        self.triton = triton
         self.calls = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
         if cmd[1] == "-c" and "get_device_capability" in cmd[2]:
             return SimpleNamespace(returncode = 0, stdout = self.capability)
+        if cmd[1] == "-c" and "import triton" in cmd[2]:
+            if self.triton is None:
+                return SimpleNamespace(returncode = 1, stdout = "")
+            return SimpleNamespace(returncode = 0, stdout = self.triton + "\n")
         if cmd[1] == "-c":
             return SimpleNamespace(returncode = 0 if self.loads.pop(0) else 1, stdout = "")
         return SimpleNamespace(returncode = 0, stdout = "")
@@ -338,11 +344,91 @@ def test_flash_attn_resolution(env, expected):
 
 @pytest.mark.parametrize("name", ["flash_attn", "mamba_ssm"])
 @pytest.mark.parametrize("capability", ["7 5", "None"])
-def test_sm80_kernels_are_skipped_below_sm80(name, capability, capsys):
+def test_sm80_kernels_are_skipped_below_sm80(name, capability, capsys, monkeypatch):
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
     run = _Runner([], capability = capability)
     assert kernel_install.install_kernel(name, _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls == []
-    assert f"skipping {name}, which needs sm80 or newer" in capsys.readouterr().out
+    assert f"skipping {name}, which needs sm80" in capsys.readouterr().out
+
+
+# unsloth_zoo keeps mamba_ssm's fast path on sm75 with Triton 3.4+ (torch 2.8+).
+
+
+@pytest.mark.parametrize("triton", [(3, 4), (3, 6), (4, 0)])
+def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton):
+    uv(False)
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
+    run = _Runner([False, True], capability = "7 5")
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls[0][-1].endswith(
+        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
+
+
+@pytest.mark.parametrize("triton", [(3, 3), (3, 2), None])
+def test_mamba_ssm_is_skipped_on_sm75_with_an_old_triton(monkeypatch, capsys, triton):
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
+    run = _Runner([], capability = "7 5")
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    out = capsys.readouterr().out
+    assert "sm75 with Triton 3.4+" in out
+    assert ("missing" if triton is None else "%d.%d" % triton) in out
+
+
+@pytest.mark.parametrize(
+    "triton, installs",
+    [("3.4.0", True), ("3.6.0+git1a2b3c", True), ("3.3.1", False), (None, False)],
+)
+def test_triton_is_read_from_the_module(uv, monkeypatch, triton, installs):
+    """pytorch-triton and other providers ship the `triton` import under another
+    distribution name, so the version comes from `triton.__version__`."""
+    uv(False)
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    run = _Runner([False, True], capability = "7 5", triton = triton)
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert bool(run.installer_calls) is installs
+
+
+def test_mamba_ssm_is_skipped_below_sm75_whatever_the_triton(monkeypatch, capsys):
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 6))
+    run = _Runner([], capability = "7 0")
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    assert "the best GPU is sm70" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "forced, capability, installs",
+    [
+        ("1", "7 0", True),
+        ("1", "7 5", True),
+        ("0", "7 5", False),
+    ],
+)
+def test_mamba_ssm_follows_the_unsloth_zoo_override(uv, monkeypatch, forced, capability, installs):
+    uv(False)
+    monkeypatch.setenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", forced)
+    monkeypatch.setattr(
+        kernel_install, "_triton_version", lambda run: (3, 6) if forced == "0" else (3, 3)
+    )
+    run = _Runner([False, True], capability = capability)
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert bool(run.installer_calls) is installs
+
+
+def test_flash_attn_stays_sm80_only_with_a_new_triton(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "1")
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 6))
+    run = _Runner([], capability = "7 5")
+    assert (
+        kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
+    )
+    assert run.installer_calls == []
 
 
 def test_causal_conv1d_still_installs_below_sm80(uv):
@@ -355,7 +441,8 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
     assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
 
 
-def test_the_gpu_is_probed_once_for_every_sm80_kernel(capsys):
+def test_the_gpu_is_probed_once_for_every_sm80_kernel(capsys, monkeypatch):
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
     run = _Runner([], capability = "7 5")
     for name in ("flash_attn", "mamba_ssm"):
         kernel_install.install_kernel(name, _COLAB, run = run, exists = lambda url: True)
