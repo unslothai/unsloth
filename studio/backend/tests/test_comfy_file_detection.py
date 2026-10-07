@@ -478,3 +478,89 @@ def test_flux1_dev_krea_schnell_defaults(tmp_path):
         fam, "flux1-dev"
     )
     assert df.comfy_flow_shift_for(fam, "b.safetensors", hint_b, base) is None
+
+
+@pytest.mark.parametrize(
+    "base, gguf, hint, differs",
+    [
+        ("black-forest-labs/FLUX.1-dev", "flux1-dev-Q4_K_S.gguf", None, False),
+        ("black-forest-labs/FLUX.1-schnell", "flux1-schnell-Q4_K_S.gguf", None, False),
+        ("black-forest-labs/FLUX.1-Krea-dev", "flux1-krea-dev-Q4_K_S.gguf", None, False),
+        # schnell is the FLUX.1 fallback base: a dev GGUF must keep its own weights
+        ("black-forest-labs/FLUX.1-schnell", "flux1-dev-Q8_0.gguf", None, True),
+        ("black-forest-labs/FLUX.1-schnell", "my_model.gguf", "flux.1-dev", True),
+        ("black-forest-labs/FLUX.1-schnell", "my_model.gguf", "flux.1-schnell", False),
+        ("/local/flux-base", "flux1-dev.gguf", None, False),
+    ],
+)
+def test_flux1_gguf_variant_never_takes_another_variants_transformer(base, gguf, hint, differs):
+    from core.inference.diffusion_families import (
+        detect_family,
+        transformer_variant_differs_from_base,
+    )
+    fam = detect_family("flux.1")
+    assert (
+        transformer_variant_differs_from_base(fam, base, gguf, hint, "/m/diffusion_models")
+        is differs
+    )
+
+
+def test_listing_offers_only_what_single_file_loading_accepts(tmp_path):
+    from hub.utils import comfy_models
+
+    folder = tmp_path / "diffusion_models"
+    folder.mkdir()
+    _write_safetensors(
+        folder / "wan2.2_ti2v_5B_fp16.safetensors",
+        _row("/wan2.2_ti2v_5B_fp16.safetensors")["shapes"],
+    )
+    # one A14B expert: the video loader refuses a single-file pick of a dual-expert family
+    _write_safetensors(
+        folder / "wan2.2_t2v_low_noise_14B_fp16.safetensors",
+        _row("/wan2.2_t2v_low_noise_14B_fp16.safetensors")["shapes"],
+    )
+    h3 = _row("/minimax_h3_fl2va_int8_convrot.safetensors")["shapes"]
+    _write_safetensors(folder / "minimax_h3_fl2va_int8_convrot.safetensors", h3)
+    # a renamed H3 denoiser: modular loading needs the ComfyUI name to pick its partition
+    _write_safetensors(folder / "renamed_video_model.safetensors", h3)
+    names = {p.name for p in comfy_models.loose_diffusion_checkpoints(folder)}
+    assert names == {"wan2.2_ti2v_5B_fp16.safetensors", "minimax_h3_fl2va_int8_convrot.safetensors"}
+
+
+def test_malformed_safetensors_shape_reads_as_unreadable(tmp_path):
+    raw = json.dumps(
+        {"img_in.weight": {"dtype": "BF16", "shape": [None, 64], "data_offsets": [0, 0]}}
+    ).encode()
+    path = tmp_path / "broken.safetensors"
+    path.write_bytes(struct.pack("<Q", len(raw)) + raw)
+    assert dc.inspect_checkpoint(str(path)).role == dc.ROLE_UNKNOWN
+    assert dc.refusal_for(str(path), dc.PAGE_IMAGE) is None
+
+
+def test_defaults_lookup_order_of_a_renamed_flux1_dev_file():
+    # the OpenAI images route and the load share this order: file name, header variant, repo, base
+    assert df.default_generation_params(
+        "my_model.safetensors",
+        "flux.1-dev",
+        "/m/diffusion_models",
+        "black-forest-labs/FLUX.1-schnell",
+    ) == (20, 3.5)
+
+
+def test_resident_single_file_answers_only_for_its_own_file():
+    from core.inference.media_model_index import MediaModelPick, resident_is_pick
+
+    a = MediaModelPick(
+        "/m/diffusion_models/a.safetensors", "/m/diffusion_models", "a.safetensors", "single_file"
+    )
+    b = MediaModelPick(
+        "/m/diffusion_models/b.safetensors", "/m/diffusion_models", "b.safetensors", "single_file"
+    )
+    status = {
+        "loaded": True,
+        "repo_id": "/m/diffusion_models",
+        "model_kind": "single_file",
+        "gguf_filename": "a.safetensors",
+    }
+    assert resident_is_pick(status, a.model_id, a)
+    assert not resident_is_pick(status, b.model_id, b)

@@ -285,19 +285,37 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
     return offered
 
 
-def _name_detects_family(name: str) -> bool:
-    from core.inference.diffusion_families import detect_family
-    from core.inference.video_families import detect_video_family
-    return detect_family(name) is not None or detect_video_family(name) is not None
+def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
+    """The loaders' own single-file refusals: pipeline-only image families, dual-expert video
+    families (one file is one expert), and modular MiniMax-H3 unless its ComfyUI name parses."""
+    if image_fam is not None and not image_fam.pipeline_only:
+        return True
+    if video_fam is None or video_fam.is_moe:
+        return False
+    if not getattr(video_fam, "modular_workflow", None):
+        return True
+    from core.inference.video_minimax_h3_comfy import is_h3_comfy_name
+
+    return bool(is_h3_comfy_name(filename))
 
 
 def _offer_loose_checkpoint(path: Path) -> bool:
     """Header decides (supported-family DiT only); an unclassifiable header falls back to the name."""
     from core.inference import diffusion_content
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
 
     if not diffusion_content.offer_as_dit(str(path)):
         return False
     info = diffusion_content.inspect_checkpoint(str(path))
     if info.role == diffusion_content.ROLE_DIT:
-        return bool(info.family)
-    return _name_detects_family(path.name)
+        if not info.family:
+            return False
+        if info.page == diffusion_content.PAGE_VIDEO:
+            return _single_file_loadable(
+                None, detect_video_family("", override = info.family), path.name
+            )
+        return _single_file_loadable(detect_family("", override = info.family), None, path.name)
+    return _single_file_loadable(
+        detect_family(path.name), detect_video_family(path.name), path.name
+    )

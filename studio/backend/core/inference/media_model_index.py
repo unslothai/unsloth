@@ -439,6 +439,11 @@ def resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) ->
         return False
     if not partition_matches(status, pick):
         return False
+    if pick.model_kind == "single_file" and not resident_is_gguf(status):
+        # loose checkpoints in one folder share it as model_path: only the file tells them apart
+        return os.path.normcase(str(status.get("gguf_filename") or "")) == os.path.normcase(
+            pick.gguf_filename or ""
+        )
     if pick.model_kind != "gguf" and not resident_is_gguf(status):
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()

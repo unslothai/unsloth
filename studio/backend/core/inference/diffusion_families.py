@@ -134,6 +134,9 @@ class DiffusionFamily:
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
     )
+    # Variants with different transformer weights but one config (canonical keys, first match wins), so a GGUF of
+    # one is never swapped for the base repo's transformer of another.
+    checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -233,6 +236,7 @@ _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        checkpoint_variants = ("flux1-schnell", "flux1-krea-dev", "flux1-dev"),
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
@@ -1370,10 +1374,29 @@ def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> d
     return dict(row[1]) if row else {}
 
 
+def _first_checkpoint_variant(
+    keys: tuple[str, ...], identifiers: tuple[Optional[str], ...]
+) -> Optional[str]:
+    # flux.1-dev / flux1_dev / FLUX-1-dev all read flux1-dev
+    for identifier in identifiers:
+        needle = re.sub(r"(?<=[a-z])-(?=\d)", "", normalize_family_name(identifier or ""))
+        for key in keys:
+            if key in needle:
+                return key
+    return None
+
+
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
     """Checkpoint and ``base`` name different variants; a base naming none (a local dir) is unknown."""
+    keys = getattr(fam, "checkpoint_variants", ())
+    if keys:
+        base_key = _first_checkpoint_variant(keys, (base,))
+        return base_key is not None and _first_checkpoint_variant(keys, identifiers) not in (
+            None,
+            base_key,
+        )
     rows = getattr(fam, "transformer_config_variants", ())
     base_row = _first_variant(rows, (base,))
     return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)

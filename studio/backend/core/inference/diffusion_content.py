@@ -545,7 +545,7 @@ def inspect_checkpoint(path: str) -> CheckpointInfo:
     if reader is not None:
         try:
             parsed = reader(str(path))
-        except (OSError, ValueError, struct.error, MemoryError, RecursionError):
+        except (OSError, ValueError, TypeError, struct.error, MemoryError, RecursionError):
             parsed = None
         info = (
             classify_tensors(*parsed)

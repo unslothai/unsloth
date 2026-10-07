@@ -2616,6 +2616,7 @@ class DiffusionBackend:
             fam,
             kwargs.get("base_repo"),
             kwargs.get("gguf_filename"),
+            content_variant_hint(kwargs.get("repo_id"), kwargs.get("gguf_filename")),
             kwargs.get("repo_id"),
             kwargs.get("display_repo_id"),
         ):
@@ -5766,7 +5767,12 @@ class DiffusionBackend:
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
                     and transformer_variant_differs_from_base(
-                        fam, base, gguf_filename, repo_id, display_repo_id
+                        fam,
+                        base,
+                        gguf_filename,
+                        content_variant_hint(repo_id, gguf_filename),
+                        repo_id,
+                        display_repo_id,
                     )
                 ):
                     dense_declined = True

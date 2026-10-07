@@ -47511,8 +47511,17 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        # Same order as the load: file name, its header's variant, repo, then the base (FLUX.1's is schnell).
+        from core.inference.diffusion_content import content_variant_hint
+
+        steps, guidance = default_generation_params(
+            status.get("gguf_filename"),
+            await asyncio.to_thread(
+                content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
+            ),
+            status.get("repo_id"),
+            status.get("base_repo"),
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
