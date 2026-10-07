@@ -71,7 +71,9 @@ def checkpoint(tmp_path):
     config = {"encoder": "tiny", "head_layers": 1, "act_costs": {"escalate": 0.5}, "max_len": 96}
     config.update(head_max_len = 48, temperature = [1.2, 1.1, 1.3], training = {"updates": 1000})
     torch.manual_seed(0)
-    model = unsloth._laya().common.build_model(config, encoder_dir = str(base / "encoder"))
+    model = unsloth._decision_mlx._laya().common.build_model(
+        config, encoder_dir = str(base / "encoder")
+    )
     weights = {k: v.half().contiguous() for k, v in model.state_dict().items()}
     save_file(weights, str(base / "model.safetensors"))
     (base / "rl_agent_config.json").write_text(json.dumps(config))
@@ -111,7 +113,7 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, full):
     saved = json.loads((tmp_path / "out" / "rl_agent_config.json").read_text())
     assert saved["fine_tuned"] is True and "training" not in saved
     assert saved["temperature"] == model.decision_config["temperature"] and saved["max_len"] == 1024
-    unsloth._laya().load(str(tmp_path / "out"), device = "cpu")
+    unsloth._decision_mlx._laya().load(str(tmp_path / "out"), device = "cpu")
     served, tokenizer = FastDecisionModel.from_pretrained(str(tmp_path / "out"))
     loss = FastDecisionModel.evaluate(served, tokenizer, held)["loss"]
     assert loss == pytest.approx(calibrated["loss"], abs = 2e-2)
@@ -176,9 +178,7 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     import sys
 
     common = sys.modules["unsloth._decision_common"]
-    assert [
-        name for name in common.__all__ if getattr(unsloth, name) is not getattr(common, name)
-    ] == []
+    assert unsloth._decision_mlx._metrics is common._metrics
     root = Path(unsloth.__file__).parent / "models"
     shared = ast.parse((root / "_decision_common.py").read_text()).body
     # Loaded by path on MLX, where unsloth.models and its torch imports are never imported.
@@ -186,7 +186,8 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     modules += [n.module for n in shared if isinstance(n, ast.ImportFrom)]
     assert {name.split(".")[0] for name in modules}.isdisjoint({"torch", "transformers"})
     torch_module = ast.parse((root / "decision.py").read_text()).body
-    assert {n.name for n in torch_module if hasattr(n, "name")}.isdisjoint(common.__all__)
+    for module in (torch_module, ast.parse((root / "decision_mlx.py").read_text()).body):
+        assert {n.name for n in module if hasattr(n, "name")}.isdisjoint(common.__all__)
     taken = [n for n in torch_module if getattr(n, "module", None) == "_decision_common"]
     assert {a.name for n in taken for a in n.names} == set(common.__all__)
 
@@ -275,7 +276,9 @@ def test_clef_trains_calibrates_saves_and_reloads(
     assert "instructions" in report["reason"] and sum(len(item["labels"]) for item in held) == 30
     assert max(len(item["input_ids"]) for item in items) == 2048 == len(items[0]["input_ids"])
     # Scored per question, typed as the shared metrics number them: choice, score, noul.
-    assert [q["qtype"] for q in unsloth._decision_logits(model, tokenizer, held[:1])[1]] == [
+    assert [
+        q["qtype"] for q in unsloth._decision_mlx._decision_logits(model, tokenizer, held[:1])[1]
+    ] == [
         2,
         0,
         1,
@@ -344,8 +347,12 @@ def test_clef_trains_calibrates_saves_and_reloads(
         merged = FastDecisionModel.evaluate(whole, tokenizer, held[0])["loss"]
         assert merged == pytest.approx(loss, abs = 3e-2)
     # The GGUF export converts a merged save, whatever the model trained through.
-    seen, gguf = [], unsloth._decision_gguf()
+    seen, gguf = [], unsloth._decision_mlx._decision_gguf()
     monkeypatch.setattr(gguf, "_converter_dir", lambda *args: None)
+    # The exporter reads the checkpoint through the helpers both backends share.
+    assert gguf._layout(clef_checkpoint) == "clef" and gguf._layout(tmp_path) is None
+    assert gguf._laya_max_head_tokens(tmp_path, {"head_max_len": 64}) == 256
+    assert gguf.effective_temperatures({"temperature": [2.0, 1.0, 1.0]}, "laya")["choice"] == 2.0
     export = lambda folder, method, **kwargs: seen.append(
         (sorted(os.listdir(folder)), method, kwargs["output_dir"], Path(folder).name)
     )
@@ -376,7 +383,7 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
     rising = lambda model, items, pad: [
         torch.arange(len(i["markers"])).float().numpy() for i in items
     ]
-    monkeypatch.setattr(unsloth._decision_zoo(), "decision_logits", rising)
+    monkeypatch.setattr(unsloth._decision_mlx._decision_zoo(), "decision_logits", rising)
     # One temperature per question type: choice, score, noul.
     model.decision_config["temperature"] = [0.5, 1.0, 5.0]
     answers = FastDecisionModel.predict(model, tokenizer, _row(0)["state"], QUESTIONS)
@@ -386,7 +393,7 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
     assert list(answers) == list(QUESTIONS)
     picked = [answers[name]["answer"] for name in QUESTIONS]
     assert picked == [True, "billing", 2] and answers["team"]["choice"] == "billing"
-    with pytest.raises(unsloth.DecisionDataError, match = "non-empty"):
+    with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "non-empty"):
         FastDecisionModel.predict(model, tokenizer, "s", {})
 
 

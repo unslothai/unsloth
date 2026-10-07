@@ -85,21 +85,11 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding = "utf-8"))
 
 
-def _decision():
-    # unsloth.models needs torch; on Apple Silicon unsloth itself holds these helpers and loads this file by path.
-    import unsloth
-
-    if getattr(unsloth, "_IS_MLX", False):
-        return unsloth
-    from . import decision
-
-    return decision
-
-
 def _layout(folder: Path) -> Optional[str]:
-    if _decision().is_clef_checkpoint(folder):
+    from ._decision_common import is_clef_checkpoint, is_decision_checkpoint
+    if is_clef_checkpoint(folder):
         return "clef"
-    return "laya" if _decision().is_decision_checkpoint(folder) else None
+    return "laya" if is_decision_checkpoint(folder) else None
 
 
 def _base_config(
@@ -207,7 +197,9 @@ def effective_temperatures(config: dict, layout: str) -> dict:
     """The temperature PyTorch serving divides each question type's logits by
     (decision._served_temperatures), keyed as llama.cpp reads them after
     "<arch>.decision.temperature.": "<type>" and "<type>.<option-count bucket>"."""
-    clamp = _decision()._laya().common.clamp_temperature
+    from ._decision_common import _laya
+
+    clamp = _laya().common.clamp_temperature
     # Clef only: a head temperature _fold_temperature could not fold into the weights.
     head = (
         _positive(config.get("head_temperature", 1.0), "head_temperature")
@@ -595,10 +587,11 @@ def _write_export(output: Path, layout: str, files: dict, source_fingerprint: st
 
 def _laya_max_head_tokens(folder: Path, config: dict) -> int:
     # The converter writes the raw head_max_len; PyTorch serves FastDecisionModel's normalised one.
-    decision = _decision()
+    from ._decision_common import TRAIN_MAX_LEN, _served_lengths
+
     encoder = folder / "encoder" / "config.json"
     positions = _read_json(encoder).get("max_position_embeddings") if encoder.is_file() else None
-    return decision._served_lengths(config, positions or decision.TRAIN_MAX_LEN)[1]
+    return _served_lengths(config, positions or TRAIN_MAX_LEN)[1]
 
 
 def export_decision_gguf(
