@@ -23,8 +23,16 @@ export function markdownToSpeechText(markdown: string): string {
     return markdown;
   }
   const out: string[] = [];
-  for (const node of root.children) collectBlocks(node, out, false);
-  return out.filter((block) => block.length > 0).join("\n");
+  const notes: string[] = [];
+  for (const node of root.children) {
+    // Footnotes render after the reply, so they are read there too.
+    collectBlocks(
+      node,
+      node.type === "footnoteDefinition" ? notes : out,
+      false,
+    );
+  }
+  return [...out, ...notes].filter((block) => block.length > 0).join("\n");
 }
 
 function collectBlocks(
@@ -49,10 +57,12 @@ function collectBlocks(
         out.push(sentence(row.children.map(inline).join(", ")));
       }
       return;
+    // The sanitizer unwraps raw HTML, so its text shows on the page.
     case "html":
+      out.push(htmlText(node.value));
+      return;
     case "thematicBreak":
     case "definition":
-    case "footnoteDefinition":
     case "yaml":
       return;
     case "listItem":
@@ -79,11 +89,22 @@ function inline(node: Nodes): string {
     case "imageReference":
       return node.alt ?? "";
     case "html":
+      return htmlText(node.value);
     case "footnoteReference":
       return "";
     default:
       return "children" in node ? node.children.map(inline).join("") : "";
   }
+}
+
+function htmlText(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->|<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 function sentence(text: string): string {

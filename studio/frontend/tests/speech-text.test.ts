@@ -64,3 +64,16 @@ test("math is read from its source and plain text passes through unchanged", () 
   assert.equal(markdownToSpeechText("Inline \\(x^2\\)"), "Inline x^2");
   assert.equal(markdownToSpeechText(""), "");
 });
+
+test("text inside raw HTML and footnotes is read, as the page shows it", () => {
+  assert.equal(
+    markdownToSpeechText(
+      "<details><summary>More</summary>\n\nHidden <b>text</b>\n\n</details>\n\nSee note[^1].\n\n[^1]: The note.\n\nEnd.",
+    ),
+    "More\nHidden text\nSee note.\nEnd.\nThe note.",
+  );
+  assert.equal(
+    markdownToSpeechText("<div>Visible answer</div>\n<script>x()</script>"),
+    "Visible answer",
+  );
+});
