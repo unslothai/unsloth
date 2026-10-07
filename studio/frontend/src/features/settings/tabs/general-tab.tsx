@@ -29,8 +29,10 @@ import {
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
 import {
+  setShowAudioCppUpdateBanner,
   setShowLlamaUpdateBanner,
   setShowWhisperUpdateBanner,
+  useShowAudioCppUpdateBanner,
   useShowLlamaUpdateBanner,
   useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
@@ -163,6 +165,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_show_whisper_update_banner",
+  "unsloth_show_audio_cpp_update_banner",
+  "unsloth_llama_update_offer_suppression",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -199,8 +203,10 @@ export function GeneralTab() {
   const hfTokenPersistenceError = useHfTokenStore(
     (s) => s.persistenceError,
   );
+  const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const showWhisperUpdates = useShowWhisperUpdateBanner();
+  const showAudioCppUpdates = useShowAudioCppUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -244,6 +250,9 @@ export function GeneralTab() {
   });
 
   const draftRef = useRef(draftToken);
+  const tokenEditedRef = useRef(false);
+  const tokenEditRevisionRef = useRef(0);
+  const submittedTokenRevisionRef = useRef<number | null>(null);
   useEffect(() => {
     draftRef.current = draftToken;
   }, [draftToken]);
@@ -251,7 +260,16 @@ export function GeneralTab() {
   // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
   useEffect(() => {
     return () => {
-      if (resetInProgress) return;
+      if (resetInProgress || !tokenEditedRef.current) return;
+      const credential = useHfTokenStore.getState();
+      if (
+        submittedTokenRevisionRef.current !== null &&
+        submittedTokenRevisionRef.current === tokenEditRevisionRef.current &&
+        !credential.isPersisting &&
+        !credential.persistenceError
+      ) {
+        return;
+      }
       const trimmed = draftRef.current.trim();
       const current = useChatRuntimeStore.getState().hfToken;
       if (trimmed !== current) {
@@ -260,13 +278,46 @@ export function GeneralTab() {
     };
   }, []);
 
+  useEffect(() => {
+    const current = hfToken ?? "";
+    if (tokenEditedRef.current) {
+      if (hfTokenIsPersisting) return;
+      if (hfTokenPersistenceError) {
+        submittedTokenRevisionRef.current = null;
+        return;
+      }
+      if (
+        submittedTokenRevisionRef.current !== tokenEditRevisionRef.current &&
+        draftRef.current.trim() !== current
+      ) {
+        return;
+      }
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+    }
+    draftRef.current = current;
+    setDraftToken(current);
+  }, [hfToken, hfTokenIsPersisting, hfTokenPersistenceError]);
+
   const commitToken = () => {
-    const trimmed = draftToken.trim();
+    if (!tokenEditedRef.current) return;
+    const trimmed = draftRef.current.trim();
+    draftRef.current = trimmed;
     if (trimmed !== draftToken) setDraftToken(trimmed);
-    if (trimmed !== hfToken) setHfToken(trimmed);
+    const current = useChatRuntimeStore.getState().hfToken;
+    if (trimmed === current) {
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+      return;
+    }
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
+    setHfToken(trimmed);
   };
 
   const clearHfToken = () => {
+    tokenEditRevisionRef.current += 1;
+    tokenEditedRef.current = true;
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
     draftRef.current = "";
     setDraftToken("");
     setHfToken("");
@@ -477,7 +528,14 @@ export function GeneralTab() {
                 spellCheck={false}
                 placeholder="hf_…"
                 value={draftToken}
-                onChange={(e) => setDraftToken(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  tokenEditRevisionRef.current += 1;
+                  tokenEditedRef.current = value.trim() !== (hfToken ?? "");
+                  submittedTokenRevisionRef.current = null;
+                  draftRef.current = value;
+                  setDraftToken(value);
+                }}
                 onBlur={commitToken}
                 className={cn(
                   "h-8 w-full font-mono text-xs",
@@ -624,6 +682,17 @@ export function GeneralTab() {
           <Switch
             checked={showWhisperUpdates}
             onCheckedChange={setShowWhisperUpdateBanner}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showAudioCppUpdates")}
+          description={t(
+            "settings.general.notifications.showAudioCppUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showAudioCppUpdates}
+            onCheckedChange={setShowAudioCppUpdateBanner}
           />
         </SettingsRow>
       </SettingsSection>

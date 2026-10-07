@@ -150,10 +150,14 @@ struct ViewsState {
     urls: HashMap<String, String>,
     /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
     downloads: HashMap<String, Vec<PathBuf>>,
+    /// By URL, finishes that couldn't tell which of several reservations they were (`take_finished`).
+    unexplained_finishes: HashMap<String, usize>,
     download_starts: HashMap<String, VecDeque<Instant>>,
     polling: bool,
     /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
     muted: HashSet<String>,
+    /// Tabs whose view committed a page of its own since it opened or was last sent somewhere; until then a download's site is the address asked for (or the opener).
+    committed: HashSet<String>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -235,6 +239,16 @@ enum BrowserEvent {
         success: bool,
         /// A finished download's handle for Download history (browser_downloads.rs).
         download_id: Option<String>,
+        /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
+        marked: Option<bool>,
+    },
+    DownloadPrompt {
+        tab_id: String,
+        url: String,
+        /// Page showing when the download started (the site a remembered answer is for); "" before the view showed one.
+        site: String,
+        name: String,
+        id: String,
     },
 }
 
@@ -519,6 +533,55 @@ fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
     let _ = app.emit_to(MAIN_WEBVIEW, EVENT, event);
 }
 
+pub(crate) fn emit_download_done<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    path: &Path,
+    download_id: Option<String>,
+    marked: Option<bool>,
+) {
+    emit(
+        app,
+        BrowserEvent::Download {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: None,
+            size: std::fs::metadata(path).ok().map(|m| m.len()),
+            done: true,
+            success: true,
+            download_id,
+            marked,
+        },
+    );
+}
+
+pub(crate) fn emit_download_failed<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    name: &str,
+) {
+    emit(
+        app,
+        BrowserEvent::Download {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            name: name.to_string(),
+            path: None,
+            size: None,
+            done: true,
+            success: false,
+            download_id: None,
+            marked: None,
+        },
+    );
+}
+
 pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, String> {
     let label = label_for(tab_id)?;
     app.get_webview(&label).ok_or_else(|| "no such tab".into())
@@ -624,18 +687,7 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
     let name = suggested
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
-            name.chars()
-                .map(|c| {
-                    if c.is_control() || "/\\:".contains(c) {
-                        '_'
-                    } else {
-                        c
-                    }
-                })
-                .collect::<String>()
-        })
-        .filter(|name| !name.trim_matches('.').is_empty())
+        .map(crate::native_file_dialogs::safe_download_name)
         .unwrap_or_else(|| "download".into());
     // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
     let same = |a: &Path, b: &Path| {
@@ -665,8 +717,24 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
         .unwrap_or(candidate)
 }
 
-/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it.
-fn mark_downloaded(path: &Path, url: &Url) {
+/// Where a download came from, for the file's internet mark: no credentials, query or fragment,
+/// which can carry tokens. Web addresses only.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sanitized_source(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut clean = url.clone();
+    let _ = clean.set_username("");
+    let _ = clean.set_password(None);
+    clean.set_query(None);
+    clean.set_fragment(None);
+    Some(clean.to_string())
+}
+
+/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it. Whether that
+/// worked (FAT, exFAT and some network drives keep no mark); None where there is no mark.
+pub(crate) fn mark_downloaded(path: &Path, url: &Url) -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -680,9 +748,10 @@ fn mark_downloaded(path: &Path, url: &Url) {
             CString::new(path.as_os_str().as_bytes()),
             CString::new("com.apple.quarantine"),
         ) else {
-            return;
+            return Some(false);
         };
-        unsafe {
+        let _ = url;
+        let result = unsafe {
             libc::setxattr(
                 path.as_ptr(),
                 name.as_ptr(),
@@ -690,21 +759,24 @@ fn mark_downloaded(path: &Path, url: &Url) {
                 value.len(),
                 0,
                 0,
-            );
-        }
-        let _ = url;
+            )
+        };
+        Some(result == 0)
     }
     #[cfg(windows)]
     {
         let mut stream = path.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
-        let _ = std::fs::write(
-            stream,
-            format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={url}\r\n"),
-        );
+        let host = sanitized_source(url)
+            .map(|source| format!("HostUrl={source}\r\n"))
+            .unwrap_or_default();
+        Some(std::fs::write(stream, format!("[ZoneTransfer]\r\nZoneId=3\r\n{host}")).is_ok())
     }
     #[cfg(not(any(target_os = "macos", windows)))]
-    let _ = (path, url);
+    {
+        let _ = (path, url);
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -864,7 +936,6 @@ fn create_view<R: Runtime>(
     let window_app = app.clone();
     let window_tab = tab.clone();
     let download_tab = tab.clone();
-    let downloads_dir = app.path().download_dir().ok();
 
     #[cfg(target_os = "macos")]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
@@ -895,12 +966,15 @@ fn create_view<R: Runtime>(
             }
             let url = payload.url().to_string();
             let loading = matches!(payload.event(), PageLoadEvent::Started);
-            app.state::<BrowserViews>()
-                .inner
-                .lock()
-                .unwrap()
-                .urls
-                .insert(load_tab.clone(), url.clone());
+            {
+                let state = app.state::<BrowserViews>();
+                let mut inner = state.inner.lock().unwrap();
+                inner.urls.insert(load_tab.clone(), url.clone());
+                // Started is a commit (WebKit) or content loading (WebView2): never a download.
+                if loading {
+                    inner.committed.insert(load_tab.clone());
+                }
+            }
             emit(
                 app,
                 BrowserEvent::Load {
@@ -963,52 +1037,44 @@ fn create_view<R: Runtime>(
             let app = webview.app_handle();
             match event {
                 DownloadEvent::Requested { url, destination } => {
-                    let Some(dir) = downloads_dir.as_deref() else {
+                    if crate::browser_downloads::unanswered(app, &download_tab)
+                        >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
+                    {
+                        let name = destination
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        emit_download_failed(app, &download_tab, &url, &name);
+                        return false;
+                    }
+                    let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
                         return false;
                     };
-                    // Picked and recorded under one lock, so two downloads can't take one name.
                     let path = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
                         // macOS reports no path when a download finishes, so two of one URL at
-                        // once couldn't be told apart (and quarantined right): one at a time.
-                        if cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str()) {
-                            return false;
-                        }
+                        // once couldn't be told apart: one at a time.
+                        let busy =
+                            cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
                         let in_flight = inner.downloads.values().map(Vec::len).sum();
                         let starts = inner
                             .download_starts
                             .entry(download_tab.clone())
                             .or_default();
-                        if !download_allowed(in_flight, starts, Instant::now()) {
+                        if busy || !download_allowed(in_flight, starts, Instant::now()) {
                             drop(inner);
-                            emit(
-                                app,
-                                BrowserEvent::Download {
-                                    tab_id: download_tab.clone(),
-                                    url: url.to_string(),
-                                    name: destination
-                                        .file_name()
-                                        .map(|name| name.to_string_lossy().into_owned())
-                                        .unwrap_or_default(),
-                                    path: None,
-                                    size: None,
-                                    done: true,
-                                    success: false,
-                                    download_id: None,
-                                },
-                            );
+                            let _ = std::fs::remove_dir_all(&staging);
+                            if !busy {
+                                let name = destination
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                emit_download_failed(app, &download_tab, &url, &name);
+                            }
                             return false;
                         }
-                        let path = {
-                            let reserved: HashSet<&Path> = inner
-                                .downloads
-                                .values()
-                                .flatten()
-                                .map(PathBuf::as_path)
-                                .collect();
-                            download_destination(dir, destination, &reserved)
-                        };
+                        let path = download_destination(&staging, destination, &HashSet::new());
                         inner
                             .downloads
                             .entry(url.to_string())
@@ -1020,65 +1086,67 @@ fn create_view<R: Runtime>(
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    *destination = path;
+                    *destination = path.clone();
+                    crate::browser_downloads::add_pending(
+                        app,
+                        id.clone(),
+                        download_tab.clone(),
+                        url.clone(),
+                        path,
+                    );
+                    // "" before the view showed its own page: the frontend knows the tab's address or opener.
+                    let committed = app
+                        .state::<BrowserViews>()
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .committed
+                        .contains(&download_tab);
+                    let site = match webview.url() {
+                        Ok(page) if committed => page.to_string(),
+                        _ => String::new(),
+                    };
                     emit(
                         app,
-                        BrowserEvent::Download {
+                        BrowserEvent::DownloadPrompt {
                             tab_id: download_tab.clone(),
                             url: url.to_string(),
+                            site,
                             name,
-                            path: None,
-                            size: None,
-                            done: false,
-                            success: false,
-                            download_id: None,
+                            id,
                         },
                     );
                     true
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    let recorded = {
+                    let (recorded, retired) = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
-                        let pending = inner.downloads.entry(url.to_string()).or_default();
-                        let index = path
-                            .as_ref()
-                            .and_then(|path| pending.iter().position(|p| p == path))
-                            .unwrap_or(0);
-                        let recorded = (index < pending.len()).then(|| pending.remove(index));
+                        let ViewsState {
+                            downloads,
+                            unexplained_finishes,
+                            ..
+                        } = &mut *inner;
+                        let key = url.to_string();
+                        let mut unexplained = unexplained_finishes.remove(&key).unwrap_or(0);
+                        let pending = downloads.entry(key.clone()).or_default();
+                        let taken = take_finished(pending, &mut unexplained, path.as_deref());
                         if pending.is_empty() {
-                            inner.downloads.remove(url.as_str());
+                            downloads.remove(&key);
+                        } else if unexplained > 0 {
+                            unexplained_finishes.insert(key, unexplained);
                         }
-                        recorded
+                        taken
                     };
-                    let path = path.or(recorded);
-                    let download_id = match (success, path.as_deref()) {
-                        (true, Some(saved)) => {
-                            mark_downloaded(saved, &url);
-                            Some(crate::browser_downloads::record(app, saved.to_path_buf()))
-                        }
-                        _ => None,
-                    };
-                    emit(
+                    // The reserved path first: the engine may report another spelling of it.
+                    crate::browser_downloads::finished(
                         app,
-                        BrowserEvent::Download {
-                            tab_id: download_tab.clone(),
-                            url: url.to_string(),
-                            name: path
-                                .as_deref()
-                                .and_then(|p| p.file_name())
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                            size: path
-                                .as_deref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .map(|m| m.len()),
-                            path: path.map(|p| p.to_string_lossy().into_owned()),
-                            done: true,
-                            success,
-                            download_id,
-                        },
+                        [recorded.as_deref(), path.as_deref()],
+                        success,
                     );
+                    for staged in retired {
+                        crate::browser_downloads::finished(app, [Some(&staged), None], false);
+                    }
                     true
                 }
                 _ => false,
@@ -1296,9 +1364,15 @@ pub fn browser_view_navigate<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     let url = parse_page_url(&url)?;
-    view(webview.app_handle(), &tab_id)?
-        .navigate(url)
-        .map_err(|error| error.to_string())
+    let page = view(webview.app_handle(), &tab_id)?;
+    webview
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .committed
+        .remove(&tab_id);
+    page.navigate(url).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1542,6 +1616,7 @@ pub fn browser_view_close<R: Runtime>(
     {
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
+        inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
@@ -1568,6 +1643,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
         {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
+            inner.committed.clear();
             set_shown(&state, &mut inner, None);
         }
         for page in browser_views(&app) {
@@ -1687,9 +1763,103 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
     }
 }
 
+/// The reservation a finished download of one URL settles, and any it retires. No path: the first on
+/// macOS, which reports none and runs downloads of one URL in turn. Elsewhere a missing path (WebView2
+/// sends none for a failed download) or one matching none stands for the sole reservation only, else
+/// settling one of several would hand it another download's result. Such a finish is counted instead:
+/// once every other download has finished, the reservations left are exactly the counted ones, and
+/// they are retired as failed so none holds a download slot or waits forever.
+fn take_finished(
+    pending: &mut Vec<PathBuf>,
+    unexplained: &mut usize,
+    path: Option<&Path>,
+) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let sole = (pending.len() == 1).then_some(0);
+    let index = match path {
+        None if cfg!(target_os = "macos") => Some(0),
+        None => sole,
+        Some(path) => pending
+            .iter()
+            .position(|p| crate::browser_downloads::same_path(p, path))
+            .or(sole),
+    };
+    let recorded = match index.filter(|&index| index < pending.len()) {
+        Some(index) => Some(pending.remove(index)),
+        None => {
+            if !pending.is_empty() {
+                *unexplained += 1;
+            }
+            None
+        }
+    };
+    let mut retired = Vec::new();
+    if *unexplained > 0 && pending.len() <= *unexplained {
+        retired = std::mem::take(pending);
+        *unexplained = 0;
+    }
+    (recorded, retired)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_finished_path_matching_no_reservation_settles_only_a_sole_one() {
+        let (a, b) = (PathBuf::from("/s/a.zip"), PathBuf::from("/s/b.zip"));
+        let mut n = 0;
+        let mut two = vec![a.clone(), b.clone()];
+        let found = take_finished(&mut two, &mut n, Some(Path::new("/s/b.zip")));
+        assert_eq!(found, (Some(b.clone()), vec![]));
+        let mut two = vec![a.clone(), b.clone()];
+        assert_eq!(
+            take_finished(&mut two, &mut n, Some(Path::new("/elsewhere"))),
+            (None, vec![])
+        );
+        assert_eq!((two.len(), n), (2, 1));
+        // The other one finishes: the one left is the unexplained finish, retired as failed.
+        assert_eq!(
+            take_finished(&mut two, &mut n, Some(Path::new("/s/b.zip"))),
+            (Some(b.clone()), vec![a.clone()])
+        );
+        assert_eq!((two.len(), n), (0, 0));
+        let mut one = vec![b.clone()];
+        assert_eq!(
+            take_finished(&mut one, &mut n, Some(Path::new("/elsewhere"))),
+            (Some(b.clone()), vec![])
+        );
+        assert_eq!(take_finished(&mut Vec::new(), &mut n, None), (None, vec![]));
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn a_finish_without_a_path_takes_the_first_only_where_downloads_run_in_turn() {
+        let (a, b) = (PathBuf::from("/s/a.zip"), PathBuf::from("/s/b.zip"));
+        let mut n = 0;
+        let mut two = vec![a.clone(), b.clone()];
+        if cfg!(target_os = "macos") {
+            assert_eq!(take_finished(&mut two, &mut n, None), (Some(a), vec![]));
+            return;
+        }
+        // WebView2: a failed download reports no path. Which one is unknown until the other ends.
+        assert_eq!(take_finished(&mut two, &mut n, None), (None, vec![]));
+        assert_eq!(
+            take_finished(&mut two, &mut n, Some(Path::new("/s/a.zip"))),
+            (Some(a), vec![b])
+        );
+        let mut one = vec![PathBuf::from("/s/c.zip")];
+        assert!(take_finished(&mut one, &mut n, None).0.is_some());
+    }
+
     use super::*;
+
+    #[test]
+    fn the_internet_mark_keeps_where_not_secrets() {
+        let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
+        assert_eq!(
+            source("https://user:pass@example.com:8443/f/a.exe?sig=secret#x").as_deref(),
+            Some("https://example.com:8443/f/a.exe")
+        );
+        assert_eq!(source("file:///etc/passwd"), None);
+    }
 
     mod url_poll {
         use super::*;

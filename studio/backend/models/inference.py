@@ -19,6 +19,7 @@ from pydantic import (
     PrivateAttr,
     Tag,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -548,6 +549,10 @@ class SttLoadRequest(BaseModel):
             "sub-variant such as 'tiny'. Omitted picks the model's default."
         ),
     )
+    download_id: Optional[str] = Field(
+        None,
+        description = "Opaque identity of the download attempt being cancelled",
+    )
 
     @model_validator(mode = "after")
     def _fold_audio_gguf_variant(self):
@@ -751,9 +756,20 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_main: bool = Field(
         False,
-        description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Unsloth yet).",
+        description = "True if transformers GitHub main ships this model_type; with main_version "
+        "set, Unsloth can install main into the persistent sidecar after user consent.",
     )
+    main_version: Optional[str] = Field(
+        None, description = "transformers main __version__ (a .devN string) at check time"
+    )
+
+    @property
+    def installable(self) -> bool:
+        """The consent dialog can install it: the PyPI release, else transformers main."""
+        return bool(
+            (self.supported_in_pypi and self.pypi_version)
+            or (self.supported_in_main and self.main_version)
+        )
 
 
 class TransformersUpgradeCheckRequest(BaseModel):
@@ -914,7 +930,7 @@ class ValidateModelResponse(BaseModel):
         False,
         description = "True when the model's architecture is unknown to every installed "
         "transformers but a newer transformers ships it; the UI should offer the "
-        "install-latest-transformers consent dialog (or the dev-only notice).",
+        "install-transformers consent dialog (a PyPI release, else transformers main).",
     )
     transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
         None,
@@ -1337,6 +1353,9 @@ class InstallLatestTransformersResponse(BaseModel):
         None,
         description = "On a version-mismatch failure: the release that superseded "
         "the requested one, so the client can retry with it",
+    )
+    latest_main_version: Optional[str] = Field(
+        None, description = "On a version-mismatch failure: transformers main's current version"
     )
 
 
@@ -3438,6 +3457,8 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # Studio tool loops: final pass's prompt + completion (total_tokens sums every pass's completion).
+    context_tokens: Optional[int] = None
     prompt_tokens_details: Optional[dict] = Field(
         default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
     )
@@ -3449,6 +3470,14 @@ class CompletionUsage(BaseModel):
             "rejected_prediction_tokens": 0,
         }
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_context_tokens(self, handler):
+        # Only tool loops set it; elsewhere the OpenAI usage object stays byte-identical.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("context_tokens") is None:
+            data.pop("context_tokens", None)
+        return data
 
 
 class ChatCompletion(BaseModel):
@@ -4251,14 +4280,31 @@ class DiffusionLoadRequest(BaseModel):
         description = "How to load the model (null = auto-detect from gguf_filename): gguf "
         "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
         "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
-        "from_pretrained, embedded quant auto-applied). Non-GGUF kinds are restricted to "
-        "unsloth/* repos (or a local path).",
+        "from_pretrained, embedded quant auto-applied). A single_file .safetensors loads from "
+        "any repo; pipeline loads are restricted to unsloth/* repos, the official base repos, "
+        "or a local path.",
     )
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
     )
     # Referenced out, so resolved back in, or a caller handed a `ref:` base cannot load it.
     _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
+    text_encoder_file: Optional[Union[str, List[str]]] = Field(
+        None,
+        description = "Separate text-encoder file(s) to use instead of the base repo's, e.g. a ComfyUI "
+        "models/text_encoders file. One path or a list (FLUX.1: clip_l + t5xxl); each is matched to the "
+        "pipeline slot whose encoder class it fits. A local .safetensors path (relative paths resolve against "
+        "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
+        "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
+        "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
+        "the base repo then supplies only configs and tokenizers for these encoders.",
+    )
+    vae_file: Optional[str] = Field(
+        None,
+        description = "Separate VAE file to use instead of the base repo's, e.g. a ComfyUI models/vae file "
+        "(ae.safetensors, qwen_image_vae.safetensors, wan_2.1_vae.safetensors). Same path rules as "
+        "text_encoder_file. Only with a gguf / single_file load.",
+    )
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )
@@ -4401,6 +4447,30 @@ class DiffusionLoadRequest(BaseModel):
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("text_encoder_file")
+    @classmethod
+    def _normalize_text_encoder_file(cls, value):
+        if value is None:
+            return None
+        items = [value] if isinstance(value, str) else list(value)
+        items = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+        if len(set(items)) != len(items):
+            raise ValueError("text_encoder_file lists the same file twice")
+        if len(items) > 4:
+            raise ValueError("at most 4 text_encoder_file entries (one per encoder slot)")
+        return items or None
+
+    @field_validator("vae_file")
+    @classmethod
+    def _blank_vae_file(cls, value):
+        return (value or "").strip() or None
+
+    def supplied_text_encoder_files(self) -> Optional[list[str]]:
+        value = self.text_encoder_file
+        if value is None:
+            return None
+        return [value] if isinstance(value, str) else list(value)
 
     @field_validator("loras")
     @classmethod
@@ -5020,6 +5090,11 @@ class DiffusionStatusResponse(BaseModel):
     )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
+    )
+    component_files: Optional[Dict[str, str]] = Field(
+        None,
+        description = "Supplied text-encoder / VAE files by pipeline component (e.g. text_encoder_2: "
+        "t5xxl_fp8_e4m3fn_scaled.safetensors); null when every companion came from the base repo",
     )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
@@ -5754,8 +5829,8 @@ class VideoLoadRequest(BaseModel):
         description = "How to load the model (null = auto-detect from gguf_filename): gguf "
         "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
         "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
-        "from_pretrained). Non-GGUF kinds are restricted to unsloth/* repos, the official "
-        "family base repos, or a local path.",
+        "from_pretrained). A single_file .safetensors loads from any repo; pipeline loads are "
+        "restricted to unsloth/* repos, the official family base repos, or a local path.",
     )
     base_repo: Optional[str] = Field(
         None,

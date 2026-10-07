@@ -22,6 +22,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,7 @@ from core.inference.stt_sidecar import (
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
     _read_revision_record,
+    _remember_completed_download,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
@@ -318,6 +320,8 @@ class _MtmdDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._selected_files: tuple[_SelectedHubFile, ...] = ()
@@ -332,6 +336,8 @@ class _MtmdDownloadState:
             snapshot = {
                 "downloading": downloading,
                 "model": model_id if downloading else None,
+                "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -351,10 +357,21 @@ class _MtmdDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
+    ) -> bool:
         """Stop an in-flight download. False when none was running."""
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None and self._model_id != model_id:
                 return False
             self._cancelled = True
             process = self._process
@@ -405,14 +422,14 @@ class _MtmdDownloadState:
         self,
         model_id: str,
         hf_token: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = resolve_mtmd_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -421,6 +438,7 @@ class _MtmdDownloadState:
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._error = None
             self._total_bytes = None
             self._selected_files = ()
@@ -435,6 +453,7 @@ class _MtmdDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(
         self,
@@ -516,6 +535,12 @@ class _MtmdDownloadState:
                 ):
                     raise RuntimeError("downloaded mtmd files are missing from the captured cache")
                 _write_revision_record(spec.repo, revision)
+                with self._lock:
+                    _remember_completed_download(
+                        self._completed_download_ids,
+                        self._download_id,
+                        cancelled = self._cancelled,
+                    )
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:
@@ -541,16 +566,20 @@ class _MtmdDownloadState:
 _download_state = _MtmdDownloadState()
 
 
-def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
-    _download_state.start(resolve_mtmd_model_id(model), hf_token)
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> str:
+    return _download_state.start(resolve_mtmd_model_id(model), hf_token)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
+    try:
+        model_id = resolve_mtmd_model_id(model) if model is not None else None
+    except SttModelIdError:
+        return False
+    return _download_state.cancel(model_id, download_id)
 
 
 class MtmdSttSidecar:

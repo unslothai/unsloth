@@ -685,9 +685,27 @@ function OsSandboxSections() {
                 </div>
               ) : (
                 <>
+                  {view.builtinInUse ? (
+                    <SettingsRow
+                      label={t("settings.sandbox.builtinLabel")}
+                      description={t("settings.sandbox.builtinDescription")}
+                    >
+                      <Badge
+                        variant="outline"
+                        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+                      >
+                        <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} />
+                        {t("settings.sandbox.builtinInUse")}
+                      </Badge>
+                    </SettingsRow>
+                  ) : null}
                   <SettingsRow
                     label={t("settings.sandbox.optInLabel")}
-                    description={t("settings.sandbox.optInDescription")}
+                    description={
+                      view.builtinInUse
+                        ? t("settings.sandbox.optInNotNeeded")
+                        : t("settings.sandbox.optInDescription")
+                    }
                   >
                     <div className="flex flex-col items-end gap-1">
                       <Switch

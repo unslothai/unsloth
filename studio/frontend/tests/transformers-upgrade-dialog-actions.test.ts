@@ -10,7 +10,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { upgradeDialogActions } from "../src/features/transformers-upgrade/lib/upgrade-dialog-actions.ts";
+import {
+  upgradeDialogActions,
+  upgradeInstallVersion,
+} from "../src/features/transformers-upgrade/lib/upgrade-dialog-actions.ts";
 import type { TransformersUpgradeInfo } from "../src/features/transformers-upgrade/types.ts";
 
 const INSTALLABLE: TransformersUpgradeInfo = {
@@ -76,7 +79,7 @@ test("a running install offers nothing that would abandon it", () => {
   assert.equal(actions.customCode, false);
 });
 
-test("a dev-only upgrade has nothing to install and says so", () => {
+test("a main-only upgrade without a known main version has nothing to install", () => {
   const actions = upgradeDialogActions({
     upgrade: DEV_ONLY,
     phase: "consent",
@@ -101,7 +104,42 @@ test("an upgrade no transformers ships at all offers only Cancel", () => {
 
   assert.deepEqual(actions, {
     installable: false,
+    fromMain: false,
     devOnly: false,
     customCode: false,
   });
+});
+
+test("a main-only architecture installs transformers main after consent", () => {
+  const upgrade: TransformersUpgradeInfo = {
+    ...DEV_ONLY,
+    // biome-ignore lint/style/useNamingConvention: API schema
+    main_version: "5.19.0.dev0",
+  };
+  const actions = upgradeDialogActions({
+    upgrade,
+    phase: "consent",
+    trustRemoteCodeFallback: false,
+  });
+
+  assert.equal(actions.installable, true);
+  assert.equal(actions.fromMain, true);
+  assert.equal(actions.devOnly, false);
+  assert.equal(upgradeInstallVersion(upgrade), "5.19.0.dev0");
+});
+
+test("a released version wins over main", () => {
+  const upgrade: TransformersUpgradeInfo = {
+    ...INSTALLABLE,
+    // biome-ignore lint/style/useNamingConvention: API schema
+    main_version: "5.19.0.dev0",
+  };
+  const actions = upgradeDialogActions({
+    upgrade,
+    phase: "consent",
+    trustRemoteCodeFallback: false,
+  });
+
+  assert.equal(actions.fromMain, false);
+  assert.equal(upgradeInstallVersion(upgrade), "5.15.0");
 });

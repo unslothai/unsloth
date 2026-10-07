@@ -1612,6 +1612,7 @@ def test_retirement_reaps_stt_downloads_and_fences_a_parked_start(tmp_path, monk
     monkeypatch.setattr(dataset_downloads, "retire_account_downloads", lambda: None)
     monkeypatch.setattr(model_downloads, "retire_account_downloads", lambda: None)
     monkeypatch.setattr(inference, "_stt_download_accounts", {})
+    monkeypatch.setattr(inference, "_stt_download_id_accounts", {})
     monkeypatch.setattr(inference, "_stt_grant_pending", {})
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     monkeypatch.setattr(access, "authorize_download", lambda *a: None)

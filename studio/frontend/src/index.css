@@ -4056,11 +4056,19 @@ html[data-chat-font] .aui-root {
 		height: var(--ui-icon-size) !important;
 	}
 
-	/* "Sandbox High ›" chip: pill on hover or while open, same wash as menu rows. */
-	.sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+	/* Menu heading chips ("Sandbox High ›", "Embedding … ›"): pill on hover or while open. */
+	.menu-heading-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
 		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
 	}
-	.dark .sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+	.dark .menu-heading-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+	}
+
+	/* A row whose action is its own menu item (RAG pins): keep the row lit while the action is. */
+	.unsloth-plus-menu .menu-row-with-action:has([data-row-action]:is(:hover, [data-highlighted])) > :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]) {
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	.dark .unsloth-plus-menu .menu-row-with-action:has([data-row-action]:is(:hover, [data-highlighted])) > :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"]) {
 		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
 	}
 
