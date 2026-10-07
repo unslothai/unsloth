@@ -118,15 +118,44 @@ def test_a_failed_url_run_keeps_what_it_saved(runner, monkeypatch, cwd):
     assert json.loads((cwd / "Llama.ipynb").read_text(encoding = "utf-8")) == NOTEBOOK
 
 
-def test_a_url_download_takes_the_owner_of_the_directory_it_lands_in(runner, monkeypatch, cwd):
+def test_a_url_download_takes_the_callers_mapped_owner(runner, monkeypatch, cwd):
     owners = []
+    monkeypatch.setenv("UNSLOTH_RUN_UID", "1234")
+    monkeypatch.setenv("UNSLOTH_RUN_GID", "5678")
+    monkeypatch.setattr(runner, "_container_run_ids", lambda ids: ids)
     monkeypatch.setattr(
         runner.os, "fchown", lambda fd, uid, gid: owners.append((uid, gid)), raising = False
     )
     _run(runner, monkeypatch, ["https://example.invalid/nb/Llama.ipynb"])
 
-    st = os.stat(cwd)
-    assert owners == [(st.st_uid, st.st_gid)]
+    assert owners == [(1234, 5678)]
+
+
+def test_a_url_out_path_uses_the_callers_owner_for_new_directories_and_output(
+    runner, monkeypatch, cwd
+):
+    owners = []
+    monkeypatch.setenv("UNSLOTH_RUN_UID", "1234")
+    monkeypatch.setenv("UNSLOTH_RUN_GID", "5678")
+    monkeypatch.setattr(runner, "_container_run_ids", lambda ids: ids)
+    monkeypatch.setattr(
+        runner.os,
+        "chown",
+        lambda path, uid, gid: owners.append((Path(path), uid, gid)),
+    )
+
+    _run(
+        runner,
+        monkeypatch,
+        ["https://example.invalid/nb/Llama.ipynb", "--out", "new/dir/result.ipynb"],
+    )
+
+    expected = {(cwd / "new", 1234, 5678), (cwd / "new" / "dir", 1234, 5678)}
+    assert expected.issubset(set(owners))
+    assert any(
+        path.name.startswith(".unsloth-run-out-") and (uid, gid) == (1234, 5678)
+        for path, uid, gid in owners
+    )
 
 
 def test_unsloth_run_reads_and_hides_the_requested_host_owner(runner, monkeypatch):
@@ -137,6 +166,26 @@ def test_unsloth_run_reads_and_hides_the_requested_host_owner(runner, monkeypatc
 
     assert "UNSLOTH_RUN_UID" not in os.environ
     assert "UNSLOTH_RUN_GID" not in os.environ
+
+
+def test_rootless_id_maps_translate_the_host_caller_to_container_root(runner, tmp_path):
+    uid_map = tmp_path / "uid_map"
+    gid_map = tmp_path / "gid_map"
+    uid_map.write_text("0 1000 1\n1 100000 65536\n", encoding = "utf-8")
+    gid_map.write_text("0 1000 1\n1 100000 65536\n", encoding = "utf-8")
+
+    assert runner._container_run_ids((1000, 1000), uid_map, gid_map) == (0, 0)
+    assert runner._container_run_ids((101234, 101234), uid_map, gid_map) == (1235, 1235)
+
+
+def test_an_unmapped_host_identity_is_rejected(runner, tmp_path):
+    uid_map = tmp_path / "uid_map"
+    gid_map = tmp_path / "gid_map"
+    uid_map.write_text("0 100000 65536\n", encoding = "utf-8")
+    gid_map.write_text("0 100000 65536\n", encoding = "utf-8")
+
+    with pytest.raises(SystemExit, match = "host ID 1000 is not mapped"):
+        runner._container_run_ids((1000, 1000), uid_map, gid_map)
 
 
 def test_url_run_uses_host_identity_without_scanning_the_worktree(runner):

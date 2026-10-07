@@ -74,7 +74,7 @@ def _scan(nb):
     return pin, model
 
 
-def _makedirs_as_host(path):
+def _makedirs_as_host(path, owner_ids = None):
     """Create `path` owned by the nearest existing ancestor. mkdir(2) uses the CALLER's
     uid/gid and only setgid carries down, so a new `--out sub/dir/` would be root-owned
     and _stage_metadata would then give the OUTPUT that owner too."""
@@ -90,18 +90,24 @@ def _makedirs_as_host(path):
     os.makedirs(path, exist_ok = True)
     if not missing:
         return
-    try:
-        anchor = os.stat(probe)
-    except OSError:
-        return
+    if owner_ids is None:
+        try:
+            anchor = os.stat(probe)
+        except OSError:
+            return
+        owner_ids = anchor.st_uid, anchor.st_gid
     for created in reversed(missing):
         try:
-            os.chown(created, anchor.st_uid, anchor.st_gid)
+            os.chown(created, *owner_ids)
         except (OSError, AttributeError):
             pass
 
 
-def _stage_metadata(staged, dest):
+def _stage_metadata(
+    staged,
+    dest,
+    owner_ids = None,
+):
     """Give the staged output the metadata the destination must end up with: mkstemp()
     creates 0600, nbconvert truncates that same inode, and os.replace carries it onto
     the destination. Best effort."""
@@ -115,11 +121,17 @@ def _stage_metadata(staged, dest):
             os.chmod(staged, 0o666 & ~umask)
         except OSError:
             pass
-        try:
-            _dir = os.stat(os.path.dirname(os.path.abspath(dest)) or ".")
-            os.chown(staged, _dir.st_uid, _dir.st_gid)
-        except (OSError, AttributeError):
-            pass
+        if owner_ids is None:
+            try:
+                _dir = os.stat(os.path.dirname(os.path.abspath(dest)) or ".")
+                owner_ids = _dir.st_uid, _dir.st_gid
+            except OSError:
+                pass
+        if owner_ids is not None:
+            try:
+                os.chown(staged, *owner_ids)
+            except (OSError, AttributeError):
+                pass
         return
     try:
         os.chmod(staged, stat.S_IMODE(st.st_mode))
@@ -131,7 +143,7 @@ def _stage_metadata(staged, dest):
         pass
 
 
-def _open_url_download(url):
+def _open_url_download(url, owner_ids = None):
     name = os.path.basename(urllib.parse.unquote(urllib.parse.urlsplit(url).path)) or "notebook"
     stem = name[: -len(".ipynb")] if name.endswith(".ipynb") else name
     n = 0
@@ -142,11 +154,17 @@ def _open_url_download(url):
         except FileExistsError:
             n += 1
             continue
-        try:
-            parent = os.stat(os.path.dirname(path))
-            os.fchown(fd, parent.st_uid, parent.st_gid)
-        except (OSError, AttributeError):
-            pass
+        if owner_ids is None:
+            try:
+                parent = os.stat(os.path.dirname(path))
+                owner_ids = parent.st_uid, parent.st_gid
+            except OSError:
+                pass
+        if owner_ids is not None:
+            try:
+                os.fchown(fd, *owner_ids)
+            except (OSError, AttributeError):
+                pass
         return path, fd
 
 
@@ -160,12 +178,34 @@ def _host_run_ids():
     return int(uid), int(gid)
 
 
-def _host_owned_command(cmd, host_ids):
-    """Run notebook code as the bind mount owner but keep the file capabilities
-    that install cells need to update the root-owned image environment."""
-    if host_ids is None or host_ids == (0, 0):
-        return cmd
+def _mapped_container_id(host_id, map_path):
+    try:
+        with open(map_path) as mapping:
+            ranges = [tuple(map(int, line.split())) for line in mapping if line.strip()]
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"unsloth-run could not read the container ID map: {exc}") from exc
+    for container_start, host_start, length in ranges:
+        if host_start <= host_id < host_start + length:
+            return container_start + host_id - host_start
+    raise SystemExit(f"host ID {host_id} is not mapped into this container")
+
+
+def _container_run_ids(
+    host_ids,
+    uid_map = "/proc/self/uid_map",
+    gid_map = "/proc/self/gid_map",
+):
+    if host_ids is None:
+        return None
     uid, gid = host_ids
+    return _mapped_container_id(uid, uid_map), _mapped_container_id(gid, gid_map)
+
+
+def _host_owned_command(cmd, run_ids):
+    """run notebook code as the bind mount owner while retaining install permissions."""
+    if run_ids is None or run_ids == (0, 0):
+        return cmd
+    uid, gid = run_ids
     capabilities = "-all,+chown,+dac_override,+fowner"
     return [
         "/usr/bin/setpriv",
@@ -197,14 +237,14 @@ def main():
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
-    host_ids = _host_run_ids()
+    run_ids = _container_run_ids(_host_run_ids())
 
     tmp_files = []
     publish_from = None
     if args.out:
         out_path = os.path.abspath(args.out)
         out_dir = os.path.dirname(out_path) or "."
-        _makedirs_as_host(out_dir)
+        _makedirs_as_host(out_dir, run_ids)
         if args.notebook.startswith(("http://", "https://")):
             # keep URL inputs beside --out so relative artifacts land in the output directory
             fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
@@ -220,7 +260,7 @@ def main():
         os.close(fd)
         tmp_files.append(publish_from)
     elif args.notebook.startswith(("http://", "https://")):
-        src_path, fd = _open_url_download(args.notebook)
+        src_path, fd = _open_url_download(args.notebook, run_ids)
         with os.fdopen(fd, "w") as f:
             json.dump(nb, f)
         out_path = src_path
@@ -265,9 +305,9 @@ def main():
         os.path.basename(args.notebook.split("?")[0]) if args.out else os.path.basename(src_path),
     )
     try:
-        rc = subprocess.call(_host_owned_command(cmd, host_ids), env = env)
+        rc = subprocess.call(_host_owned_command(cmd, run_ids), env = env)
         if rc == 0 and publish_from is not None:
-            _stage_metadata(publish_from, out_path)
+            _stage_metadata(publish_from, out_path, run_ids)
             try:
                 os.replace(publish_from, out_path)
             except OSError:
