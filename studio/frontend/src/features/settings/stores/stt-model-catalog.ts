@@ -209,6 +209,20 @@ export function sttShownVariant(
   );
 }
 
+/** Whether a listing shows the pinned quant on disk. A cache-only listing names only cached quants,
+ *  some by the loose key ("Q8_0" for "small/Q8_0"), so a quant it leaves out is not cached. */
+export function sttListedQuantDownloaded(
+  listing: { variants: readonly { quant: string; downloaded?: boolean }[] },
+  pinned: string,
+): boolean {
+  const exact = listing.variants.find((variant) => variant.quant === pinned);
+  const loose = listing.variants.filter((variant) =>
+    pinned.endsWith(`/${variant.quant}`),
+  );
+  const row = exact ?? (loose.length === 1 ? loose[0] : undefined);
+  return row?.downloaded === true;
+}
+
 export function sttModelSize(model: SttModel): string {
   return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
 }

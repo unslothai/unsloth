@@ -101,7 +101,8 @@ function settle(
     outcome === "complete" &&
     dictationEngine === "model" &&
     sttModel === model &&
-    (tracked === undefined || tracked === variant)
+    // An adopted download's quant is unknown; it can only be what an unpinned row runs.
+    (tracked === undefined ? variant === null : tracked === variant)
   ) {
     void loadAndAnnounce(model, engine, variant);
   }

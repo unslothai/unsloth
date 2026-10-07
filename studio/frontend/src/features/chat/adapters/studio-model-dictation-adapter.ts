@@ -20,6 +20,7 @@ import {
   isCuratedSttModel,
   recordRecentDictation,
   resolveModelDictationLanguage,
+  sttListedQuantDownloaded,
   sttModelVariant,
   useVoiceSettingsStore,
   withSttVariant,
@@ -356,10 +357,7 @@ export async function sttQuantDownloaded(
   const listing = await listGgufVariants(model, hfApiToken(getHfToken()), {
     signal,
   }).catch(() => null);
-  return (
-    listing?.variants.find((variant) => variant.quant === ggufVariant)
-      ?.downloaded !== false
-  );
+  return !listing || sttListedQuantDownloaded(listing, ggufVariant);
 }
 
 /** The quant an audiocpp pick names, as the request field; every other engine takes none. A saved

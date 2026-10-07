@@ -90,6 +90,7 @@ import {
   isSttModelLanguageCompatible,
   sttModelName,
   sttModelSize,
+  sttListedQuantDownloaded,
   sttModelVariant,
   sttShownVariant,
   type TtsEngine,
@@ -687,6 +688,11 @@ export function VoiceTab() {
     sttLoadedVariant,
     sttVariantListing?.model === sttModel ? sttVariantListing.listing : null,
   );
+  const shownSttLabel = ggufVariantDisplayLabel(
+    sttVariants.find((variant) => variant.quant === shownSttVariant) ?? {
+      quant: shownSttVariant ?? "",
+    },
+  );
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;
@@ -697,12 +703,11 @@ export function VoiceTab() {
       ? sttDownloadAvailability.state
       : "checking";
   // Status knows rows, not quants: a pinned quant of a row with another one cached is missing.
-  const pinnedSttVariant = sttVariants.find(
-    (variant) => variant.quant === sttVariant,
-  );
   const effectiveSttDownloadAvailability =
     rowSttDownloadAvailability === "downloaded" &&
-    pinnedSttVariant?.downloaded === false
+    sttVariant &&
+    sttVariantListing?.model === sttModel &&
+    !sttListedQuantDownloaded(sttVariantListing.listing, sttVariant)
       ? "missing"
       : rowSttDownloadAvailability;
   useEffect(() => {
@@ -1313,11 +1318,13 @@ export function VoiceTab() {
                 />
                 {/* A saved key names its own quant, so only package folder rows offer one. */}
                 {sttVariants.length > 1 ? (
+                  // Bound to the pin, not the shown quant: picking the quant that runs now
+                  // must still save it, or an idle unload drops back to another one.
                   <Select
-                    value={shownSttVariant ?? undefined}
+                    value={sttVariant ?? ""}
                     onValueChange={(next) => {
-                      if (next === shownSttVariant) return;
                       setSttGgufVariant(next);
+                      if (next === shownSttVariant) return;
                       void unloadSttModel().catch(() => {});
                       void autoLoadSttModel(sttModel, next);
                     }}
@@ -1328,12 +1335,9 @@ export function VoiceTab() {
                       className="w-full font-mono text-xs"
                       size="sm"
                     >
-                      <SelectValue>
-                        {ggufVariantDisplayLabel(
-                          sttVariants.find(
-                            (variant) => variant.quant === shownSttVariant,
-                          ) ?? { quant: shownSttVariant ?? "" },
-                        )}
+                      {/* Unpinned, the value is "" and Radix renders the placeholder. */}
+                      <SelectValue placeholder={shownSttLabel}>
+                        {shownSttLabel}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent align="end">

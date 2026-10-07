@@ -74,6 +74,7 @@ import {
   sttModelName,
   sttModelSize,
   sttModelVariant,
+  sttListedQuantDownloaded,
   sttShownVariant,
   withSttVariant,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
@@ -582,8 +583,14 @@ test("every Settings dictation path carries the saved quant", () => {
   // Ready means the pinned quant is the resident one, not merely the row.
   assert.match(voiceTab, /\(!sttVariant \|\| engineStatus\.loaded_variant === sttVariant\)/);
   // Status only knows rows; the listing says whether the pinned quant is on disk.
-  assert.match(voiceTab, /\(variant\) => variant\.quant === sttVariant,/);
-  assert.match(voiceTab, /pinnedSttVariant\?\.downloaded === false\s*\?\s*"missing"/);
+  assert.match(
+    voiceTab,
+    /!sttListedQuantDownloaded\(sttVariantListing\.listing, sttVariant\)\s*\?\s*"missing"/,
+  );
+  // The Select is bound to the pin, so picking the quant that runs now still saves it.
+  assert.match(voiceTab, /value=\{sttVariant \?\? ""\}/);
+  assert.match(voiceTab, /setSttGgufVariant\(next\);\s*if \(next === shownSttVariant\) return;/);
+  assert.match(voiceTab, /<SelectValue placeholder=\{shownSttLabel\}>/);
 
   // The prompt fetches the quant its requester pinned, not whatever Voice settings say now.
   const prompt = readSrc("features/settings/components/stt-download-prompt.tsx");
@@ -603,7 +610,11 @@ test("every Settings dictation path carries the saved quant", () => {
   const downloadedAt = mirror.indexOf("if (engineStatus?.downloaded_models.includes(model))");
   assert.ok(cancelledAt > 0 && cancelledAt < erroredAt && erroredAt < downloadedAt);
   // A quant picked while another one downloads is not warmed when the first lands.
-  assert.match(mirror, /sttModel === model &&\s*\(tracked === undefined \|\| tracked === variant\)/);
+  // An adopted download's quant is unknown: warm it only for an unpinned row.
+  assert.match(
+    mirror,
+    /\(tracked === undefined \? variant === null : tracked === variant\)/,
+  );
   assert.match(voiceTab, /trackSttDownload\(sttModel, \{ ggufVariant: sttVariant \}\)/);
   assert.match(prompt, /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*\}\)/);
   assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
@@ -616,10 +627,7 @@ test("every Settings dictation path carries the saved quant", () => {
     assert.match(upload, new RegExp(`requestSttDownload\\([^)]*\\{\\s*ggufVariant: ${holder}\\.ggufVariant,`));
   }
   // Status lists a row once any quant is cached; a pinned quant needs its own listing row.
-  assert.match(
-    adapter,
-    /listing\?\.variants\.find\(\(variant\) => variant\.quant === ggufVariant\)\s*\?\.downloaded !== false/,
-  );
+  assert.match(adapter, /return !listing \|\| sttListedQuantDownloaded\(listing, ggufVariant\);/);
   // Upload readiness and the no-speech-service switch both require the pinned quant on disk.
   assert.match(upload, /sttQuantDownloaded\(\s*targetModel,\s*target\.ggufVariant,\s*signal,\s*\)/);
   assert.match(
@@ -637,7 +645,7 @@ test("every Settings dictation path carries the saved quant", () => {
 
 test("the quant Select appears for package folders with more than one quant", () => {
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
-  assert.match(voiceTab, /\{sttVariants\.length > 1 \? \(\s*<Select/);
+  assert.match(voiceTab, /\{sttVariants\.length > 1 \? \([\s\S]{0,200}?<Select\s/);
   assert.match(voiceTab, /if \(!isLocalEngine \|\| !isAudioCppFolderId\(sttModel\)\) return;/);
   assert.match(voiceTab, /aria-label=\{t\("settings\.voice\.dictation\.sttQuantLabel"\)\}/);
 });
@@ -907,4 +915,22 @@ test("the quant Select shows the quant a dictation would actually run", () => {
   assert.equal(sttShownVariant(null, "Q8_0", null), "Q8_0");
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(voiceTab, /const shownSttVariant = sttShownVariant\(\s*sttVariant,\s*sttLoadedVariant,/);
+});
+
+test("a pinned quant counts as on disk only when the listing shows it downloaded", () => {
+  const online = {
+    variants: [
+      { quant: "multilingual-ctc/F16", downloaded: true },
+      { quant: "v3-ctc/F16", downloaded: false },
+    ],
+  };
+  assert.equal(sttListedQuantDownloaded(online, "multilingual-ctc/F16"), true);
+  assert.equal(sttListedQuantDownloaded(online, "v3-ctc/F16"), false);
+  // A cache-only listing names only what is cached: a quant it leaves out is not on disk.
+  const offline = { variants: [{ quant: "multilingual-ctc/F16", downloaded: true }] };
+  assert.equal(sttListedQuantDownloaded(offline, "v3-ctc/F16"), false);
+  // ...and it can key the one cached quant loosely.
+  const loose = { variants: [{ quant: "Q8_0", downloaded: true }] };
+  assert.equal(sttListedQuantDownloaded(loose, "small/Q8_0"), true);
+  assert.equal(sttListedQuantDownloaded({ variants: [] }, "small/Q8_0"), false);
 });
