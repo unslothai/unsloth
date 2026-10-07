@@ -3332,26 +3332,37 @@ def test_a_python_call_that_edits_an_attachment_reports_it(tmp_path, monkeypatch
     assert {entry["name"] for entry in files} == {path, beside}
 
 
-def test_an_attachment_another_chat_copies_in_mid_call_is_not_reported(tmp_path, monkeypatch):
+def test_an_attachment_copied_in_during_a_call_is_not_claimed_by_it(tmp_path, monkeypatch):
     from core import chat_originals
 
     tools = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
     session = "__LOCALID_sharedattach"
+    kept, _ = chat_originals.save([b"a,b\n1,2\n"])
+    tools.materialize_sandbox_attachments(session, [(kept, "kept.csv")])
     workdir = tools._get_workdir(session)
-    token = tools._call_started(workdir)
-    before = tools._snapshot_workdir_files(workdir)
-    sheet, _ = chat_originals.save([b"a,b\n1,2\n"])
-    tools.materialize_sandbox_attachments(session, [(sheet, "other.csv")])
-    copy = os.path.join(workdir, tools.sandbox_attachment_path(sheet, "other.csv"))
-    with open(os.path.join(os.path.dirname(copy), ".tmp-0123456789ab"), "wb") as handle:
-        handle.write(b"a,b\n")
-    with open(os.path.join(workdir, "out.txt"), "w") as handle:
-        handle.write("x")
-    result = tools._created_file_sentinels(workdir, before, None, token)
-    tools._call_finished(token)
+
+    def call(during):
+        token = tools._call_started(workdir)
+        before = tools._snapshot_workdir_files(workdir)
+        during()
+        try:
+            return tools._created_file_sentinels(workdir, before, None, token)
+        finally:
+            tools._call_finished(token)
+
+    def recopy_and_write():
+        tools.materialize_sandbox_attachments(session, [(kept, "kept.csv")])
+        with open(os.path.join(workdir, "out.txt"), "w") as handle:
+            handle.write("x")
+
+    result = call(recopy_and_write)
     files = json.loads(result.split("__FILES__:")[1].split("\n")[0])
     assert [entry["name"] for entry in files] == ["out.txt"]
+
+    other, _ = chat_originals.save([b"c,d\n"])
+    assert call(lambda: tools.materialize_sandbox_attachments(session, [(other, "other.csv")])) == ""
+    assert os.path.isfile(os.path.join(workdir, tools.sandbox_attachment_path(other, "other.csv")))
 
 
 def test_sandbox_attachment_paths_match_the_frontend():
