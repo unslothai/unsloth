@@ -374,6 +374,13 @@ test("files that run code are recognised however the name is cased, padded or pa
   for (const { name, dangerous } of fixture.cases) assert.equal(isDangerousDownload(name), dangerous, name);
   assert.equal(isDangerousDownload("C:\\Users\\a\\setup.exe"), true);
   assert.equal(isDangerousDownload("dir.exe/readme.txt"), false);
+  // Saved names are cut to 240 bytes: a tail too long to keep as the extension is cut off, leaving .exe last.
+  assert.equal(isDangerousDownload(`${"a".repeat(236)}.exe${"x".repeat(40)}`), true);
+  assert.equal(isDangerousDownload(`${"a".repeat(300)}.txt`), false);
+  assert.equal(isDangerousDownload(`${"a".repeat(236)}.txt${"x".repeat(40)}`), false);
+  // A Windows device name gets a leading "_", which moves the cut by one byte.
+  assert.equal(isDangerousDownload(`con.${"a".repeat(231)}.exe${"x".repeat(40)}`), true);
+  assert.equal(isDangerousDownload(`cox.${"a".repeat(231)}.exe${"x".repeat(40)}`), false);
 });
 
 test("download answers are kept per origin, never for every site", async () => {

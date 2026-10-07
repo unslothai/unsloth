@@ -303,6 +303,10 @@
     {
       "name": "notes.txt",
       "dangerous": false
+    },
+    {
+      "name": "addin.xla",
+      "dangerous": true
     }
   ]
 }

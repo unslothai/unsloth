@@ -445,7 +445,15 @@ pub(crate) fn add_pending<R: Runtime>(
 /// Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
 pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     if cfg!(any(windows, target_os = "macos")) {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+        // `\\?\C:\x` is `C:\x` on Windows.
+        let plain = |p: &Path| {
+            let text = p.to_string_lossy().to_lowercase();
+            match text.strip_prefix(r"\\?\") {
+                Some(rest) if cfg!(windows) && !rest.starts_with("unc\\") => rest.to_string(),
+                _ => text,
+            }
+        };
+        plain(a) == plain(b)
     } else {
         a == b
     }
@@ -781,6 +789,15 @@ mod tests {
         place_new(&from, &free).unwrap();
         assert_eq!(fs::read(&free).unwrap(), b"new");
         assert!(!from.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_path_is_the_same_file() {
+        assert!(same_path(
+            Path::new(r"\\?\C:\Users\A\x.zip"),
+            Path::new(r"c:\users\a\X.zip")
+        ));
     }
 
     #[test]

@@ -1121,15 +1121,7 @@ fn create_view<R: Runtime>(
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
                         let pending = inner.downloads.entry(url.to_string()).or_default();
-                        let index = path
-                            .as_ref()
-                            .and_then(|path| {
-                                pending
-                                    .iter()
-                                    .position(|p| crate::browser_downloads::same_path(p, path))
-                            })
-                            .unwrap_or(0);
-                        let recorded = (index < pending.len()).then(|| pending.remove(index));
+                        let recorded = take_reservation(pending, path.as_deref());
                         if pending.is_empty() {
                             inner.downloads.remove(url.as_str());
                         }
@@ -1757,8 +1749,47 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
     }
 }
 
+/// The path reserved for a finished download of one URL. No path (macOS reports none; its downloads
+/// of one URL run in turn): the first. A path matching none stands for the sole reservation only,
+/// else settling one of several would hand it another download's result.
+fn take_reservation(pending: &mut Vec<PathBuf>, path: Option<&Path>) -> Option<PathBuf> {
+    let index = match path {
+        None => Some(0),
+        Some(path) => pending
+            .iter()
+            .position(|p| crate::browser_downloads::same_path(p, path))
+            .or((pending.len() == 1).then_some(0)),
+    };
+    index
+        .filter(|&index| index < pending.len())
+        .map(|index| pending.remove(index))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_finished_path_matching_no_reservation_settles_only_a_sole_one() {
+        let (a, b) = (PathBuf::from("/s/a.zip"), PathBuf::from("/s/b.zip"));
+        let mut two = vec![a.clone(), b.clone()];
+        assert_eq!(
+            take_reservation(&mut two, Some(Path::new("/s/b.zip"))),
+            Some(b.clone())
+        );
+        let mut two = vec![a.clone(), b.clone()];
+        assert_eq!(
+            take_reservation(&mut two, Some(Path::new("/elsewhere"))),
+            None
+        );
+        assert_eq!(two.len(), 2);
+        assert_eq!(take_reservation(&mut two, None), Some(a.clone()));
+        let mut one = vec![b.clone()];
+        assert_eq!(
+            take_reservation(&mut one, Some(Path::new("/elsewhere"))),
+            Some(b)
+        );
+        assert_eq!(take_reservation(&mut Vec::new(), None), None);
+    }
+
     use super::*;
 
     #[test]
