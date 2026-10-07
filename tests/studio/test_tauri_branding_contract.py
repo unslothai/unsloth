@@ -68,6 +68,10 @@ def test_desktop_package_transitions_preserve_legacy_installs() -> None:
     deb = config["bundle"]["linux"]["deb"]
     for field in ("provides", "conflicts", "replaces"):
         assert deb[field] == ["unsloth-studio-desktop"]
+    # Ubuntu ships it in universe: a Depends would make apt refuse the package (and every in-app
+    # update) where universe is off, while dictation already falls back to PCM without it (#11939).
+    assert deb["recommends"] == ["gstreamer1.0-plugins-bad"]
+    assert "depends" not in deb
 
     installer = read(TAURI / "windows/installer.nsi")
     assert '!define INSTALLIDENTITY "Unsloth Studio (Desktop)"' in installer
