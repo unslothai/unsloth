@@ -19,6 +19,7 @@ from pydantic import (
     PrivateAttr,
     Tag,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -3456,6 +3457,8 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # Studio tool loops: final pass's prompt + completion (total_tokens sums every pass's completion).
+    context_tokens: Optional[int] = None
     prompt_tokens_details: Optional[dict] = Field(
         default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}
     )
@@ -3467,6 +3470,14 @@ class CompletionUsage(BaseModel):
             "rejected_prediction_tokens": 0,
         }
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_context_tokens(self, handler):
+        # Only tool loops set it; elsewhere the OpenAI usage object stays byte-identical.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("context_tokens") is None:
+            data.pop("context_tokens", None)
+        return data
 
 
 class ChatCompletion(BaseModel):
