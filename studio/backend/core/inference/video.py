@@ -3168,6 +3168,7 @@ class VideoBackend:
                         # An API-initiated load takes the cached checkpoint or fails; it never pulls the multi-GB file
                         # itself.
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE +
@@ -3578,6 +3579,7 @@ class VideoBackend:
                             cancel_event = cancel_event,
                             reuse_other_cache_root = True,
                             local_files_only = local_files_only,
+                            gguf_header_delta = True,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
@@ -8287,6 +8289,7 @@ class VideoBackend:
                 hf_token,
                 reuse_other_cache_root = True,
                 local_files_only = local_files_only,
+                gguf_header_delta = True,
             )
         )
 

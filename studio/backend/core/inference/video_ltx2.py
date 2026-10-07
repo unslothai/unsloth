@@ -607,6 +607,7 @@ def _load_extras_file(
         reuse_other_cache_root = True,
         # the switch's locality gate cleared these three artifacts by name
         local_files_only = local_files_only,
+        gguf_header_delta = True,
     )
     return load_file(path)
 
