@@ -123,7 +123,9 @@ def _run_sh_argv(tmp_path, *command):
     bindir.mkdir()
     argv_log = tmp_path / "argv"
     docker = bindir / "docker"
-    docker.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{argv_log}"\n', encoding = "utf-8")
+    docker.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{argv_log}"\n', encoding = "utf-8"
+    )
     docker.chmod(docker.stat().st_mode | stat.S_IEXEC)
     env = {
         "PATH": f"{bindir}:/usr/bin:/bin",
@@ -143,7 +145,9 @@ def _run_sh_argv(tmp_path, *command):
     return argv_log.read_text(encoding = "utf-8").splitlines()
 
 
-@pytest.mark.skipif(os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required")
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required"
+)
 def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
     argv = _run_sh_argv(tmp_path, "unsloth-run", "https://example.invalid/nb/Llama.ipynb")
     image = argv.index("unsloth/unsloth:latest")
@@ -151,7 +155,9 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
     assert f"{tmp_path}:/workspace/host" in argv[:image]
 
 
-@pytest.mark.skipif(os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required")
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required"
+)
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path):
     argv = _run_sh_argv(tmp_path, "jupyter", "lab")
     assert "-w" not in argv[: argv.index("unsloth/unsloth:latest")]
