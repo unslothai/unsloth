@@ -272,6 +272,54 @@ Describe 'the rerun block in setup.ps1' {
     }
 }
 
+Describe 'the rerun does not ask for elevation a second time' {
+    # The first pass runs these blocks before its dependency step, so by the time the new copy runs
+    # the user has already answered (or could not answer) the UAC prompt once in this update.
+    BeforeAll {
+        $script:LongPathsBlock = Get-LineSlice 'the Long Paths block' `
+            { param($i) $lines[$i] -eq '$LongPathsEnabled = $false' } `
+            { param($j) $lines[$j] -eq '}' }
+        $script:CudaTargetsBlock = Get-LineSlice 'the CUDA .targets block' `
+            { param($i) $lines[$i].StartsWith('# CUDA installed before VS Build Tools leaves .targets missing') } `
+            { param($j) $lines[$j] -eq '}' }
+        foreach ($block in @($script:LongPathsBlock, $script:CudaTargetsBlock)) {
+            if (-not $block.Contains('-Verb RunAs')) { throw "drift: an elevation block no longer elevates." }
+        }
+        function step { param([string]$Label, [string]$Value) }
+        function substep { param([string]$Message) }
+        function Write-StudioLine { param([string]$Text) }
+        function Get-VcBuildCustomizationsDir { param($VsInstallPath, $Generator) $script:VsCustomDir }
+    }
+    AfterEach { Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue }
+
+    It 'Long Paths: asks on a first run and not on the rerun (<Guard>)' -ForEach @(
+        @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
+    ) {
+        Mock Get-ItemProperty { [pscustomobject]@{ LongPathsEnabled = 0 } }
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+        if ($Guard) { $env:UNSLOTH_SETUP_RERUN = $Guard }
+        $StageRoot = $null
+        . ([scriptblock]::Create($script:LongPathsBlock))
+        Should -Invoke Start-Process -Times $Expected -Exactly
+    }
+
+    It 'CUDA .targets: asks on a first run and not on the rerun (<Guard>)' -ForEach @(
+        @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
+    ) {
+        $CudaToolkitRoot = Join-Path $TestDrive "cuda-$Expected"
+        $extras = Join-Path $CudaToolkitRoot 'extras\visual_studio_integration\MSBuildExtensions'
+        New-Item -ItemType Directory -Path $extras -Force | Out-Null
+        $script:VsCustomDir = Join-Path $TestDrive "vs-$Expected"
+        New-Item -ItemType Directory -Path $script:VsCustomDir -Force | Out-Null
+        $VsInstallPath = 'C:\VS'; $CmakeGenerator = 'Visual Studio 17 2022'
+        Mock Copy-Item { throw 'access denied' }
+        Mock Start-Process { }
+        if ($Guard) { $env:UNSLOTH_SETUP_RERUN = $Guard }
+        . ([scriptblock]::Create($script:CudaTargetsBlock))
+        Should -Invoke Start-Process -Times $Expected -Exactly
+    }
+}
+
 Describe 'finishing with the setup script the update installed (<HostName>)' -ForEach $script:Hosts {
     Context '-Command, the CLI shape' {
         BeforeAll {

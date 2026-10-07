@@ -4972,6 +4972,9 @@ if ($LongPathsEnabled) {
     step "long paths" "enabled"
 } elseif ($StageRoot) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
+} elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
+    # The run that handed off to this copy already asked; a declined UAC prompt should not come back.
+    step "long paths" "disabled; already asked earlier in this update" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
@@ -5336,6 +5339,8 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                 substep "CUDA VS integration files installed"
             } catch {
                 try {
+                    # As for Long Paths: the run that handed off to this copy already asked.
+                    if ($env:UNSLOTH_SETUP_RERUN -eq '1') { throw "elevation was already asked for earlier in this update" }
                     $copyCmd = "Copy-Item '$cudaExtras\*' '$vsCustomizations' -Force"
                     Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
                     $hasTargetsRetry = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
