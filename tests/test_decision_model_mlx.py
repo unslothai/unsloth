@@ -102,7 +102,7 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, full):
         "encoder.layers.0.attn.Wo.weight" in dict(tree_flatten(model.trainable_parameters()))
     )
     manual = DecisionTrainer(model, TrainingArguments(str(tmp_path / "run")), train[:16], held)
-    assert manual._trainer.eval_dataset is None and manual.evaluate()["eval_loss"] > 0
+    assert manual.evaluate()["eval_loss"] > 0
     assert manual.evaluate(held[:8])["eval_loss"] != manual.evaluate()["eval_loss"]
     assert FastDecisionModel.calibrate(model, tokenizer, held)["fitted_types"] == [0, 1, 2]
     calibrated = FastDecisionModel.evaluate(model, tokenizer, held)
@@ -126,39 +126,37 @@ def test_unsupported_options_are_refused(checkpoint, tmp_path):
     for option in ({"use_dora": True}, {"bias": "all"}, {"loftq_config": {"loftq_bits": 4}}):
         with pytest.raises(NotImplementedError, match = next(iter(option))):
             FastDecisionModel.get_peft_model(model, **option)
-    with pytest.raises(NotImplementedError, match = "compute_metrics, kl_weight"):
-        DecisionTrainer(model, compute_metrics = len, kl_weight = 0.5, ordinal_weight = 0.0)
-    best = {"eval_strategy": "steps", "load_best_model_at_end": True}
-    for option in (best, {"dataloader_drop_last": True}):
-        with pytest.raises(NotImplementedError, match = list(option)[-1]):
+    with pytest.raises(NotImplementedError, match = "data_collator, optimizers"):
+        DecisionTrainer(model, data_collator = len, optimizers = (None, None), brier_weight = 0.5)
+    best = {"save_strategy": "best", "eval_strategy": "steps", "metric_for_best_model": "loss"}
+    for option in ({"auto_find_batch_size": True}, best):
+        with pytest.raises(NotImplementedError, match = next(iter(option))):
             DecisionTrainer(model, TrainingArguments(str(tmp_path), **option))
-    with pytest.warns(UserWarning, match = "saves no checkpoints"):
-        assert DecisionTrainer(model).args.save_steps == 0
-    quiet = TrainingArguments(str(tmp_path), logging_strategy = "no", logging_steps = 1)
-    assert DecisionTrainer(model, quiet).args.logging_steps == 0
-    with pytest.warns(UserWarning, match = "not once per epoch"):
-        DecisionTrainer(model, TrainingArguments(str(tmp_path), logging_strategy = "epoch"))
     ignored = {"data_seed": 1, "eval_on_start": True, "neftune_noise_alpha": 5.0}
     with pytest.warns(UserWarning, match = "ignores data_seed, eval_on_start, neftune_noise_alpha"):
         DecisionTrainer(model, TrainingArguments(str(tmp_path), **ignored))
 
 
-def test_label_smoothing_moves_training_targets_toward_uniform(checkpoint, tmp_path):
+def test_the_torch_trainer_options_reach_the_mlx_trainer(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
-    items, _ = FastDecisionModel.build_dataset([_row(0)], tokenizer, model)
-    args = TrainingArguments(str(tmp_path), label_smoothing_factor = 0.3, save_strategy = "no")
-    smoothed = lambda dataset: [[round(value, 4) for value in item["target"]] for item in dataset]
-    trainer = DecisionTrainer(model, args, items, items)
-    # In option order: noul is (false, true), then the two teams, then the three moods.
-    expected = [[0.15, 0.85], [0.85, 0.15], [0.1, 0.1, 0.8]]
-    assert smoothed(trainer.train_dataset) == smoothed(trainer._eval_dataset) == expected
-    plain = DecisionTrainer(model, args, items, label_smoothing = 0.0).train_dataset
-    assert smoothed(plain) == smoothed(items) != expected
-    trainer, seen = DecisionTrainer(model, None, items, label_smoothing = 0.3), []
-    assert smoothed(trainer.train_dataset) == expected and min(items[0]["target"]) == 0.0
-    trainer._trainer.evaluate = lambda: seen.append(smoothed(trainer._trainer.eval_dataset))
-    trainer.evaluate(items)
-    assert seen == [expected]
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    schedule = {"eval_strategy": "steps", "eval_steps": 2, "save_steps": 2, "max_steps": 4}
+    schedule.update(logging_first_step = True, label_smoothing_factor = 0.3, report_to = "none")
+    args = TrainingArguments(str(tmp_path), **schedule)
+    count = lambda prediction: {"rows": len(prediction.label_ids)}
+    options = {"preprocess_logits_for_metrics": lambda logits, _: logits.argmax(dim = -1)}
+    trainer = DecisionTrainer(model, args, items, items, compute_metrics = count, **options)
+    assert trainer.objective == (0.3, 0.0, 0.0) and min(trainer.train_dataset[0]["target"]) == 0.0
+    trainer.train()
+    assert trainer.state.log_history[0]["step"] == 1 and (tmp_path / "checkpoint-2").is_dir()
+    resumed = DecisionTrainer(model, args, items, items)
+    resumed.train(resume_from_checkpoint = str(tmp_path / "checkpoint-2"))
+    logs = resumed.state.log_history, trainer.state.log_history
+    assert (
+        logs[0][:2] == logs[1][:2] and len(logs[0]) == len(logs[1]) and logs[0][2:] != logs[1][2:]
+    )
+    assert trainer.predict(items[:3]).predictions.shape == (3,)
+    assert trainer.evaluate()["eval_rows"] == 12
 
 
 def test_transformers_callbacks_read_the_training_arguments(checkpoint, tmp_path):
@@ -298,18 +296,19 @@ def test_clef_trains_calibrates_saves_and_reloads(
         1,
     ]
     args = {**ARGS, "max_steps": 12, "eval_strategy": "no", "per_device_train_batch_size": 4}
+    args.update(save_strategy = "steps", save_steps = 12)
     args = TrainingArguments(str(tmp_path / "run"), learning_rate = 1e-3, **args)
-    trainer = DecisionTrainer(model, args, train, held, head_learning_rate = 1e-3, kl_weight = 0.0)
-    smoothed = DecisionTrainer(model, args, train, label_smoothing = 0.2).train_dataset[0]
-    peaks = [[round(max(t), 4), t.index(max(t))] for t in smoothed["targets"]]
-    assert peaks == [[0.9, t.index(1.0)] for t in train[0]["targets"][:2]] + [
-        [0.8667, train[0]["targets"][2].index(max(train[0]["targets"][2]))]
-    ]
+    options = {"kl_weight": 0.0 if full else 0.5, "permute_fields": True, "ordinal_weight": 0.3}
+    options["brier_weight"] = 0.5
+    trainer = DecisionTrainer(model, args, train, held, head_learning_rate = 1e-3, **options)
+    assert trainer.train_dataset[0]["source"]["max_length"] == 2048 and trainer._permute
+    assert trainer.objective == (0.0, 0.5, 0.3) and (trainer._reference is None) == full
     before = {name: mx.array(value) for name, value in tree_flatten(model.trainable_parameters())}
     trainer.train()
     after = dict(tree_flatten(model.trainable_parameters()))
     moved = {name.split(".")[0] for name in before if not mx.array_equal(before[name], after[name])}
     assert moved == {"encoder", "head"}
+    assert (tmp_path / "run" / "checkpoint-12" / "adapter_model.safetensors").exists() != full
     trained = [name for name, _ in tree_flatten(model.trainable_parameters())]
     assert {name.split(".")[0] for name in trained} == {"encoder", "head"}
     assert full != any(name.endswith("lora_b") for name in trained)

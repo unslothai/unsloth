@@ -1012,27 +1012,36 @@ if _IS_MLX:
     }
 
     # Training arguments that change what is trained and that the MLX trainer does not implement.
-    _DECISION_UNSUPPORTED_ARGUMENTS = (
-        "load_best_model_at_end",
-        "dataloader_drop_last",
-        "optim_args",
-        "eval_delay",
-        "auto_find_batch_size",
-    )
+    _DECISION_UNSUPPORTED_ARGUMENTS = ("optim_args", "auto_find_batch_size")
 
     # The MLX trainer for language models takes these; this trainer has no counterpart for them.
     _DECISION_UNUSED = {"neftune_noise_alpha", "push_to_hub"}
 
-    # Set by transformers itself or about where logs go.
-    _DECISION_QUIET_ARGUMENTS = ("do_eval", "do_train", "logging_dir", "run_name", "label_names")
+    # Read by the MLX decision trainer without a field in the MLX config, or set by transformers itself.
+    _DECISION_QUIET_ARGUMENTS = (
+        "do_eval",
+        "do_train",
+        "logging_dir",
+        "run_name",
+        "label_names",
+        "label_smoothing_factor",
+        "eval_delay",
+        "logging_first_step",
+        "dataloader_drop_last",
+    )
 
-    # Trainer options of the torch DecisionTrainer that the MLX trainer does not implement.
-    _DECISION_UNSUPPORTED_OBJECTIVES = (
+    # What the torch DecisionTrainer takes beyond transformers' own arguments, and the MLX trainer too.
+    _DECISION_TRAINER_OPTIONS = (
         "brier_weight",
         "ordinal_weight",
         "kl_weight",
         "permute_fields",
+        "compute_metrics",
+        "preprocess_logits_for_metrics",
     )
+
+    # Defaults for training a Clef, as the torch DecisionTrainer's.
+    CLEF_RECIPE = {}
 
     @functools.lru_cache(maxsize = None)
     def _decision_zoo():
@@ -1631,10 +1640,7 @@ if _IS_MLX:
             # The torch trainer's default: three epochs, no evaluation schedule.
             from transformers import TrainingArguments
             args = TrainingArguments(output_dir = "tmp_trainer")
-        given = args
-        strategy = getattr(args, "eval_strategy", None)
-        strategy = str(getattr(strategy, "value", strategy) or "").lower()
-        checkpointing = None
+        given, checkpointing = args, None
         if isinstance(args, MLXTrainingConfig):
             args = copy.copy(args)
         else:
@@ -1659,49 +1665,29 @@ if _IS_MLX:
                     warnings.warn(
                         f"Unsloth: DecisionTrainer on MLX ignores {', '.join(sorted(ignored))}."
                     )
-        if strategy == "epoch":
-            args.eval_steps = 0
-        # transformers callbacks read arguments the MLX config has no field for, such as eval_strategy.
+        # The MLX trainer and transformers callbacks read arguments the MLX config has no field for.
         for name, value in vars(given).items():
             if not (name.startswith("_") or hasattr(args, name)):
                 setattr(args, name, value)
-        logging = getattr(given, "logging_strategy", None)
-        logging = str(getattr(logging, "value", logging) or "").lower()
-        if logging == "no":
-            args.logging_steps = 0
-        elif logging == "epoch":
-            warnings.warn(
-                "Unsloth: DecisionTrainer on MLX logs every logging_steps steps, not once per epoch."
-            )
         unsupported = [
             name for name in _DECISION_UNSUPPORTED_ARGUMENTS if getattr(given, name, None)
         ]
+        saving = getattr(given, "save_strategy", None)
+        if str(getattr(saving, "value", saving)).lower() == "best":
+            unsupported.append('save_strategy = "best"')
         if unsupported:
             raise NotImplementedError(
                 f"Unsloth: DecisionTrainer on MLX does not support {', '.join(unsupported)}."
             )
-        if getattr(args, "save_steps", 0):
-            # transformers saves every 500 steps by default, so this is a warning and not a refusal.
-            warnings.warn(
-                "Unsloth: DecisionTrainer on MLX saves no checkpoints during training; "
-                "call model.save_pretrained_merged when it finishes."
-            )
-            args.save_steps = 0
-        return args, strategy, checkpointing
-
-    def _decision_smoothed(items, smoothing):
-        # Toward uniform over each decision's own options, as the torch trainer smooths its targets.
-        def smooth(target):
-            return [(1.0 - smoothing) * value + smoothing / len(target) for value in target]
-
-        return [
-            {**item, "targets": [smooth(target) for target in item["targets"]]}
-            if "targets" in item
-            else {**item, "target": smooth(item["target"])}
-            for item in items
-        ]
+        return args, checkpointing
 
     class DecisionTrainer:
+        """The MLX decision trainer behind the torch DecisionTrainer's arguments.
+
+        Everything else, such as `train(resume_from_checkpoint = ...)`, `evaluate` and `predict`,
+        is the MLX trainer's own.
+        """
+
         def __init__(
             self,
             model = None,
@@ -1711,68 +1697,74 @@ if _IS_MLX:
             *,
             head_learning_rate: Optional[float] = None,
             tokenizer = None,
+            label_smoothing: Optional[float] = None,
             callbacks = None,
             processing_class = None,
             **kwargs,
         ):
-            label_smoothing = kwargs.pop("label_smoothing", None)
-            # The torch trainer's other objectives may be passed at the value that leaves them off.
-            kwargs = {
-                name: value
-                for name, value in kwargs.items()
-                if value or name not in _DECISION_UNSUPPORTED_OBJECTIVES
-            }
-            if kwargs:
+            unknown = sorted(set(kwargs) - set(_DECISION_TRAINER_OPTIONS))
+            if unknown:
                 raise NotImplementedError(
-                    f"Unsloth: DecisionTrainer on MLX does not support {', '.join(sorted(kwargs))}."
+                    f"Unsloth: DecisionTrainer on MLX does not support {', '.join(unknown)}."
                 )
-            args, eval_strategy, gradient_checkpointing = _decision_arguments(args)
+            args, gradient_checkpointing = _decision_arguments(args)
+            clef = _is_clef(model)
+            recipe = CLEF_RECIPE if clef else {}
             if label_smoothing is None:
-                label_smoothing = getattr(args, "label_smoothing_factor", 0.0)
-            # The torch trainer's loss smooths its targets when it evaluates too.
-            self._smoothing = float(label_smoothing or 0.0)
-            train_dataset, eval_dataset = map(self._smoothed, (train_dataset, eval_dataset))
-            if gradient_checkpointing and not _is_clef(model):
+                label_smoothing = getattr(args, "label_smoothing_factor", 0.0) or recipe.get(
+                    "label_smoothing", 0.0
+                )
+            options = {name: recipe[name] for name in _DECISION_TRAINER_OPTIONS if name in recipe}
+            options.update({name: value for name, value in kwargs.items() if value is not None})
+            preprocess = options.get("preprocess_logits_for_metrics")
+            if preprocess is not None:
+                import torch
+
+                # The hook is written for the torch trainer, which hands it tensors.
+                options["preprocess_logits_for_metrics"] = lambda logits, labels: preprocess(
+                    torch.from_numpy(logits), torch.from_numpy(labels)
+                )
+            if gradient_checkpointing and not clef:
                 model.gradient_checkpointing = True
+            if clef and getattr(model, "_unsloth_lora", False):
+                # Lets a checkpoint be written as the adapters save_pretrained writes.
+                config = model.decision_config
+                origin = (
+                    model._unsloth_source,
+                    config["base_model"],
+                    config.get("base_revision"),
+                    config,
+                )
+                object.__setattr__(model, "_origin", origin)
+            if clef and options.get("permute_fields") and train_dataset is not None:
+                # A record is encoded again in its new order, to the length it was built for.
+                length = model.decision_config["max_len"]
+                train_dataset = [
+                    {**item, "source": {**item["source"], "max_length": length}}
+                    if "source" in item
+                    else item
+                    for item in train_dataset
+                ]
             processing_class = tokenizer if processing_class is None else processing_class
             if processing_class is None:
                 processing_class = model._saved_temp_tokenizer
-            self._eval_dataset = eval_dataset
             self._trainer = _decision_zoo().MLXDecisionTrainer(
                 model,
                 args,
                 train_dataset,
-                # Kept for evaluate(); the zoo trainer evaluates on a schedule whenever it holds one.
-                None if eval_strategy == "no" else eval_dataset,
+                eval_dataset,
                 pad_token_id = _decision_pad_token_id(processing_class),
                 head_learning_rate = head_learning_rate,
                 callbacks = callbacks,
                 processing_class = processing_class,
+                label_smoothing = float(label_smoothing or 0.0),
+                **options,
             )
 
         def __getattr__(self, name):
-            if name in ("_trainer", "_eval_dataset", "_smoothing"):
+            if name == "_trainer":
                 raise AttributeError(name)
             return getattr(self._trainer, name)
-
-        def train(self):
-            return self._trainer.train()
-
-        def _smoothed(self, items):
-            return (
-                _decision_smoothed(items, self._smoothing) if self._smoothing and items else items
-            )
-
-        def evaluate(self, eval_dataset = None):
-            trainer = self._trainer
-            eval_dataset = (
-                self._eval_dataset if eval_dataset is None else self._smoothed(eval_dataset)
-            )
-            scheduled, trainer.eval_dataset = trainer.eval_dataset, eval_dataset
-            try:
-                return trainer.evaluate()
-            finally:
-                trainer.eval_dataset = scheduled
 
     def is_bfloat16_supported():
         try:
