@@ -1868,6 +1868,8 @@ def test_the_streaming_backend_stops_reading_once_cancelled(monkeypatch):
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
     monkeypatch.setattr(LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
+    # Pin the device pick: a __new__ backend has no load state, and the host may have CUDA.
+    monkeypatch.setattr(LlamaCppBackend, "holds_no_vram", True)
 
     out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
     assert out == []
@@ -1919,6 +1921,8 @@ def test_a_cancel_wakes_a_stream_read_blocked_in_prefill(monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", SimpleNamespace(has_codec = lambda _t: True))
     monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
     monkeypatch.setattr(LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
+    # Pin the device pick: a __new__ backend has no load state, and the host may have CUDA.
+    monkeypatch.setattr(LlamaCppBackend, "holds_no_vram", True)
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
 
     threading.Timer(0.2, cancel.set).start()
