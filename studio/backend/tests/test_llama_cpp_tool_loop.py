@@ -4538,6 +4538,39 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     assert "prompt_tokens_details" not in metadata[-1]["usage"]
 
 
+def test_metadata_event_context_tokens_count_earlier_passes_once(monkeypatch):
+    """A tool pass's completion is re-sent inside the next pass's prompt, so the
+    context the turn leaves is the final prompt plus the final completion only;
+    total_tokens keeps billing every pass's completion."""
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "cats"}, "call_1"),
+            _usage_done({"prompt_tokens": 100, "completion_tokens": 30}, "tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Found cats."}),
+            _usage_done({"prompt_tokens": 140, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [_web_search_tool()],
+        max_tool_iterations = 2,
+    )
+
+    assert len(payloads) == 2
+    usage = [e for e in events if e.get("type") == "metadata"][-1]["usage"]
+    assert usage["completion_tokens"] == 40
+    assert usage["total_tokens"] == 180
+    assert usage["context_tokens"] == 150
+
+
 def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     """Finding 6: a rehearsal call whose name (``web_search``) and ``[ARGS]{...}``
     arrive in separate content deltas must hold the bare name in the buffer until
