@@ -134,7 +134,6 @@ def mxfp8_reference(t: dict) -> torch.Tensor:
 ENCODERS = {"nvfp4": (nvfp4_encode, nvfp4_reference), "mxfp8": (mxfp8_encode, mxfp8_reference)}
 
 
-# ----------------------------------------------------------------------------------- layout and dequant
 @pytest.mark.parametrize("rows,blocks", [(128, 4), (200, 6), (3, 1), (384, 120)])
 def test_tiling_matches_the_cublas_formula_and_round_trips(rows, blocks):
     plain = torch.randint(0, 255, (rows, blocks), dtype = torch.uint8)
@@ -179,7 +178,6 @@ def test_pre_quant_scale_is_folded_into_the_columns():
     assert torch.equal(got, nvfp4_reference(t) * smooth)
 
 
-# ----------------------------------------------------------------------------------- detection / refusal
 def _layer_file(
     tmp_path,
     fmt,
@@ -265,7 +263,6 @@ def test_resident_size_prices_kept_and_dequantized_nvfp4(tmp_path):
     assert kept == 3  # 2 MiB of codes + 256 KiB of block scales
 
 
-# ----------------------------------------------------------------------------------- loading a model
 class _Block(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
@@ -464,7 +461,6 @@ def test_runtime_forward_matches_the_dequantized_product(block_file, fmt, dynami
     assert rel < (0.15 if fmt == "nvfp4" else 0.05), rel  # activation quantization error only
 
 
-# ----------------------------------------------------------------------------------- runtime choice
 def _target(device):
     return types.SimpleNamespace(torch_device = device, dtype = torch.bfloat16)
 

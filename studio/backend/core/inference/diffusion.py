@@ -5469,8 +5469,7 @@ class DiffusionBackend:
                 _ensure_attention_backend_installed(preinstall_backend, logger)
         except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
-        # Install FlashInfer only when a pre-quantised checkpoint will load: the on-the-fly build is torchao. A ComfyUI
-        # nvfp4 single file is one too: its codes only stay nvfp4 on the FlashInfer Linear.
+        # Install FlashInfer only when a pre-quantised checkpoint (incl. a ComfyUI nvfp4 file) will load: on-the-fly is torchao.
         if (
             kind == "single_file"
             and nvfp4_diffusion_enabled()
@@ -7801,8 +7800,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _comfy_single_file_holds_nvfp4(repo_id: Optional[str], filename: Optional[str]) -> bool:
-        """Whether this single-file pick is a ComfyUI checkpoint with nvfp4 layers, read from the header of a file
-        already on disk (local path or the hub cache). Never downloads, never raises."""
+        """Whether an already-on-disk single file holds ComfyUI nvfp4 layers; never downloads, never raises."""
         try:
             if not repo_id or not filename:
                 return False

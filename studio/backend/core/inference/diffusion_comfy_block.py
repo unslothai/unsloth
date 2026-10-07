@@ -1,24 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI's block-scaled layer formats (``nvfp4``, ``mxfp8``): decode, dequantize, and the runtimes that keep them.
+"""ComfyUI ``nvfp4`` / ``mxfp8`` layers: decode, dequantize, and the runtimes that keep them.
 
-On disk (measured on Comfy-Org's own files, not inferred from a writer):
-
-* ``nvfp4``: ``.weight`` uint8 ``[N, K/2]``, two e2m1 codes per byte with the EVEN column in the HIGH nibble;
-  ``.weight_scale`` float8_e4m3fn block scales (one per 16 columns) in the cuBLAS 128x4 tiled layout, padded to
-  ``[roundup(N, 128), roundup(K/16, 4)]``; ``.weight_scale_2`` the fp32 per-tensor scale; ``.input_scale`` the
-  static fp32 activation scale (``amax / (448 * 6)``); ``.pre_quant_scale`` (optional) an AWQ smoothing vector
-  that multiplies the input. Value = e2m1 * block_scale * weight_scale_2.
-* ``mxfp8``: ``.weight`` float8_e4m3fn ``[N, K]``; ``.weight_scale`` e8m0 exponents (one per 32 columns) in the same
-  tiled layout. Value = fp8 * 2 ** (e - 127). Activations are block-quantized per call (``input_scale`` unused).
-
-Decoded, every layer is row-major (codes ``[N, *]`` with the plain ``[N, K / block]`` scales beside them), so the
-row-tag mapping in ``diffusion_comfy_quant`` can split, rename and concatenate rows exactly as for int8 / fp8.
-
-Runtimes: nvfp4 keeps its codes on Studio's own FlashInfer NVFP4 Linear (codes nibble-swapped to its low-first
-packing, scales re-tiled); mxfp8 keeps them on ``torch._scaled_mm`` with e8m0 block scales (``ComfyMXFP8Linear``,
-plain buffers, so offload hooks can move it). Where neither runs, layers dequantize to the compute dtype.
+Layout measured on Comfy-Org's files: nvfp4 ``.weight`` uint8 ``[N, K/2]`` with the EVEN column in the HIGH nibble,
+e4m3 block scales (per 16 columns) in the cuBLAS 128x4 tiled layout, ``.weight_scale_2`` per-tensor,
+``.input_scale`` = activation ``amax / (448 * 6)``, optional ``.pre_quant_scale`` input smoothing. mxfp8 ``.weight``
+e4m3 ``[N, K]`` with e8m0 exponents (per 32 columns) in the same tiled layout. Decoded layers are row-major so the
+row-tag mapping in ``diffusion_comfy_quant`` splits and concatenates them as for int8 / fp8.
 """
 
 from __future__ import annotations
@@ -85,8 +74,7 @@ def swap_nibbles(packed: Any) -> Any:
 
 
 def decode_layer(fmt: str, weight: Any, weight_scale: Any) -> tuple[Any, Any]:
-    """``(codes, plain scales)`` in row-major form: nvfp4 codes LOW-nibble-first uint8 ``[N, K/2]`` with e4m3
-    scales ``[N, K/16]``; mxfp8 codes float8_e4m3fn ``[N, K]`` with uint8 e8m0 exponents ``[N, K/32]``."""
+    """Row-major ``(codes, plain scales)``; nvfp4 codes come out low-nibble-first (FlashInfer's packing)."""
     import torch
 
     rows = int(weight.shape[0])
@@ -117,8 +105,7 @@ def dequant_block(
     pre_quant_scale: Any = None,
     dtype: Any = None,
 ) -> Any:
-    """Dense ``[N, K]`` weight from decoded codes + plain scales, in float32 then cast to ``dtype``. A
-    ``pre_quant_scale`` (input smoothing) is folded into the columns: ``(x * s) @ W.T == x @ (W * s).T``."""
+    """Dense ``[N, K]`` weight; ``pre_quant_scale`` folds into the columns: ``(x * s) @ W.T == x @ (W * s).T``."""
     import torch
 
     dtype = dtype or torch.bfloat16
@@ -147,10 +134,8 @@ def dequant_block(
     return weight.to(dtype)
 
 
-# ----------------------------------------------------------------------------------------------------- mxfp8 runtime
 def mx_quantize_activation(x: Any) -> tuple[Any, Any]:
-    """bf16 ``[M, K]`` -> (float8_e4m3fn codes, tiled e8m0 scales), one power-of-two scale per 32 columns, exponent
-    ``ceil(log2(amax / 448))`` (no block overflows); an all-zero block keeps scale 2**-127 and codes 0."""
+    """``[M, K]`` -> (e4m3 codes, tiled e8m0 scales), exponent ``ceil(log2(amax / 448))`` per 32 columns (ComfyUI's rule)."""
     import torch
 
     m, k = x.shape
@@ -177,8 +162,7 @@ def mxfp8_linear_class():
         return _MX_CLASS
 
     class ComfyMXFP8Linear(nn.Module):
-        """MXFP8-weight Linear from a ComfyUI file: fp8 codes + tiled e8m0 scales as plain buffers, activations
-        block-quantized per call, one ``torch._scaled_mm``. No host sync, no data-dependent branch."""
+        """Plain buffers so offload hooks can move it; forward stays capture-safe (no host sync)."""
 
         def __init__(
             self,
@@ -230,8 +214,7 @@ _NVFP4_DYNAMIC_CLASS = None
 
 
 def nvfp4_dynamic_linear_class():
-    """Studio's FlashInfer NVFP4 Linear with the activation global scale taken from each call's amax (on device:
-    no host sync), for ComfyUI nvfp4 layers that ship no ``input_scale``."""
+    """FlashInfer NVFP4 Linear scaling activations from each call's amax, for layers without ``input_scale``."""
     global _NVFP4_DYNAMIC_CLASS
     if _NVFP4_DYNAMIC_CLASS is not None:
         return _NVFP4_DYNAMIC_CLASS
@@ -299,8 +282,7 @@ def _device_of(target: Any) -> Any:
 
 
 def mxfp8_runtime_reason(target: Any) -> Optional[str]:
-    """None when ``torch._scaled_mm`` runs e8m0 block-scaled fp8 on ``target``'s device (cached tiny probe),
-    else why not."""
+    """None when ``torch._scaled_mm`` runs e8m0 block-scaled fp8 on ``target``'s device (cached probe), else why not."""
     try:
         import torch
     except Exception:  # noqa: BLE001
@@ -347,13 +329,8 @@ def comfy_block_backend(
     *,
     dtype: Any = None,
 ) -> tuple[Optional[str], str]:
-    """``(runtime or None, reason)`` for ComfyUI ``fmt`` layers on ``target``. None = dequantize to the compute
-    dtype, which is always correct and costs the memory saving.
-
-    nvfp4 follows Studio's own NVFP4 gating: ``UNSLOTH_NVFP4_DIFFUSION`` on, Studio's backend choice landing on
-    FlashInfer (its capability set + preflight), and the family not denied nvfp4. mxfp8 needs a Blackwell GPU
-    whose ``torch._scaled_mm`` passes the block-scale probe, a bf16 pipeline, and the family not denied mxfp8.
-    ``UNSLOTH_DIFFUSION_COMFY_NVFP4=0`` / ``UNSLOTH_DIFFUSION_COMFY_MXFP8=0`` force the dequantized path."""
+    """``(runtime or None, reason)`` for ``fmt`` layers on ``target``; None = dequantize (always correct).
+    nvfp4 follows Studio's own NVFP4 gating (flag, FlashInfer backend choice, family); mxfp8 needs the probe + bf16."""
     try:
         from .diffusion_transformer_quant import TQ_MXFP8, TQ_NVFP4, _family_denied
         if fmt == NVFP4:
@@ -405,7 +382,6 @@ def build_runtime_linear(
     input_scale: Any = None,
     bias: Any = None,
 ) -> Any:
-    """The runtime Linear that keeps ``codes`` for ``linear``'s shapes (``linear`` supplies shapes only)."""
     import torch
 
     rows = int(codes.shape[0])
@@ -423,7 +399,7 @@ def build_runtime_linear(
         )
         w_scale = torch.as_tensor(tensor_scale, dtype = torch.float32).reshape(1).clone()
         if input_scale is None:
-            # No calibrated scale: ComfyUI scales activations from their amax on every call, and so does this Linear.
+            # no calibrated scale: per-call amax, as ComfyUI does
             a_gsf = torch.ones(1, dtype = torch.float32)
             cls = nvfp4_dynamic_linear_class()
         else:
@@ -461,8 +437,7 @@ def comfy_block_backends(
     dtype: Any = None,
     logger: Any = None,
 ) -> dict:
-    """``{"nvfp4_backend": ..., "mxfp8_backend": ...}`` for ``load_comfy_quant_transformer``, logging, for every
-    block format ``scan`` holds, which runtime keeps it or why its layers dequantize."""
+    """``load_comfy_quant_transformer`` backend kwargs, logging per format which runtime keeps it or why not."""
     out = {"nvfp4_backend": None, "mxfp8_backend": None}
     counts = scan.counts() if scan is not None else {}
     for fmt in (NVFP4, MXFP8):

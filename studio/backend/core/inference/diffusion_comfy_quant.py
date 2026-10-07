@@ -324,7 +324,6 @@ def comfy_resident_mib(
             or (layer.format == NVFP4 and keep_nvfp4)
             or (layer.format == MXFP8 and keep_mxfp8)
         )
-    # an nvfp4 byte holds two weights
     packed = {name + ".weight" for name, layer in scan.layers.items() if layer.format == NVFP4}
     total = 0
     for key, entry in header.items():
@@ -442,14 +441,13 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
 
 @dataclass
 class _BlockWeight:
-    """A converted nvfp4 / mxfp8 weight: row segments ``(codes, plain scales, extras)`` from one or more layers."""
+    """Row segments ``(codes, plain scales, extras)`` from one or more layers."""
 
     fmt: str
     parts: list
 
 
 def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
-    """Dense weight of a block-format weight, each source segment with its own tensor / smoothing scale."""
     import torch
 
     from .diffusion_comfy_block import dequant_block
@@ -469,10 +467,8 @@ def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
 
 
 def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
-    """``(codes, scales, tensor_scale, input_scale)`` when one runtime Linear can hold ``value`` exactly, else None:
-    nvfp4 needs one per-tensor scale over all segments and no input smoothing. Rows from several layers share an
-    input, so the largest static input_scale is kept (none clips); any segment without one makes the activation
-    scale dynamic (None), as ComfyUI does for such a layer."""
+    """``(codes, scales, tensor_scale, input_scale)`` when one runtime Linear holds ``value`` exactly, else None.
+    Segments share an input: the largest static input_scale (none clips); any missing one = dynamic (None)."""
     import torch
 
     extras = [extra for _c, _s, extra in value.parts]
@@ -1007,7 +1003,6 @@ def load_comfy_quant_transformer(
                 else float(input_scale.float().reshape(-1)[0]),
                 "pre_quant_scale": state.pop(layer.name + ".pre_quant_scale", None),
             }
-            # row-major from here: codes [N, *] beside plain [N, K / block] scales
             codes, scale = decode_layer(layer.format, codes, scale)
         elif layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
@@ -1319,8 +1314,7 @@ def load_comfy_quant_transformer(
             model._unsloth_nvfp4_backend = nvfp4_backend
         except Exception:  # noqa: BLE001 -- marker is best-effort
             pass
-        # As for Studio's own NVFP4 checkpoints: a per-model step-protect controller, so concurrent image and video
-        # renders never move each other's steps. (GEMM tuning happens on each shape's first call.)
+        # per-model step-protect controller, as for Studio's own NVFP4 checkpoints
         from .diffusion_nvfp4_protect import attach_own_controller
         attach_own_controller(model)
     model.eval()
