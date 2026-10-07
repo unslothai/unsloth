@@ -303,3 +303,41 @@ test("an unchanged alias is still cleared when the forget's response lands", asy
     setAuthFetchHandler(null);
   }
 });
+
+test("an identical re-save from another tab before the forget's response keeps that record", async () => {
+  store.clear();
+  const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
+  let releaseForget: (() => void) | null = null;
+  setAuthFetchHandler((_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const response = () =>
+      new Response(
+        JSON.stringify({
+          overrides: {},
+          // biome-ignore lint/style/useNamingConvention: API schema
+          removed_keys: body.remove ? [`${REPO}:${QUANT}`, `${SNAPSHOT}:${QUANT}`] : [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    if (!body.remove) {
+      return response();
+    }
+    return new Promise<Response>((resolve) => {
+      releaseForget = () => resolve(response());
+    });
+  });
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    savePerModelConfig(SNAPSHOT, QUANT, tuned());
+    assert.ok(forgetRunSettings(ggufTarget()));
+    // Same settings, saved again by the other tab: only the write itself is new.
+    assert.ok(savePerModelConfig(SNAPSHOT, QUANT, tuned()));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(releaseForget, "the forget is still in flight");
+    releaseForget();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, true);
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});

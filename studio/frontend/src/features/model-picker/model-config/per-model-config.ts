@@ -1383,6 +1383,9 @@ export function savePerModelConfig(
     return false;
   }
   const written = writeMap(map);
+  if (written) {
+    stampWrite(key, map);
+  }
   if (written && evicted) {
     for (const evictedKey of evictedKeys) {
       const id = modelIdFromStorageKey(evictedKey);
@@ -1482,25 +1485,63 @@ function findModelOverrideKeyOwners(
   return owners;
 }
 
+// A unique mark per save, beside the records, so another tab's identical re-save still reads as new.
+const WRITE_STAMPS_KEY = "unsloth_model_config_stamps";
+
+function readStamps(): Record<string, string> {
+  if (!canUseStorage()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WRITE_STAMPS_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stampWrite(key: string, map: StoredMap): void {
+  const stamps: Record<string, string> = {};
+  for (const [k, v] of Object.entries(readStamps())) {
+    if (k in map) {
+      stamps[k] = v;
+    }
+  }
+  stamps[key] = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  try {
+    localStorage.setItem(WRITE_STAMPS_KEY, JSON.stringify(stamps));
+  } catch {
+    // Best-effort: without it a forget's cleanup falls back to comparing contents.
+  }
+}
+
+export type PerModelConfigSnapshot = {
+  readonly records: Readonly<Record<string, unknown>>;
+  readonly stamps: Readonly<Record<string, string>>;
+};
+
 /** Every saved record as stored, shared by all tabs; see `unchangedSince` below. */
-export function perModelConfigSnapshot(): Readonly<Record<string, unknown>> {
-  return readMapRaw();
+export function perModelConfigSnapshot(): PerModelConfigSnapshot {
+  return { records: readMapRaw(), stamps: readStamps() };
 }
 
 /** Delete the records the server keys name; false when one was left behind. With
  *  `unchangedSince`, a record written after that snapshot (in any tab) is kept. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
-  unchangedSince?: Readonly<Record<string, unknown>>,
+  unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   let deleted = true;
-  const current = unchangedSince ? readMapRaw() : {};
+  const current = unchangedSince ? perModelConfigSnapshot() : null;
   for (const overrideKey of overrideKeys) {
     for (const owner of findModelOverrideKeyOwners(overrideKey)) {
+      const key = owner.storageKey;
       if (
         unchangedSince &&
-        JSON.stringify(current[owner.storageKey]) !==
-          JSON.stringify(unchangedSince[owner.storageKey])
+        current &&
+        (current.stamps[key] !== unchangedSince.stamps[key] ||
+          JSON.stringify(current.records[key]) !==
+            JSON.stringify(unchangedSince.records[key]))
       ) {
         continue;
       }
