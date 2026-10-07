@@ -1291,9 +1291,15 @@ def _wrap_generate_clears_varlen(model, hybrid_modules) -> None:
 
     @wraps(generate_orig)
     def generate_without_varlen(*args, **kwargs):
+        # Restore after: gradient-checkpoint recompute in a pending backward still needs the stash.
+        saved = [module._unsloth_varlen for module in hybrid_modules]
         for module in hybrid_modules:
             module._unsloth_varlen = None
-        return generate_orig(*args, **kwargs)
+        try:
+            return generate_orig(*args, **kwargs)
+        finally:
+            for module, varlen in zip(hybrid_modules, saved):
+                module._unsloth_varlen = varlen
 
     model.generate = generate_without_varlen
     model._unsloth_varlen_generate_wrapped = True

@@ -2679,3 +2679,20 @@ def test_patch_mamba2_varlen_second_model_gets_its_own_boundaries(monkeypatch):
         assert calls[-1].tolist() == [[0, 0, 0, 0, 1]]
     finally:
         sys.modules.pop(name, None)
+
+
+def test_generate_restores_packed_stash_for_pending_backward(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _FakeMamba2Model()
+    seen = []
+    model.generate = lambda *a, **k: seen.append(model.mixer._unsloth_varlen)
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = False,
+    )
+    stash = model.mixer._unsloth_varlen
+    model.generate()
+    assert seen == [None]  # generate never sees training boundaries
+    assert model.mixer._unsloth_varlen is stash  # recompute in backward still does
