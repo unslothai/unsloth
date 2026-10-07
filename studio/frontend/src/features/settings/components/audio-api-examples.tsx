@@ -14,7 +14,10 @@ import type {
   KeylessApiAccessExposure,
   KeylessApiAccessScope,
 } from "../api/keyless-api-access";
-import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
+import {
+  loadOpenAIAutoSwitchSettings,
+  subscribeOpenAIAutoSwitchSettings,
+} from "../api/openai-auto-switch";
 import {
   type AudioApiModel,
   listOpenAIAudioModels,
@@ -180,8 +183,13 @@ export function AudioApiExamples({
       (settings) => !cancelled && setAutoSwitch(settings.enabled),
       () => undefined,
     );
+    // The Model auto-switch switch sits in this same tab.
+    const unsubscribe = subscribeOpenAIAutoSwitchSettings((settings) =>
+      setAutoSwitch(settings.enabled),
+    );
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
@@ -217,6 +225,8 @@ export function AudioApiExamples({
   const placeholder = models !== null && !picked;
   const needsLoad =
     !placeholder &&
+    // Transcriptions load their model on request whatever auto-switch says.
+    example !== "transcribe" &&
     autoSwitch === false &&
     models !== null &&
     !models.some((m) => m.id === model && m.loaded);
