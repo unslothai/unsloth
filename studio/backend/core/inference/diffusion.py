@@ -1999,6 +1999,11 @@ def _uninstall_fused_dit_patches() -> None:
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
     try:
+        from .diffusion_qwenimage21_fused import uninstall as uninstall_q21_fused
+        uninstall_q21_fused()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+    try:
         from .diffusion_rocm_fused import uninstall as uninstall_rocm_fused
         uninstall_rocm_fused()
     except Exception:  # noqa: BLE001 - teardown is best effort
