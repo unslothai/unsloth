@@ -1294,6 +1294,9 @@ export const ja = {
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
+        sttQuantLabel: "量子化",
+        sttQuantDescription:
+          "ローカルで実行する STT モデルを選択または検索し、量子化を選びます。",
         sttDeviceLabel: "読み込み先",
         sttDeviceAuto: "GPU（利用できる場合）",
         sttDeviceCpu: "CPU メモリ",

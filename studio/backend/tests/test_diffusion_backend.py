@@ -8172,30 +8172,33 @@ def test_generate_reclaims_model_offload_memory_once_after_success(
 
 
 def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_runtime, tmp_path):
-    # A prompt list needs a matching negative list: encode_prompt asserts equal lengths, and pipes that encode the negative separately would build batch-1 embeds against batch-N latents.
+    # encode_prompt requires matching lengths to avoid batch-1 embeds with batch-N latents.
     backend = _load_zimage_backend(tmp_path)
-    backend.generate(prompt = "fallback", prompts = ["a", "b", "c"], negative_prompt = "blurry")
+    backend.generate(
+        prompt = "fallback",
+        prompts = ["a", "b", "c"],
+        negative_prompt = "blurry",
+        guidance = 0.5,
+    )
     call = backend._state.pipe.last_kwargs
     assert call["prompt"] == ["a", "b", "c"]
     assert call["negative_prompt"] == ["blurry", "blurry", "blurry"]
-    # An empty negative prompt is still omitted entirely (never sent as [""] * n).
+    # empty negatives remain omitted instead of expanding to [""] * n.
     backend.generate(prompt = "fallback", prompts = ["a", "b"])
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
 
 
 def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime, tmp_path):
-    # Uniform-prompt and single-image forwards pass a SCALAR prompt, so the negative prompt must stay scalar too.
+    # scalar prompts require scalar negatives on uniform-prompt and single-image paths.
     backend = _load_zimage_backend(tmp_path)
-    backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry")
+    backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry", guidance = 0.5)
     assert backend._state.pipe.last_kwargs["prompt"] == "a sloth"
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
-    backend.generate(prompt = "a sloth", seed = 1, negative_prompt = "blurry")
+    backend.generate(prompt = "a sloth", seed = 1, negative_prompt = "blurry", guidance = 0.5)
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
 
 
 class _TracingPipe(_CountingPipe):
-    """Appends ``("call", n)`` to a shared trace so resets can be interleaved with forwards."""
-
     def __init__(
         self,
         trace,
@@ -14618,7 +14621,7 @@ def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path,
     backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
     call = backend._state.pipe.last_kwargs
     assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == ""
-    # An explicit negative is kept; guidance <= 1 never asks for CFG.
+    # true CFG engages only above guidance 1 and preserves explicit negatives when engaged.
     backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
     backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
@@ -14626,9 +14629,60 @@ def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path,
 
 
 def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path):
-    backend = _loaded_backend(tmp_path)  # z-image: guidance_scale, its own CFG handling
+    backend = _loaded_backend(tmp_path)  # z-image owns guidance_scale CFG handling
     backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+def test_flux_neither_receives_nor_reports_a_negative_prompt(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "flux.1")
+    assert backend.status()["supports_negative_prompt"] is False
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 3.5)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+
+
+def test_qwen_reports_no_negative_when_true_cfg_is_off(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
+    assert out["negative_prompt"] == "blurry"
+
+
+def test_sdxl_reports_no_negative_when_cfg_is_off(fake_runtime, tmp_path):
+    backend = _loaded_backend(
+        tmp_path,
+        gguf_filename = "sdxl.safetensors",
+        base_repo = None,
+        family_override = "sdxl",
+    )
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 1.5)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    assert out["negative_prompt"] == "blurry"
+
+
+def test_cfg_family_reports_the_negative_prompt_it_applied(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path)
+    assert backend.status()["supports_negative_prompt"] is True
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 0.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 0.5)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    assert out["negative_prompt"] == "blurry"
 
 
 class _IdeogramScheduleFakePipe(_FakePipe):

@@ -1290,6 +1290,9 @@ export const ar = {
         customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
+        sttQuantLabel: "التكميم",
+        sttQuantDescription:
+          "اختر نموذج STT أو ابحث عنه لتشغيله محليًا، ثم اختر التكميم.",
         sttDeviceLabel: "التحميل إلى",
         sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
         sttDeviceCpu: "ذاكرة المعالج",

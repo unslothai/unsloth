@@ -3358,7 +3358,7 @@ class VideoBackend:
             selected_card_identity,
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
-            sd_cpp_supports_graph_cut,
+            sd_cpp_graph_cut_options,
             sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -3639,9 +3639,10 @@ class VideoBackend:
                     "again."
                 )
             binary_identity = _sd_cli_identity(binary)
-            # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose
-            # between.
-            supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
+            # probe under the claim; the CPU fallback has no card to select.
+            graph_cut_options = (
+                sd_cpp_graph_cut_options(binary) if native_device != "cpu" else frozenset()
+            )
             # Lossy (INT8 QK^T), so only on an explicit speed_mode="max".
             h3_sage = (
                 native_device != "cpu"
@@ -3697,13 +3698,10 @@ class VideoBackend:
         native_offload = tuple(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
-        # H3 allocates each module WHOLE on the device (20.5 GB DiT, 17 GB encoder), so --offload-to-cpu alone still
-        # cudaMallocs; not gated on memory mode because auto and fast are what OOM. --max-vram segments on its own, but
-        # upstream ignores --stream-layers unless the params are on the CPU, so it only rides along with
-        # --offload-to-cpu.
-        if supports_graph_cut:
+        # H3's 20.5 GB DiT and 17 GB encoder OOM in auto and fast; --max-vram segments them, and streaming needs CPU offload.
+        if "--max-vram" in graph_cut_options:
             native_offload += GRAPH_CUT_VRAM_FLAGS
-            if "--offload-to-cpu" in native_offload:
+            if "--offload-to-cpu" in native_offload and "--stream-layers" in graph_cut_options:
                 native_offload += GRAPH_CUT_STREAM_FLAGS
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:

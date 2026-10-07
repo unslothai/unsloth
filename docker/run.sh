@@ -13,6 +13,7 @@
 #   bash docker/run.sh                                  # start Studio + JupyterLab
 #   bash docker/run.sh bash                             # shell in the container
 #   bash docker/run.sh python /workspace/host/train.py  # run your training script
+#   bash docker/run.sh unsloth-run <notebook URL>       # notebook and saves stay in $PWD
 #   UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh   # publish the ports
 #
 # JupyterLab on the lean core image (unsloth/unsloth:core):
@@ -397,8 +398,22 @@ if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
 fi
 
-# No `set -x`: it would echo HF_TOKEN / WANDB_API_KEY to CI logs. The
-# ${arr[@]+"${arr[@]}"} form keeps empty arrays nounset-safe on bash 3.2 (macOS).
+# URL runs use mounted $PWD so unsloth-run saves survive --rm; local paths still use /workspace
+WORKDIR_FLAG=()
+RUN_USER_ENV=()
+if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
+    for _arg in "${@:2}"; do
+        case "$_arg" in
+            http://* | https://*)
+                WORKDIR_FLAG=(-w /workspace/host)
+                RUN_USER_ENV=(-e "UNSLOTH_RUN_UID=$(id -u)" -e "UNSLOTH_RUN_GID=$(id -g)")
+                break
+                ;;
+        esac
+    done
+fi
+
+# no set -x: it leaks HF_TOKEN/WANDB_API_KEY; this array form is nounset-safe on macOS Bash 3.2
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
@@ -408,6 +423,8 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${WORKDIR_FLAG[@]+"${WORKDIR_FLAG[@]}"} \
+    ${RUN_USER_ENV[@]+"${RUN_USER_ENV[@]}"} \
     ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \
