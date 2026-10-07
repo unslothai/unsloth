@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Copy } from "lucide-react";
+import { useDuplicateTrainingRun } from "@/features/training/hooks/use-duplicate-training-run";
 import {
   Sidebar,
   SidebarContent,
@@ -2684,6 +2686,10 @@ export function AppSidebar() {
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const {
+    duplicate: duplicateTrainingRun,
+    disabled: duplicateTrainingRunDisabled,
+  } = useDuplicateTrainingRun();
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
   const trainingInProgress = useTrainingRuntimeStore(isTrainingStartPending);
@@ -5901,6 +5907,16 @@ export function AppSidebar() {
                             </button>
                           )}
                         >
+                          <DropdownMenuItem
+                            disabled={duplicateTrainingRunDisabled}
+                            onSelect={() => {
+                              void duplicateTrainingRun(run.id);
+                              closeMobileIfOpen();
+                            }}
+                          >
+                            <Copy className="size-icon" />
+                            <span>{t("common.duplicate")}</span>
+                          </DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => openRenameRun(run)}>
                             <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.rename")}</span>
