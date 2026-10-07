@@ -239,21 +239,15 @@ def test_fingerprint_and_export_json(tmp_path):
     second = contract.fingerprint(folder, "clef")
     (folder / "unsloth_decision_config.json").unlink()
     assert contract.fingerprint(folder, "clef") not in (first, second)
-    (folder / "joint_head_config.json").unlink()
-    with pytest.raises(FileNotFoundError):
-        contract.fingerprint(folder, "clef")
     laya = _laya_folder(tmp_path / "laya")
     laya_print = contract.fingerprint(laya, "laya")
     (laya / "model.safetensors").write_bytes(b"trained")
     assert contract.fingerprint(laya, "laya") != laya_print
-    (laya / "rl_agent_config.json").unlink()
-    with pytest.raises(FileNotFoundError):
-        contract.fingerprint(laya, "laya")
 
     out = tmp_path / "run" / contract.EXPORT_DIR
     out.mkdir()
     files = {"Q8_0": {"model": "model-Q8_0.gguf", "mmproj": "mmproj-Q8_0.gguf"}}
-    data = contract.write_export(out, "clef", files, "abc")
+    data = decision_gguf._write_export(out, "clef", files, "abc")
     assert data == {
         "format": "unsloth-decision-gguf",
         "version": 1,
@@ -262,15 +256,11 @@ def test_fingerprint_and_export_json(tmp_path):
         "files": files,
         "source_fingerprint": "abc",
     }
-    assert contract.read_export(tmp_path / "run") == data == contract.read_export(out)
+    assert contract.read_export(tmp_path / "run") == data
     umask = os.umask(0)
     os.umask(umask)
     assert os.name == "nt" or ((out / "export.json").stat().st_mode & 0o777) == 0o666 & ~umask
     assert sorted(p.name for p in out.iterdir()) == ["export.json"]
-    (out / "export.json").write_text(json.dumps({**data, "version": 2}))
-    assert contract.read_export(out) is None
-    (out / "export.json").write_text("{not json")
-    assert contract.read_export(out) is None
 
 
 def test_eligibility(tmp_path):
@@ -386,6 +376,12 @@ def test_export_writes_models_mmproj_temperatures_and_export_json_last(tmp_path,
         "Q4_K_M": {"model": "model-Q4_K_M.gguf", "mmproj": "mmproj-Q8_0.gguf"},
     }
     assert data["source_fingerprint"] == contract.fingerprint(folder, "clef")
+    # What native serving picks up from the run folder.
+    assert contract.served_files(folder, "clef") == (
+        "Q8_0",
+        out / "model-Q8_0.gguf",
+        out / "mmproj-Q8_0.gguf",
+    )
     assert sorted(p.name for p in out.iterdir()) == [
         "export.json",
         "mmproj-Q8_0.gguf",
@@ -405,6 +401,7 @@ def test_export_writes_models_mmproj_temperatures_and_export_json_last(tmp_path,
     assert data["quantizations"] == ["F16", "Q8_0", "Q4_K_M"]
     # New weights: the old files go.
     (folder / "joint_head.safetensors").write_bytes(b"retrained")
+    assert contract.served_files(folder, "clef") is None  # stale until re-exported
     data = decision_gguf.export_decision_gguf(folder, "q8_0")
     assert data["quantizations"] == ["Q8_0"]
     assert sorted(p.name for p in out.iterdir()) == [

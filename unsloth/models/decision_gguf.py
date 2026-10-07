@@ -419,6 +419,29 @@ def _decision_config(folder: Path, layout: str) -> dict:
     return _read_json(path) if path.is_file() else {}
 
 
+def _write_export(output: Path, layout: str, files: dict, source_fingerprint: str) -> dict:
+    # In the format gguf_export_contract.read_export accepts; written last, atomically.
+    contract = _contract()
+    data = {
+        "format": contract.FORMAT,
+        "version": contract.VERSION,
+        "layout": layout,
+        "quantizations": list(files),
+        "files": {q: {"model": e["model"], "mmproj": e.get("mmproj")} for q, e in files.items()},
+        "source_fingerprint": source_fingerprint,
+    }
+    # open(..., "x") rather than mkstemp: the file gets the umask's mode, not 0600.
+    tmp = output / f".export-{os.getpid()}-{uuid.uuid4().hex[:8]}.json"
+    try:
+        with open(tmp, "x", encoding = "utf-8") as f:
+            json.dump(data, f, indent = 2)
+        os.replace(tmp, output / contract.EXPORT_FILE)
+    except BaseException:
+        tmp.unlink(missing_ok = True)
+        raise
+    return data
+
+
 def export_decision_gguf(
     checkpoint_folder,
     quantization_method = "q8_0",
@@ -499,7 +522,9 @@ def export_decision_gguf(
             }
 
         # An earlier export of the same weights keeps its other quantizations.
-        previous = contract.read_export(output)
+        previous = (
+            contract.read_export(output.parent) if output.name == contract.EXPORT_DIR else None
+        )
         keep = {}
         if (
             previous is not None
@@ -530,7 +555,7 @@ def export_decision_gguf(
             for name in (entry["model"], entry["mmproj"]):
                 if name and (staging / name).is_file():
                     os.replace(staging / name, output / name)
-        data = contract.write_export(output, layout, merged, source_fingerprint)
+        data = _write_export(output, layout, merged, source_fingerprint)
     finally:
         shutil.rmtree(staging, ignore_errors = True)
     print(f"Unsloth: saved decision model GGUF ({', '.join(files)}) to {output}")
