@@ -3240,7 +3240,7 @@ export function ModelConfigPage({
         resolvedIsDiffusion,
         gpuDevices,
       ),
-      { followGlobal: true },
+      { unsetIsAuto: true },
     );
   const saveState =
     rememberChanged || (savedNow && !matchesSaved)

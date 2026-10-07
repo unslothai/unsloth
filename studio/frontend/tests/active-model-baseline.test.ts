@@ -46,7 +46,7 @@ function configsEqual(persistedMode: string) {
     perModelConfigsEqual: (
       a: PerModelConfig,
       b: PerModelConfig,
-      options?: { followGlobal?: boolean },
+      options?: { followGlobal?: boolean; unsetIsAuto?: boolean },
     ) => boolean;
   }>(
     new URL(
@@ -128,4 +128,12 @@ test("between stored configs a null mode stays distinct from an explicit one", (
   const offEqual = configsEqual("off");
   assert.ok(!offEqual(BASE, { ...BASE, speculativeType: "off" }));
   assert.ok(offEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }));
+});
+
+test("against its saved record, a draft's Auto matches a saved null but an explicit mode does not", () => {
+  const saved = { unsetIsAuto: true };
+  const mtpEqual = configsEqual("mtp");
+  assert.ok(mtpEqual(BASE, { ...BASE, speculativeType: "auto" }, saved));
+  assert.ok(!mtpEqual(BASE, { ...BASE, speculativeType: "mtp" }, saved));
+  assert.ok(mtpEqual({ ...BASE, speculativeType: "mtp" }, { ...BASE, speculativeType: "MTP" }, saved));
 });
