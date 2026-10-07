@@ -61,6 +61,7 @@ make_variant() {
         cat "$WORK/func_blk.sh"
         cat <<EOF
 echo "START $_v pid=\$\$ pwd=\$PWD guard=\${UNSLOTH_SETUP_RERUN:-}"
+echo "FULLDEPS $_v [\${UNSLOTH_STUDIO_FULL_DEPS-<unset>}]"
 for _a in "\$@"; do echo "ARG $_v [\$_a]"; done
 cd "\$SCRIPT_DIR"
 _action=\${DEPS_$_v:-none}
@@ -125,6 +126,10 @@ for INTERP in "${INTERPRETERS[@]}"; do
         assert_eq "[$INTERP] replaced (rename): the old copy's later phases do not run" "0" "$(count "PHASE OLD")"
         assert_eq "[$INTERP] replaced (rename): the new copy's later phases run" "1" "$(count "PHASE NEW")"
     fi
+
+    run_setup "$INTERP" UNSLOTH_STUDIO_FULL_DEPS=1 DEPS_OLD="unlink:$WORK/src_NEW.sh"
+    assert_contains "[$INTERP] full deps: the first copy sees the override" "$OUT" "FULLDEPS OLD [1]"
+    assert_contains "[$INTERP] full deps: the rerun does not force a second pass" "$OUT" "FULLDEPS NEW [<unset>]"
 
     run_setup "$INTERP" DEPS_OLD=none
     assert_eq "[$INTERP] untouched: no handoff" "0" "$(count "$HANDOFF")"

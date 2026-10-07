@@ -5046,7 +5046,10 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    if ($gitNeeded -or -not $StageRoot) {
+    # Optional here, and the run that handed off to this copy already tried; its installer prompts for UAC.
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -and -not $gitNeeded) {
+        step "git" "not found; already tried earlier in this update" "Yellow"
+    } elseif ($gitNeeded -or -not $StageRoot) {
         Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
@@ -9293,6 +9296,8 @@ if (Test-SetupScriptReplaced) {
     step "setup" "the update replaced this setup script; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
+    # The forced pass just finished; the rerun would otherwise force a second one.
+    Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
     $env:UNSLOTH_SETUP_RERUN = '1'
     $_setupRerunner = New-Module -ScriptBlock { $script:Ok = $false; $script:Code = 1 }
     try {

@@ -2569,6 +2569,8 @@ _setup_rerun_if_replaced() {
     fi
     step "setup" "the update replaced this setup script; finishing with the new version"
     export UNSLOTH_SETUP_RERUN=1
+    # The forced pass just finished; the rerun would otherwise force a second one.
+    unset UNSLOTH_STUDIO_FULL_DEPS
     cd "$_SETUP_START_PWD" 2>/dev/null || :
     # execfail alone is not enough: under set -e a failed exec still ends the shell.
     shopt -s execfail

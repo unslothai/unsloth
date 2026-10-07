@@ -101,7 +101,7 @@ __UTF8__
 __FUNCS__
 function step { param([string]$Label, [string]$Value) Write-StudioLine ("  {0,-15}{1}" -f $Label, $Value) }
 $env:PSModulePath = "MUTATED;" + $env:PSModulePath
-Write-StudioLine ("  " + [char]::ConvertFromUtf32(0x1F9A5) + " __TAG__ banner " + [char]0x2500 + " args=[" + ($script:SetupArgs -join '|') + "] argc=[" + $script:SetupArgs.Count + "] guard=[" + $env:UNSLOTH_SETUP_RERUN + "] mutated=[" + @($env:PSModulePath -split ';' | Where-Object { $_ -eq 'MUTATED' }).Count + "] leaked=[" + $leakProbe + "] extra=[" + $env:SETUP_ADDED + "] date=[" + (Get-Date -Date 2001-02-03) + "]")
+Write-StudioLine ("  " + [char]::ConvertFromUtf32(0x1F9A5) + " __TAG__ banner " + [char]0x2500 + " args=[" + ($script:SetupArgs -join '|') + "] argc=[" + $script:SetupArgs.Count + "] guard=[" + $env:UNSLOTH_SETUP_RERUN + "] mutated=[" + @($env:PSModulePath -split ';' | Where-Object { $_ -eq 'MUTATED' }).Count + "] leaked=[" + $leakProbe + "] extra=[" + $env:SETUP_ADDED + "] full=[" + $env:UNSLOTH_STUDIO_FULL_DEPS + "] date=[" + (Get-Date -Date 2001-02-03) + "]")
 $env:SETUP_ADDED = "added-by-__TAG__"
 $leakProbe = "parent-__TAG__"
 __ELEVATION__
@@ -135,7 +135,7 @@ Write-StudioLine "__TAG__: llama.cpp"
 Write-StudioLine "__TAG__: audio.cpp"
 if ($env:NEW_FAIL) { Exit-SetupFailure -Message "audio.cpp failed specifically" -Code ([int]$env:NEW_FAIL) }
 if ($env:NEW_THROW) { throw "audio.cpp threw" }
-cmd /c exit 7
+& ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -NoProfile -NonInteractive -Command 'exit 7'
 Write-StudioLine "__TAG__: done"
 '@
 
@@ -175,7 +175,8 @@ Write-StudioLine "__TAG__: done"
 
     # Everything a case sets, cleared first so the runner's own environment cannot steer one.
     $script:CaseVars = @('MODE', 'MODE_NEW', 'FAIL_DEPS', 'NEW_FAIL', 'NEW_THROW', 'SETUP_ADDED',
-        'UNSLOTH_SETUP_RERUN', 'UNSLOTH_TAURI_UPDATE', 'UNSLOTH_TAURI_MODE', 'SKIP_STUDIO_BASE')
+        'UNSLOTH_SETUP_RERUN', 'UNSLOTH_TAURI_UPDATE', 'UNSLOTH_TAURI_MODE', 'SKIP_STUDIO_BASE',
+        'UNSLOTH_STUDIO_FULL_DEPS')
 
     function Invoke-Setup {
         param(
@@ -282,6 +283,10 @@ Describe 'elevation prompts across the rerun' {
             { param($i) $lines[$i].StartsWith('# CUDA installed before VS Build Tools leaves .targets missing') } `
             { param($j) $lines[$j] -eq '}' }
         if (-not $script:CudaTargetsBlock.Contains('-Verb RunAs')) { throw "drift: the CUDA .targets block no longer elevates." }
+        $script:GitBlock = Get-LineSlice 'the Git block' `
+            { param($i) $lines[$i] -eq '$HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)' } `
+            { param($j) $lines[$j] -eq '}' }
+        if (-not $script:GitBlock.Contains('winget install Git.Git')) { throw "drift: the Git block no longer installs Git." }
         $tokens = $null; $errors = $null
         $script:Ast = [System.Management.Automation.Language.Parser]::ParseInput($script:SetupText, [ref]$tokens, [ref]$errors)
         $script:HandoffAt = $script:SetupText.IndexOf('if (Test-SetupScriptReplaced) {')
@@ -334,6 +339,30 @@ Describe 'elevation prompts across the rerun' {
         Ensure-VCRedist
         Should -Invoke Invoke-SetupCommand -Times $Expected -Exactly
         Should -Invoke Invoke-WebRequest -Times $Expected -Exactly
+    }
+
+    It 'Git runs at top level before the handoff' {
+        $script:SetupText.IndexOf('winget install Git.Git') | Should -BeLessThan $script:HandoffAt
+    }
+
+    It 'Git: tries the optional install on a first run and not on the rerun (<Guard>)' -ForEach @(
+        @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
+    ) {
+        function Invoke-SetupCommand { param([scriptblock]$Block) }
+        function Refresh-Environment { }
+        function Exit-SetupFailure { param([string]$Message) throw $Message }
+        Mock Invoke-SetupCommand { }
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'git' }
+        Mock Get-Command { [pscustomobject]@{ Name = 'winget' } } -ParameterFilter { $Name -eq 'winget' }
+        foreach ($k in @('STUDIO_LOCAL_INSTALL', 'UNSLOTH_LOCAL_LLAMA_CPP_DIR', 'UNSLOTH_LLAMA_PR_FORCE', 'UNSLOTH_LLAMA_TAG',
+                         'UNSLOTH_LLAMA_FORCE_COMPILE', 'UNSLOTH_LLAMA_PR')) {
+            Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+        }
+        $DefaultLlamaPrForce = ''; $DefaultLlamaSource = 'https://github.com/ggml-org/llama.cpp'; $DefaultLlamaTag = 'b1'
+        if ($Guard) { $env:UNSLOTH_SETUP_RERUN = $Guard }
+        $StageRoot = $null
+        . ([scriptblock]::Create($script:GitBlock))
+        Should -Invoke Invoke-SetupCommand -Times $Expected -Exactly
     }
 
     # Resolve-CudaToolkit only runs for a llama.cpp source build, after the handoff, so a first pass
@@ -448,6 +477,12 @@ Describe 'finishing with the setup script the update installed (<HostName>)' -Fo
             $r = Invoke-Setup -HostPath $HostPath -Env @{ MODE = 'replace' } -Suffix '; ''after-guard=['' + $env:UNSLOTH_SETUP_RERUN + '']'''
             Get-Count $r 'NEW: done' | Should -Be 1 -Because $r.Text
             Get-Count $r 'after-guard=[]' | Should -Be 1
+        }
+
+        It 'A12: does not force a second full dependency pass in the rerun' {
+            $r = Invoke-Setup -HostPath $HostPath -Env @{ MODE = 'replace'; UNSLOTH_STUDIO_FULL_DEPS = '1' }
+            Get-Banner $r 'OLD' | Should -BeLike '*full=`[1`]*'
+            Get-Banner $r 'NEW' | Should -BeLike '*full=`[`]*'
         }
 
         It 'A7: does not let the old copy''s variables reach the new one' {
