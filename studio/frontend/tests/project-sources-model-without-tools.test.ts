@@ -67,7 +67,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       useNativeIntentStore: selectorStore({ pendingAttachments: {} }),
     },
     "@/lib/toast": { toast: () => undefined },
-    "@/components/ui/dropdown-menu": {},
+    "@/components/ui/dropdown-menu": new Proxy({}, { get: () => Passthrough }),
     "../api/rag-api": {
       listKnowledgeBases: async () => [],
       subscribeKnowledgeBasesChanged: () => () => undefined,
@@ -78,7 +78,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       useRagAvailabilityStore: selectorStore({ isUnavailable: () => false }),
     },
     "../types/rag": { RAG_UPLOAD_ACCEPT: "", isLinkedFolderManaged: () => false },
-    "@/components/ui/alert-dialog": {},
+    "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
     "./document-status-chip": {
       DocumentStatusChip: ({ filename }: { filename: string }) =>
         React.createElement("span", null, filename),
@@ -99,9 +99,12 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
   },
 );
 
-function renderProjectChat(model: { checkpoint: string; supportsTools: boolean }) {
+function renderProjectChat(
+  model: { checkpoint: string; supportsTools: boolean },
+  ragEnabled = false,
+) {
   runtime = {
-    ragEnabled: false,
+    ragEnabled,
     ragSource: { type: "thread" },
     activeProjectId: "project-1",
     projectAttachmentTarget: "project",
@@ -141,4 +144,24 @@ test("a model with tool calling still shows the project's sources as in effect",
   assert.match(html, /handbook\.pdf/);
   assert.match(html, /This chat retrieves from its project/);
   assert.doesNotMatch(html, /not used/);
+});
+
+test("with Docs on, a model without tool calling dims the files it will not search", () => {
+  const html = renderProjectChat(
+    { checkpoint: "unsloth/gemma-3-4b-it-GGUF", supportsTools: false },
+    true,
+  );
+  assert.match(html, /handbook\.pdf/);
+  assert.match(html, /these files aren&#x27;t used/);
+  assert.match(html, /opacity-50/);
+});
+
+test("with Docs on, a model with tool calling keeps the files in effect", () => {
+  const html = renderProjectChat(
+    { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
+    true,
+  );
+  assert.match(html, /handbook\.pdf/);
+  assert.doesNotMatch(html, /aren&#x27;t used/);
+  assert.doesNotMatch(html, /opacity-50/);
 });

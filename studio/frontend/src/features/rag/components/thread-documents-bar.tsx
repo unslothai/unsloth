@@ -827,9 +827,15 @@ export function ThreadDocumentsBar({
         <div
           ref={chipScrollRef}
           onScroll={updateChipFade}
+          title={
+            ragToolDisabled
+              ? "The selected model can't search documents, so these files aren't used. Pick a model with tool support to use them."
+              : undefined
+          }
           className={cn(
             "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
             chipsOverflow && "rag-docs-bottom-fade",
+            ragToolDisabled && "opacity-50",
           )}
         >
           {/* Project sources first: inherited context, and it outlives this chat. */}
