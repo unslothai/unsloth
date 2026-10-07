@@ -206,26 +206,35 @@ def gpu_available() -> bool:
     return _llama_cpp_has_gpu()
 
 
-_LLAMA_GPU_CACHE: list = []  # [(monotonic time, answer)]
+_LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
 
 
 def _llama_cpp_has_gpu() -> bool:
-    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs (cached 60 s)."""
-    if _LLAMA_GPU_CACHE and time.monotonic() - _LLAMA_GPU_CACHE[0][0] < 60:
-        return _LLAMA_GPU_CACHE[0][1]
+    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs.
+
+    Cached 60 s per binary path and mtime, so a switched or reinstalled build is probed again.
+    """
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from core.systemone.native_worker import resolve_binary
 
         binary = resolve_binary()
+        if not binary:
+            return False
+        key = (binary, os.stat(binary).st_mtime_ns)
+        if (
+            _LLAMA_GPU_CACHE
+            and _LLAMA_GPU_CACHE[0][1] == key
+            and time.monotonic() - _LLAMA_GPU_CACHE[0][0] < 60
+        ):
+            return _LLAMA_GPU_CACHE[0][2]
         # The binary's own devices: a CPU-only build exposes none even with a GPU present.
         answer = bool(
-            binary
-            and LlamaCppBackend._enumerated_gpu_devices(
+            LlamaCppBackend._enumerated_gpu_devices(
                 binary, LlamaCppBackend._llama_server_env_for_binary(binary)
             )
         )
     except Exception:
-        answer = False
-    _LLAMA_GPU_CACHE[:] = [(time.monotonic(), answer)]
+        return False
+    _LLAMA_GPU_CACHE[:] = [(time.monotonic(), key, answer)]
     return answer

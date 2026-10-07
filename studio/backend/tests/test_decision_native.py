@@ -1330,13 +1330,15 @@ def test_a_uuid_mask_keeps_its_order_when_choosing_the_gpu(stub, monkeypatch):
 
 
 @pytest.mark.parametrize("devices, expected", [(["CUDA0"], True), ([], False)])
-def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, devices, expected):
+def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, tmp_path, devices, expected):
     from utils import systemone_settings
     from utils.hardware import hardware
 
     calls = []
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CPU)
-    monkeypatch.setattr(native_worker, "resolve_binary", lambda: "llama-server")
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: str(binary))
     monkeypatch.setattr(LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda _: {}))
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -1350,3 +1352,6 @@ def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, devices, expect
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "no torch")
     assert systemone_settings.gpu_available() is expected
     assert systemone_settings.gpu_available() is expected and len(calls) == 1
+    # A reinstalled build (new mtime) is probed again.
+    os.utime(binary, ns = (0, 10**9))
+    assert systemone_settings.gpu_available() is expected and len(calls) == 2
