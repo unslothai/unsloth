@@ -3,18 +3,9 @@
 
 """ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
 
-A ComfyUI install keeps its weights by role under ``models/``: denoisers in ``diffusion_models/``
-(``unet/`` on older installs) and ``checkpoints/``, text encoders in ``text_encoders/`` (``clip/``)
-and VAEs in ``vae/``. Each of those folders holds many loose ``.safetensors`` files side by side,
-none with a ``config.json``, so the generic scan (which lists folders and loose GGUFs) showed only
-the GGUFs. A user registering a ComfyUI root, or its ``models/`` folder, as a scan folder gets the
-denoiser folders scanned, with every loose checkpoint listed as its own row when its header says it
-is a diffusion model. ``extra_model_paths.yaml`` beside the root adds more folders.
-
-Text-encoder and VAE folders are only resolved here (``ComfyLayout.text_encoder_dirs`` /
-``vae_dirs``), for a split-layout loader to use; nothing loads from them yet.
-
-Pure filesystem helpers, no torch: the scanners call these on every listing.
+Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
+own row when its header says DiT. Text-encoder / VAE folders are resolved but nothing loads from
+them yet. No torch: called on every listing.
 """
 
 from __future__ import annotations
@@ -27,13 +18,11 @@ from typing import Iterable, Optional
 
 from utils.paths.path_utils import is_appledouble_metadata
 
-# ComfyUI folder names per role. ``unet`` and ``clip`` are the legacy names of ``diffusion_models``
-# and ``text_encoders``; ComfyUI still reads both, so a user may have either.
+# ``unet`` / ``clip`` are ComfyUI's legacy names, still read.
 DIT_FOLDERS = ("diffusion_models", "unet", "checkpoints")
 TEXT_ENCODER_FOLDERS = ("text_encoders", "clip")
 VAE_FOLDERS = ("vae",)
 _ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS
-# Folders only a ComfyUI ``models/`` dir has; one of them beside a denoiser folder is the tell.
 _COMFY_ONLY_FOLDERS = frozenset(
     {
         *_ROLE_FOLDERS,
@@ -49,17 +38,13 @@ _COMFY_ONLY_FOLDERS = frozenset(
     }
 )
 EXTRA_MODEL_PATHS_FILE = "extra_model_paths.yaml"
-# The yaml is user-authored config, not a model: never read a large file on the listing path.
 _MAX_EXTRA_PATHS_BYTES = 256 * 1024
 
-# Transformers / diffusers shard names: a piece of a sharded model, never a whole checkpoint.
 _SHARD_RE = re.compile(r"-\d{3,}-of-\d{3,}(?:\.[^.]+)?\.safetensors$", re.IGNORECASE)
 
 
 @dataclass(frozen = True)
 class ComfyLayout:
-    """The role folders of one ComfyUI install, existing directories only, deduplicated."""
-
     models_dir: Optional[Path]
     dit_dirs: tuple[Path, ...] = ()
     text_encoder_dirs: tuple[Path, ...] = ()
@@ -74,7 +59,6 @@ def _is_dir(path: Path) -> bool:
 
 
 def _is_comfy_models_dir(path: Path) -> bool:
-    """A ``models/`` folder: at least one denoiser folder plus one other ComfyUI-only folder."""
     try:
         names = {entry.name for entry in os.scandir(path) if entry.is_dir()}
     except OSError:
@@ -95,13 +79,8 @@ def _split_paths(value) -> list[str]:
 
 
 def read_extra_model_paths(yaml_path: Path) -> dict[str, list[Path]]:
-    """``{folder role: [paths]}`` from a ComfyUI ``extra_model_paths.yaml``. Never raises.
-
-    Each top-level section may set ``base_path`` (``~`` and ``$VARS`` expanded, relative to the
-    yaml's folder); every other key names a model folder role and holds one path or a ``|`` block
-    of one path per line, joined onto ``base_path`` or, without one, resolved against the yaml's
-    folder. ``is_default`` is ComfyUI's own ordering flag and is skipped. Only the roles Studio
-    uses are kept."""
+    """``{role: [paths]}`` from ``extra_model_paths.yaml``, relative paths against ``base_path`` else
+    the yaml's folder (ComfyUI's semantics). Never raises."""
     out: dict[str, list[Path]] = {}
     try:
         if yaml_path.stat().st_size > _MAX_EXTRA_PATHS_BYTES:
@@ -152,8 +131,7 @@ def _dedupe_dirs(paths: Iterable[Path]) -> tuple[Path, ...]:
 
 
 def _allowed(path: Path) -> bool:
-    """Paths a yaml names are user input: keep them out of the same system folders a scan folder
-    may not be registered under."""
+    """Yaml paths are user input: same system-folder denylist as scan folders."""
     try:
         from hub.storage.scan_folders import is_denied_system_path
         return not is_denied_system_path(os.path.realpath(path))
@@ -162,10 +140,6 @@ def _allowed(path: Path) -> bool:
 
 
 def comfy_layout(folder: Path) -> Optional[ComfyLayout]:
-    """The ComfyUI layout ``folder`` is the root of, or the ``models/`` dir of, else None.
-
-    A root is a folder whose ``models/`` passes the models-dir test, or one carrying an
-    ``extra_model_paths.yaml``; the yaml's folders are added to the ``models/`` ones."""
     folder = Path(folder)
     models_dir: Optional[Path] = None
     yaml_path: Optional[Path] = None
@@ -208,9 +182,6 @@ _MAX_SUBDIRS = 200
 
 
 def _plain_subdirs(root: Path) -> list[Path]:
-    """Sub-folders of a denoiser folder, as ComfyUI also reads them (``diffusion_models/wan/x``):
-    bounded, no hidden folders, no symlinked folders, not into a folder that is itself one model
-    (a ``config.json`` / ``model_index.json`` beside its weights)."""
     out: list[Path] = []
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack and len(out) < _MAX_SUBDIRS:
@@ -235,8 +206,6 @@ def _plain_subdirs(root: Path) -> list[Path]:
 
 
 def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
-    """The denoiser folders to scan for a registered scan folder that is a ComfyUI root or
-    ``models/`` dir (with their plain sub-folders); empty for any other folder."""
     layout = comfy_layout(folder)
     if layout is None:
         return ()
@@ -248,7 +217,6 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
 
 
 def comfy_role_dirs(folder: Path) -> frozenset[str]:
-    """``normcase(realpath)`` of every role folder of the ComfyUI layout ``folder`` roots, else empty."""
     layout = comfy_layout(folder)
     if layout is None:
         return frozenset()
@@ -265,8 +233,6 @@ def comfy_role_dirs(folder: Path) -> frozenset[str]:
 
 
 def is_loose_checkpoint_candidate(path: Path) -> bool:
-    """A loose ``.safetensors`` that could be a whole single-file checkpoint by its name: not a
-    shard, not a PEFT adapter, not macOS metadata."""
     name = path.name
     lower = name.lower()
     if not lower.endswith(".safetensors") or is_appledouble_metadata(path):
@@ -277,12 +243,8 @@ def is_loose_checkpoint_candidate(path: Path) -> bool:
 
 
 def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = None) -> list[Path]:
-    """Loose ``.safetensors`` files directly in ``folder`` that the header check offers as a
-    diffusion model (text encoders, VAEs and LoRAs are not; an unclassifiable header falls back to
-    the file name), sorted by name.
-
-    Only for a folder holding no ``config.json`` / ``adapter_config.json`` / ``model_index.json``:
-    such a folder is one model and is listed whole. Never raises."""
+    """Loose ``.safetensors`` in ``folder`` offered as diffusion models, sorted; empty for a folder
+    that is itself one model. Never raises."""
     try:
         for marker in (
             "config.json",
@@ -324,15 +286,12 @@ def _name_detects_family(name: str) -> bool:
 
 
 def _offer_loose_checkpoint(path: Path) -> bool:
-    """The header decides: a DiT of a supported family is offered, a DiT of no supported family and
-    a text encoder / VAE / LoRA / ControlNet never are. A header that classifies as neither (unreadable, unknown layout) falls back to the name, so a
-    stray ``foo.safetensors`` beside the models is not offered as one."""
+    """Header decides (supported-family DiT only); an unclassifiable header falls back to the name."""
     from core.inference import diffusion_content
 
     if not diffusion_content.offer_as_dit(str(path)):
         return False
     info = diffusion_content.inspect_checkpoint(str(path))
     if info.role == diffusion_content.ROLE_DIT:
-        # a DiT of an architecture Studio has no family for is not a loadable pick
         return bool(info.family)
     return _name_detects_family(path.name)

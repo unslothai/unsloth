@@ -428,10 +428,6 @@ def loose_diffusion_checkpoint_rows(
     limit: int | None = None,
     entry_limit: int | None = None,
 ) -> List[LocalModelInfo]:
-    """One row per loose single-file diffusion checkpoint in ``folder`` (a ComfyUI
-    ``diffusion_models/`` holds dozens side by side). Each row's path IS the file, so a pick loads
-    that file and not whichever one a folder-level guess would settle on; text encoders, VAEs and
-    LoRAs beside them are not offered (the header decides, see ``comfy_models``)."""
     from hub.utils.comfy_models import loose_diffusion_checkpoints
 
     rows: List[LocalModelInfo] = []
@@ -1206,9 +1202,7 @@ def _scan_custom_folder(
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
 
-    # A ComfyUI root or models/ folder: its denoiser folders (diffusion_models/, unet/,
-    # checkpoints/, and any extra_model_paths.yaml adds) are scanned like nested roots, so
-    # registering the install lists its models without registering each folder.
+    # A ComfyUI root / models/: its denoiser folders are scanned like nested roots.
     from hub.utils.comfy_models import comfy_dit_scan_roots
 
     comfy_roots = tuple(

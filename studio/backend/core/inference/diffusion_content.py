@@ -1,27 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a single-file diffusion checkpoint IS, read from its tensor names and shapes.
+"""What a single-file diffusion checkpoint IS (DiT of which family / text encoder / VAE / LoRA /
+ControlNet), from the safetensors or GGUF header only: no torch, no weight bytes, cached per
+(path, size, mtime). ComfyUI and diffusers layouts, bare or under a container prefix.
 
-A ComfyUI ``models/`` tree names files freely (``qwen_image_vae.safetensors``,
-``clip_l_hidream.safetensors``, a DiT renamed to ``my_model.safetensors``), so the family keyword
-in a file name says neither that the file is a denoiser nor which one. This module answers both
-from the safetensors JSON header or the GGUF tensor table: no torch, no weight bytes, only the
-header (a few MB at most), cached per (path, size, mtime).
-
-``inspect_checkpoint`` returns the role (DiT / text encoder / VAE / LoRA / ControlNet / unknown)
-and, for a DiT, the supported family its key/shape signature identifies, in both the ComfyUI
-(original-repo) layout and the diffusers layout, bare or under a ``model.diffusion_model.``-style
-container prefix (an all-in-one ComfyUI checkpoint is a DiT plus its TE/VAE).
-
-Variants that share one architecture cannot be told apart by keys; the file name stays the
-tie-breaker for them (``SAME_ARCH_VARIANTS``):
-- FLUX.1 dev / Krea dev / Kontext dev (schnell only differs by lacking ``guidance_in``)
-- Qwen-Image / Qwen-Image-2512 / Qwen-Image-Edit / Edit-2509 (ComfyUI's Edit-2511 repack carries
-  an ``__index_timestep_zero__`` marker, so that one is recognised as an edit model)
-- FLUX.2-klein distilled / base (4B and 9B differ by width, both map to ``flux.2-klein``)
-- Z-Image / Z-Image-Turbo; HiDream-I1 full / dev / fast; LTX-2 / LTX-2.3 dev / distilled
-- HunyuanVideo-1.5 480p / 720p; Wan2.2 T2V-A14B high-noise / low-noise (and Wan2.1 T2V-14B)
+Same-architecture variants (FLUX.1 dev / Krea / Kontext, Qwen-Image / 2512 / Edit / Edit-2509,
+klein distilled / base, Z-Image base / Turbo, HiDream full / dev / fast, LTX-2 / 2.3,
+HunyuanVideo-1.5 480p / 720p, Wan A14B high / low noise) have identical keys: the file name decides.
 """
 
 from __future__ import annotations
@@ -45,10 +31,8 @@ ROLE_UNKNOWN = "unknown"
 PAGE_IMAGE = "image"
 PAGE_VIDEO = "video"
 
-# Roles that can never be loaded as the diffusion model, whatever the name says.
 NON_DIT_ROLES = frozenset({ROLE_TEXT_ENCODER, ROLE_VAE, ROLE_LORA, ROLE_CONTROLNET})
 
-# content family -> name families that are the same architecture (the name picks among them)
 SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
     "flux.1": frozenset({"flux.1", "flux.1-kontext"}),
     "qwen-image": frozenset({"qwen-image", "qwen-image-edit"}),
@@ -74,26 +58,18 @@ _MAX_GGUF_KV = 1 << 20
 
 @dataclass(frozen = True)
 class CheckpointInfo:
-    role: str  # one of the ROLE_* constants
-    family: Optional[str] = (
-        None  # supported image/video family name when role == dit and recognised
-    )
-    page: Optional[str] = None  # "image" | "video" | None
-    what: str = ""  # human description, e.g. "a VAE"
-    layout: str = ""  # "comfy" | "diffusers" | "checkpoint" | "gguf" | ""
-    # Defaults-table identifier the keys imply when the name cannot say (``flux.1-schnell`` vs ``flux.1-dev``).
-    variant: Optional[str] = None
+    role: str
+    family: Optional[str] = None
+    page: Optional[str] = None
+    what: str = ""  # e.g. "a VAE", used in refusals
+    layout: str = ""
+    variant: Optional[str] = None  # flux.1-schnell vs flux.1-dev
 
 
 def family_page(family: Optional[str]) -> Optional[str]:
     if not family:
         return None
     return PAGE_VIDEO if family in _VIDEO_FAMILIES else PAGE_IMAGE
-
-
-# --------------------------------------------------------------------------------------------
-# Header readers. Both return {tensor name: shape list} plus a small metadata dict, or None.
-# --------------------------------------------------------------------------------------------
 
 
 def _read_safetensors_header(path: str) -> Optional[tuple[dict[str, list[int]], dict]]:
@@ -215,12 +191,6 @@ def _read_gguf_header(path: str) -> Optional[tuple[dict[str, list[int]], dict]]:
     return shapes, meta
 
 
-# --------------------------------------------------------------------------------------------
-# Signatures
-# --------------------------------------------------------------------------------------------
-
-# Container prefixes a DiT may sit under: ComfyUI checkpoints (``model.diffusion_model.``),
-# some fp8 repacks (``model.model.``, ``model.``), diffusers-style exports (``transformer.``).
 _DIT_PREFIXES = (
     "model.diffusion_model.",
     "diffusion_model.",
@@ -267,11 +237,10 @@ def _dit(family: Optional[str], what: str, layout: str) -> CheckpointInfo:
 
 
 def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
-    """The DiT this (prefix-stripped) key set is, or None. Ordered most specific first."""
+    """Most specific signature first."""
     keys = s.keys()
     tops = _tops(keys)
 
-    # --- FLUX.2 (klein / dev): ComfyUI ``.lin`` and diffusers ``.linear`` modulation heads
     if "single_stream_modulation" in tops and "double_stream_modulation_img" in tops:
         layout = "diffusers" if "x_embedder" in tops else "comfy"
         width = _dim(s, "img_in.weight") or _dim(s, "x_embedder.weight")
@@ -279,7 +248,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             return _dit("flux.2-dev", "a FLUX.2 [dev] diffusion transformer", layout)
         return _dit("flux.2-klein", "a FLUX.2 [klein] diffusion transformer", layout)
 
-    # --- FLUX.1 (ComfyUI / BFL layout)
     if "double_blocks" in tops and "single_blocks" in tops and "vector_in" in tops:
         in_ch = _dim(s, "img_in.weight", 1)
         if in_ch not in (None, 64):
@@ -289,7 +257,7 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
                 "comfy",
             )
         info = _dit("flux.1", "a FLUX.1 diffusion transformer", "comfy")
-        # schnell is the only FLUX.1 without a guidance embedder; dev / Krea-dev / Kontext share keys.
+        # schnell is the only FLUX.1 without guidance_in
         return CheckpointInfo(
             **{
                 **info.__dict__,
@@ -297,17 +265,14 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             }
         )
 
-    # --- HunyuanImage-2.1 / HunyuanVideo-1.5 (ComfyUI layout)
     if "byt5_in" in tops and "double_blocks" in tops:
         if "single_blocks" in tops:
             return _dit("hunyuanimage-2.1", "a HunyuanImage-2.1 diffusion transformer", "comfy")
         return _dit("hunyuanvideo-1.5", "a HunyuanVideo-1.5 diffusion transformer", "comfy")
 
-    # --- HiDream-I1 (same names in ComfyUI and diffusers)
     if "double_stream_blocks" in tops and "single_stream_blocks" in tops:
         return _dit("hidream-i1", "a HiDream-I1 diffusion transformer", "comfy")
 
-    # --- Z-Image / Lumina-Image-2.0 (NextDiT): both carry noise/context refiners + cap_embedder
     if "noise_refiner" in tops and "context_refiner" in tops and "layers" in tops:
         if "cap_pad_token" in tops or "all_x_embedder" in tops or "x_pad_token" in tops:
             return _dit(
@@ -321,13 +286,11 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             "diffusers" if "time_caption_embed" in tops else "comfy",
         )
 
-    # --- Krea-2
     if {"txtfusion", "tmlp", "first"} <= tops:
         return _dit("krea-2", "a Krea-2 diffusion transformer", "comfy")
     if {"text_fusion", "time_mod_proj", "transformer_blocks"} <= tops:
         return _dit("krea-2", "a Krea-2 diffusion transformer", "diffusers")
 
-    # --- MiniMax-H3 (audio+video)
     if "token_refiner" in tops and (
         {"video_patch_proj", "audio_patch_proj"} <= tops or "audio_proj_in" in tops
     ):
@@ -337,7 +300,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             "comfy" if "video_patch_proj" in tops else "diffusers",
         )
 
-    # --- LTX-2 / LTX-2.3 (audio+video); LTX-Video 1 has no audio branch
     if "transformer_blocks" in tops and (
         "audio_adaln_single" in tops
         or "av_ca_a2v_gate_adaln_single" in tops
@@ -352,7 +314,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
     if "patchify_proj" in tops and "transformer_blocks" in tops:
         return _dit(None, "an LTX-Video (v0.9) diffusion transformer (not supported)", "comfy")
 
-    # --- Wan (ComfyUI: head.modulation / text_embedding; diffusers: condition_embedder / scale_shift_table)
     if (
         "patch_embedding" in tops
         and "blocks" in tops
@@ -376,7 +337,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             return _dit(None, "a Wan image-to-video diffusion transformer (not supported)", layout)
         return _dit(None, "a Wan diffusion transformer of an unsupported size", layout)
 
-    # --- HunyuanVideo-1.5 / HunyuanImage-2.1 (diffusers layout)
     if (
         "transformer_blocks" in tops
         and ("cond_type_embed" in tops or "image_embedder" in tops)
@@ -391,7 +351,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
     } <= tops and ("time_guidance_embed" in tops or "context_embedder_2" in tops):
         return _dit("hunyuanimage-2.1", "a HunyuanImage-2.1 diffusion transformer", "diffusers")
 
-    # --- Qwen-Image family (ComfyUI keeps the diffusers names)
     if "transformer_blocks" in tops and "img_in" in tops and "txt_in" in tops:
         if "txt_norm" in tops:
             if "time_text_embed.addition_t_embedding.weight" in s:
@@ -406,7 +365,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         if "modulation" in tops or _any(keys, r"^txt_in\.(in_layer|text_norm)"):
             return _dit("qwen-image-2.1", "a Qwen-Image-2.1 diffusion transformer", "comfy")
 
-    # --- FLUX.1 (diffusers layout); HunyuanImage diffusers carries context_embedder_2 (above)
     if {
         "transformer_blocks",
         "single_transformer_blocks",
@@ -426,7 +384,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             **{**info.__dict__, "variant": "flux.1-dev" if guided else "flux.1-schnell"}
         )
 
-    # --- SDXL / SD UNets (LDM and diffusers layouts)
     if {"input_blocks", "middle_block", "output_blocks"} <= tops:
         if "label_emb" in tops:
             return _dit("sdxl", "an SDXL UNet", "comfy")
@@ -436,7 +393,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             return _dit("sdxl", "an SDXL UNet", "diffusers")
         return _dit(None, "a Stable Diffusion 1.x/2.x UNet (not supported)", "diffusers")
 
-    # --- Known unsupported DiTs, named so the refusal says what the file is
     if "joint_blocks" in tops:
         return _dit(None, "a Stable Diffusion 3 diffusion transformer (not supported)", "comfy")
     if "double_layers" in tops and "cond_seq_linear" in tops:
@@ -518,7 +474,6 @@ _TE_GGUF_ARCHS = frozenset(
 
 
 def classify_tensors(shapes: dict[str, list[int]], meta: Optional[dict] = None) -> CheckpointInfo:
-    """Classify a checkpoint from its {tensor name: shape} table (pure; used by tests directly)."""
     if not shapes:
         return CheckpointInfo(ROLE_UNKNOWN, what = "an empty or unreadable checkpoint")
     keys = list(shapes)
@@ -570,8 +525,7 @@ _CACHE_MAX = 4096
 
 
 def inspect_checkpoint(path: str) -> CheckpointInfo:
-    """Header-only classification of a local ``.safetensors`` / ``.gguf``; never raises
-    (unreadable -> ROLE_UNKNOWN). Cached per (path, size, mtime)."""
+    """Header-only classification of a local ``.safetensors`` / ``.gguf``; never raises."""
     try:
         st = os.stat(path)
     except (OSError, TypeError, ValueError):
@@ -606,15 +560,11 @@ def inspect_checkpoint(path: str) -> CheckpointInfo:
 
 
 def offer_as_dit(path: str) -> bool:
-    """True when a library listing should offer ``path`` as a diffusion model: the header says DiT,
-    or the header could not be classified (unknown layout / unreadable), in which case the caller's
-    name check decides. TE / VAE / LoRA / ControlNet files are never offered."""
+    """False for TE / VAE / LoRA / ControlNet; an unclassified header is left to the caller's name check."""
     return inspect_checkpoint(path).role not in NON_DIT_ROLES
 
 
 def local_pick_file(repo_id: Optional[str], filename: Optional[str]) -> Optional[str]:
-    """The local file a pick names (``repo_id`` a directory + ``filename``, or ``repo_id`` itself a
-    file), or None for a remote / cache pick. Never raises."""
     try:
         if not repo_id:
             return None
@@ -633,8 +583,7 @@ def local_pick_file(repo_id: Optional[str], filename: Optional[str]) -> Optional
 
 
 def refusal_for(path: str, page: str) -> Optional[str]:
-    """The message refusing ``path`` as this page's diffusion model, or None when it may load.
-    Refuses TE / VAE / LoRA / ControlNet files and a DiT the header places on the other page."""
+    """Why ``path`` cannot be this page's diffusion model (non-DiT, or other page's DiT), else None."""
     info = inspect_checkpoint(path)
     name = os.path.basename(str(path))
     if info.role in NON_DIT_ROLES:
@@ -661,16 +610,9 @@ def resolve_family_with_content(
     page: str,
     name_vetoed: bool = False,
 ) -> tuple[Optional[str], bool]:
-    """(family, decided_by_content). Combines the name verdict with the header verdict:
-
-    - a non-DiT file, or a DiT of the other page -> (None, True)
-    - the header names a family: the name family wins when it is a same-architecture variant of it
-      (FLUX.1 dev vs Kontext, Qwen-Image vs Edit, HunyuanVideo-1.5 480p vs 720p), otherwise the
-      header wins (a renamed or misnamed file)
-    - the header recognises no supported family (unknown layout, unreadable, unsupported arch):
-      the name decides, as before
-    A name the variant guard refused (``...-inpaint``) stays refused: content never revives it.
-    """
+    """(family, decided_by_content). Non-DiT / other page -> None; a same-architecture name variant
+    keeps the name, else the header wins; no supported header family -> the name. A name the variant
+    guard refused (``...-inpaint``) stays refused."""
     if not path:
         return name_family, False
     info = inspect_checkpoint(path)
@@ -688,9 +630,7 @@ def resolve_family_with_content(
 
 
 def assert_local_pick_is_dit(repo_id: Optional[str], filename: Optional[str], page: str) -> None:
-    """Raise ValueError when the LOCAL file a pick names is not this page's diffusion model (a text
-    encoder, VAE, LoRA or ControlNet, or a DiT of the other page). Header-only, before any load;
-    remote picks and directories pass through untouched."""
+    """ValueError when a LOCAL pick is not this page's diffusion model. Header-only, before any load."""
     path = local_pick_file(repo_id, filename)
     if not path:
         return
@@ -700,10 +640,8 @@ def assert_local_pick_is_dit(repo_id: Optional[str], filename: Optional[str], pa
 
 
 def content_variant_hint(repo_id: Optional[str], filename: Optional[str]) -> Optional[str]:
-    """The defaults / flow-shift identifier a local pick's keys imply (``flux.1-dev`` or
-    ``flux.1-schnell``), or None. Callers place it right AFTER the file name, so a name that says
-    ``krea-dev`` still wins, and BEFORE the folder path (an unrelated word there, ``krea``, would pick
-    another model's row) and the family base repo, which for FLUX.1 is schnell (the ungated
-    companion source) and would otherwise hand a renamed dev file schnell's 4 steps."""
+    """Defaults / flow-shift key a local pick's header implies (``flux.1-dev`` / ``-schnell``), or None.
+    Callers put it AFTER the file name and BEFORE the folder path and base repo (FLUX.1's base is
+    schnell, which would hand a renamed dev file 4 steps)."""
     path = local_pick_file(repo_id, filename)
     return inspect_checkpoint(path).variant if path else None

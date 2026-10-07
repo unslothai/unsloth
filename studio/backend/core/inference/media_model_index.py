@@ -278,8 +278,6 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             if _add_gguf_picks(index, info, keys, on_disk, load_dir):
                 continue
             if load_dir.is_file():
-                # A loose checkpoint row (one of many in a ComfyUI diffusion_models/) names its own
-                # file: load exactly that one, as the picker does, never a folder-level guess.
                 if load_dir.suffix.lower() == ".safetensors" and _loader_can_open(
                     str(load_dir.parent), load_dir.name
                 ):

@@ -1037,7 +1037,6 @@ def _assert_pick_is_not_speech(
 
 
 def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) -> None:
-    """Header-only refusal of a local TE / VAE / LoRA / image-DiT pick, before any eviction or load."""
     from .diffusion_content import assert_local_pick_is_dit
     assert_local_pick_is_dit(repo_id, gguf_filename, page)
 
@@ -1066,8 +1065,7 @@ def _detect_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
-    # The picked local file's own header outranks its name: a TE / VAE / LoRA, or an image DiT, is never a video model,
-    # and a renamed DiT resolves to the family its keys identify (the name still picks 480p vs 720p).
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
     from .diffusion_content import local_pick_file, resolve_family_with_content
 
     path = local_pick_file(repo_id, gguf_filename)

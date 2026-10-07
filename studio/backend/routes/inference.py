@@ -45709,7 +45709,6 @@ async def diffusion_download_plan(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
         if kind == "pipeline" and not request.gguf_filename:
-            # A loose checkpoint picked by its own file path (one of many in a ComfyUI folder) loads that file.
             split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
             if split is not None:
                 request.model_path, request.gguf_filename = split
@@ -45959,7 +45958,6 @@ async def load_diffusion_model_gated(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A local On-Device pick can be a bare single-file .safetensors directory; if it holds exactly one checkpoint, reinterpret it as a single_file load so all three paths agree.
         if kind == "pipeline" and not request.gguf_filename:
-            # A loose checkpoint picked by its own file path (one of many in a ComfyUI folder) loads that file.
             split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
             if split is not None:
                 request.model_path, request.gguf_filename = split

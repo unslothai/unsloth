@@ -569,12 +569,7 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
 
 
 def split_local_checkpoint_path(model_path: str) -> Optional[tuple[str, str]]:
-    """``(directory, basename)`` when ``model_path`` names one local ``.safetensors`` FILE, else None.
-
-    A loose checkpoint listed on its own (one of many in a ComfyUI ``diffusion_models/``) is
-    picked by its file path; the load routes take a directory plus a filename, and the folder-level
-    rescue in ``resolve_local_single_file`` cannot choose among several files, so the pick is split
-    here into exactly that file's ``single_file`` load. Never raises."""
+    """``(dir, name)`` when ``model_path`` is one local ``.safetensors`` file, else None."""
     try:
         path = Path(model_path).expanduser()
         if path.suffix.lower() != ".safetensors" or not path.is_file():
@@ -2960,8 +2955,6 @@ class DiffusionBackend:
         name, a non-unsloth non-GGUF repo, or an undetectable family, and
         ValueError/FileNotFoundError for a bad local path. Touches no GPU, network, or state."""
         kind = resolve_model_kind(gguf_filename, model_kind)
-        # A ComfyUI text encoder / VAE / LoRA (or a video DiT) named for an image family is refused by what its
-        # header says it is, before any weight is read.
         assert_local_pick_is_dit(repo_id, gguf_filename, "image")
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:

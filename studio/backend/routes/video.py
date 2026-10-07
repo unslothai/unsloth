@@ -174,7 +174,6 @@ async def video_download_plan(
     try:
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         if kind == "pipeline" and not request.gguf_filename:
-            # A loose checkpoint picked by its own file path (one of many in a ComfyUI folder) loads that file.
             split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
             if split is not None:
                 request.model_path, request.gguf_filename = split
@@ -358,7 +357,6 @@ async def load_video_model_gated(
         # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds
         # exactly one checkpoint, load it as single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
-            # A loose checkpoint picked by its own file path (one of many in a ComfyUI folder) loads that file.
             split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
             if split is not None:
                 request.model_path, request.gguf_filename = split

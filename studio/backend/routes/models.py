@@ -461,8 +461,6 @@ def _scan_models_dir(
     limit: int | None = None,
     loose_files: bool = False,
 ) -> List[LocalModelInfo]:
-    """``loose_files``: list a lone loose checkpoint as its file row, never as the folder (a
-    ComfyUI role folder is a container, not a model)."""
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -550,8 +548,7 @@ def _scan_models_dir(
                     ),
                 )
 
-    # Loose single-file diffusion checkpoints beside each other (a ComfyUI diffusion_models/), one
-    # row per file: the folder-level rescue below needs exactly one and cannot pick among several.
+    # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
     from core.inference.diffusion import resolve_local_single_file
     from hub.utils.comfy_models import loose_diffusion_checkpoints
 
@@ -911,10 +908,8 @@ def _scan_nested_compat_rows(
 def _with_comfy_compat_rows(
     folder_path: Path, existing: List[LocalModelInfo], *, limit: int
 ) -> List[LocalModelInfo]:
-    """``existing`` plus rows from a ComfyUI root's (or ``models/`` dir's) denoiser folders, which a
-    plain scan of the registered folder never reaches; see ``hub.utils.comfy_models``. The role
-    folders themselves (``diffusion_models/``, ``vae/``, ...), which the LM Studio-style
-    ``publisher/model`` scan lists as models, are dropped: they are containers."""
+    """``existing`` plus a ComfyUI root's denoiser-folder rows, minus the role folders themselves
+    (the ``publisher/model`` scan lists them as models; they are containers)."""
     from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
 
     role_dirs = comfy_role_dirs(folder_path)
@@ -925,7 +920,6 @@ def _with_comfy_compat_rows(
     seen = {(m.path, m.model_format) for m in existing}
     found: List[LocalModelInfo] = []
     roots = comfy_dit_scan_roots(folder_path)
-    # A sub-folder of a role folder is scanned in its own right, so its folder row is not repeated.
     scanned = {os.path.normcase(str(root)) for root in roots}
     for root in roots:
         if len(existing) + len(found) >= limit:

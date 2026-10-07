@@ -806,8 +806,7 @@ _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 def _token_in_needle(token: str, needle: str) -> bool:
     """True when ``token`` appears in ``needle`` as a whole segment (delimited by ``- _ . / \\`` or
     a boundary), not a raw substring, so 'qwen-image-edit' matches '...-2511' but 'kontext'
-    doesn't match 'kontextual'. Separator-insensitive: ``_ - .`` and spaces all read as one
-    delimiter on both sides (``qwen_image_2.1_bf16`` holds ``qwen-image-2.1``)."""
+    doesn't match 'kontextual'. Separator-insensitive."""
     return token_in_name(token, needle)
 
 
@@ -980,13 +979,8 @@ def detect_family_for_pick(
 def _family_from_content(
     fam: Optional[DiffusionFamily], repo_id: str, gguf_filename: Optional[str]
 ) -> Optional[DiffusionFamily]:
-    """Reconcile the name verdict with the picked LOCAL file's own tensor header.
-
-    A ComfyUI tree names files freely, so the header decides what the file is: a text encoder /
-    VAE / LoRA / ControlNet, or a video DiT, is never this page's model (None), and a renamed DiT
-    resolves to the family its keys identify. The name still picks among same-architecture
-    variants (FLUX.1 dev vs Kontext, Qwen-Image vs Edit). Remote picks and directories (no local
-    file) are untouched, as is a header that names no supported family."""
+    """Reconcile the name verdict with a LOCAL file's header: non-DiT / video DiT -> None, renamed DiT
+    -> its header family; the name still picks same-architecture variants. Remote picks untouched."""
     from .diffusion_content import local_pick_file, resolve_family_with_content
 
     path = local_pick_file(repo_id, gguf_filename)
@@ -1309,13 +1303,13 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
-    ("flux1-krea", 20, 3.5),  # FLUX.1-Krea-dev file names, before Krea-2's generic row
+    ("flux1-krea", 20, 3.5),  # before Krea-2's generic row
     ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
     ("flux1-schnell", 4, 0.0),
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
-    ("flux1", 20, 3.5),  # ComfyUI / BFL file names (flux1-dev, flux1-krea-dev): never schnell's row
+    ("flux1", 20, 3.5),
     # Undistilled base runs real CFG; keep before the generic distilled key.
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
