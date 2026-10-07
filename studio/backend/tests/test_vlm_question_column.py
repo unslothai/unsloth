@@ -8,6 +8,7 @@ from PIL import Image
 from utils.datasets import format_and_template_dataset, llm_assist
 
 HELPER_SENTENCE = "Solve the math problem shown in the image."
+GENERIC_SENTENCE = "Describe this image in detail."
 
 
 @pytest.fixture(autouse = True)
@@ -83,3 +84,14 @@ def test_structured_input_column_is_not_used_as_the_question():
     out = _format({"inputs": [[101, 102], [103]], "caption": answers})
 
     assert [_turns(sample) for sample in out] == [(HELPER_SENTENCE, a) for a in answers]
+
+
+def test_missing_question_value_uses_the_generic_instruction():
+    questions = ["Find x in the triangle.", None]
+    answers = ["x = 42", "3"]
+    out = _format({"problem": questions, "answer": answers})
+
+    assert [_turns(sample) for sample in out] == [
+        (questions[0], answers[0]),
+        (GENERIC_SENTENCE, answers[1]),
+    ]
