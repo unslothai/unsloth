@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,31 +140,46 @@ def test_unsloth_run_reads_and_hides_the_requested_host_owner(runner, monkeypatc
     assert "UNSLOTH_RUN_GID" not in os.environ
 
 
-def test_unsloth_run_chowns_only_new_or_changed_root_outputs(runner, monkeypatch, tmp_path):
-    before = {
-        "untouched": (1, 10, 100),
-        "changed": (1, 20, 100),
-    }
-    after = {
-        "untouched": (1, 10, 100),
-        "changed": (1, 20, 200),
-        "new/model.bin": (1, 30, 200),
-    }
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "inotify requires Linux")
+def test_ownership_monitor_tracks_only_changed_paths(runner, tmp_path):
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    untouched = existing / "untouched"
+    untouched.write_text("old", encoding = "utf-8")
+    modified = existing / "modified"
+    modified.write_text("old", encoding = "utf-8")
+    monitor = runner._OwnershipMonitor(str(tmp_path))
+    assert monitor.start()
+
+    modified.write_text("new", encoding = "utf-8")
+    created = existing / "new"
+    created.mkdir()
+    artifact = created / "model.bin"
+    artifact.write_bytes(b"model")
+    affected, recursive = monitor.stop()
+
+    assert str(artifact) in affected
+    assert str(created) in recursive
+    assert str(modified) in affected
+    assert str(untouched) not in affected
+
+
+def test_unsloth_run_chowns_only_monitored_root_outputs(runner, monkeypatch, tmp_path):
+    changed = str(tmp_path / "changed")
+    artifact = str(tmp_path / "new" / "model.bin")
     owners = []
-    monkeypatch.setattr(runner, "_root_owned_state", lambda _root: after)
+    monkeypatch.setattr(runner.os, "lstat", lambda _path: SimpleNamespace(st_uid = 0))
     monkeypatch.setattr(
         runner.os,
         "chown",
-        lambda path, uid, gid, **kwargs: owners.append(
-            (os.path.relpath(path, tmp_path), uid, gid, kwargs)
-        ),
+        lambda path, uid, gid, **kwargs: owners.append((path, uid, gid, kwargs)),
     )
 
-    runner._restore_output_ownership(str(tmp_path), before, 1234, 5678)
+    runner._restore_output_ownership({changed, artifact}, set(), 1234, 5678)
 
     assert owners == [
-        ("changed", 1234, 5678, {"follow_symlinks": False}),
-        ("new/model.bin", 1234, 5678, {"follow_symlinks": False}),
+        (changed, 1234, 5678, {"follow_symlinks": False}),
+        (artifact, 1234, 5678, {"follow_symlinks": False}),
     ]
 
 
