@@ -1070,6 +1070,61 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
+# 26B-A4B / 31B generate after an empty thought channel their template omits from history; final-turn reasoning fills it.
+_gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
+gemma4_empty_thought_template = gemma4_thinking_template.replace(
+    _gemma4_model_turn,
+    _gemma4_model_turn + \
+"""    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- elif not thinking -%}
+            {{ '<|channel>thought\n<channel|>' }}
+        {%- endif -%}
+    {%- endif -%}
+""",
+    1,
+).replace(
+    "{%- for message in loop_messages -%}",
+    "{%- set ns_turn = namespace(last_user_idx=-1) -%}\n"
+    "{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}\n"
+    "{%- for message in loop_messages -%}",
+    1,
+)
+assert gemma4_empty_thought_template != gemma4_thinking_template
+# Ollama re-renders history each request, so every assistant turn gets the channel too.
+gemma4_empty_thought_ollama = '''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "assistant" }}<|turn>model
+<|channel>thought
+<channel|>{{ .Content }}{{ if not $last }}<turn|>
+{{ end }}
+{{- else }}<|turn>{{ .Role }}
+{{ .Content }}<turn|>
+{{ if $last }}<|turn>model
+<|channel>thought
+<channel|>{{ end }}
+{{- end }}
+{{- end }}"""
+'''
+GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+
+
+def _gemma4_wants_empty_thought(*holders):
+    # Content based: the model's own template primes the empty channel (E2B / E4B do not).
+    for holder in holders:
+        template = getattr(holder, "chat_template", None)
+        if isinstance(template, dict): template = template.get("default")
+        if not isinstance(template, str): continue
+        # Unsloth's gemma-4-thinking primes it for every size
+        if template.endswith(gemma4_thinking_template): continue
+        if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
+            return True
+    return False
+
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
 # =========================================== GPT-OSS
 gptoss_template = \
@@ -1955,6 +2010,15 @@ def get_chat_template(
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
+        if type_chat_template in GEMMA4_TEMPLATE_NAMES and \
+            _gemma4_wants_empty_thought(_processor, old_tokenizer):
+            logger.warning_once(
+                "Unsloth: This Gemma-4 model expects an empty thought channel on non-thinking turns. "\
+                "Adding <|channel>thought\\n<channel|> to assistant turns without thinking content."
+            )
+            chat_template = gemma4_empty_thought_template
+            ollama_modelfile = gemma4_empty_thought_ollama
+
         # The template can veto the eos mapping, but it must not force it back on: map_eos_token = False is
         # an explicit choice by the caller.
         if not yes_map_eos_token and map_eos_token: map_eos_token = False
@@ -2183,8 +2247,17 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+_COLUMN_RE = re.compile(r"\{(.+?)\}")
+
+
+def _column_names_in(text):
+    return _COLUMN_RE.findall(_ESCAPED_BRACES_RE.sub("", text))
+
+
 def _parse_combined_prompt(combined_prompt, dataset):
-    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    possible_columns = _column_names_in(combined_prompt)
     dataset_columns = set(dataset.column_names)
     for column in possible_columns:
         if column not in dataset_columns:
@@ -2227,14 +2300,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            needed_columns = _column_names_in(optional_prompt)
             formatter_templates.append(("required", optional_prompt, needed_columns))
             merged_prompt_parts.append(optional_prompt)
             continue
 
         _, prompt = optional_prompt
         prompt = prompt[2:-2]
-        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        needed_columns = _column_names_in(prompt)
         if len(needed_columns) == 0:
             raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
         optional_name = f"__optional_{j}__"
@@ -2353,7 +2426,8 @@ def to_sharegpt(
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
-        all_shuffled.append(shuffled)
+        # Kept caller columns live on copy 0; repeating them makes axis=1 concat fail.
+        all_shuffled.append(shuffled.select_columns([f"conversations{j}"]))
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     n_extensions += 1
@@ -2372,7 +2446,7 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        remove_columns = dataset.column_names if remove_unused_columns else None,
+        remove_columns = dataset.column_names if remove_unused_columns else conversation_columns,
     )
     return dataset
 

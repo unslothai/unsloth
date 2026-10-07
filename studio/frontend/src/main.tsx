@@ -19,6 +19,8 @@ import {
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
+import { watchDropdownSurround } from "./lib/dropdown-surround";
+import { watchInputModality } from "./lib/input-modality";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 
 setHubSessionRefresh(refreshSession);
@@ -57,6 +59,8 @@ watchMathBlockContainmentOverride();
 
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
+watchInputModality(window);
+watchDropdownSurround(window);
 
 function renderApp(): void {
   root.render(

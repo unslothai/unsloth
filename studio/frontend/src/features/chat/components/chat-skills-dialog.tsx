@@ -399,7 +399,8 @@ export function ChatSkillsDialog({
               </Button>
             </div>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] space-y-5 overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            {/* -mr-7 pr-7 spans the dialog's right padding, so the scrollbar sits on its edge. */}
+            <div className="hover-scrollbar min-h-0 max-h-[min(58dvh,520px)] -mr-7 space-y-5 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {error ? (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
                   {error}
@@ -481,7 +482,7 @@ export function ChatSkillsDialog({
               </DialogDescription>
             </DialogHeader>
 
-            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] overflow-y-auto pr-1 max-sm:flex-1 max-sm:max-h-none">
+            <div className="hover-scrollbar min-h-0 max-h-[min(62dvh,640px)] -mr-7 overflow-y-auto pr-7 max-sm:flex-1 max-sm:max-h-none">
               {view.kind === "new" ? (
                 <Editor
                   formId="skill-new-form"
@@ -720,11 +721,11 @@ function SkillRow({
   const t = useT();
   const usable = skill.valid && !skill.shadowed;
   const descriptionId = useId();
-  // The details button covers the row; the switch sits above it, not inside it.
+  // The details button covers the row and the switch sits above it; only those two take pointer events.
   return (
     <div
       className={cn(
-        "group relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-[14px] border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group pointer-events-none relative grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-10 gap-y-1.5 rounded-[14px] border border-border/60 bg-muted/20 px-5 py-4 transition-colors hover:bg-muted/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
         skill.shadowed && "opacity-60",
       )}
     >
@@ -734,7 +735,7 @@ function SkillRow({
         aria-label={skill.name}
         aria-describedby={descriptionId}
         title={(skill.valid ? skill.description : skill.error) ?? undefined}
-        className="absolute inset-0 cursor-pointer rounded-[14px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="pointer-events-auto absolute inset-0 cursor-pointer rounded-[14px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <span className="truncate font-medium text-ui-14">{skill.name}</span>
@@ -744,7 +745,7 @@ function SkillRow({
       </div>
       {/* Lowercase text reads lower than its box, so the controls drop to its x-height. */}
       <Switch
-        className="translate-y-[0.11em] text-ui-14"
+        className="pointer-events-auto translate-y-[0.11em] text-ui-14"
         checked={usable && skill.enabled}
         disabled={!usable || changing}
         aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}

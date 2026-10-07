@@ -146,6 +146,7 @@ def test_encode_mp4_falls_back_to_libx264(monkeypatch, gpu, nvenc_ok, expect):
     monkeypatch.setattr(eu, "encode_video", _x264)
     monkeypatch.setattr(video_mod, "nvenc_gpu", lambda logger = None: gpu)
     monkeypatch.setattr(video_mod, "encode_nvenc", _nvenc)
+    monkeypatch.setattr(video_mod, "encode_x264", lambda *args: False)
     out = video_mod.VideoBackend._encode_mp4(
         np.zeros((2, 16, 16, 3), dtype = np.float32), 24, None, None
     )

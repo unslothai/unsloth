@@ -59,6 +59,9 @@ _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 # metadata, so a stale per-TENSOR checkpoint is rejected and rebuilt.
 FP8_GRANULARITY = "per_row"
 
+# torchao ``activation_value_lb``: keeps an all-zero activation row off scale 0 (NaN, black frames); not calibrated.
+FP8_ACTIVATION_VALUE_LB = 1e-12
+
 # Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.
 DEFAULT_MIN_LINEAR_FEATURES = 512
 
@@ -132,6 +135,7 @@ _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    "qwen-image-layered": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
     # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's
     # exclusion list does not apply and this one was measured rather than inherited. ``txt_in`` is
     # here as a QUALITY lever, not the small-M crash guard it is on qwen-image: all four policy arms
@@ -218,18 +222,48 @@ _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
             "img_mlp.out",
         ),
     ),
+    # exactly the Linears the hosted INT8 checkpoint quantizes (all input axes 256-divisible)
+    "z-image": (
+        256,
+        (
+            "attention.to_q",
+            "attention.to_k",
+            "attention.to_v",
+            "attention.to_out.0",
+            "feed_forward.w1",
+            "feed_forward.w2",
+            "feed_forward.w3",
+            "cap_embedder.1",
+        ),
+    ),
 }
 
 
 _INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
     "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors",
 }
+# Only this repo gets the rotated name prepended: a same-named file elsewhere is not this build.
+_INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
+    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
+    "z-image": "unsloth/Z-Image-Turbo-FP8",
+}
+
+# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image"})
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
 
-def int8_convrot_enabled() -> bool:
-    return (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+def int8_convrot_enabled(family: Optional[str] = None) -> bool:
+    """``UNSLOTH_DIFFUSION_INT8_CONVROT``: ``1`` turns ConvRot on for every family with a table entry, ``0`` turns it
+    off everywhere (the kill switch); unset follows the family default."""
+    raw = (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower()
+    if raw in ("1", "on", "true", "yes"):
+        return True
+    if raw in ("0", "off", "false", "no"):
+        return False
+    return str(family or "").strip().lower() in _INT8_FAMILY_CONVROT_DEFAULT_ON
 
 
 def convrot_spec_for_scheme(
@@ -245,6 +279,13 @@ def convrot_prequant_filename(scheme: str, family: Optional[str] = None) -> Opti
     if scheme != TQ_INT8:
         return None
     return _INT8_FAMILY_CONVROT_FILENAME.get(str(family or "").strip().lower())
+
+
+def convrot_prequant_repo(scheme: str, family: Optional[str] = None) -> Optional[str]:
+    """The repo the family's rotated int8 artifact is published to, or None."""
+    if scheme != TQ_INT8:
+        return None
+    return _INT8_FAMILY_CONVROT_REPO.get(str(family or "").strip().lower())
 
 
 def convrot_fqns(
@@ -269,7 +310,7 @@ def apply_runtime_convrot(
 ) -> tuple[str, ...]:
     """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
     group, suffixes = convrot_spec_for_scheme(scheme, family)
-    if not group or not int8_convrot_enabled():
+    if not group or not int8_convrot_enabled(family):
         return ()
     from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
 
@@ -395,6 +436,7 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
+    "qwen-image-layered": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
 
 
@@ -1268,7 +1310,9 @@ def _scheme_supported(
             # Re-checked under the lock: the route answers plans concurrently, and a burst of them must not each spawn
             # a child that imports torch.
             if (scheme, card) not in _SMOKE_CACHE:
-                table = _child_probe_table(card)
+                table = _persisted_probe_table(card)
+                if table is None or scheme not in table:
+                    table = _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -1403,7 +1447,64 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
                 break
     finally:
         _close_probe_child(proc, queue)
-    return table if isinstance(table, dict) else _crashed_child_verdict(proc, device)
+    if isinstance(table, dict):
+        try:
+            from . import diffusion_probe_cache
+            diffusion_probe_cache.store(device, table)
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            pass
+        return table
+    return _crashed_child_verdict(proc, device)
+
+
+def prewarm_probe_table(device: str = "cuda") -> bool:
+    """Resolve and persist this card's smoke-probe table at boot; True iff a child probe ran.
+
+    A load arriving mid-probe waits on the same lock and reads these verdicts. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``
+    disables it."""
+    if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        from . import diffusion_probe_cache
+
+        if not diffusion_probe_cache.enabled():
+            return False
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    card = _smoke_cache_device_key(device)
+    schemes = without_nvfp4(TQ_SCHEMES)
+    if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+        return False
+    if _persisted_probe_table(card) is not None:
+        return False
+    with _CHILD_PROBE_LOCK:
+        if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+            return False
+        table = _child_probe_table(card)
+        if table is None:
+            return False
+        for name, verdict in table.items():
+            if verdict is not None:
+                _SMOKE_CACHE[(name, card)] = verdict
+    return True
+
+
+def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
+    """A previous process's clean child table for this card and stack, or None."""
+    try:
+        from . import diffusion_probe_cache
+        return diffusion_probe_cache.load(card)
+    except Exception:  # noqa: BLE001 - a miss, never an error
+        return None
 
 
 # SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
@@ -1706,7 +1807,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
-            fp8_kwargs["activation_value_lb"] = 1e-12
+            fp8_kwargs["activation_value_lb"] = FP8_ACTIVATION_VALUE_LB
         # Pin the plain-torch quantize kernel: the default AUTO switches to the MSLK kernel whenever an mslk package
         # is importable, changing fp8 scale rounding BITWISE and breaking the prequant bit-identity invariant. It is
         # also slower compiled on B200 (an opaque extern call blocks inductor's quantize fusion), so the pin costs

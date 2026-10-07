@@ -265,7 +265,11 @@ def test_model_config_page_floors_the_context_ceiling():
     rounded up (rounding up can offer/persist a length above the model's real
     ceiling and break loading)."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
+    assert re.search(
+        r"floorMaxSeqLength\(\s*targetIsNpu\s*\? target\.meta\.contextLength\s*"
+        r": modelMaxPosition\.maxPositionEmbeddings,\s*\)",
+        src,
+    )
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
@@ -508,9 +512,19 @@ def test_active_model_config_round_trips_gpu_fields():
         "nCpuMoe",
         "selectedGpuIds",
         "selectedGpuIndexKind",
+        "llamaExtraArgs",
+        "loadedLlamaExtraArgs",
     ):
         assert field in src, field
-    assert "if (!isGguf)" in src and "return base" in src
+    # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
+    flat = " ".join(src.split())
+    assert "if (!isGguf) {" in flat and ": base; }" in flat
+    assert (
+        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
+        in flat
+    )
+    assert "loadedLlamaExtraArgs != null" in src
+    assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
@@ -704,7 +718,7 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[\s*inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 
@@ -755,15 +769,17 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
-    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    # #7767 added the expander's abort signal to this call, so the options are an object
-    # literal now rather than the bare localSource ternary.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
         0
     ), "the expander drops the row's own cache directory"
     assert "preferLocalCache" not in call.group(0)
+    assert "localOnly," in call.group(0)
+    assert "loadPickerGgufVariants(" in picker
+    sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
+    assert sole and "localOnly: true," in sole.group(0)
+    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -1072,7 +1088,7 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # Both GGUF responses report it: the status poll and the already_loaded
     # dedup reply. Either one re-deriving it reintroduces the flip.
     assert route.count("is_local_model = _loaded_is_local_model(") >= 2
-    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
+    assert "is_local_model = bool(_active and is_local_path(_active))" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
@@ -1147,9 +1163,10 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
-    # MLX pins via customContextLength, so substituting the shown default would turn
-    # "Auto" into a request for that number.
-    assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
+    # MLX and NPU pin via customContextLength, so substituting the shown default would
+    # turn "Auto" into a request for that number.
+    assert "const pinsContextLength = targetIsMlx || targetIsNpu;" in src
+    assert "target.isGguf || pinsContextLength\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -1218,7 +1235,8 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     # The committed draft lands in this target's pin field.
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
+        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        in page
     )
 
 
@@ -1226,7 +1244,7 @@ def test_context_commit_rechecks_persistence_only_shortcut():
     """Committed context changes must bypass persistence-only saves."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
     assert "const effectivePersistenceOnly =" in src
     assert "if (effectivePersistenceOnly)" in src
 
@@ -1318,7 +1336,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
-    assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
+    assert (
+        "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
+        "                npuServedWindow == null\n" in page
+    )
     assert "const mlxServedWindow = resolveMlxServedWindow(" in page
     assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
@@ -1344,14 +1365,14 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, targetIsMlx))" in page
+    assert "update(contextPinPatch(value, pinsContextLength))" in page
     # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
         in page
     )
     # Both props are optional, so dropping either typechecks and mislabels the control.
-    assert "isMlx={targetIsMlx}" in page
+    assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
 
 
@@ -1646,6 +1667,16 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert "diffusionRoutePick(" in src, f"{rel}: route pick not derived"
         # And the derived pick is what gets loaded, not the raw search params.
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
+
+
+def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
+    """Reapply after refresh rebuilds target, logical identity and H3 partition from status."""
+    src = _read("features/video/video-page.tsx")
+    assert 'status?.model_kind !== "pipeline"' in src
+    assert "displayRepoId: status.display_repo_id ?? undefined," in src
+    assert 'status.h3_task === "fl2va" || status.h3_task === "ref2va"' in src
+    assert "lastLoad.current = {" in src
+    assert "setCanReapply(true);" in src
 
 
 def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
@@ -2086,13 +2117,18 @@ def test_staged_downloads_always_scope_their_files():
     it would finish instantly having fetched everything except the weights and leave the
     repo on device unloadable."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    # A GGUF quant entry goes out as the standard variant download (its plan brings companions);
+    # every other entry is the scoped branch.
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", src, re.S)
     assert start, "requestStart call not found"
     body = start.group(0)
     # Unconditional: no branch may send a null scope or omit the files.
     assert "scopeId," in body and "files: current.files," in body
     assert "? null" not in body and "? undefined" not in body
-    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+    assert re.search(
+        r"const activeVariant = current\s*\?\s*\(current\.ggufVariant \?\? scopedVariant\(scopeId\)\)\s*:\s*null;",
+        src,
+    )
 
 
 def test_staged_downloads_use_one_actionable_download_surface():
@@ -2121,23 +2157,23 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     alone is not enough -- a checkpoint sharing its repo with the companions, and already
     cached, leaves an entry of companion files that would still claim to be the model."""
     for page in ("images/images-page.tsx", "video/video-page.tsx"):
-        src = _read(f"features/{page}")
-        entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
-        assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "e.files.includes(opts.filename)" in entries.group(
-            0
-        ), f"{page} does not mark the picked repo's entry as the checkpoint"
-        # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
-        # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
-        # reads the whole selected model as "Required assets". Only the planner knows about the
-        # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
-        assert "e.checkpoint ??" in entries.group(
-            0
-        ), f"{page} ignores the checkpoint flag the plan carried"
+        assert "diffusionStagingEntries(plan.entries" in _read(
+            f"features/{page}"
+        ), f"{page} does not map the plan entries into staged downloads"
+    page = "lib/diffusion-pipeline-load-target.ts"
+    entries = re.search(r"entries\s*\.map\(\(e\) => \(\{.*?\}\)\)", _read(page), re.S)
+    assert entries, f"{page} does not map the plan entries into staged downloads"
+    assert "e.files.includes(opts.filename)" in entries.group(
+        0
+    ), f"{page} does not mark the picked repo's entry as the checkpoint"
+    # The plan's answer wins (only it knows a gated pipeline is staged from an ungated mirror); false is final.
+    assert "e.checkpoint ??" in entries.group(
+        0
+    ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", staged, re.S)
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", staged, re.S)
     assert start, "requestStart call not found"
     assert "checkpoint: current.checkpoint," in start.group(0)
 
@@ -2507,7 +2543,7 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     # And the rollback that makes the reseed necessary is still ordered before the
     # hydration it protects, in the adopt path.
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
+    adopt = runtime[runtime.index("const confirmedStatus = await readPickStatus()") :]
     adopt = adopt[: adopt.index("void refreshContextUsage(")]
     assert (
         adopt.index("restorePreviousConfig();")
@@ -2914,7 +2950,7 @@ def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     loadable. The ordering requirement is unchanged and is what this still pins.
     """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
+    branch = src[src.index("const confirmedStatus = await readPickStatus()") :]
     branch = branch[: branch.index("void refreshContextUsage(")]
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
     # Landing before the checkpoint moves, so nothing reads the pair half updated.

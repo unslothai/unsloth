@@ -205,11 +205,18 @@ def _apply_value_normalisers(line: str) -> str:
     return out
 
 
+# winget's busy spinner. While it queries a source it draws one of these on a line of its own, and how
+# many frames reach the log depends only on how long the query took: two runs of the same install.ps1
+# differed by a single "   -" around `winget install astral-sh.uv`. A frame carries nothing a user
+# reads, and a line with any other text on it (" - Packages") still compares.
+_SPINNER_FRAMES = frozenset("-\\|/")
+
+
 def normalise_transcript(text: str) -> list[str]:
     lines = []
     for raw in text.splitlines():
         line = normalise_line(raw)
-        if not line.strip():
+        if not line.strip() or line.strip() in _SPINNER_FRAMES:
             continue
         # Runner-injected noise, and ONLY what the runner injects. These carry the workflow's own
         # group names and the side's SHA, so they differ between sides for nothing to do with the

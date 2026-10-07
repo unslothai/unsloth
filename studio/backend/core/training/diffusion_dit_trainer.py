@@ -57,7 +57,7 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     has_functional_torchao,
-    native_bf16_supported,
+    flow_bf16_trainable,
     native_bf16_supported_xpu,
     PermutationBatchSampler,
     repo_is_prequantized,
@@ -1514,7 +1514,9 @@ def _open_resized(path, resolution):
     Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     w0, h0 = img.size
     scale = resolution / min(w0, h0)
     rw, rh = max(resolution, round(w0 * scale)), max(resolution, round(h0 * scale))
@@ -1870,7 +1872,7 @@ def run_dit_lora_training(
     device = resolve_train_device()
     # bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic). Both accelerator
     # guards gate on NATIVE bf16, since is_bf16_supported() counts emulation on CUDA and on XPU alike.
-    if device == "cuda" and not native_bf16_supported():
+    if device == "cuda" and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."

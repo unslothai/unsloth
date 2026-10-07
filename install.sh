@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -43,6 +43,8 @@ _NO_ROLLBACK=false
 # Set by the discard itself, so the disk-full remedy can describe what happened rather than what was requested.
 _VENV_DISCARDED=false
 _VENV_DISCARD_LEFTOVER=""
+_INSTALL_SYSTEMD=false
+_SYSTEMD_STARTED=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -84,6 +86,7 @@ case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 case "${UNSLOTH_INSTALL_NO_ROLLBACK:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_ROLLBACK=true ;; esac
+case "${UNSLOTH_INSTALL_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_SYSTEMD=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -1456,6 +1459,49 @@ _apt_distro_description() {
 # `test -r` only checks permission bits, which look fine in containers and systemd units where open() then fails with ENXIO, so probe with a real open. The subshell is required: in dash a failed redirection on the special builtin `:` exits the whole script.
 _can_read_tty() {
     ( : </dev/tty ) >/dev/null 2>&1
+}
+
+# Checkout copy only for a trusted --local run: a piped install's _REPO_ROOT is the caller's cwd,
+# and -I keeps that cwd off sys.path for the installed-package lookup.
+_resolve_systemd_install_script() {
+    if [ "$_REPO_IS_CHECKOUT" = "1" ] && [ -f "$_REPO_ROOT/studio/systemd/install_user_service.sh" ]; then
+        printf '%s\n' "$_REPO_ROOT/studio/systemd/install_user_service.sh"
+        return 0
+    fi
+    [ -x "$VENV_DIR/bin/python" ] || return 0
+    "$VENV_DIR/bin/python" -I -c \
+        "import importlib.resources as r; print(r.files('studio') / 'systemd' / 'install_user_service.sh')" \
+        2>/dev/null || true
+}
+
+# Only with UNSLOTH_INSTALL_SYSTEMD set; without it the install is unchanged.
+_install_systemd_user_service() {
+    case "$OS" in
+        linux|wsl) ;;
+        *) step "systemd" "UNSLOTH_INSTALL_SYSTEMD is Linux only; skipped" "$C_WARN"; return 0 ;;
+    esac
+    _sd_script=$(_resolve_systemd_install_script)
+    if [ -z "$_sd_script" ] || [ ! -f "$_sd_script" ]; then
+        step "systemd" "service helper not found in this install; skipped" "$C_WARN"
+        return 0
+    fi
+
+    set -- --unsloth-exe "$VENV_DIR/bin/unsloth" \
+        --host "${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}" --port "${UNSLOTH_SYSTEMD_PORT:-8888}" --enable --start
+    # The user manager runs with the passwd HOME, so any non-default home has to be spelled out.
+    [ "$_STUDIO_HOME_REDIRECT" != "default" ] && set -- "$@" --studio-home "$STUDIO_HOME"
+
+    if bash "$_sd_script" "$@" >/dev/null; then
+        _SYSTEMD_STARTED=true
+        step "systemd" "user service enabled (unsloth-studio.service)"
+        substep "status: systemctl --user status unsloth-studio.service"
+        substep "logs:   journalctl --user -u unsloth-studio.service -f"
+        substep "stop:   systemctl --user stop unsloth-studio.service"
+        substep "binds 127.0.0.1 by default; set UNSLOTH_SYSTEMD_HOST=0.0.0.0 before install for LAN"
+        substep "for boot without a login session, run once: loginctl enable-linger \"\$USER\""
+    else
+        step "systemd" "user service install failed; see the error above" "$C_WARN"
+    fi
 }
 
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
@@ -3139,6 +3185,11 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
     [ -n "${UNSLOTH_MIRROR_FALLBACK:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_MIRROR_FALLBACK=$(_rr_q "$UNSLOTH_MIRROR_FALLBACK")"
     [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
+    if [ "$_INSTALL_SYSTEMD" = true ]; then
+        _rr_exports="$_rr_exports; export UNSLOTH_INSTALL_SYSTEMD=1"
+        [ -n "${UNSLOTH_SYSTEMD_HOST:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_SYSTEMD_HOST=$(_rr_q "$UNSLOTH_SYSTEMD_HOST")"
+        [ -n "${UNSLOTH_SYSTEMD_PORT:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_SYSTEMD_PORT=$(_rr_q "$UNSLOTH_SYSTEMD_PORT")"
+    fi
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
@@ -4066,8 +4117,9 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
             :
         else
             # Unpinned hosts keep the path they have always had: a wrong triple breaks the install outright, which costs more than the fallback's score.
+            # The versioned installer installs the same pinned release (and checks its per-asset sha256), not whatever is latest.
             _uv_tmp=$(mktemp)
-            if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+            if download "https://astral.sh/uv/$UV_PINNED_VERSION/install.sh" "$_uv_tmp"; then
                 run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
             else
                 _uv_refreshed=false
@@ -4102,6 +4154,8 @@ mkdir -p "$STUDIO_HOME"
 _MIGRATED=false
 # Empty so an inherited value can never masquerade as a probed torch version.
 _PREV_TORCH_VER=""
+# Any earlier environment in this home, readable or not: only a home without one takes a new-install torch default.
+_EXISTING_INSTALL=false
 
 # Replace occupied venvs even when bin/python is missing or dangling, as in the repair loop reported in #9479.
 if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
@@ -4115,6 +4169,7 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
         exit 1
     fi
+    _EXISTING_INSTALL=true
     # Record the existing venv's torch BEFORE the replacement moves it aside: a re-run rebuilds the venv for clean state, but must keep the torch release the user already has. Last line only, so sitecustomize or import-hook noise on stdout cannot corrupt the version. Disk first, no interpreter: `import torch` can block forever on a wedged Intel driver, and this runs before setup.sh's bounded probes. version.py carries the same label; the interpreter stays as the fallback for a layout without one.
     _PREV_TORCH_VER=""
     for _prev_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
@@ -4140,6 +4195,12 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
 elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
     # Old layout: validate before migrating (env-mode skips it); no-torch checks Python only.
     substep "found legacy Unsloth environment, validating..."
+    _EXISTING_INSTALL=true
+    for _prev_tv in "$STUDIO_HOME"/.venv/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_prev_tv" ] || continue
+        _PREV_TORCH_VER=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_prev_tv" | head -n 1)
+        break
+    done
     _legacy_ok=false
     if [ "$SKIP_TORCH" = true ]; then
         if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
@@ -4175,6 +4236,14 @@ torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device,
         _invalid_venv="$STUDIO_HOME/.venv.invalid.$(date +%Y%m%d%H%M%S 2>/dev/null || echo time).$$"
         mv "$STUDIO_HOME/.venv" "$_invalid_venv" 2>/dev/null || true
     fi
+elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && _dir_has_entries "$STUDIO_HOME/.venv"; then
+    # A legacy .venv whose interpreter is missing or dangling is still an earlier install: keep the old torch range, not the new-install one.
+    _EXISTING_INSTALL=true
+    for _prev_tv in "$STUDIO_HOME"/.venv/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_prev_tv" ] || continue
+        _PREV_TORCH_VER=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_prev_tv" | head -n 1)
+        break
+    done
 fi
 
 if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
@@ -4396,6 +4465,8 @@ fi
 # Companions bounded to torch's window: torchaudio 2.11 dropped its torch pin, so it can drift.
 TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
+_CU130_TORCH_CEILING="2.15.0"
+_CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -4412,8 +4483,8 @@ _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
-    # Check local repo first (for --local installs)
-    if [ -f "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" ]; then
+    # Local copy only for a --local checkout run: a piped install's _REPO_ROOT is the caller's cwd.
+    if [ "$_REPO_IS_CHECKOUT" = "1" ] && [ -f "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" ]; then
         echo "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt"
         return
     fi
@@ -5954,12 +6025,77 @@ _torch_release_in_window() {
     echo "no"
 }
 
+# "yes" when $1 is the cu130 index on Linux/WSL x86_64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
+_cu130_torch213_route() {
+    [ "$(_cu130_torch213_platform "$1")" = "yes" ] || { echo "no"; return; }
+    _pypi_unsloth_admits_torch "2.13.0"
+}
+
+# The local half of the route, with no network: it alone decides the preservation window, so a
+# PyPI outage on a re-run can never shrink it and downgrade an existing 2.13/2.14 install.
+_cu130_torch213_platform() {
+    [ "$(_torch_index_url_leaf "$1")" = "cu130" ] || { echo "no"; return; }
+    case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
+    case "$_ARCH" in x86_64|amd64) ;; *) echo "no"; return ;; esac
+    _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
+    [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
+}
+
+# "yes" only when the newest unsloth on PyPI admits torch $1: `studio update` runs the INSTALLED release's setup,
+# which re-resolves under its own cap and would downgrade a newer torch. Any failure answers "no", as does anything
+# making public PyPI's newest release not what uv will pick: an upload cutoff, offline mode, another package index.
+_pypi_unsloth_admits_torch() {
+    _pua_off=$(printf '%s' "${UV_OFFLINE:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    case "$_pua_off" in 1|t|true|y|yes|on) echo "no"; return ;; esac
+    if [ -n "${UV_EXCLUDE_NEWER:-}${UV_EXCLUDE_NEWER_PACKAGE:-}" ] || _mirror_configured uv; then
+        echo "no"
+        return
+    fi
+    _pua_url="${UNSLOTH_PYPI_JSON_URL:-https://pypi.org/pypi/unsloth/json}"
+    _pua_out=$(_run_bounded --secs 20 "$VENV_DIR/bin/python" - "$_pua_url" "$1" 2>/dev/null <<'PY' || true
+import json, re, sys, urllib.request
+url, want = sys.argv[1], sys.argv[2]
+def rel(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) + (0,) * (3 - len(re.findall(r"\d+", v)[:3]))
+try:
+    with urllib.request.urlopen(url, timeout = 15) as r:
+        reqs = json.load(r)["info"].get("requires_dist") or []
+    specs = [q for q in reqs if re.match(r"^torch\s*[<>=!~(]", q) and "extra ==" not in q]
+    if len(specs) != 1:
+        raise ValueError(specs)
+    ops = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b,
+           ">=": lambda a, b: a >= b, "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
+    body = specs[0].split(";", 1)[0][len("torch"):].strip().strip("()")
+    ok = True
+    for part in filter(None, (p.strip() for p in body.split(","))):
+        m = re.fullmatch(r"(<=|>=|==|!=|<|>)\s*([0-9][0-9.]*)", part)
+        if m is None:
+            raise ValueError(part)
+        ok = ok and ops[m.group(1)](rel(want), rel(m.group(2)))
+    print("yes" if ok else "no")
+except Exception:
+    print("no")
+PY
+)
+    [ "$(printf '%s' "$_pua_out" | tail -n 1)" = "yes" ] && echo "yes" || echo "no"
+}
+
+# torchaudio 2.11 is the last release (stable ABI), so newer torch minors pair with it.
+_torchaudio_for_torch_minor() {
+    if [ "$1" -ge 12 ] 2>/dev/null; then
+        echo "torchaudio==2.11.*"
+    else
+        echo "torchaudio==2.$1.*"
+    fi
+}
+
 # Keep the previous torch RELEASE when inside the window; UNSLOTH_TORCH_UPGRADE=1 opts out.
 _previous_torch_pin() {
     _ptp_ver="$1"
     _ptp_con="$2"
     [ -n "$_ptp_ver" ] || { echo ""; return; }
-    [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
+    # $3 = keep: an upgrade with no newer release to move to still keeps the resident one.
+    [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && [ "${3:-}" != "keep" ] && { echo ""; return; }
     _ptp_base="${_ptp_ver%%+*}"
     # Base must be a plain numeric release; nightly/dev builds never become a pin.
     case "$_ptp_base" in
@@ -6022,7 +6158,7 @@ _install_torch_default_index() {
         case "$_itdi_base" in
             2.*)
                 _itdi_tv="torchvision==0.$((_itdi_minor + 15)).*"
-                _itdi_ta="torchaudio==2.${_itdi_minor}.*"
+                _itdi_ta=$(_torchaudio_for_torch_minor "$_itdi_minor")
                 ;;
         esac
         if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$_itdi_tv")" "$_itdi_ta" \
@@ -6328,7 +6464,11 @@ _maybe_bootstrap_rocm_wsl() {
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
-        _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
+        # Never fall back to a fixed /tmp name: this file runs with sudo, and another user could own it.
+        if ! _rw_tmp="$(mktemp 2>/dev/null)" || [ -z "$_rw_tmp" ]; then
+            substep "Could not create a private temp file for the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
+            return 0
+        fi
         if download "https://raw.githubusercontent.com/unslothai/unsloth/${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
         else
@@ -6974,15 +7114,39 @@ case "$_torch_index_leaf" in
         ;;
 esac
 fi  # _torch_index_pinned guard (Radeon + Strix reroute)
+# Only this route has prebuilt kernel wheels for torch 2.13/2.14 (prebuilt-wheels-cu13, cp313), so new installs get 2.13;
+# preservation keeps a wider window so an existing 2.4-2.14 install stays on its release.
+_PRESERVE_TORCH_CONSTRAINT="$TORCH_CONSTRAINT"
+_CU130_NEW_INSTALL_ROUTE=false
+if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
+    _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
+    # An existing home never takes 2.13 unasked, even when its torch could not be read or kept.
+    if { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
+       && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
+        _CU130_NEW_INSTALL_ROUTE=true
+    fi
+fi
 _PREV_TORCH_PIN=""
+# The pre-route default: a kept release that fails to reinstall falls back here, never to 2.13.
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ]; then
-    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$TORCH_CONSTRAINT")
+    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT")
+    # UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) with the 2.13 route closed (PyPI unreachable, a
+    # mirror, an older release) must not move a resident release above the default range down.
+    if [ -z "$_prev_pin" ] && [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] \
+       && [ "$_CU130_NEW_INSTALL_ROUTE" = false ] && [ -n "$_PREV_TORCH_VER" ] \
+       && [ "$(_torch_release_in_window "${_PREV_TORCH_VER%%+*}" "$TORCH_CONSTRAINT")" != "yes" ]; then
+        _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_PRESERVE_TORCH_CONSTRAINT" keep)
+    fi
     if [ -n "$_prev_pin" ]; then
         _PREV_TORCH_PIN="$_prev_pin"
         TORCH_CONSTRAINT="$_prev_pin"
         substep "existing install has torch $_PREV_TORCH_VER -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
     fi
+fi
+if [ -z "$_PREV_TORCH_PIN" ] && [ "$_CU130_NEW_INSTALL_ROUTE" = true ]; then
+    TORCH_CONSTRAINT="$_CU130_NEW_INSTALL_TORCH"
+    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
 fi
 
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
@@ -7687,7 +7851,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.12}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.2}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -7700,7 +7864,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -7715,7 +7879,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -7935,7 +8099,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -7954,7 +8118,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -7985,7 +8149,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.8" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.2" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8009,7 +8173,7 @@ fi
 
 # Same probe as install.ps1: version() answers from whichever record the finder yields first, so a duplicate would be reported here as an ordinary version.
 _installed_package_version_exit=0
-if _installed_package_version=$("$_VENV_PY" -c '
+if _installed_package_version=$("$_VENV_PY" -I -c '
 import sys
 try:
     from studio.install_manifest import installed_version_probe
@@ -8224,7 +8388,10 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -f "$_REPO_ROOT/studio/setup.sh" ]; t
 fi
 
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
-    SETUP_SH=$("$VENV_DIR/bin/python" -c "
+    # -I: a bare -c puts the caller's cwd first on sys.path, so launching from an unsloth
+    # checkout resolved `studio` to the checkout and ran ITS setup.sh, which installed the
+    # checkout's requirement pins while the wheel's verify_install read the wheel's.
+    SETUP_SH=$("$VENV_DIR/bin/python" -I -c "
 import importlib.resources
 print(importlib.resources.files('studio') / 'setup.sh')
 " 2>/dev/null || echo "")
@@ -8672,6 +8839,12 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+if [ "$_INSTALL_SYSTEMD" = true ]; then
+    _install_systemd_user_service
+    if [ "$_SYSTEMD_STARTED" = true ]; then
+        _SKIP_AUTOSTART=true
+    fi
+fi
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes. Prompt only when something can answer: `test -r` passes on the unopenable /dev/tty found in containers, leaving a dangling question in the log.

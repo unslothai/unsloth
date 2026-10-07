@@ -95,8 +95,6 @@ test("an empty open folder says it is empty", () => {
     APP_SIDEBAR,
     /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
-  // And it is a row, so the bottom fade has to count it like the "Show more" one.
-  assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
 // A chat's "Move to" holds projects and sections, each its own group under a heading: its New
@@ -280,10 +278,11 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     ["folder-1", "folder-2", "pin-1", "proj-1", "recent-1"],
   );
   // The sidebar publishes Pinned in its drawn order, folders and chats interleaved with each open
-  // folder's chats under its row, and leaves the section's own chats to projectItems.
+  // folder's chats under its row (pinned pages have none), and leaves the section's own chats to
+  // projectItems.
   assert.match(
     APP_SIDEBAR,
-    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: \[row\.item\],/,
+    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: row\.kind === "chat"\n\s*\? \[row\.item\]\n\s*: \[\],/,
   );
   // The walk reads pinnedItems then projectItems, so the two are every section above Recents in
   // the order the user dragged them into, split at Pinned.
@@ -415,11 +414,6 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
   ]) {
     assert.match(APP_SIDEBAR, gated);
   }
-  // And the row count the scroll fade measures counts nothing where nothing is drawn.
-  assert.match(
-    APP_SIDEBAR,
-    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
-  );
 });
 
 // "Remove from <name>", and lists that scroll: forty projects ran the submenu off the window,

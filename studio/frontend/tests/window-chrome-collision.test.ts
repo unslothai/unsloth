@@ -67,7 +67,7 @@ test("the message More menu clears the titlebar", async () => {
   // Padding alone can't stop a flipped menu growing under the titlebar.
   assert.match(
     thread,
-    /aui-action-bar-more-content[^"]*max-h-\(--radix-dropdown-menu-content-available-height\)[^"]*overflow-y-auto/,
+    /aui-action-bar-more-content[^"]*max-h-\(--radix-dropdown-menu-content-available-height\)[^"]*overflow-hidden/,
   );
 });
 
@@ -106,6 +106,11 @@ test("context submenus stop at the titlebar and scroll", async () => {
   const sub = menu.slice(menu.indexOf("function ContextMenuSubContent"));
   assert.match(
     sub,
-    /max-h-\(--radix-context-menu-content-available-height\) overflow-x-hidden overflow-y-auto"/,
+    /max-h-\(--radix-context-menu-content-available-height\) flex flex-col overflow-hidden"/,
+  );
+  // An inner viewport scrolls, so the rounded surface keeps its corners.
+  assert.match(
+    sub,
+    /data-slot="context-menu-viewport"\s*className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"/,
   );
 });

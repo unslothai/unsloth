@@ -722,7 +722,7 @@ export function DebuggingTab() {
             onScroll={onScroll}
             data-testid="debug-log-pane"
             className={cn(
-              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
               wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
               !text && "text-muted-foreground",
             )}

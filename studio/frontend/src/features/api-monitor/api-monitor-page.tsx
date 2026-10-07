@@ -26,7 +26,11 @@ import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useIsAccountOwner } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  lanApiUrls,
+  loadLanAccess,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import { useLinkedInstancesOverview } from "@/features/settings/hooks/use-linked-instances-overview";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -34,9 +38,9 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
+  ApiIcon,
   Copy01Icon,
   Delete02Icon,
-  InternetIcon,
   PauseIcon,
   PlayIcon,
   PowerSocket01Icon,
@@ -45,6 +49,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { LinkedInstancesRail } from "./components/linked-instances-rail";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
@@ -378,7 +383,7 @@ function PayloadBlock({
       <pre
         data-reload-snapshot-sensitive
         className={cn(
-          "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
+          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
@@ -579,23 +584,27 @@ export function ApiMonitorPage(): ReactElement {
   }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const lanUrls = usePlatformStore((s) => s.lanUrls);
   const [unloading, setUnloading] = useState(false);
+  // block raw unloads while a picker load could finish afterward without a lifecycle guard.
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
       void fetchDeviceType({ force: true });
+      loadLanAccess()
+        .then((status) =>
+          usePlatformStore.setState({ lanUrls: lanApiUrls(status) }),
+        )
+        .catch(() => undefined);
     };
     refreshRemoteBase();
     window.addEventListener("focus", refreshRemoteBase);
     return () => window.removeEventListener("focus", refreshRemoteBase);
   }, []);
 
-  // Manual release so VRAM frees without the idle timer. /unload matches on the
-  // internal id, which the monitor does not carry, so read status. unloadResident owns
-  // the read/unload/recheck sequence: this page's own feature (an API auto-switch) can
-  // swap the model out from under the read, and /unload naming a replaced model is a
-  // successful no-op, so one pass would report success over the model still resident.
+  // read status for /unload's internal id; recheck because an API auto-switch can make it a no-op.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -708,13 +717,12 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // The desktop webview's origin is tauri://, and the packaged app picks its port
-  // dynamically. Same source as the Agents tab.
+  // Tauri uses the runtime API base because its tauri:// origin omits the dynamic port.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const serverStatus = data?.status ?? "idle";
-  // Older backends omit the field; only an explicit `false` means recording is off.
+  // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const isOwner = useIsAccountOwner();
   const linked = useLinkedInstancesOverview(isOwner);
@@ -763,6 +771,12 @@ export function ApiMonitorPage(): ReactElement {
           data-tour="api-toolbar"
           className="flex flex-wrap items-center gap-2"
         >
+          <ApiModelLoadControls
+            activeModel={data?.active_model}
+            onSettled={refresh}
+            onUnloadActive={unloadActiveModel}
+            unloading={unloading}
+          />
           <Button
             type="button"
             variant="outline"
@@ -782,7 +796,7 @@ export function ApiMonitorPage(): ReactElement {
             variant="outline"
             size="sm"
             onClick={() => void unloadActiveModel()}
-            disabled={unloading || !data?.active_model}
+            disabled={unloading || modelLoading || !data?.active_model}
             title={
               data?.active_model
                 ? `Unload ${data.active_model} and free its VRAM`
@@ -871,7 +885,7 @@ export function ApiMonitorPage(): ReactElement {
             <div className="flex min-w-0 items-center gap-2.5">
               <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
                 <HugeiconsIcon
-                  icon={InternetIcon}
+                  icon={ApiIcon}
                   strokeWidth={1.75}
                   className="size-4"
                 />

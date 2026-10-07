@@ -116,6 +116,12 @@ def test_lenient_template_receives_original_string_untouched():
     assert tok.seen_arguments == '{"query": "x"}'
 
 
+def test_deeply_nested_arguments_are_left_as_a_string():
+    arguments = '{"x":' + "[" * 10000 + "0" + "]" * 10000 + "}"
+    conv = _conv(arguments)
+    assert _normalize_tool_call_arguments(conv) is conv
+
+
 def test_messages_without_tool_calls_pass_through_unchanged():
     conv = [{"role": "user", "content": "hi"}]
     assert _normalize_tool_call_arguments(conv) is conv

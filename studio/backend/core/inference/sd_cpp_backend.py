@@ -26,11 +26,12 @@ import re
 import sys
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference.diffusion_auto_policy import format_generation_for_log
+from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -53,6 +54,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
     supported_family_names,
+    _family_override_resolved,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -68,6 +70,7 @@ from core.inference.sd_cpp_args import (
     device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
+    sd_cli_output_paths,
     without_device_backend_flags,
 )
 from core.inference.sd_cpp_engine import (
@@ -310,36 +313,29 @@ def help_text_supports_minimax_h3(help_text: str) -> bool:
 
 
 def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
-    """Both of ``ensure_h3_sd_cpp_binary``'s questions against a live binary, on ONE ``--help``. The
-    capability marker cannot stand alone here: ``--ref-video`` is a plain option name that
-    unrelated reference-video tools expose too, so a caller re-checking only capability would
-    accept a program the gate itself would have refused on identity -- the difference between "an
-    sd.cpp build too old for H3" and "not sd.cpp at all" (#8507). Same conservative default as
-    ``sd_cpp_supports_minimax_h3``: an unreadable ``--help`` is "could not tell", and the
-    caller's own ``version()`` gate already refuses a binary that will not run."""
+    """rejects unrelated --ref-video tools; version() rejects binaries an unreadable probe keeps."""
     text = _sd_cpp_probe_output(binary, "--help")
     if text is None:
         return True
     return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
 
 
-# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does
-# nothing without --max-vram.
-_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
+def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
+    """returns advertised graph-cut flags; missing help emits none because sd-cli rejects them."""
+    if not binary:
+        return frozenset()
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None or "--max-vram" not in text:
+        return frozenset()
+    return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
-def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
-    """True only when ``binary``'s ``--help`` advertises the graph-cut executor. The opposite
-    default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe: that gate
-    refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and sd-cli exits
-    non-zero on an option it does not know. Guessing yes from an unreadable ``--help`` would
-    break every generation on an older build instead of merely leaving it as slow as it is today."""
+def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
+    """fails closed because sd-cli rejects unknown flags (u13b9d92 predates --sage-attn)."""
     if not binary:
         return False
     text = _sd_cpp_probe_output(binary, "--help")
-    if text is None:
-        return False
-    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+    return text is not None and "--sage-attn" in text
 
 
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
@@ -372,6 +368,7 @@ def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
     indistinguishable from a real accelerator, so an unreadable re-probe would read as a build
     that changed underneath the load and refuse it."""
     text = _sd_cpp_probe_output(binary, "--list-devices")
+    _remember_device_listing(binary, text)
     if text is None:
         return None
     names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
@@ -412,6 +409,67 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
         "was unreadable" if text is None else "does not list it",
     )
     return None
+
+
+# ggml-cuda's init log on stderr; a HIP build says "ROCm devices", so only CUDA builds match.
+_CUDA_INIT_RE = re.compile(r"ggml_cuda_init: found \d+ CUDA devices")
+_CUDA_DEVICE_CC_RE = re.compile(
+    r"^\s*Device (\d+): .*?, compute capability (\d+)\.(\d+)", re.MULTILINE
+)
+
+
+# Last --list-devices answer per binary + (size, mtime_ns); only the capability read reuses it, never the verdict.
+_LAST_DEVICE_LISTING: dict = {}
+
+
+def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None:
+    if not binary:
+        return
+    if text is None:
+        _LAST_DEVICE_LISTING.pop(binary, None)
+        return
+    _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
+
+
+def sd_cpp_cuda_compute_capability(
+    binary: Optional[str],
+    device_name: Optional[str],
+    *,
+    probe: bool = True,
+) -> Optional[tuple[int, int]]:
+    """Compute capability the CUDA build reports for ``device_name`` (``CUDA<i>``); the lowest card
+    when unpinned. None when unsure (unreadable, non-CUDA build, unlisted device). ``probe = False``
+    only reads the listing the last accelerator verdict took of this file."""
+    if not binary:
+        return None
+    text = None
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is not None and seen[0] == _binary_stat_identity(binary):
+        text = seen[1]
+    elif probe:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None or not _CUDA_INIT_RE.search(text):
+        return None
+    caps = {
+        int(m.group(1)): (int(m.group(2)), int(m.group(3)))
+        for m in _CUDA_DEVICE_CC_RE.finditer(text)
+    }
+    if not caps:
+        return None
+    if device_name is None:
+        return min(caps.values())
+    head = device_name.rstrip("0123456789")
+    if head.upper() != "CUDA" or not device_name[len(head) :]:
+        return None
+    return caps.get(int(device_name[len(head) :]))
 
 
 # Every namespace ggml names a device in; the narrower list above is physical-index schemes only.
@@ -801,6 +859,48 @@ def _installer_module():
 # has no asset for would re-resolve (and re-download) on every single load, because the wrong-accelerator binary it
 # keeps still does not match the request.
 _failed_accelerator_upgrades: set[str] = set()
+
+
+# (pin, accelerator class) upgrades that failed this process: keep the old bundle instead of retrying every load.
+_failed_pin_upgrades: set[tuple[str, str]] = set()
+_PIN_UPGRADE_ENV = "UNSLOTH_SD_CPP_AUTO_UPGRADE"
+
+
+def _pin_upgrade_disabled() -> bool:
+    return os.environ.get(_PIN_UPGRADE_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _pin_moved(binary: str, accelerator: str) -> bool:
+    """True when ``binary`` is a managed install made for an older pin. Unknown answers False."""
+    if _pin_upgrade_disabled():
+        return False
+    root = owning_managed_root(binary)
+    if root is None:
+        return False
+    if _managed_tree_in_use():
+        return False
+    try:
+        mod = _installer_module()
+        want = mod._pinned_tag()
+        if not want or (want, mod.accelerator_class(accelerator)) in _failed_pin_upgrades:
+            return False
+        return bool(mod.install_is_stale(root))
+    except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary
+        return False
+
+
+def _note_failed_pin_upgrade(accelerator: str) -> None:
+    try:
+        mod = _installer_module()
+        want = mod._pinned_tag()
+        if want:
+            _failed_pin_upgrades.add((want, mod.accelerator_class(accelerator)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _needs_reinstall(binary: str, accelerator: str) -> bool:
+    return _accelerator_changed(binary, accelerator) or _pin_moved(binary, accelerator)
 
 
 def _note_failed_upgrade(accelerator: str) -> None:
@@ -1517,7 +1617,33 @@ def _managed_tree_in_use() -> bool:
     Reads the singleton without a lock on purpose: a stale answer either defers an upgrade to the
     next load (harmless) or lets one through in a window the load path guards anyway.
     """
-    return _tree_in_use(_sd_cpp_backend)
+    return _tree_in_use(_sd_cpp_backend) or _external_tree_holder_alive()
+
+
+# Other backends' processes running out of the managed tree (the H3 video sd-server), so an install stands down for
+# them too. Weak: a dropped runtime cannot pin the tree.
+_external_tree_holders: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def register_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.add(holder)
+
+
+def unregister_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.discard(holder)
+        _tree_state.notify_all()
+
+
+def _external_tree_holder_alive() -> bool:
+    for holder in list(_external_tree_holders):
+        try:
+            if holder.is_alive():
+                return True
+        except Exception:  # noqa: BLE001 -- a broken holder must not wedge installs either way
+            continue
+    return False
 
 
 def _accelerator_changed(binary: str, accelerator: str) -> bool:
@@ -1589,7 +1715,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
     try:
         mod = _installer_module()
         want = mod.accelerator_class(accelerator)
-        if not _record_mismatch(mod, root, want) or _record_mismatch(mod, current, want):
+        # Superseded = built for another accelerator, or (with the pin upgrade on) for an older pin.
+        legacy_stale = _record_mismatch(mod, root, want) or (
+            not _pin_upgrade_disabled() and mod.install_is_stale(root)
+        )
+        if (
+            not legacy_stale
+            or _record_mismatch(mod, current, want)
+            or mod.install_is_stale(current)
+        ):
             return False
         return mod.installed_ships_server(current) is False
     except Exception:  # noqa: BLE001 -- cannot tell
@@ -1661,6 +1795,35 @@ def _native_output_image(fam: Any, im: Any) -> Any:
     return im.convert("RGB")
 
 
+def _layer_count(fam: Any) -> int:
+    return int(getattr(fam, "layer_count", 0) or 0)
+
+
+def _layered_canvas_size(fam: Any, size: tuple[int, int]) -> tuple[int, int]:
+    """Copy of diffusion._layered_canvas (the pipeline's calculate_dimensions); this module never imports torch."""
+    import math
+
+    iw, ih = size
+    area = float(getattr(fam, "layer_resolution", 640) or 640) ** 2
+    ratio = float(iw) / float(max(1, ih))
+    width = math.sqrt(area * ratio)
+    height = width / ratio
+    return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
+
+
+def _keep_layers(items: list, layers: int) -> list:
+    """Drop sd.cpp's input reconstruction (first of each layers + 1 group), as the diffusers pipeline does."""
+    if not layers:
+        return list(items)
+    per = layers + 1
+    return [item for i, item in enumerate(items) if i % per]
+
+
+def _family_reads_vision(fam: Any) -> bool:
+    """Whether ``fam``'s native encoders include a vision projector (``llm_vision``)."""
+    return any(kind == "llm_vision" for _r, _f, kind in getattr(fam, "sd_cpp_text_encoders", ()))
+
+
 # Carried only by sd.cpp builds that keep reference alpha (upstream e112ab5) and no longer centre-crop references
 # on sd-server (78557f8 / e012065). The pinned build predates all three.
 _REFERENCE_FIDELITY_MARKER = "error: allocate memory for channel promotion"
@@ -1676,25 +1839,57 @@ def _native_condition_images(
     *,
     full_fidelity: bool,
     pad_to_output: bool,
+    source_sized: bool = False,
 ) -> tuple[int, int, list[bytes]]:
     """(width, height, ordered PNG bytes) for one native reference / edit call, decoded through
-    the diffusers engine's helper. A ``full_fidelity`` build gets every image as decoded. An older
+    the diffusers engine's helper. ``source_sized`` (edit-only families): the output is the source's size on
+    the family grid, whatever width / height asked for. A ``full_fidelity`` build gets every image as decoded. An older
     build reads references as RGB, so each is flattened over white first (else transparent pixels
     become noise), and its sd-server centre-crops references to the output aspect, so with
     ``pad_to_output`` each is padded to it instead: white for images, black for a separate mask.
     """
     import io
+    import math
 
     from PIL import Image
 
     from core.inference.diffusion_conditioning import (
+        MIN_OUTPUT_SIDE,
         check_output_size,
         decode_condition_images,
         match_source_size,
     )
 
     images = decode_condition_images(fam, init_image, reference_images, localized_edit)
-    if width is None or height is None:
+    if source_sized and _layer_count(fam):
+        # Canvas from the 16 px snapped source, as the diffusers engine picks it.
+        sw, sh = images[0].size
+        snapped = (max(16, int(round(sw / 16)) * 16), max(16, int(round(sh / 16)) * 16))
+        width, height = _layered_canvas_size(fam, snapped)
+        if images[0].size != (width, height):
+            images[0] = images[0].resize((width, height), Image.LANCZOS)
+    elif source_sized:
+        multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
+        sw, sh = images[0].size
+        max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
+        max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
+        # Fit the bounds instead of refusing: the caller has no width / height to change on an edit-only family.
+        up = max(1.0, MIN_OUTPUT_SIDE / float(min(sw, sh)))
+        fit = min(up, max_side / float(max(sw, sh)), math.sqrt(max_pixels / float(sw * sh)))
+        # Same rounding as diffusion._snap_to_multiple.
+        floor = -(-MIN_OUTPUT_SIDE // multiple) * multiple if up > 1.0 else multiple
+        width = max(floor if sw <= sh else multiple, int(round(sw * fit / multiple)) * multiple)
+        height = max(floor if sh <= sw else multiple, int(round(sh * fit / multiple)) * multiple)
+        width = min(width, max_side // multiple * multiple)
+        height = min(height, max_side // multiple * multiple)
+        while width * height > max_pixels:
+            if width >= height:
+                width -= multiple
+            else:
+                height -= multiple
+        if (width, height) != (sw, sh):
+            images[0] = images[0].resize((width, height), Image.LANCZOS)
+    elif width is None or height is None:
         width, height = match_source_size(fam, images[0].size, 1024)
     check_output_size(fam, int(width), int(height))
     target = float(width) / float(height)
@@ -1826,14 +2021,14 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
     diffusers."""
     found = find_sd_cpp_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
-    if usable and not _accelerator_changed(found, accelerator):
+    if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
     with _install_lock:
         found = find_sd_cpp_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
-        if usable and not _accelerator_changed(found, accelerator):
+        if usable and not _needs_reinstall(found, accelerator):
             return found
         # A usable binary of the wrong accelerator is still better than none, so an install that cannot deliver the
         # right one (no such asset for this host, no network) keeps it.
@@ -1866,6 +2061,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None:
                     _note_failed_upgrade(accelerator)
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
 
 
@@ -1885,7 +2081,7 @@ def ensure_sd_server_binary(
     # not downloaded again on every later load.
     if usable and _superseded_legacy_server(found, accelerator):
         return None
-    if usable and not _accelerator_changed(found, accelerator):
+    if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
@@ -1894,7 +2090,7 @@ def ensure_sd_server_binary(
         usable = bool(found) and _usable_or_discard_managed(found)
         if usable and _superseded_legacy_server(found, accelerator):
             return None
-        if usable and not _accelerator_changed(found, accelerator):
+        if usable and not _needs_reinstall(found, accelerator):
             return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched
         fallback = found if usable else None
@@ -1920,6 +2116,7 @@ def ensure_sd_server_binary(
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
         installed = find_sd_server_binary()
         # The finder also probes the tree an older build left beside the Unsloth home, so when the bundle just
@@ -1927,7 +2124,7 @@ def ensure_sd_server_binary(
         # None, not the fallback: an install just completed, so the router's next step resolves the sd-cli it landed,
         # and a one-shot run on the right build beats a resident server on the wrong one. The fallback stays for the
         # failure path above, where no matching binary was fetched at all.
-        if installed and _accelerator_changed(installed, accelerator):
+        if installed and _needs_reinstall(installed, accelerator):
             return None
         return installed or fallback
 
@@ -1943,6 +2140,7 @@ class _SdState:
     family: DiffusionFamily
     device: str
     files: SdCppModelFiles
+    display_repo_id: Optional[str] = None
     vae_format: Optional[str] = None
     native_speed: str = "off"
     offload_flags: tuple[str, ...] = ()
@@ -1953,6 +2151,7 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
+    resolved: Optional[dict] = None
     # The GGUF basename this load committed: some variants pick their encoder by filename, and a local *klein-9B*.gguf
     # carries that keyword only in the basename.
     gguf_filename: Optional[str] = None
@@ -2077,14 +2276,19 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+_EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
+
+
 def _map_guidance(
     fam: DiffusionFamily, guidance: Optional[float]
 ) -> tuple[Optional[float], Optional[float]]:
-    """(cfg_scale, guidance) for sd-cli from the single diffusers ``guidance`` value. FLUX families
-    take a distilled embedded ``--guidance``; everyone else uses real classifier-free
-    ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a value > 1 is real CFG."""
-    if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
-        return None, (float(guidance) if guidance is not None else None)
+    """(cfg_scale, guidance) for sd-cli. Guidance-distilled FLUX runs cfg 1.0 plus the embedded guidance; the rest
+    (FLUX.2-klein included: no guidance embedder) use real CFG, 1.0 when <= 1. Always explicit: sd.cpp defaults to 7.0."""
+    if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
+        return 1.0, (float(guidance) if guidance is not None else None)
+    if fam.name == "z-image":
+        # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
+        return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
 
@@ -2445,6 +2649,7 @@ class SdCppDiffusionBackend:
         # BINARY, which is a separate managed tree with its own install policy; a background load may still install
         # one, exactly as it does today.
         local_files_only: bool = False,
+        display_repo_id: Optional[str] = None,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -2556,10 +2761,12 @@ class SdCppDiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
                 fam = fam,
+                family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
@@ -2578,9 +2785,11 @@ class SdCppDiffusionBackend:
         self,
         *,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         gguf_filename: str,
         base: str,
         fam: DiffusionFamily,
+        family_override: Optional[str] = None,
         hf_token: Optional[str],
         # Cache-only when set: every Hub call below is either skipped or told to resolve from disk, so a load nobody
         # asked for cannot pull bytes. See begin_load for what it does not cover.
@@ -2704,6 +2913,7 @@ class SdCppDiffusionBackend:
                 hf_token,
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
+                vision_optional = not getattr(fam, "edit", False),
             )
 
             files = SdCppModelFiles(
@@ -2919,6 +3129,7 @@ class SdCppDiffusionBackend:
                 )
                 state = _SdState(
                     repo_id = repo_id,
+                    display_repo_id = display_repo_id,
                     base_repo = base,
                     family = fam,
                     device = device,
@@ -2934,6 +3145,9 @@ class SdCppDiffusionBackend:
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
+                    resolved = build_resolved_record(
+                        {"family_override": _family_override_resolved(family_override, fam)}
+                    ),
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image, long after this
@@ -3292,6 +3506,7 @@ class SdCppDiffusionBackend:
         hf_token: Optional[str],
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
+        vision_optional: bool = True,
     ) -> dict[str, str]:
         """Download every asset (cancellable via this load's own ``cancel_event``, so a replacement
         load cannot un-cancel this pull), returning kind -> local path. ``local_files_only``
@@ -3327,6 +3542,7 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 except _local_entry_not_found_error() as exc:
                     # Raised by huggingface_hub for exactly "not cached and outgoing traffic is disabled", so it can
@@ -3335,7 +3551,7 @@ class SdCppDiffusionBackend:
                     # (unreachable) online case rather than relabelled, so nothing changes when the flag is off.
                     if not local_files_only:
                         raise
-                    if kind == "llm_vision":
+                    if kind == "llm_vision" and vision_optional:
                         # Only editing reads the projector, and edit is offered only when it is loaded. A
                         # Qwen-Image-2.1 GGUF cached before the projector was listed still loads for
                         # text-to-image; opening it from the Images page fetches the projector.
@@ -3427,13 +3643,18 @@ class SdCppDiffusionBackend:
         )
 
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
-        """Whether this load can run the unified edit workflow natively: a unified-edit family, its
-        vision projector loaded, and a build carrying the family's edit marker."""
+        """Whether this load can run an edit natively: unified-edit needs its projector and the build's edit marker;
+        edit-only needs its projector if it declares one, and the marker only if it declares one."""
         if state is None:
             return False
         fam = state.family
         marker = getattr(fam, "sd_cpp_edit_marker", None)
-        if not (getattr(fam, "unified_edit", False) and marker and state.files.llm_vision):
+        if getattr(fam, "edit", False):
+            if _family_reads_vision(fam) and not state.files.llm_vision:
+                return False
+            if not marker:
+                return True
+        elif not (getattr(fam, "unified_edit", False) and marker and state.files.llm_vision):
             return False
         binary = self._native_binary(state)
         if not binary:
@@ -3480,6 +3701,15 @@ class SdCppDiffusionBackend:
 
         from core.inference import diffusion_lora
 
+        # Edit-only families: an input image with no workflow is an edit (re-checked under the lock below).
+        loaded = self._state
+        if (
+            workflow is None
+            and init_image is not None
+            and loaded is not None
+            and getattr(loaded.family, "edit", False)
+        ):
+            workflow = "edit"
         conditioned = workflow in ("edit", "reference")
         if conditioned:
             if init_image is None:
@@ -3546,6 +3776,21 @@ class SdCppDiffusionBackend:
                 self._gen = _SdGen(total_steps = int(steps))
             try:
                 ref_pngs: list[bytes] = []
+                edit_only = bool(getattr(state.family, "edit", False))
+                if edit_only and not conditioned:
+                    raise ValueError(
+                        f"{state.family.name} is an image-editing model: provide an input image."
+                    )
+                if edit_only and workflow == "reference":
+                    raise ValueError(
+                        f"The reference workflow is not supported for the '{state.family.name}' "
+                        "model family."
+                    )
+                if reference_images and not getattr(state.family, "reference", False):
+                    raise ValueError(
+                        f"Reference images are not supported for the '{state.family.name}' "
+                        "model family."
+                    )
                 if conditioned:
                     from core.inference.diffusion_conditioning import check_conditioned_fields
 
@@ -3572,6 +3817,7 @@ class SdCppDiffusionBackend:
                         height,
                         full_fidelity = self._native_reference_fidelity(state),
                         pad_to_output = state.mode == "server" and state.server is not None,
+                        source_sized = edit_only,
                     )
                 elif width is None or height is None:
                     raise ValueError("width and height are required for this workflow.")
@@ -3583,6 +3829,8 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
+                if cfg_scale <= 1.0:
+                    negative_prompt = None
                 # Resolve selected LoRAs up front (a bad id gives a clear 400). Drop weight-0 rows BEFORE the support
                 # gate so an only-disabled request stays a no-op.
                 lora_resolved: list = []
@@ -3620,6 +3868,7 @@ class SdCppDiffusionBackend:
                             lora_resolved = lora_resolved,
                             cancel = cancel,
                             ref_pngs = ref_pngs,
+                            layers = _layer_count(state.family) or None,
                         )
                     else:
                         images, seeds = self._generate_oneshot(
@@ -3636,6 +3885,7 @@ class SdCppDiffusionBackend:
                             lora_resolved = lora_resolved,
                             cancel = cancel,
                             ref_pngs = ref_pngs,
+                            layers = _layer_count(state.family) or None,
                         )
                 except RuntimeError as exc:
                     # The mid-render hipBLAS death the video path records too; not a cancellation.
@@ -3666,7 +3916,8 @@ class SdCppDiffusionBackend:
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
-                    "repo_id": state.repo_id,
+                    "negative_prompt": negative_prompt or None,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants
                     # make different pixels.
                     "model_kind": "gguf",
@@ -3683,6 +3934,8 @@ class SdCppDiffusionBackend:
                     "offload_policy": (
                         "active" if without_device_backend_flags(state.offload_flags) else "none"
                     ),
+                    "speed_mode": state.native_speed,
+                    "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
                     "workflow": workflow if conditioned else "txt2img",
                     "reference_resolution": None,
                     "localized_edit": getattr(localized_edit, "mode", None)
@@ -3725,6 +3978,7 @@ class SdCppDiffusionBackend:
         lora_resolved: list,
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
+        layers: Optional[int] = None,
     ) -> tuple[list, list[int]]:
         """Generate via the resident sd-server (no model reload).
 
@@ -3797,6 +4051,7 @@ class SdCppDiffusionBackend:
                         "data:image/png;base64," + base64.b64encode(b).decode("ascii")
                         for b in ref_pngs or []
                     ],
+                    qwen_image_layers = layers,
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -3821,16 +4076,21 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         total_timeout = max(deadline - time.monotonic(), 1.0),
                     )
-                # All-or-nothing per chunk: fail rather than silently drop images from the batch.
-                if not cancel.is_set() and len(blobs) != count:
+                # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
+                expected = count * ((layers + 1) if layers else 1)
+                if not cancel.is_set() and len(blobs) != expected:
                     raise RuntimeError(
-                        f"sd-server returned {len(blobs)} of {count} requested images in the batch."
+                        f"sd-server returned {len(blobs)} of {expected} requested images in the batch."
                     )
+                kept = _keep_layers(blobs, layers or 0)
                 images.extend(
-                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in blobs
+                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in kept
                 )
-                # sd.cpp advances the seed per image within a job, so report chunk_seed+i.
-                seeds.extend((chunk_seed + i) & ((1 << 63) - 1) for i in range(len(blobs)))
+                # sd.cpp advances the seed per generation; every layer of one carries that seed.
+                per = len(kept) // count if count else 1
+                seeds.extend(
+                    (chunk_seed + i // max(1, per)) & ((1 << 63) - 1) for i in range(len(kept))
+                )
         finally:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
@@ -3912,6 +4172,7 @@ class SdCppDiffusionBackend:
         lora_resolved: list,
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
+        layers: Optional[int] = None,
     ) -> tuple[list, list[int]]:
         """Fallback path: re-run one-shot sd-cli per image (reloads the model each time). LoRA on
         the one-shot path uses sd-cli's own mechanism: materialize the selected adapters into a
@@ -3970,6 +4231,7 @@ class SdCppDiffusionBackend:
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
                     ref_images = tuple(ref_paths),
+                    qwen_image_layers = layers,
                 )
                 # Each sd-cli run executes out of the managed tree, so hold installs off for its duration (and wait
                 # here if one is already extracting). getattr: an INJECTED engine is the unit-test seam / escape hatch
@@ -4007,9 +4269,11 @@ class SdCppDiffusionBackend:
                         on_log = self._on_log,
                         cancel_event = cancel,
                     )
-                with Image.open(out_path) as im:
-                    images.append(_native_output_image(state.family, im.copy()))
-                seeds.append(seed_i)
+                outputs = sd_cli_output_paths(out_path, (layers + 1) if layers else 1)
+                for path in _keep_layers(outputs, layers or 0):
+                    with Image.open(path) as im:
+                        images.append(_native_output_image(state.family, im.copy()))
+                    seeds.append(seed_i)
         return images, seeds
 
     def _on_log(self, line: str) -> None:
@@ -4129,6 +4393,7 @@ class SdCppDiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -4144,6 +4409,7 @@ class SdCppDiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "resolved": None,
                 "engine": "sd_cpp",
                 "native_mode": None,
                 "supports_lora": False,
@@ -4155,16 +4421,20 @@ class SdCppDiffusionBackend:
         from core.inference.diffusion_conditioning import conditioning_capabilities
         from hub.utils.gguf import extract_quant_token
 
-        workflows = ["txt2img"]
-        if self._native_edit_ready(state):
-            workflows += ["reference", "edit"]
+        if getattr(state.family, "edit", False):
+            workflows = ["edit"] if self._native_edit_ready(state) else []
+        else:
+            workflows = ["txt2img"]
+            if self._native_edit_ready(state):
+                workflows += ["reference", "edit"]
         conditioning = conditioning_capabilities(state.family, workflows)
         # No reference detail natively: sd.cpp sizes inputs to the output area.
         conditioning["reference_resolutions"] = []
         full_fidelity = self._native_reference_fidelity(state)
         conditioning["alpha"] = full_fidelity
         notes: list[str] = []
-        if "edit" in workflows:
+        # The alpha / padding notes are about the unified family's RGBA path; edit-only families are RGB, source-sized.
+        if "edit" in workflows and not getattr(state.family, "edit", False):
             if not full_fidelity:
                 notes.append(
                     "Transparent parts of input images are filled with white on this native build."
@@ -4183,6 +4453,7 @@ class SdCppDiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,
@@ -4206,6 +4477,7 @@ class SdCppDiffusionBackend:
             "transformer_quant": None,
             "attention_backend": None,
             "transformer_cache": None,
+            "resolved": state.resolved,
             "engine": "sd_cpp",
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "sd_cpp",
@@ -4214,6 +4486,7 @@ class SdCppDiffusionBackend:
                 transformer_quant = None,
             ),
             "supports_controlnet": False,
+            "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
             # txt2img always; reference and edit only where this build and its loaded assets run them.

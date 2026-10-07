@@ -2584,6 +2584,7 @@ def detect_think_prefill(
     special_tokens = None,
     *,
     preserves_think_close: bool = False,
+    resumes_thought: bool = False,
 ) -> str:
     """Return the trailing open ``<think>`` prefill of a rendered prompt.
 
@@ -2606,6 +2607,9 @@ def detect_think_prefill(
     ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block, and as
     a path streaming the detokenizer's own text does. The special-token list then says nothing, and
     skipping the opener is the same bug mirrored: a stray ``</think>``.
+
+    ``resumes_thought``: the prompt ends inside a resumed thought (the client's text), so only the
+    bare opener is returned.
     """
     if not prompt:
         return ""
@@ -2613,11 +2617,11 @@ def detect_think_prefill(
     if open_idx == -1:
         return ""
     tail = prompt[open_idx:]
-    if _THINK_CLOSE in tail or tail.strip() != _THINK_OPEN:
+    if _THINK_CLOSE in tail or (tail.strip() != _THINK_OPEN and not resumes_thought):
         return ""
     if not preserves_think_close and special_tokens and _THINK_CLOSE in set(special_tokens):
         return ""
-    return tail
+    return _THINK_OPEN if resumes_thought else tail
 
 
 def _normalize_tool_call_arguments(messages: list) -> list:
@@ -2643,7 +2647,7 @@ def _normalize_tool_call_arguments(messages: list) -> list:
             if isinstance(args, str):
                 try:
                     parsed = json.loads(args)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     parsed = None
                 if isinstance(parsed, dict):
                     call = {**call, "function": {**fn, "arguments": parsed}}
@@ -2822,6 +2826,19 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
                 return None
             texts.append(str(part.get("text") or ""))
         return "".join(texts)
+    return None
+
+
+def trailing_assistant_resume_kind(messages: list) -> Optional[str]:
+    """Return the trailing assistant field to resume, or None; prefer content over reasoning."""
+    text = trailing_assistant_text(messages)
+    if text:
+        return "content"
+    if text is None:
+        return None
+    reasoning = messages[-1].get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return "reasoning_content"
     return None
 
 
@@ -3084,6 +3101,14 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        added_reasoning = assistant_msg.get("reasoning_content")
+        if (
+            isinstance(added_reasoning, str)
+            and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        ):
+            merged_msg["reasoning_content"] = (
+                f"{conversation[-1]['reasoning_content']}{added_reasoning}"
+            )
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
@@ -3101,6 +3126,34 @@ def strip_open_reasoning_prefill(prefix: str) -> str:
     if prefix[open_at + len(_THINK_OPEN) :].strip():
         return prefix
     return prefix[:open_at]
+
+
+class ThoughtUnresumableError(ValueError):
+    """A trailing thought this model cannot reopen; the message is client-safe."""
+
+    public = True
+    openai_param = "continue_final_message"
+
+    def __init__(self):
+        super().__init__("This model cannot resume a response that stopped mid-thought. Use Retry.")
+
+
+def template_resumes_thought(tokenizer, tools = None) -> bool:
+    """Whether a thought can be reopened as ``<think>`` text (not native reasoning channels)."""
+    if detect_reasoning_channel_markers(tokenizer, tools = tools) is not None:
+        return False
+    return any(
+        _THINK_OPEN in template for template in _selected_chat_template_strings(tokenizer, tools)
+    )
+
+
+def splice_resumed_thought(prefix: str, thought: str) -> str:
+    """Reopen *thought* on a generation prompt, cutting the template's own reasoning prefill (open
+    or empty closed block) as llama-server does."""
+    open_at = prefix.rfind(_THINK_OPEN)
+    if open_at != -1 and prefix[open_at + len(_THINK_OPEN) :].strip() in ("", _THINK_CLOSE):
+        prefix = prefix[:open_at]
+    return f"{prefix}{_THINK_OPEN}{thought}"
 
 
 def render_prompt_with_boundary(
@@ -3211,6 +3264,11 @@ def apply_chat_template_for_generation(
     # renders as an ordinary new turn.
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = bool(_continue_text)
+    _resumes_thought = (
+        continue_final_message and trailing_assistant_resume_kind(messages) == "reasoning_content"
+    )
+    if _resumes_thought and not template_resumes_thought(tokenizer, tools):
+        raise ThoughtUnresumableError()
     _boundary_kwargs = (
         {"add_generation_prompt": False, "continue_final_message": True}
         if _continuing
@@ -3254,7 +3312,22 @@ def apply_chat_template_for_generation(
             return f"{strip_open_reasoning_prefill(prefix)}{partial}"
         raise TypeError("no attempt rendered the continuation prefix")
 
+    def _render_thought_continuation(msgs: list) -> str:
+        # Templates render a final thought closed, so there is no boundary to cut at.
+        for kwargs in attempts:
+            swept = _swept_for(kwargs, msgs)
+            try:
+                prefix = tokenizer.apply_chat_template(
+                    swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                )
+            except TypeError:
+                continue
+            return splice_resumed_thought(prefix, swept[-1]["reasoning_content"])
+        raise TypeError("no attempt rendered the thought continuation prefix")
+
     def _render_with_fallback(msgs: list) -> str:
+        if _resumes_thought:
+            return _render_thought_continuation(msgs)
         try:
             return _render(msgs)
         except TypeError:

@@ -16,12 +16,19 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -30,32 +37,36 @@ import {
   scopedVariant,
   useDownloadManagerStore,
 } from "@/features/hub";
-import { type TranslationKey, translate, useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { TaskDone01Icon } from "@hugeicons/core-free-icons";
+import { PlayIcon, TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  type SystemOneBackend,
+  type SystemOneConnection,
   type SystemOneDevice,
   type SystemOneDownloadPlan,
   type SystemOneSettings,
+  loadSystemOneConnections,
   loadSystemOneSettings,
   resolveSystemOneDownload,
   unloadSystemOneModel,
   updateSystemOneSettings,
   validateSystemOneSettings,
 } from "../api/systemone";
+import {
+  DECISION_MODEL_LABELS,
+  isClefDecisionModel,
+} from "../lib/decision-model-labels";
+import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
 const POLL_MS = 5000;
 const RECOMMENDED_MODEL = "laya-multilingual";
-const MODEL_LABELS: Record<string, TranslationKey> = {
-  "laya-multilingual": "settings.apiKeys.decisionApi.modelMultilingual",
-  "laya-english": "settings.apiKeys.decisionApi.modelEnglish",
-  "laya-typed-decisions": "settings.apiKeys.decisionApi.modelTypedDecisions",
-};
 const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
 const ENV_MODEL = "UNSLOTH_SYSTEMONE_MODEL";
 const ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE";
@@ -71,8 +82,12 @@ function errorMessage(error: unknown): string | null {
 export function DecisionApiSection(): ReactElement | null {
   const t = useT();
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
+  const [connections, setConnections] = useState<SystemOneConnection[] | null>(
+    null,
+  );
   const [planState, setPlanState] = useState<{
     model: string;
+    backend: SystemOneBackend;
     plan: SystemOneDownloadPlan;
   } | null>(null);
   const [confirm, setConfirm] = useState<{
@@ -81,11 +96,33 @@ export function DecisionApiSection(): ReactElement | null {
     model: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tryOpen, setTryOpen] = useState(false);
+  const [tryModel, setTryModel] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const decisionTryRequested = useSettingsDialogStore(
+    (s) => s.decisionTryRequested,
+  );
 
   const enabled = settings?.enabled ?? false;
+  if (tryOpen && !enabled) setTryOpen(false);
+
+  useEffect(() => {
+    if (!decisionTryRequested || !settings) return;
+    useSettingsDialogStore.getState().consumeDecisionTryRequest();
+    if (settings.enabled && settings.model === decisionTryRequested) {
+      setTryModel(decisionTryRequested);
+      setTryOpen(true);
+    }
+  }, [decisionTryRequested, settings]);
   const model = settings?.model ?? null;
-  const plan = planState && planState.model === model ? planState.plan : null;
+  const backend = settings?.backend ?? "auto";
+  // llama.cpp serves a GGUF, PyTorch the safetensors: the download follows the runtime.
+  const plan =
+    planState?.model === model && planState?.backend === backend
+      ? planState.plan
+      : null;
 
   useEffect(() => {
     let live = true;
@@ -98,10 +135,28 @@ export function DecisionApiSection(): ReactElement | null {
             translate("settings.apiKeys.decisionApi.loadError"),
         ),
     );
+    loadSystemOneConnections().then(
+      (next) => live && setConnections(next),
+      () => live && setConnections([]),
+    );
     return () => {
       live = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (scrollTarget !== "api-keys-decision-api" || !settings) return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      useSettingsDialogStore
+        .getState()
+        .consumeScrollTarget("api-keys-decision-api");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [scrollTarget, settings]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -125,17 +180,22 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (!enabled || !model) return;
     let live = true;
-    resolveSystemOneDownload(model).then(
-      (next) => live && setPlanState({ model, plan: next }),
+    resolveSystemOneDownload(model, backend).then(
+      (next) => live && setPlanState({ model, backend, plan: next }),
       (err) => live && setError(errorMessage(err)),
     );
     return () => {
       live = false;
     };
-  }, [enabled, model, downloadDone]);
+  }, [enabled, model, backend, downloadDone]);
 
-  const modelLabel = (name: string) =>
-    MODEL_LABELS[name] ? t(MODEL_LABELS[name]) : name;
+  const modelLabel = (name: string) => {
+    const connection = connections?.find((c) => c.name === name);
+    if (connection) return `${connection.provider} · ${connection.model}`;
+    const option = settings?.models.find((m) => m.name === name);
+    if (option?.label) return option.label;
+    return DECISION_MODEL_LABELS[name] ? t(DECISION_MODEL_LABELS[name]) : name;
+  };
 
   const resyncSettingsAfterError = async (message: string) => {
     try {
@@ -198,6 +258,7 @@ export function DecisionApiSection(): ReactElement | null {
       // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
       const nextEnabled = patch.enabled ?? settings?.enabled;
       const nextModel = patch.model ?? settings?.model;
+      const nextBackend = patch.backend ?? backend;
       const settingsPatch =
         downloadAfter && settings
           ? {
@@ -206,10 +267,9 @@ export function DecisionApiSection(): ReactElement | null {
               expectedModel: settings.model,
             }
           : patch;
-      let resolvedPlan: { model: string; plan: SystemOneDownloadPlan } | null =
-        null;
+      let resolvedPlan: typeof planState = null;
       if (nextEnabled && nextModel && downloadAfter) {
-        const nextPlan = await resolveSystemOneDownload(nextModel);
+        const nextPlan = await resolveSystemOneDownload(nextModel, nextBackend);
         if (!nextPlan.cached) {
           if (nextPlan.error || !nextPlan.repo || nextPlan.files.length === 0) {
             throw new Error(
@@ -224,7 +284,11 @@ export function DecisionApiSection(): ReactElement | null {
           });
           return;
         }
-        resolvedPlan = { model: nextModel, plan: nextPlan };
+        resolvedPlan = {
+          model: nextModel,
+          backend: nextBackend,
+          plan: nextPlan,
+        };
       }
       const next = await updateSystemOneSettings(settingsPatch);
       setSettings(next);
@@ -247,7 +311,11 @@ export function DecisionApiSection(): ReactElement | null {
       const next = await updateSystemOneSettings(accepted.patch);
       setSettings(next);
       if (next.model === accepted.model) {
-        setPlanState({ model: accepted.model, plan: accepted.plan });
+        setPlanState({
+          model: accepted.model,
+          backend: next.backend,
+          plan: accepted.plan,
+        });
       }
     } catch (err) {
       await resyncSettingsAfterError(
@@ -279,7 +347,7 @@ export function DecisionApiSection(): ReactElement | null {
             className="size-4 text-foreground"
           />
         </div>
-        <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <h2 className="settings-heading text-base font-semibold font-heading">
             {t("settings.apiKeys.decisionApi.title")}
           </h2>
@@ -287,6 +355,32 @@ export function DecisionApiSection(): ReactElement | null {
             {t("settings.apiKeys.decisionApi.description")}
           </p>
         </div>
+        {settings ? (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <span className="shrink-0">
+                <Button
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={!enabled}
+                  onClick={() => setTryOpen(true)}
+                >
+                  <HugeiconsIcon
+                    icon={PlayIcon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
+                  {t("decisions.tryIt")}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {enabled ? null : (
+              <TooltipContent side="bottom">
+                {t("decisions.tryItOff")}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        ) : null}
       </div>
 
       {error ? (
@@ -309,13 +403,33 @@ export function DecisionApiSection(): ReactElement | null {
   }
 
   const current = settings.models.find((m) => m.name === settings.model);
-  const knownModel = current !== undefined;
+  const isRemote = settings.model.startsWith("connection:");
+  const remote = connections?.find((c) => c.name === settings.model);
+  const knownModel = current !== undefined || isRemote;
+  const longLabel = isRemote || current?.kind === "fine_tune";
+  // Laya is PyTorch only; Clef runs on either runtime, a GGUF-only model on llama.cpp only.
+  const runtimeChoice =
+    isClefDecisionModel(settings.model) ||
+    settings.layout === "clef" ||
+    !!current?.llamaCppOnly;
+  const connectionGroups = [
+    ...new Set(connections?.map((c) => c.providerId)),
+  ].map((id) => connections?.filter((c) => c.providerId === id) ?? []);
   const sizeBytes = plan?.sizeBytes || current?.downloadBytes || 0;
 
   let tone: "pending" | "ready" | "error" | null = null;
   let status = "";
   let action: "download" | "unload" | null = null;
-  if (settings.error) {
+  if (remote) {
+    status = t("settings.apiKeys.decisionApi.sendsTo", {
+      provider: remote.provider,
+    });
+  } else if (isRemote) {
+    tone = connections ? "error" : "pending";
+    status = connections
+      ? t("settings.apiKeys.decisionApi.connectionMissing")
+      : t("settings.apiKeys.decisionApi.checking");
+  } else if (settings.error) {
     tone = "error";
     status = settings.error;
   } else if (settings.installing) {
@@ -346,11 +460,15 @@ export function DecisionApiSection(): ReactElement | null {
     action = "download";
   } else {
     tone = "ready";
-    status = t("settings.apiKeys.decisionApi.downloaded");
+    status =
+      current?.kind === "fine_tune"
+        ? t("settings.apiKeys.decisionApi.ready")
+        : t("settings.apiKeys.decisionApi.downloaded");
   }
 
   return (
     <section
+      ref={sectionRef}
       data-settings-label={t("settings.apiKeys.decisionApi.title")}
       className="overflow-hidden rounded-lg border border-border/70"
     >
@@ -364,7 +482,9 @@ export function DecisionApiSection(): ReactElement | null {
               ? t("settings.apiKeys.decisionApi.lockedByEnv", {
                   name: ENV_DISABLE,
                 })
-              : t("settings.apiKeys.decisionApi.enableDescription")
+              : isRemote
+                ? t("settings.apiKeys.decisionApi.enableRemoteDescription")
+                : t("settings.apiKeys.decisionApi.enableDescription")
           }
         >
           <Switch
@@ -385,7 +505,7 @@ export function DecisionApiSection(): ReactElement | null {
               : undefined
           }
           description={
-            enabled && status ? (
+            (enabled || isRemote) && status ? (
               <span
                 className={cn(
                   "flex min-w-0 items-center gap-2",
@@ -442,26 +562,56 @@ export function DecisionApiSection(): ReactElement | null {
                 onValueChange={(name) => void apply({ model: name }, true)}
               >
                 <SelectTrigger
-                  className="w-48 max-[420px]:flex-1"
+                  className={cn(
+                    longLabel ? "w-64" : "w-48",
+                    "max-[420px]:flex-1",
+                  )}
                   aria-label={t("settings.apiKeys.decisionApi.model")}
+                  title={longLabel ? modelLabel(settings.model) : undefined}
                 >
-                  <SelectValue>{modelLabel(settings.model)}</SelectValue>
+                  <SelectValue className="min-w-0">
+                    <span className="truncate">
+                      {modelLabel(settings.model)}
+                    </span>
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {settings.models.map((option) => (
-                    <SelectItem key={option.name} value={option.name}>
-                      <span className="flex items-center gap-2">
-                        {modelLabel(option.name)}
-                        <span className="text-ui-10 tabular-nums text-muted-foreground">
-                          {formatBytes(option.downloadBytes)}
+                  <SelectGroup>
+                    <SelectLabel>
+                      {t("settings.apiKeys.decisionApi.thisMachine")}
+                    </SelectLabel>
+                    {settings.models.map((option) => (
+                      <SelectItem
+                        key={option.name}
+                        value={option.name}
+                        disabled={!option.available}
+                        title={option.unavailableReason ?? option.description}
+                      >
+                        <span className="flex items-center gap-2">
+                          {modelLabel(option.name)}
+                          {option.kind === "fine_tune" ? null : (
+                            <span className="text-ui-10 tabular-nums text-muted-foreground">
+                              {formatBytes(option.downloadBytes)}
+                            </span>
+                          )}
+                          {option.name === RECOMMENDED_MODEL ? (
+                            <span className="rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:text-emerald-400">
+                              {t("settings.apiKeys.decisionApi.recommended")}
+                            </span>
+                          ) : null}
                         </span>
-                        {option.name === RECOMMENDED_MODEL ? (
-                          <span className="rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:text-emerald-400">
-                            {t("settings.apiKeys.decisionApi.recommended")}
-                          </span>
-                        ) : null}
-                      </span>
-                    </SelectItem>
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                  {connectionGroups.map((group) => (
+                    <SelectGroup key={group[0].providerId}>
+                      <SelectLabel>{group[0].provider}</SelectLabel>
+                      {group.map((option) => (
+                        <SelectItem key={option.name} value={option.name}>
+                          {option.model}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   ))}
                 </SelectContent>
               </Select>
@@ -473,40 +623,117 @@ export function DecisionApiSection(): ReactElement | null {
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          label={t("settings.apiKeys.decisionApi.device")}
-          description={
-            settings.deviceLocked
-              ? t("settings.apiKeys.decisionApi.lockedByEnv", {
-                  name: ENV_DEVICE,
-                })
-              : t("settings.apiKeys.decisionApi.deviceDescription")
-          }
-        >
-          <Select
-            value={settings.device}
-            disabled={busy || settings.deviceLocked}
-            onValueChange={(device) =>
-              void apply({ device: device as SystemOneDevice }, false)
+        {runtimeChoice ? (
+          <>
+            <SettingsRow
+              label={t("settings.apiKeys.decisionApi.backend")}
+              description={t("settings.apiKeys.decisionApi.backendDescription")}
+            >
+              <Select
+                value={backend}
+                disabled={busy}
+                onValueChange={(value) =>
+                  void apply({ backend: value as SystemOneBackend }, true)
+                }
+              >
+                <SelectTrigger
+                  className="w-36"
+                  aria-label={t("settings.apiKeys.decisionApi.backend")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("settings.apiKeys.decisionApi.backendAuto")}
+                  </SelectItem>
+                  <SelectItem value="llama.cpp">llama.cpp</SelectItem>
+                  <SelectItem value="pytorch">PyTorch</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <p
+              className="pb-3 text-xs text-muted-foreground leading-relaxed"
+              data-decision-backend
+            >
+              {t("settings.apiKeys.decisionApi.backendStatus", {
+                backend:
+                  (settings.loadedModel === settings.model
+                    ? settings.loadedBackend
+                    : settings.effectiveBackend) ??
+                  t("settings.apiKeys.decisionApi.backendNone"),
+              })}
+              {settings.fallbackReason ? ` · ${settings.fallbackReason}` : ""}{" "}
+              {t(
+                settings.inputModalities.includes("image")
+                  ? "settings.apiKeys.decisionApi.mediaImages"
+                  : "settings.apiKeys.decisionApi.mediaText",
+              )}
+            </p>
+          </>
+        ) : null}
+
+        {isRemote ? null : (
+          <SettingsRow
+            label={t("settings.apiKeys.decisionApi.device")}
+            description={
+              settings.deviceLocked
+                ? t("settings.apiKeys.decisionApi.lockedByEnv", {
+                    name: ENV_DEVICE,
+                  })
+                : t("settings.apiKeys.decisionApi.deviceDescription")
             }
           >
-            <SelectTrigger
-              className="w-36"
-              aria-label={t("settings.apiKeys.decisionApi.device")}
+            <Select
+              value={settings.device}
+              disabled={busy || settings.deviceLocked}
+              onValueChange={(device) =>
+                void apply({ device: device as SystemOneDevice }, false)
+              }
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="cpu">
-                {t("settings.apiKeys.decisionApi.deviceCpu")}
-              </SelectItem>
-              <SelectItem value="gpu" disabled={!settings.gpuAvailable}>
-                {t("settings.apiKeys.decisionApi.deviceGpu")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingsRow>
+              <SelectTrigger
+                className="w-36"
+                aria-label={t("settings.apiKeys.decisionApi.device")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="cpu">
+                  {t("settings.apiKeys.decisionApi.deviceCpu")}
+                </SelectItem>
+                <SelectItem value="gpu" disabled={!settings.gpuAvailable}>
+                  {t("settings.apiKeys.decisionApi.deviceGpu")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        )}
+
+        {connections?.length === 0 && !settings.modelLocked ? (
+          <p className="pb-3 text-xs text-muted-foreground">
+            {t("settings.apiKeys.decisionApi.addConnection")}{" "}
+            <button
+              type="button"
+              className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+              onClick={() =>
+                useSettingsDialogStore.getState().setActiveTab("connections")
+              }
+            >
+              {t("settings.apiKeys.decisionApi.openConnections")}
+            </button>
+          </p>
+        ) : null}
       </div>
+
+      <DecisionTryDialog
+        open={tryOpen && enabled}
+        onOpenChange={setTryOpen}
+        initialModel={tryModel}
+        settings={settings}
+        connections={connections ?? []}
+        onRun={() => {
+          loadSystemOneSettings().then(setSettings, () => undefined);
+        }}
+      />
 
       <AlertDialog
         open={confirm !== null}
@@ -522,9 +749,15 @@ export function DecisionApiSection(): ReactElement | null {
               <HugeiconsIcon icon={TaskDone01Icon} strokeWidth={1.75} />
             </AlertDialogMedia>
             <AlertDialogTitle>
-              {t("settings.apiKeys.decisionApi.downloadConfirmTitle", {
-                model: modelLabel(confirm?.model ?? settings.model),
-              })}
+              {t(
+                isClefDecisionModel(confirm?.model ?? settings.model) ||
+                  settings.models.find(
+                    (m) => m.name === (confirm?.model ?? settings.model),
+                  )?.llamaCppOnly
+                  ? "settings.apiKeys.decisionApi.downloadConfirmTitleModel"
+                  : "settings.apiKeys.decisionApi.downloadConfirmTitle",
+                { model: modelLabel(confirm?.model ?? settings.model) },
+              )}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t("settings.apiKeys.decisionApi.downloadConfirmBody", {

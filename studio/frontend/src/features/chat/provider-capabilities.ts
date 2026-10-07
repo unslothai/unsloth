@@ -4,6 +4,7 @@
 import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
+  providerModelSupportsThinking,
 } from "./external-providers";
 import {
   type ModelCatalogEntry,
@@ -13,6 +14,8 @@ import {
   resolveModelCatalogEntryByName,
   sortReasoningEfforts,
 } from "./model-catalog";
+
+import { normalizeCustomReasoningConfig } from "./custom-reasoning";
 
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
@@ -614,6 +617,17 @@ export function isGeminiCustomOpenAICompatBase(
   }
 }
 
+/** Native Gemini rejects oversized input before generation: Infinity attributes length stops
+ *  to Max Tokens. Other providers and custom gateways have unknown windows. */
+export function externalStopWindow(
+  providerType: string | null | undefined,
+  baseUrl: string | null | undefined,
+): number | null {
+  return providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)
+    ? Number.POSITIVE_INFINITY
+    : null;
+}
+
 /** Whether this Gemini image model supports googleSearch. Documented on the Gemini 3 image
  *  family; older ids reject it with "Search as tool is not enabled for this model". */
 function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
@@ -685,13 +699,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
   },
-  // Anthropic accepts top_k on 3.x and 4.5/4.6, but 4.7 400s on it, so the panel surfaces it
-  // and the backend strips per-model. Presence/frequency penalty is not in the Messages API.
-  // Claude 4.7 is Opus, Sonnet and Haiku alike. Stripping lives in _stream_anthropic in
-  // core/inference/external_provider.py.
+  // _stream_anthropic never sends top_p. Presence/frequency penalty is not in the Messages API.
   anthropic: {
     temperature: true,
-    topP: true,
+    topP: false,
     topK: true,
     minP: false,
     repetitionPenalty: false,
@@ -746,6 +757,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
+// Mirrors _anthropic_sampling_params_removed in external_provider.py; a backend test checks they agree.
+const ANTHROPIC_SAMPLING_REMOVED_MODEL =
+  /^claude-(?:mythos-preview(?:-|$)|[a-z]+-(?:[5-9]|\d{2,})(?:[-.]|$)|opus-4[-.](?:0?[7-9]|[1-9]\d)(?:[-.]|$))/;
+
 const OPENAI_RESPONSES_FIXED_SAMPLING_MODEL =
   /^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))/;
 
@@ -772,6 +787,16 @@ export function getProviderCapabilities(
       return PROVIDER_CAPABILITIES.openai;
     }
     return CUSTOM_RESPONSES_CAPABILITIES;
+  }
+  if (
+    providerType === "anthropic" &&
+    ANTHROPIC_SAMPLING_REMOVED_MODEL.test(modelId?.trim().toLowerCase() ?? "")
+  ) {
+    return {
+      ...PROVIDER_CAPABILITIES.anthropic,
+      temperature: false,
+      topK: false,
+    };
   }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }
@@ -1136,6 +1161,7 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
   /** Custom providers can opt into OpenAI's Responses API and its reasoning controls. */
   apiType?: "chat_completions" | "responses";
+  reasoningConfig?: unknown;
 }
 
 export function effectiveExternalReasoningProviderType(
@@ -1148,15 +1174,30 @@ export function effectiveExternalReasoningProviderType(
     : normalizedProvider;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
-function resolveConnectionLevelReasoning(
+// Thinking off sends "none". https://docs.ollama.com/api/openai-compatibility
+const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle. Ollama errors a
+// thinking request at a model without the /api/tags "thinking" capability, so gate on it (#9649).
+function resolveProviderReasoning(
   normalizedProvider: string,
+  modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+    });
+  }
+  if (
+    normalizedProvider === "ollama" &&
+    providerModelSupportsThinking(normalizedProvider, modelId) === true
+  ) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: OLLAMA_EFFORT_LEVELS,
     });
   }
   return null;
@@ -1261,17 +1302,43 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
-  const normalizedModel = modelId?.trim().toLowerCase() ?? "";
+  // Check the connection before the catalog: known models must not opt Custom in.
+  if (
+    providerType?.trim().toLowerCase() === "custom" &&
+    options?.apiType !== "responses"
+  ) {
+    const config = normalizeCustomReasoningConfig(options?.reasoningConfig);
+    if (!config?.enabled) {
+      return isOpenRouterMandatoryReasoningModel(modelId ?? "")
+        ? withEnableThinkingStyle({
+            supportsReasoning: true,
+            reasoningAlwaysOn: true,
+            supportsReasoningOff: false,
+          })
+        : withEnableThinkingStyle();
+    }
+    return config.style === "reasoning_effort" || config.style === "reasoning"
+      ? withReasoningEffortStyle({
+          supportsReasoning: true,
+          supportsReasoningOff: true,
+          reasoningEffortLevels: ["none", "low", "medium", "high"],
+        })
+      : withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
+  // The capability map is keyed by the catalog's id, so look it up before case-folding.
+  const catalogModel = modelId?.trim() ?? "";
+  const normalizedModel = catalogModel.toLowerCase();
   const normalizedProvider = effectiveExternalReasoningProviderType(
     providerType,
     options?.apiType,
   );
-  const connectionLevel = resolveConnectionLevelReasoning(
+  const providerLevel = resolveProviderReasoning(
     normalizedProvider,
+    catalogModel,
     options,
   );
-  if (connectionLevel) {
-    return connectionLevel;
+  if (providerLevel) {
+    return providerLevel;
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();

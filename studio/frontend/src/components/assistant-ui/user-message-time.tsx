@@ -25,13 +25,15 @@ export const UserMessageTime: FC = () => {
     dateStyle: "full",
     timeStyle: "short",
   });
+  // A button only so the keyboard reaches the tooltip. Clicking does nothing, so the
+  // cursor stays an arrow, even with pointer cursors on.
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
         <button
           type="button"
           aria-label={fullDate}
-          className="aui-user-message-time-trigger mr-2 h-8 min-w-8 flex-1 cursor-pointer self-center rounded-sm text-right text-ui-13 text-muted-foreground tabular-nums"
+          className="aui-user-message-time-trigger mr-2 h-8 min-w-8 flex-1 cursor-default! self-center rounded-sm text-right text-ui-11p5 text-muted-foreground tabular-nums"
         >
           <time
             dateTime={date.toISOString()}

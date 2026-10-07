@@ -21,6 +21,7 @@ from core.inference.memory_contract import (
     project_kv_cache_estimate,
 )
 from core.inference.model_ids import display_model_name
+from hub.schemas.inventory import LocalArtifactKind
 from hub.services.models import account_access
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
@@ -32,6 +33,7 @@ from hub.services.models.catalog_classification import (
     _repo_has_pipeline_index,
     _repo_is_diffusers,
 )
+from hub.services.models.common import _diffusers_pipeline_artifact_kind
 
 # Compatibility aliases: these moved to catalog_classification, but callers and tests still resolve them
 # from routes.models. Assigned through the module rather than re-imported, since an import this module never
@@ -96,6 +98,7 @@ class CachedModelRepo(BaseModel):
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
+    artifact_kind: Optional[LocalArtifactKind] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
     # True for an image/video diffusion repo. Not the same question as task, which says only whether this
@@ -257,6 +260,8 @@ try:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        decision_layout,
+        is_decision_model,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -289,6 +294,8 @@ except ImportError:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        decision_layout,
+        is_decision_model,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -318,6 +325,7 @@ from models.models import (
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
+    LocalModelSource,
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
@@ -342,7 +350,10 @@ def derive_model_type(
     is_vision: bool,
     audio_type: Optional[str],
     is_embedding: bool = False,
+    is_decision: bool = False,
 ) -> ModelType:
+    if is_decision:
+        return "decision"
     if is_embedding:
         return "embeddings"
     if audio_type is not None:
@@ -444,7 +455,12 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
         return False
 
 
-def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_models_dir(
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+    loose_files: bool = False,
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -532,9 +548,21 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                     ),
                 )
 
+    # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
+    from core.inference.diffusion import resolve_local_single_file
+    from hub.utils.comfy_models import loose_diffusion_checkpoints
+
+    sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
+    loose = [] if sole is not None else loose_diffusion_checkpoints(models_dir)
+
     # A scan folder can also point at a BARE single-file checkpoint dir (one loose .safetensors,
     # no configs): both checks reject it, but resolve_local_single_file loads it.
-    if not found and (limit is None or limit > 0) and _has_non_gguf_weights(models_dir):
+    if (
+        not found
+        and not loose
+        and (limit is None or limit > 0)
+        and _has_non_gguf_weights(models_dir)
+    ):
         try:
             updated_at = models_dir.stat().st_mtime
         except OSError:
@@ -546,6 +574,24 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(models_dir),
                 source = "models_dir",
                 model_format = _dir_model_format(models_dir),
+                updated_at = updated_at,
+            ),
+        )
+
+    for checkpoint in loose:
+        if limit is not None and len(found) >= limit:
+            break
+        try:
+            updated_at = checkpoint.stat().st_mtime
+        except OSError:
+            continue
+        found.append(
+            LocalModelInfo(
+                id = str(checkpoint),
+                display_name = checkpoint.stem,
+                path = str(checkpoint),
+                source = "models_dir",
+                model_format = None,
                 updated_at = updated_at,
             ),
         )
@@ -642,9 +688,10 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory: ``publisher/model-name`` folders of GGUF files, or
-    standalone GGUFs at the top level."""
+def _scan_lmstudio_dir(
+    lm_dir: Path, *, source: LocalModelSource = "lmstudio"
+) -> List[LocalModelInfo]:
+    """Scan a host-app model root; ``source`` names which app it belongs to."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -659,7 +706,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 id = str(lm_dir),
                 display_name = lm_dir.name,
                 path = str(lm_dir),
-                source = "lmstudio",
+                source = source,
                 model_format = _dir_model_format(lm_dir),
                 updated_at = updated_at,
             ),
@@ -683,7 +730,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             id = str(child),
                             display_name = child.stem,
                             path = str(child),
-                            source = "lmstudio",
+                            source = source,
                             model_format = "gguf",
                             updated_at = updated_at,
                         ),
@@ -701,7 +748,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         id = str(child),
                         display_name = child.name,
                         path = str(child),
-                        source = "lmstudio",
+                        source = source,
                         model_format = _dir_model_format(child),
                         updated_at = updated_at,
                     ),
@@ -732,7 +779,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 model_id = model_id,
                                 display_name = model_dir.name,
                                 path = str(model_dir),
-                                source = "lmstudio",
+                                source = source,
                                 model_format = _dir_model_format(model_dir),
                                 updated_at = updated_at,
                             ),
@@ -752,7 +799,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 model_id = f"{child.name}/{model_dir.stem}",
                                 display_name = model_dir.stem,
                                 path = str(model_dir),
-                                source = "lmstudio",
+                                source = source,
                                 model_format = "gguf",
                                 updated_at = updated_at,
                             ),
@@ -801,6 +848,7 @@ class _CompatLocalInventorySources(NamedTuple):
     known_hf_caches: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...] = ()
     ollama_dirs: tuple[Path, ...] = ()
+    omlx_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
@@ -810,6 +858,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         hf_default_cache_dir,
         legacy_hf_cache_dir,
         lmstudio_model_dirs,
+        omlx_model_dirs,
     )
     from utils.hf_cache_settings import known_hf_hub_caches
     return _CompatLocalInventorySources(
@@ -820,7 +869,70 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         tuple(known_hf_hub_caches()),
         tuple(hermes_model_dirs()),
         tuple(ollama_model_dirs()),
+        tuple(omlx_model_dirs()),
     )
+
+
+def _scan_nested_compat_rows(
+    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
+) -> List[LocalModelInfo]:
+    """Rows from a recursive scan folder's sub-folders that its own scan did not already list (#6371)."""
+    from hub.services.models.local_inventory import is_loadable_model_dir, nested_scan_roots
+
+    seen = {(m.path, m.model_format) for m in existing}
+    found: List[LocalModelInfo] = []
+    for root in nested_scan_roots(folder_path):
+        if len(existing) + len(found) >= limit:
+            break
+        # No shared variant index: it was built for the registered caches, so a nested one reads its own state.
+        rows = _scan_models_dir(root, limit = limit - len(existing) - len(found)) + _scan_hf_cache(
+            root, active_cache = False
+        )
+        for row in rows:
+            key = (row.path, row.model_format)
+            path = Path(row.path)
+            # This scanner also lists config-only folders; across a whole tree those are mostly other apps' configs.
+            if row.source != "hf_cache" and not (path.is_file() or is_loadable_model_dir(path)):
+                continue
+            if key in seen or any(
+                p in (".studio_links", "ollama_links") for p in Path(row.path).parts
+            ):
+                continue
+            seen.add(key)
+            found.append(row)
+            if len(existing) + len(found) >= limit:
+                return found
+    return found
+
+
+def _with_comfy_compat_rows(
+    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
+) -> List[LocalModelInfo]:
+    """``existing`` plus a ComfyUI root's denoiser-folder rows, minus the role folders themselves
+    (the ``publisher/model`` scan lists them as models; they are containers)."""
+    from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
+
+    role_dirs = comfy_role_dirs(folder_path)
+    if role_dirs:
+        existing = [
+            m for m in existing if os.path.normcase(os.path.realpath(m.path)) not in role_dirs
+        ]
+    seen = {(m.path, m.model_format) for m in existing}
+    found: List[LocalModelInfo] = []
+    roots = comfy_dit_scan_roots(folder_path)
+    scanned = {os.path.normcase(str(root)) for root in roots}
+    for root in roots:
+        if len(existing) + len(found) >= limit:
+            break
+        for row in _scan_models_dir(
+            root, limit = limit - len(existing) - len(found), loose_files = True
+        ):
+            key = (row.path, row.model_format)
+            if key in seen or os.path.normcase(row.path) in scanned:
+                continue
+            seen.add(key)
+            found.append(row)
+    return existing + found
 
 
 def collect_local_models(
@@ -865,6 +977,8 @@ def collect_local_models(
         *sources.known_hf_caches,
         legacy_hf,
         hf_default,
+        # oMLX also serves models--* repos kept under its own roots.
+        *sources.omlx_dirs,
     ):
         cache_real = _safe_resolve(cache_dir)
         if cache_real is None:
@@ -922,9 +1036,18 @@ def collect_local_models(
         except Exception as e:
             logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
 
+    for omlx_dir in sources.omlx_dirs:
+        try:
+            local_models += _scan_lmstudio_dir(omlx_dir, source = "omlx")
+        except Exception as e:
+            logger.warning("Error scanning oMLX directory %s: %s", omlx_dir, e)
+
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
+    from hub.services.models.local_inventory import _local_model_path_is_symlink
+
+    custom_identities: set[str] = set()
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -946,6 +1069,11 @@ def collect_local_models(
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
+            if folder.get("recursive"):
+                _generic += _scan_nested_compat_rows(
+                    folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
+                )
+            _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
             custom_models = []
             for model in _generic:
                 path = Path(model.path)
@@ -995,6 +1123,16 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
+        # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
+        for m in custom_models:
+            try:
+                below_root = os.path.join(
+                    os.path.realpath(folder_path), os.path.relpath(m.path, folder_path)
+                )
+            except (OSError, ValueError):
+                continue
+            if not _local_model_path_is_symlink(below_root):
+                custom_identities.add(_compat_inventory_path_identity(m.path))
         # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
         # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
@@ -1003,6 +1141,14 @@ def collect_local_models(
             else m.model_copy(update = {"source": "custom"})
             for m in custom_models
         ]
+
+    # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
+    # those (the train picker refuses oMLX rows).
+    local_models = [
+        m
+        for m in local_models
+        if m.source != "omlx" or _compat_inventory_path_identity(m.path) not in custom_identities
+    ]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
     # "Custom Folders" UI section even when the model is also in the HF cache.
@@ -1088,11 +1234,13 @@ async def _shared_compat_local_inventory_scan(
             task, audio_type = _catalog_classification._local_model_classification_for_task(
                 model, _local_model_task(model)
             )
+            workflows = _catalog_classification.local_audio_workflows(model, audio_type)
             classified.append(
                 model.model_copy(
                     update = {
                         "task": task,
                         "audio_type": audio_type,
+                        **({"audio_workflows": workflows} if workflows else {}),
                     }
                 )
             )
@@ -1132,7 +1280,9 @@ async def _shared_compat_local_inventory_scan(
             Path(_compat_inventory_path_identity(models_root)),
             scan_sources,
             tuple(
-                _compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders
+                _compat_inventory_path_identity(folder.get("path", ""))
+                + ("\x00r" if folder.get("recursive") else "")
+                for folder in custom_folders
             ),
             epoch,
         )
@@ -1266,7 +1416,9 @@ async def add_scan_folder_endpoint(
     from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
+        folder, inserted = await asyncio.to_thread(
+            add_scan_folder_with_status, body.path, body.recursive
+        )
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         rejection_message = str(e)
@@ -1550,7 +1702,7 @@ def _build_browse_allowlist(
     _add(Path.home())
     if media_roots is None:
         media_roots = [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     if drive_roots is None:
@@ -1836,7 +1988,7 @@ def browse_folders(
         []
         if managed
         else [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     )
@@ -2012,39 +2164,34 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 if await asyncio.to_thread(account_access.model_visible, m)
             ]
 
-        loaded_models = []
-        hide_resident = account_access.resident_hidden(
-            "chat", getattr(inference_backend, "active_model_name", None)
-        )
-        for model_name, model_data in inference_backend.models.items():
-            if hide_resident:
-                continue
-            _is_vision = model_data.get("is_vision", False)
-            _audio_type = model_data.get("audio_type")
-            model_info = ModelDetails(
-                id = model_name,
-                name = display_model_name(model_name),
-                is_vision = _is_vision,
-                is_lora = model_data.get("is_lora", False),
-                is_mlx = model_data.get("is_mlx", False),
-                is_audio = model_data.get("is_audio", False),
-                audio_type = _audio_type,
-                has_audio_input = model_data.get("has_audio_input", False),
-                model_type = derive_model_type(_is_vision, _audio_type),
-            )
-            loaded_models.append(model_info)
-
-        # Active GGUF model (llama-server), labelled from the display id /api/inference/status publishes; the
-        # id stays raw for agents-tab's path filter.
+        from core.inference import model_slots
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        hide_resident = hide_resident or account_access.resident_hidden(
-            "chat", getattr(llama_backend, "model_identifier", None)
-        )
-        if not hide_resident and llama_backend.is_loaded and llama_backend.model_identifier:
+        def _orchestrator_models(orchestrator) -> list[ModelDetails]:
+            entries = []
+            for model_name, model_data in orchestrator.models.items():
+                _is_vision = model_data.get("is_vision", False)
+                _audio_type = model_data.get("audio_type")
+                entries.append(
+                    ModelDetails(
+                        id = model_name,
+                        name = display_model_name(model_name),
+                        is_vision = _is_vision,
+                        is_lora = model_data.get("is_lora", False),
+                        is_mlx = model_data.get("is_mlx", False),
+                        is_audio = model_data.get("is_audio", False),
+                        audio_type = _audio_type,
+                        has_audio_input = model_data.get("has_audio_input", False),
+                        model_type = derive_model_type(_is_vision, _audio_type),
+                    )
+                )
+            return entries
+
+        def _gguf_model(llama_backend) -> list[ModelDetails]:
+            if not (llama_backend.is_loaded and llama_backend.model_identifier):
+                return []
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
-            loaded_models.append(
+            return [
                 ModelDetails(
                     id = llama_backend.model_identifier,
                     name = display_model_name(display_id or llama_backend.model_identifier),
@@ -2053,7 +2200,25 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
                 )
-            )
+            ]
+
+        loaded_models = []
+        hide_resident = account_access.resident_hidden(
+            "chat", getattr(inference_backend, "active_model_name", None)
+        )
+        if not hide_resident:
+            loaded_models += _orchestrator_models(inference_backend)
+
+        llama_backend = get_llama_cpp_backend()
+        hide_resident = hide_resident or account_access.resident_hidden(
+            "chat", getattr(llama_backend, "model_identifier", None)
+        )
+        if not hide_resident:
+            loaded_models += _gguf_model(llama_backend)
+
+        for slot in model_slots.visible():
+            loaded_models += _orchestrator_models(slot.orchestrator)
+            loaded_models += model_slots.in_slot(slot, lambda: _gguf_model(slot.llama))
 
         all_models = []
         seen_ids = set()
@@ -2198,6 +2363,9 @@ def _model_config_inspection_target(
         with_load_subdirs(model_name, ("config.json", "adapter_config.json")),
     )
     if snapshot is None:
+        # A cached Laya checkpoint has no config.json; the probes read it by repo id.
+        if is_decision_model(model_name, hf_token, local_files_only = True):
+            return model_name
         raise HTTPException(
             status_code = 404,
             detail = "Selected cached model is no longer available.",
@@ -2249,17 +2417,23 @@ async def get_model_config(
     hf_token: Optional[str] = Query(None),
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
+    as_decision: bool = False,
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Get configuration for a specific model (wraps load_model_defaults)."""
+    """Get configuration for a specific model (wraps load_model_defaults).
+
+    ``as_decision`` asks for a text or vision LLM as a decision model: a fresh Clef head on it."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
+    from core.inference.npu_backend import is_npu_model_path
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
+    if is_npu_model_path(model_name):
+        return ModelDetails(id = model_name, model_name = model_name, model_type = "text")
     if local_path:
         local_path = resolve_inventory_handle(local_path)
     if local_path:
@@ -2326,6 +2500,25 @@ async def get_model_config(
                 local_files_only = probe_local_only,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
+            layout = decision_layout(
+                model_name, hf_token = hf_token, local_files_only = probe_local_only
+            )
+            is_decision = layout is not None
+            decision_checkpoints = None
+            if layout == "clef":
+                from core.systemone.catalog import CLEF_DEFAULTS_REPO
+
+                # Local Clef folders and Studio fine-tunes start from Clef-flash's recipe.
+                if config_dict == load_model_defaults("default"):
+                    config_dict = load_model_defaults(CLEF_DEFAULTS_REPO)
+            elif is_decision:
+                from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
+                config_dict = load_model_defaults(LAYA_REPO)
+                decision_checkpoints = [
+                    {"name": c.name, "subfolder": c.subfolder, "description": c.description}
+                    for c in CHECKPOINTS.values()
+                    if c.source == model_name
+                ] or None
             audio_type, audio_type_definitive = detect_audio_type_checked(
                 _audio_probe_target(inspection_target),
                 hf_token = hf_token,
@@ -2364,6 +2557,15 @@ async def get_model_config(
                 except Exception:
                     pass
 
+            if (
+                as_decision
+                and not is_decision
+                and not (is_embedding or is_lora or audio_type is not None)
+            ):
+                from utils.models.model_config import load_llm_decision_defaults
+                is_decision, layout = True, "llm"
+                config_dict = load_llm_decision_defaults()
+
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
@@ -2373,12 +2575,15 @@ async def get_model_config(
                 config = config_dict,
                 is_vision = is_vision,
                 is_embedding = is_embedding,
+                is_decision = is_decision,
+                decision_layout = layout,
+                decision_checkpoints = decision_checkpoints,
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
                 audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
-                model_type = derive_model_type(is_vision, audio_type, is_embedding),
+                model_type = derive_model_type(is_vision, audio_type, is_embedding, is_decision),
                 base_model = base_model,
                 max_position_embeddings = max_position_embeddings,
                 # Keyed on the target, not the flag: the bare repo id an anonymous caller
@@ -2749,21 +2954,29 @@ async def discard_remote_code_download(
 
     try:
         from hub.services.models.deletion import _loaded_id_matches_repo
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
-                return {"deleted": False, "reason": "loaded"}
+        for llama_backend in (
+            get_llama_cpp_backend(),
+            *(slot.llama for slot in model_slots.resident()),
+        ):
+            if llama_backend.is_loaded and llama_backend.model_identifier:
+                if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
+                    return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
     try:
         # Peek, not construct: no orchestrator means no active model, and building one hits get_device().
         from core.inference.orchestrator import peek_inference_backend
-        inference_backend = peek_inference_backend()
-        if inference_backend is not None and inference_backend.active_model_name:
-            if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
-                return {"deleted": False, "reason": "loaded"}
+        from core.inference import model_slots
+        for inference_backend in (
+            peek_inference_backend(),
+            *(slot.orchestrator for slot in model_slots.resident()),
+        ):
+            if inference_backend is not None and inference_backend.active_model_name:
+                if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
+                    return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
 
@@ -3292,60 +3505,46 @@ async def delete_finetuned_model(
             ) from e
 
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_active
-            and not llama_backend.is_loaded
-            and llama_backend.model_identifier
-            and _loaded_model_matches_deleted_path(
-                llama_backend.model_identifier,
-                target_path,
-            )
-            and (
-                not gguf_variant
-                or not llama_backend.hf_variant
-                # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
-                # literal comparison here would wave through the very spelling it then deletes.
-                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-            )
-        ):
+        kept = model_slots.resident()
+        filling = model_slots.filling_model()
+        if filling and _loaded_model_matches_deleted_path(filling, target_path):
             raise HTTPException(
                 status_code = 409,
                 detail = "Cannot delete a model while it is loading",
             )
-        if (
-            llama_backend.is_loaded
-            and llama_backend.model_identifier
-            and _loaded_model_matches_deleted_path(
-                llama_backend.model_identifier,
-                target_path,
-            )
-            and (
-                not gguf_variant
-                or not llama_backend.hf_variant
-                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-            )
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Unload the model before deleting",
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
-        raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
-        ) from e
-
-    try:
+        for llama_backend in (get_llama_cpp_backend(), *(slot.llama for slot in kept)):
+            if (
+                (llama_backend.is_active or llama_backend.is_loaded)
+                and llama_backend.model_identifier
+                and _loaded_model_matches_deleted_path(
+                    llama_backend.model_identifier,
+                    target_path,
+                )
+                and (
+                    not gguf_variant
+                    or not llama_backend.hf_variant
+                    # Alias-aware: a literal compare would pass the bare-quant spelling the delete accepts.
+                    or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
+                )
+            ):
+                if llama_backend.is_loaded:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
         # Peek: building an orchestrator to learn there is none reaches get_device() (a torch import).
         from core.inference.orchestrator import peek_inference_backend
-        inference_backend = peek_inference_backend()
-        if inference_backend is not None:
+
+        for inference_backend in (peek_inference_backend(), *(slot.orchestrator for slot in kept)):
+            if inference_backend is None:
+                continue
             loading_models = getattr(inference_backend, "loading_models", set())
             if any(
                 _loading_model_matches_deleted_path(loading_model, target_path)
@@ -3355,19 +3554,18 @@ async def delete_finetuned_model(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
-            if inference_backend.active_model_name:
-                if _loaded_model_matches_deleted_path(
-                    inference_backend.active_model_name,
-                    target_path,
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Unload the model before deleting",
-                    )
+            if inference_backend.active_model_name and _loaded_model_matches_deleted_path(
+                inference_backend.active_model_name,
+                target_path,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Could not check inference backend loaded model before delete: %s", e)
+        logger.warning("Could not check the loaded models before delete: %s", e)
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
@@ -4550,7 +4748,9 @@ async def get_gguf_variants(
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, repo_id)
+        await asyncio.to_thread(
+            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
@@ -5354,8 +5554,13 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": row_task,
                     }
+                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    if pipeline_artifact_kind is not None:
+                        row["artifact_kind"] = pipeline_artifact_kind
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    if model_load_id:
+                    if row_task is None and pipeline_artifact_kind is not None:
+                        row["load_id"] = str(selected)
+                    elif model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info, selected)
                     if model_format:
@@ -5580,7 +5785,7 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
 
         models = [
             ModelCheckpoints(
