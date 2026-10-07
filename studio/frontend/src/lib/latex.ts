@@ -40,7 +40,7 @@ const BLOCK_BREAK_RE =
 
 /** A `$NAME ... $` span that reads as prose: no math symbols, and the closer starts a word. */
 const VARIABLE_PROSE_RE =
-  /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`-]*(?:[\s/:,.;-]|[\s(]["'(`])$/;
+  /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
 
 /**

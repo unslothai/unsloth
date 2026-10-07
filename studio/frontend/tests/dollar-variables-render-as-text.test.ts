@@ -61,6 +61,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["Use ${HOME} and ${PATH} in scripts.", ["${HOME} and ${PATH}"]],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
+  ["Try $PATH || $HOME, $HOME > $LOG or $PATH=$HOME/bin.", ["$PATH || $HOME", "$PATH=$HOME/bin"]],
   ["PHP reads $_GET and $_POST.", ["$_GET and $"]],
   [
     "Add it to $PATH, then run `echo $HOME`.",
