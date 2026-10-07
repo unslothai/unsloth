@@ -66,6 +66,7 @@ from core.inference.stt_sidecar import (
     _downloaded_file_bytes,
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
+    _remember_completed_download,
     _training_active,
     normalize_whisper_language,
 )
@@ -309,6 +310,7 @@ class _AudioCppDownloadState:
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
@@ -330,6 +332,7 @@ class _AudioCppDownloadState:
                 "downloading": downloading,
                 "model": row if downloading else None,
                 "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "variant": variant if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
@@ -354,6 +357,8 @@ class _AudioCppDownloadState:
     ) -> bool:
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
                 return False
             if download_id is not None:
                 if self._download_id != download_id:
@@ -503,6 +508,12 @@ class _AudioCppDownloadState:
                 from core.inference.audio_cpp_models import forget
 
                 forget(model.id)
+                with self._lock:
+                    _remember_completed_download(
+                        self._completed_download_ids,
+                        self._download_id,
+                        cancelled = self._cancelled,
+                    )
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:

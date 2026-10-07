@@ -682,6 +682,17 @@ def is_model_downloaded(model: Optional[str]) -> bool:
         return False
 
 
+def _remember_completed_download(
+    completed_download_ids: list[str], download_id: Optional[str], *, cancelled: bool
+) -> bool:
+    """Keep enough successful attempt ids for delayed UI pollers to settle."""
+    if cancelled or download_id is None:
+        return False
+    completed_download_ids.append(download_id)
+    del completed_download_ids[:-8]
+    return True
+
+
 class _SnapshotDownloadState:
     """Tracks one background snapshot_download of a dictation repository.
 
@@ -695,6 +706,7 @@ class _SnapshotDownloadState:
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._repo: Optional[str] = None
         self._revision: Optional[str] = None
         self._hub_cache: Optional[Path] = None
@@ -712,6 +724,7 @@ class _SnapshotDownloadState:
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -742,6 +755,8 @@ class _SnapshotDownloadState:
         """
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
                 return False
             if download_id is not None:
                 if self._download_id != download_id:
@@ -934,7 +949,11 @@ class _SnapshotDownloadState:
                 )
             _write_revision_record(repo, revision)
             with self._lock:
-                self._complete = True
+                self._complete = _remember_completed_download(
+                    self._completed_download_ids,
+                    self._download_id,
+                    cancelled = self._cancelled,
+                )
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:

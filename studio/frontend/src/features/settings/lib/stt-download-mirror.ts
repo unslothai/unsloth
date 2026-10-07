@@ -25,7 +25,11 @@ import {
   sttModelVariant,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
-import { SttDownloadTrackers } from "./stt-download-trackers";
+import {
+  shouldRecheckSttReplacement,
+  SttDownloadTrackers,
+  sttReplacementAction,
+} from "./stt-download-trackers";
 
 /**
  * Shows a dictation model download in the shared download panel, and loads the
@@ -150,6 +154,13 @@ async function poll(
     download?.download_id &&
     requestedDownloadId !== download.download_id
   ) {
+    // A shared engine can move to another transfer before this row polls. The
+    // attempt history is authoritative: downloaded_models is only row-level
+    // and could describe an older audio.cpp quant.
+    if (download.completed_download_ids?.includes(requestedDownloadId)) {
+      settle(model, "complete", undefined, engine);
+      return;
+    }
     const elapsed = Date.now() - (trackedStartedAt.get(key) ?? startedAt);
     if (elapsed > START_GRACE_MS) {
       settle(
@@ -288,9 +299,15 @@ async function confirmSttDownloadReplacement(
       sttEngineStatusFor(status, model, resolvedEngine)?.download.download_id === candidate
     ) {
       const current = trackedDownloadIds.get(key);
-      if (trackers.has(key) && current === previousDownloadId) {
+      const action = sttReplacementAction(
+        trackers.has(key),
+        current,
+        previousDownloadId,
+        candidate,
+      );
+      if (action === "track") {
         trackSttDownloadNow(model, options);
-      } else if (trackers.has(key) && current !== candidate) {
+      } else if (action === "retry") {
         retry = true;
       }
     }
@@ -302,8 +319,16 @@ async function confirmSttDownloadReplacement(
   if (retry) {
     // Re-check after either a transient fetch failure or another candidate changing local state.
     window.setTimeout(() => {
-      if (trackers.has(key) && trackedDownloadIds.get(key) !== candidate) {
-        trackSttDownload(model, options);
+      if (
+        shouldRecheckSttReplacement(trackedDownloadIds.get(key), candidate)
+      ) {
+        void confirmSttDownloadReplacement(
+          model,
+          options,
+          resolvedEngine,
+          key,
+          previousDownloadId,
+        );
       }
     }, POLL_MS);
   }

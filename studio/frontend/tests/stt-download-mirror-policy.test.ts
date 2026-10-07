@@ -25,9 +25,17 @@ test("an adopted STT transfer keeps progress and merges its Voice owner", () => 
   );
   assert.match(
     source,
-    /download\.download_id === candidate[\s\S]*current === previousDownloadId[\s\S]*trackSttDownloadNow\(model, options\)/,
+    /completed_download_ids\?\.includes\(requestedDownloadId\)[\s\S]*settle\(model, "complete"/,
   );
-  assert.match(source, /current !== candidate[\s\S]*retry = true/);
+  assert.match(
+    source,
+    /download\.download_id === candidate[\s\S]*sttReplacementAction\([\s\S]*action === "track"[\s\S]*trackSttDownloadNow\(model, options\)/,
+  );
+  assert.match(source, /action === "retry"[\s\S]*retry = true/);
+  assert.match(
+    source,
+    /shouldRecheckSttReplacement\(trackedDownloadIds\.get\(key\), candidate\)[\s\S]*confirmSttDownloadReplacement\(/,
+  );
   assert.match(
     source,
     /previousDownloadId !== options\.downloadId[\s\S]*confirmSttDownloadReplacement\(/,

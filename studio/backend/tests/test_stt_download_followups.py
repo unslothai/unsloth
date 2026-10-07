@@ -198,6 +198,38 @@ def test_a_stale_cancel_cannot_stop_a_newer_download(
         state._thread.join(timeout = 5)
 
 
+@pytest.mark.parametrize(
+    "state_factory, model_id",
+    [
+        (snapshot_mod._SnapshotDownloadState, "unsloth/whisper-tiny"),
+        (ggml_mod._GgmlDownloadState, "tiny"),
+        (mtmd_mod._MtmdDownloadState, "qwen3-asr-0.6b"),
+        (audiocpp_mod._AudioCppDownloadState, "homebrew/repo:Q4_K_M"),
+    ],
+)
+def test_a_completed_attempt_cannot_be_cancelled_during_thread_teardown(
+    state_factory, model_id, monkeypatch
+):
+    state = state_factory()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = model_id
+    state._download_id = "completed-download"
+    state._completed_download_ids.append("completed-download")
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.cancel(model_id, "completed-download") is False
+        assert state._cancelled is False
+        assert stopped == []
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
 def test_the_download_identity_is_authoritative_for_an_audio_variant(monkeypatch):
     state = audiocpp_mod._AudioCppDownloadState()
     release = threading.Event()
@@ -216,6 +248,35 @@ def test_the_download_identity_is_authoritative_for_an_audio_variant(monkeypatch
     finally:
         release.set()
         state._thread.join(timeout = 5)
+
+
+def test_completed_download_history_is_bounded_and_ignores_missing_identity():
+    history = [f"attempt-{index}" for index in range(8)]
+
+    assert snapshot_mod._remember_completed_download(history, None, cancelled = False) is False
+    assert snapshot_mod._remember_completed_download(history, "cancelled", cancelled = True) is False
+    assert snapshot_mod._remember_completed_download(history, "attempt-8", cancelled = False) is True
+
+    assert history == [f"attempt-{index}" for index in range(1, 9)]
+
+
+@pytest.mark.parametrize(
+    "state_factory",
+    [
+        snapshot_mod._SnapshotDownloadState,
+        ggml_mod._GgmlDownloadState,
+        mtmd_mod._MtmdDownloadState,
+        audiocpp_mod._AudioCppDownloadState,
+    ],
+)
+def test_download_status_copies_completed_attempt_history(state_factory):
+    state = state_factory()
+    state._completed_download_ids.append("attempt-a")
+
+    status = state.status()
+    status["completed_download_ids"].append("caller-mutation")
+
+    assert state.status()["completed_download_ids"] == ["attempt-a"]
 
 
 def test_a_bare_audio_row_remains_a_legacy_cancel_target(monkeypatch):

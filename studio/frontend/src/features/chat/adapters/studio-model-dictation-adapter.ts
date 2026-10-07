@@ -241,6 +241,8 @@ export interface SttDownloadStatus {
   model: string | null;
   /** opaque identity of this download attempt */
   download_id?: string | null;
+  /** bounded history of attempts that completed successfully */
+  completed_download_ids?: string[];
   /** active audiocpp quant; absent for other engines */
   variant?: string | null;
   error: string | null;

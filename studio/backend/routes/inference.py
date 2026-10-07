@@ -24465,6 +24465,7 @@ def _stt_lifecycle() -> tuple:
 
 
 _stt_download_accounts: dict[str, str] = {}
+_stt_download_id_accounts: dict[str, dict[str, str]] = {}
 _stt_download_lock = threading.Lock()
 _stt_grant_pending: dict[str, threading.Event] = {}
 
@@ -24501,6 +24502,11 @@ def _start_account_stt_download(
         download_id = module.start_model_download(*args)
         _stt_download_accounts[engine] = current_account_id()
         account = current_account_id()
+        if download_id is not None:
+            attempts = _stt_download_id_accounts.setdefault(engine, {})
+            attempts[str(download_id)] = account
+            while len(attempts) > 64:
+                attempts.pop(next(iter(attempts)))
         settled = _stt_grant_pending[engine] = threading.Event()
 
         def watch():
@@ -24631,8 +24637,23 @@ def _account_stt_status(status):
             for model in section.get("downloaded_models", [])
             if account_access.model_visible(_stt_repo_reference(model, engine))
         ]
+        download = section.get("download", {})
+        attempt_accounts = _stt_download_id_accounts.get(engine, {})
+        completed_download_ids = [
+            download_id
+            for download_id in download.get("completed_download_ids", [])
+            if attempt_accounts.get(download_id) == current_account_id()
+        ]
         if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
-            section["download"] = {"downloading": False}
+            # The opaque identity lets an older local tracker detect that the
+            # engine moved on without revealing another account's model or error.
+            section["download"] = {
+                "downloading": False,
+                "download_id": download.get("download_id"),
+                "completed_download_ids": completed_download_ids,
+            }
+        else:
+            download["completed_download_ids"] = completed_download_ids
     return status
 
 

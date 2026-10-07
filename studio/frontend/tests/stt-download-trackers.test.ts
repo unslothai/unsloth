@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SttDownloadTrackers } from "../src/features/settings/lib/stt-download-trackers.ts";
+import {
+  shouldRecheckSttReplacement,
+  SttDownloadTrackers,
+  sttReplacementAction,
+} from "../src/features/settings/lib/stt-download-trackers.ts";
 
 test("a second model's download does not stop the first", () => {
   const trackers = new SttDownloadTrackers();
@@ -47,4 +51,34 @@ test("stopping an untracked model is a no-op", () => {
   const trackers = new SttDownloadTrackers();
   trackers.stop("whisper-small");
   assert.equal(trackers.has("whisper-small"), false);
+});
+
+test("an authoritative replacement survives its previous tracker settling", () => {
+  assert.equal(
+    sttReplacementAction(false, undefined, "attempt-x", "attempt-y"),
+    "track",
+  );
+});
+
+test("replacement confirmation cannot displace a newer local attempt", () => {
+  assert.equal(
+    sttReplacementAction(true, "attempt-z", "attempt-x", "attempt-y"),
+    "retry",
+  );
+  assert.equal(
+    sttReplacementAction(true, "attempt-y", "attempt-x", "attempt-y"),
+    "ignore",
+  );
+});
+
+test("a transient confirmation failure retries after the prior tracker settles", () => {
+  assert.equal(shouldRecheckSttReplacement(undefined, "attempt-y"), true);
+  assert.equal(
+    shouldRecheckSttReplacement("attempt-x", "attempt-y"),
+    true,
+  );
+  assert.equal(
+    shouldRecheckSttReplacement("attempt-y", "attempt-y"),
+    false,
+  );
 });

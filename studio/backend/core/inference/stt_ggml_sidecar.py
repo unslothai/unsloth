@@ -64,6 +64,7 @@ from core.inference.stt_sidecar import (
     _known_whisper_languages,
     _prepare_stt_cache_for_http,
     _read_revision_record,
+    _remember_completed_download,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
@@ -463,6 +464,7 @@ class _GgmlDownloadState:
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
@@ -477,6 +479,7 @@ class _GgmlDownloadState:
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -507,6 +510,8 @@ class _GgmlDownloadState:
         """
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if self._download_id in self._completed_download_ids:
                 return False
             if download_id is not None:
                 if self._download_id != download_id:
@@ -677,6 +682,12 @@ class _GgmlDownloadState:
                 ):
                     raise RuntimeError("downloaded file is missing from the captured cache")
                 _write_revision_record(repo_id, revision)
+                with self._lock:
+                    _remember_completed_download(
+                        self._completed_download_ids,
+                        self._download_id,
+                        cancelled = self._cancelled,
+                    )
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:

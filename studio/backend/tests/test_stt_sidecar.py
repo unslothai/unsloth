@@ -1943,6 +1943,7 @@ def test_download_status_is_idle_before_any_download():
         "downloading": False,
         "model": None,
         "download_id": None,
+        "completed_download_ids": [],
         "error": None,
         "cancelled": False,
         # Only set alongside cancelled: "model" goes None once the download thread stops, so
