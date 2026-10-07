@@ -466,7 +466,6 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   }
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
-    // Renderer tokens and markdown would otherwise be spoken aloud.
     const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 
