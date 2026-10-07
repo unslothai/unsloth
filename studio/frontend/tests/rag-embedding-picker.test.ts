@@ -188,7 +188,7 @@ test("Settings keeps the long text in the info hint and the status on the row", 
 test("Eject sits on the picker and in the RAG menu, only while a model is resident", () => {
   assert.match(SECTION, /onEject=\{embeddingModel\?\.backendLoaded \?/);
   assert.match(PICKER, /\{onEject \? \([\s\S]*?onEject\(\);[\s\S]*?group-hover\/trigger:block/);
-  assert.match(MENU_PICKER, /\{settings\.backendLoaded \? \([\s\S]*?void eject\(\)/);
+  assert.match(MENU_PICKER, /\{settings\.backendLoaded \? \([\s\S]*?void eject\(/);
   assert.match(MENU_PICKER, /settings\.general\.rag\.ejectModel/);
 });
 
@@ -232,14 +232,10 @@ test("Settings keeps a focusable Eject in the picker list", () => {
   assert.match(PICKER, /\{onEject \? \(\s*<div className="border-t[\s\S]*?<button\s+type="button"[\s\S]*?onEject\(\);[\s\S]*?settings\.general\.rag\.ejectModel/);
 });
 
-test("Reset all preferences clears embedding pins", () => {
+test("embedding pins are account data, like chat model pins, so Reset all leaves them", () => {
   const general = read("../src/features/settings/tabs/general-tab.tsx");
   const keys = general.slice(general.indexOf("const PREFS_KEYS"), general.indexOf("];", general.indexOf("const PREFS_KEYS")));
-  assert.match(keys, /EMBEDDING_PINS_STORAGE_KEY,/);
-  assert.match(
-    read("../src/features/settings/stores/embedding-pins-store.ts"),
-    /\{ name: EMBEDDING_PINS_STORAGE_KEY \}/,
-  );
+  assert.doesNotMatch(keys, /EMBEDDING_PINS_STORAGE_KEY|unsloth_embedding_pins|unsloth_pinned_models/);
 });
 
 test("composer pins are their own menu items, so the keyboard reaches them", () => {
@@ -296,4 +292,16 @@ test("the list header is a page header: its own back button, then a titled page"
     /t\("settings\.general\.rag\.embeddingModel"\)[\s\S]*?t\("settings\.general\.rag\.menuSubtitle"\)/,
   );
   assert.doesNotMatch(MENU_PICKER, /menuTitle|DropdownMenuLabel/);
+});
+
+test("ejecting from the menu moves focus to a model row", () => {
+  assert.match(MENU_PICKER, /void eject\(\(event\.currentTarget as HTMLElement\)\.closest\('\[role="menu"\]'\)\)/);
+  assert.match(MENU_PICKER, /menu\?\.querySelector<HTMLElement>\('\.menu-row-with-action \[role\^="menuitem"\]'\)\?\.focus\(\)/);
+});
+
+test("embedding pins mirror to the account like the chat model pins", () => {
+  const store = read("../src/features/settings/stores/embedding-pins-store.ts");
+  assert.match(store, /mirrorPins\("embedding", pinned\)/);
+  assert.match(store, /onPinsRestored\("embedding"/);
+  assert.match(read("../src/lib/pins-mirror.ts"), /embedding: "unsloth_embedding_pins"/);
 });

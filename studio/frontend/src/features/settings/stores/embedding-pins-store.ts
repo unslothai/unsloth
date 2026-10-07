@@ -2,31 +2,56 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+
+import { mirrorPins, onPinsRestored } from "../../../lib/pins-mirror.ts";
 
 export const EMBEDDING_PINS_STORAGE_KEY = "unsloth_embedding_pins";
 
-/** Embedding models pinned to the RAG menu for quick switching. Per browser. */
+/** Embedding models pinned to the RAG menu for quick switching. A plain id list in localStorage,
+ *  mirrored to the account so an account switch's purge does not lose it. */
 interface EmbeddingPinsState {
   pinned: string[];
   togglePin: (model: string) => void;
 }
 
-export const useEmbeddingPinsStore = create<EmbeddingPinsState>()(
-  persist(
-    (set) => ({
-      pinned: [],
-      togglePin: (model) =>
-        set((state) => {
-          const id = model.trim();
-          if (!id) return state;
-          return {
-            pinned: state.pinned.includes(id)
-              ? state.pinned.filter((pin) => pin !== id)
-              : [...state.pinned, id],
-          };
-        }),
-    }),
-    { name: EMBEDDING_PINS_STORAGE_KEY },
-  ),
-);
+function readPins(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(EMBEDDING_PINS_STORAGE_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePins(pinned: string[]): void {
+  mirrorPins("embedding", pinned);
+  try {
+    localStorage.setItem(EMBEDDING_PINS_STORAGE_KEY, JSON.stringify(pinned));
+  } catch {
+    // Storage unavailable; the account copy still has them.
+  }
+}
+
+export const useEmbeddingPinsStore = create<EmbeddingPinsState>()((set, get) => ({
+  pinned: readPins(),
+  togglePin: (model) => {
+    const id = model.trim();
+    if (!id) return;
+    const current = get().pinned;
+    const pinned = current.includes(id)
+      ? current.filter((pin) => pin !== id)
+      : [...current, id];
+    writePins(pinned);
+    set({ pinned });
+  },
+}));
+
+onPinsRestored("embedding", () => useEmbeddingPinsStore.setState({ pinned: readPins() }));
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === EMBEDDING_PINS_STORAGE_KEY || event.key === null) {
+      useEmbeddingPinsStore.setState({ pinned: readPins() });
+    }
+  });
+}

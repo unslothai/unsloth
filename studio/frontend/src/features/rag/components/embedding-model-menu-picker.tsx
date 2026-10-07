@@ -159,12 +159,16 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const eject = async () => {
+  const eject = async (menu: Element | null) => {
     if (ejecting) return;
     setEjecting(true);
     try {
       await ejectEmbeddingModel();
       toast.success(t("settings.general.rag.ejected"));
+      // The Eject row goes with the model and took focus with it; land on the first model row.
+      requestAnimationFrame(() =>
+        menu?.querySelector<HTMLElement>('.menu-row-with-action [role^="menuitem"]')?.focus(),
+      );
     } catch (error) {
       toast.error(t("settings.general.rag.unloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -315,7 +319,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
             onSelect={(event) => {
               // Stay open; the row goes away once the model is out.
               event.preventDefault();
-              void eject();
+              void eject((event.currentTarget as HTMLElement).closest('[role="menu"]'));
             }}
           >
             {ejecting ? (

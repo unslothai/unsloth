@@ -82,7 +82,6 @@ import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
-import { EMBEDDING_PINS_STORAGE_KEY } from "../stores/embedding-pins-store";
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
@@ -120,7 +119,6 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
   "unsloth_chat_sandbox_level",
-  EMBEDDING_PINS_STORAGE_KEY,
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
