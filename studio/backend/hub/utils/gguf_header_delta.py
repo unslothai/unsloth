@@ -487,15 +487,15 @@ def hub_range_fetcher(
     base_headers = build_hf_headers(token = token)
 
     def fetch(start: int, end: int) -> bytes:
+        # requests (huggingface_hub 0.x, Python 3.9) or httpx / httpx2 (1.x / 2.x).
+        from core.inference.diffusion_compat import _iter_body, _ranged_stream
+
         headers = dict(base_headers)
         headers["Range"] = f"bytes={start}-{end}"
-        # httpx (huggingface_hub 1.x) and httpx2 (2.x) share this API.
-        with get_session().stream(
-            "GET", url, headers = headers, follow_redirects = True, timeout = _RANGE_TIMEOUT
-        ) as resp:
+        with _ranged_stream(get_session(), url, headers) as resp:
             if resp.status_code != 206:
                 raise ValueError(f"range request answered {resp.status_code}")
-            return resp.read()
+            return b"".join(_iter_body(resp, 1 << 20))
 
     return fetch
 

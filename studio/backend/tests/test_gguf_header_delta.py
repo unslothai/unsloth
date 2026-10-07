@@ -607,9 +607,9 @@ def test_media_gate_follows_the_catalog_task(tmp_path, monkeypatch, task, expect
     assert delta._is_media_gguf(tmp_path / "x.gguf", "u/m", "x.gguf") is expected
 
 
-@pytest.mark.parametrize("module", ["httpx", "httpx2"])
+@pytest.mark.parametrize("client", ["httpx", "httpx2", "requests"])
 @pytest.mark.parametrize("status, ok", [(206, True), (200, False)])
-def test_range_fetcher_streams_on_the_hub_session(monkeypatch, module, status, ok):
+def test_range_fetcher_streams_on_the_hub_session(monkeypatch, client, status, ok):
     seen = []
 
     class Resp:
@@ -621,12 +621,18 @@ def test_range_fetcher_streams_on_the_hub_session(monkeypatch, module, status, o
         def __exit__(self, *exc):
             return False
 
-        def read(self):
+        def _chunks(self, size):
             seen.append("read")
-            return b"x" * 10
+            return iter([b"x" * 4, b"x" * 6])
 
-    session = type("Client", (), {"__module__": module})()
-    session.stream = lambda method, url, **kw: seen.append(kw["headers"]["Range"]) or Resp()
+    if client == "requests":
+        Resp.iter_content = Resp._chunks
+        session = type("Session", (), {"__module__": "requests.sessions", "stream": False})()
+        session.get = lambda url, **kw: seen.append(kw["headers"]["Range"]) or Resp()
+    else:
+        Resp.iter_bytes = Resp._chunks
+        session = type("Client", (), {"__module__": client})()
+        session.stream = lambda method, url, **kw: seen.append(kw["headers"]["Range"]) or Resp()
     import huggingface_hub.utils as hf_utils
 
     monkeypatch.setattr(hf_utils, "get_session", lambda: session)
