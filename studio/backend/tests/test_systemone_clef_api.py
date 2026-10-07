@@ -24,13 +24,23 @@ def png_url():
 
 @pytest.fixture
 def api(monkeypatch):
-    for name, value in (("get_enabled", True), ("get_model", "clef-flash"), ("get_backend", "auto")):
+    for name, value in (
+        ("get_enabled", True),
+        ("get_model", "clef-flash"),
+        ("get_backend", "auto"),
+    ):
         monkeypatch.setattr(systemone_settings, name, lambda value = value: value)
     calls = []
+
     def decide(checkpoint, state, questions, images):
         calls.append((checkpoint, state, questions, images))
-        return {"model": checkpoint.name, "answers": {"q": {"type": "noul", "noul": 0.5}},
-                "usage": {"input_tokens": 12, "output_tokens": 0}, "_backend": "pytorch"}
+        return {
+            "model": checkpoint.name,
+            "answers": {"q": {"type": "noul", "noul": 0.5}},
+            "usage": {"input_tokens": 12, "output_tokens": 0},
+            "_backend": "pytorch",
+        }
+
     monkeypatch.setattr(runtime, "decide", decide)
     app = FastAPI()
     app.include_router(systemone.router, prefix = "/v1")
@@ -39,7 +49,12 @@ def api(monkeypatch):
 
 
 def request(**extra):
-    return {"state": "Inspect", "model": "jev-preview", "questions": {"q": {"type": "noul"}}, **extra}
+    return {
+        "state": "Inspect",
+        "model": "jev-preview",
+        "questions": {"q": {"type": "noul"}},
+        **extra,
+    }
 
 
 @pytest.mark.parametrize("images", [[], [png_url()]])
@@ -57,21 +72,40 @@ def test_default_alias_keeps_wire_format_and_media(api, images):
 
 def test_image_url_state_parts_follow_same_contract(api):
     client, calls = api
-    state = [{"role": "user", "content": [
-        {"type": "text", "text": "Inspect"}, {"type": "image_url", "image_url": {"url": png_url()}}
-    ]}]
+    state = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect"},
+                {"type": "image_url", "image_url": {"url": png_url()}},
+            ],
+        }
+    ]
     response = client.post("/v1/systemone", json = request(state = state))
     assert response.status_code == 200
     assert calls[0][1] == [{"role": "user", "content": [{"type": "text", "text": "Inspect"}]}]
     assert len(calls[0][3]) == 1
 
 
-@pytest.mark.parametrize("extra,status,error", [
-    *[({field: []}, 400, field) for field in ("audio", "videos", "media_kwargs", "temperature", "arbitrary")],
-    *[({"images": images}, 422, None) for images in (
-        ["https://example.org/img.png"], ["data:image/png;base64,AAAA"], [png_url()] * 5, [1], "image"
-    )],
-])
+@pytest.mark.parametrize(
+    "extra,status,error",
+    [
+        *[
+            ({field: []}, 400, field)
+            for field in ("audio", "videos", "media_kwargs", "temperature", "arbitrary")
+        ],
+        *[
+            ({"images": images}, 422, None)
+            for images in (
+                ["https://example.org/img.png"],
+                ["data:image/png;base64,AAAA"],
+                [png_url()] * 5,
+                [1],
+                "image",
+            )
+        ],
+    ],
+)
 def test_invalid_extensions_fail_before_runtime(api, extra, status, error):
     client, calls = api
     response = client.post("/v1/systemone", json = request(**extra))
@@ -111,20 +145,30 @@ def test_models_discovery_reports_selected_alias_and_native_capabilities(api):
     assert models["laya-multilingual"]["architecture"]["input_modalities"] == ["text"]
 
 
-@pytest.mark.parametrize("available,images,preference,expected", [
-    (False, False, "auto", "pytorch"), (True, False, "auto", "llama.cpp"),
-    (True, True, "auto", "pytorch"), (True, False, "pytorch", "pytorch"),
-    (False, False, "llama.cpp", None),
-])
+@pytest.mark.parametrize(
+    "available,images,preference,expected",
+    [
+        (False, False, "auto", "pytorch"),
+        (True, False, "auto", "llama.cpp"),
+        (True, True, "auto", "pytorch"),
+        (True, False, "pytorch", "pytorch"),
+        (False, False, "llama.cpp", None),
+    ],
+)
 def test_selection_uses_capabilities_only(monkeypatch, available, images, preference, expected):
-    monkeypatch.setattr(native_worker, "native_availability",
-                        lambda: {"available": available, "reason": None if available else "old binary"})
+    monkeypatch.setattr(
+        native_worker,
+        "native_availability",
+        lambda: {"available": available, "reason": None if available else "old binary"},
+    )
     checkpoint = catalog.CHECKPOINTS["clef-flash"]
     if expected is None:
         with pytest.raises(runtime.Unavailable, match = "old binary"):
             runtime.select_checkpoint(checkpoint, images = images, preference = preference)
     else:
-        selected, reason = runtime.select_checkpoint(checkpoint, images = images, preference = preference)
+        selected, reason = runtime.select_checkpoint(
+            checkpoint, images = images, preference = preference
+        )
         assert runtime._clef().is_native(selected) == (expected == "llama.cpp")
         assert bool(reason) == (preference == "auto" and (not available or images))
 
@@ -141,6 +185,7 @@ def test_native_only_discovery_and_image_refusal(api, monkeypatch):
 def test_native_inspection_error_is_not_a_fallback(monkeypatch):
     def fail():
         raise RuntimeError("unexpected native error")
+
     monkeypatch.setattr(native_worker, "native_availability", fail)
     with pytest.raises(RuntimeError, match = "unexpected native error"):
         runtime.select_checkpoint(catalog.CHECKPOINTS["clef-flash"], preference = "auto")

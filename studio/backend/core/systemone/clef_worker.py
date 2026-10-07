@@ -69,6 +69,7 @@ def _reference_module():
         sys.modules.pop(name, None)
         raise
     from .laya_runtime import _utf8_open
+
     module.open = _utf8_open
     return module
 

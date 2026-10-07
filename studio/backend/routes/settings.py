@@ -1475,7 +1475,6 @@ def update_helper_precache(
 
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone.catalog import ClefCheckpoint
-
     if reason is None or isinstance(checkpoint, ClefCheckpoint) or checkpoint.layout != "clef":
         return {}
     return {"available": False, "unavailable_reason": reason}

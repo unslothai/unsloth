@@ -474,7 +474,9 @@ def test_the_catalog_offers_the_stock_clef_models():
 
 
 @pytest.mark.parametrize("kind", ["mlx", "xpu", "cpu"])
-def test_clef_fine_tunes_need_gpu_but_base_checkpoints_remain_available(home, client, clef, monkeypatch, kind):
+def test_clef_fine_tunes_need_gpu_but_base_checkpoints_remain_available(
+    home, client, clef, monkeypatch, kind
+):
     served = _clef_fine_tune(home, "clef_nogpu_1")
     assert _put(client, enabled = True, model = served).status_code == 200
     _spoof_device(monkeypatch, kind)
