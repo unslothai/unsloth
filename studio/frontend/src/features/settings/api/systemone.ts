@@ -149,7 +149,8 @@ function publishSystemOneSettings(settings: SystemOneSettings) {
 }
 
 function toApiPatch(patch: SystemOneSettingsPatch) {
-  const { expectedEnabled, expectedModel, expectedBackend, ...settings } = patch;
+  const { expectedEnabled, expectedModel, expectedBackend, ...settings } =
+    patch;
   return {
     ...settings,
     ...(expectedEnabled !== undefined && {

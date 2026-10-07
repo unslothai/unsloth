@@ -56,7 +56,9 @@ test("a download waits for confirmation before changing the setting", () => {
     SECTION.indexOf("const acceptDownload = async"),
   );
   assert.doesNotMatch(apply, /startDownload\(/);
-  const resolve = apply.indexOf("resolveSystemOneDownload(nextModel, nextBackend)");
+  const resolve = apply.indexOf(
+    "resolveSystemOneDownload(nextModel, nextBackend)",
+  );
   assert.ok(resolve >= 0);
   assert.ok(resolve < apply.indexOf("updateSystemOneSettings(settingsPatch)"));
   assert.match(apply, /expectedEnabled: settings\.enabled/);
