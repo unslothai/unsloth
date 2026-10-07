@@ -143,6 +143,21 @@ def test_loose_checkpoints_keep_only_offered_whole_files(tmp_path):
     assert names == _EXPECTED_DIT_FILES
 
 
+def test_loose_checkpoints_match_the_loader_on_symlinks(tmp_path):
+    from core.inference.diffusion_families import resolve_local_gguf_child
+
+    folder = tmp_path / "diffusion_models"
+    outside = _st(tmp_path / "elsewhere" / "flux1-dev.safetensors")
+    inside = _st(folder / "real" / "z_image_turbo_bf16.safetensors")
+    (folder / "escaping_flux1-dev.safetensors").symlink_to(outside)
+    (folder / "z_image_turbo_link.safetensors").symlink_to(inside)
+    names = {p.name for p in comfy_models.loose_diffusion_checkpoints(folder)}
+    assert names == {"z_image_turbo_link.safetensors"}
+    resolve_local_gguf_child(folder, "z_image_turbo_link.safetensors")
+    with pytest.raises(ValueError):
+        resolve_local_gguf_child(folder, "escaping_flux1-dev.safetensors")
+
+
 def test_loose_checkpoints_skip_a_folder_that_is_one_model(tmp_path):
     _comfy_diffusion_folder(tmp_path)
     (tmp_path / "config.json").write_text("{}")

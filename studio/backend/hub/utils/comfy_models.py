@@ -255,13 +255,19 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
             if (folder / marker).exists():
                 return []
         files: list[Path] = []
+        folder_real = Path(os.path.realpath(folder))
         with os.scandir(folder) as entries:
             for index, entry in enumerate(entries, start = 1):
                 if entry_limit is not None and index > entry_limit:
                     break
                 path = Path(entry.path)
                 try:
-                    if is_loose_checkpoint_candidate(path) and entry.is_file():
+                    # The loader refuses a file resolving outside its folder (resolve_local_gguf_child).
+                    if (
+                        is_loose_checkpoint_candidate(path)
+                        and entry.is_file()
+                        and folder_real in Path(os.path.realpath(path)).parents
+                    ):
                         files.append(path)
                 except OSError:
                     continue
