@@ -54,6 +54,15 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_runs_a_script_in_the_mounted_dir():
+    text = HUB_README.read_text(encoding = "utf-8")
+    section = text[text.index("### Scripts") :]
+    start = section.index("```")
+    command = section[start : section.index("```", start + 3)]
+    assert "python /workspace/host/train.py" in command
+    assert "-w /workspace/host" in command
+
+
 def test_the_hub_readme_explains_the_studio_volume():
     """The volume keeps Studio's data and never pins its code; a volume from an image
     before the code/data split is migrated with its old code kept aside. Both facts,

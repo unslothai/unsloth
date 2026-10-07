@@ -338,9 +338,23 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
 @pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required"
 )
+def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path):
+    argv = _run_sh_argv(tmp_path, "python", "/workspace/host/train.py")
+    image = argv.index("unsloth/unsloth:latest")
+    assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
+    assert argv[image + 1 :] == ["python", "/workspace/host/train.py"]
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required"
+)
 @pytest.mark.parametrize(
     "command",
-    [("jupyter", "lab"), ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb")],
+    [
+        ("jupyter", "lab"),
+        ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
+        ("python", "/workspace/smoke_test.py"),
+    ],
 )
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
     argv = _run_sh_argv(tmp_path, *command)
