@@ -148,6 +148,7 @@ import {
 } from "../model-config/model-config-draft";
 import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
+import { useSavedRunSettings } from "../model-config/saved-run-settings";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
   CACHE_RAM_MAX,
@@ -899,6 +900,12 @@ function GpuMemorySettings({
       <div className={isDiffusion ? "hidden" : ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>GPU Memory</span>
+          <SettingResetButton
+            label="GPU Memory"
+            setting="gpuMemory"
+            config={config}
+            update={update}
+          />
           <InfoHint>
             <div className="flex flex-col gap-1.5">
               <div>
@@ -911,12 +918,6 @@ function GpuMemorySettings({
               </div>
             </div>
           </InfoHint>
-          <SettingResetButton
-            label="GPU Memory"
-            setting="gpuMemory"
-            config={config}
-            update={update}
-          />
         </div>
         <Select
           value={mode}
@@ -1147,13 +1148,13 @@ function ParallelSlotsRow({
     <div className={ROW_CLASS}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className={LABEL_CLASS}>Parallel Slots</span>
-        <InfoHint>{hint}</InfoHint>
         <SettingResetButton
           label="Parallel Slots"
           setting="nParallel"
           config={config}
           update={update}
         />
+        <InfoHint>{hint}</InfoHint>
       </div>
       <input
         type="number"
@@ -1215,6 +1216,12 @@ function MlxAdvancedSettings({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
+          <SettingResetButton
+            label="KV Cache Dtype"
+            setting="mlxKvQuant"
+            config={config}
+            update={update}
+          />
           <InfoHint>
             Lower KV cache precision to save memory, at some cost to quality.
             Auto keeps full precision; 8-bit is the safest step down.
@@ -1222,12 +1229,6 @@ function MlxAdvancedSettings({
             which uses 3-bit keys beside 4-bit values; sliding-window and
             recurrent layers keep their native cache under it.
           </InfoHint>
-          <SettingResetButton
-            label="KV Cache Dtype"
-            setting="mlxKvQuant"
-            config={config}
-            update={update}
-          />
         </div>
         <Select
           value={config.mlxKvQuant ?? MLX_KV_QUANT_AUTO}
@@ -1329,6 +1330,12 @@ function LoadModeRow({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
+          <SettingResetButton
+            label="Mmap/Mlock"
+            setting="loadMode"
+            config={config}
+            update={update}
+          />
           <InfoHint>
             How the weights are read off disk (--load-mode). Auto is the
             default and lets Unsloth pick. mmap maps the file, mlock keeps the
@@ -1336,12 +1343,6 @@ function LoadModeRow({
             mode.
             Model Memory, in Settings, overrides this when it is on.
           </InfoHint>
-          <SettingResetButton
-            label="Mmap/Mlock"
-            setting="loadMode"
-            config={config}
-            update={update}
-          />
         </div>
         <Select
           value={config.loadMode ?? LOAD_MODE_DEFAULT}
@@ -1434,16 +1435,16 @@ function GgufAdvancedSettings({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
-          <InfoHint>
-            Lower KV cache precision to save VRAM, at some cost to quality. f16
-            is the default; q8_0 through iq4_nl are quantized.
-          </InfoHint>
           <SettingResetButton
             label="KV Cache Dtype"
             setting="kvCacheDtype"
             config={config}
             update={update}
           />
+          <InfoHint>
+            Lower KV cache precision to save VRAM, at some cost to quality. f16
+            is the default; q8_0 through iq4_nl are quantized.
+          </InfoHint>
         </div>
         <Select
           value={config.kvCacheDtype ?? KV_CACHE_DTYPE_DEFAULT}
@@ -1475,18 +1476,18 @@ function GgufAdvancedSettings({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
-          <InfoHint>
-            Faster generation. Auto picks the best strategy for the model and
-            platform, or choose one to force it. DSpark and DFlash download a
-            drafter sidecar (about 11 GB and 1.5 GB) and trade VRAM for speed;
-            MTP and ngram do not change output.
-          </InfoHint>
           <SettingResetButton
             label="Speculative Decoding"
             setting="speculative"
             config={config}
             update={update}
           />
+          <InfoHint>
+            Faster generation. Auto picks the best strategy for the model and
+            platform, or choose one to force it. DSpark and DFlash download a
+            drafter sidecar (about 11 GB and 1.5 GB) and trade VRAM for speed;
+            MTP and ngram do not change output.
+          </InfoHint>
         </div>
         <Select
           value={config.speculativeType ?? speculativeFallback}
@@ -1526,16 +1527,16 @@ function GgufAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
-            <InfoHint>
-              Max draft tokens per step. Leave blank for the default (2 or 3,
-              depending on the strategy and device).
-            </InfoHint>
             <SettingResetButton
               label="Draft Tokens"
               setting="specDraftNMax"
               config={config}
               update={update}
             />
+            <InfoHint>
+              Max draft tokens per step. Leave blank for the default (2 or 3,
+              depending on the strategy and device).
+            </InfoHint>
           </div>
           <input
             type="number"
@@ -1565,17 +1566,17 @@ function GgufAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS_WRAP}>Spec Decoding KV Cache Dtype</span>
-            <InfoHint>
-              KV cache precision for the draft model's own context, separate
-              from the KV Cache Dtype above. f16 is the default; quantizing it
-              saves VRAM on a drafter the target verifies anyway.
-            </InfoHint>
             <SettingResetButton
               label="Spec Decoding KV Cache Dtype"
               setting="specDraftCacheDtype"
               config={config}
               update={update}
             />
+            <InfoHint>
+              KV cache precision for the draft model's own context, separate
+              from the KV Cache Dtype above. f16 is the default; quantizing it
+              saves VRAM on a drafter the target verifies anyway.
+            </InfoHint>
           </div>
           <Select
             value={config.specDraftCacheDtype ?? KV_CACHE_DTYPE_DEFAULT}
@@ -1617,16 +1618,16 @@ function GgufAdvancedSettings({
           <div className={ROW_CLASS}>
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Batch Size</span>
-              <InfoHint>
-                Logical prompt batch size (--batch-size). Leave blank for the
-                default (2048). The micro-batch below usually matters more.
-              </InfoHint>
               <SettingResetButton
                 label="Batch Size"
                 setting="nBatch"
                 config={config}
                 update={update}
               />
+              <InfoHint>
+                Logical prompt batch size (--batch-size). Leave blank for the
+                default (2048). The micro-batch below usually matters more.
+              </InfoHint>
             </div>
             <input
               type="number"
@@ -1669,18 +1670,18 @@ function GgufAdvancedSettings({
           <div className={ROW_CLASS}>
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Micro-batch Size</span>
-              <InfoHint>
-                Physical prompt micro-batch size (--ubatch-size). Leave blank
-                for the default (512, or 1120 on Gemma 4 vision models). Larger
-                values speed up prompt processing but use more VRAM; capped at
-                the batch size.
-              </InfoHint>
               <SettingResetButton
                 label="Micro-batch Size"
                 setting="nUbatch"
                 config={config}
                 update={update}
               />
+              <InfoHint>
+                Physical prompt micro-batch size (--ubatch-size). Leave blank
+                for the default (512, or 1120 on Gemma 4 vision models). Larger
+                values speed up prompt processing but use more VRAM; capped at
+                the batch size.
+              </InfoHint>
             </div>
             <input
               type="number"
@@ -1722,16 +1723,16 @@ function GgufAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Tensor Parallelism</span>
-            <InfoHint>
-              Speeds up dense models across multiple GPUs. No effect on a single
-              GPU, and MoE models don't benefit.
-            </InfoHint>
             <SettingResetButton
               label="Tensor Parallelism"
               setting="tensorParallel"
               config={config}
               update={update}
             />
+            <InfoHint>
+              Speeds up dense models across multiple GPUs. No effect on a single
+              GPU, and MoE models don't benefit.
+            </InfoHint>
           </div>
           <Switch
             className="panel-switch shrink-0"
@@ -1747,17 +1748,17 @@ function GgufAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
             <SettingResetButton
               label="Vision"
               setting="vision"
               config={config}
               update={update}
             />
+            <InfoHint>
+              Loads the vision projector so the model can read images. Turning
+              it off frees that VRAM for more layers on the GPU. Text generation
+              is unaffected either way.
+            </InfoHint>
           </div>
           <Switch
             className="panel-switch shrink-0"
@@ -1771,16 +1772,16 @@ function GgufAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Reasoning Budget</span>
-            <InfoHint>
-              Maximum thinking tokens. -1 is unlimited and 0 turns reasoning
-              off.
-            </InfoHint>
             <SettingResetButton
               label="Reasoning Budget"
               setting="reasoningBudget"
               config={config}
               update={update}
             />
+            <InfoHint>
+              Maximum thinking tokens. -1 is unlimited and 0 turns reasoning
+              off.
+            </InfoHint>
           </div>
           <input
             type="number"
@@ -1814,16 +1815,16 @@ function GgufAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
-            <InfoHint>
-              Optional text added before the end-of-thinking tag when the budget
-              runs out.
-            </InfoHint>
             <SettingResetButton
               label="Reasoning Budget Message"
               setting="reasoningBudgetMessage"
               config={config}
               update={update}
             />
+            <InfoHint>
+              Optional text added before the end-of-thinking tag when the budget
+              runs out.
+            </InfoHint>
           </div>
           <input
             type="text"
@@ -1862,18 +1863,18 @@ function GgufAdvancedSettings({
           <div className={ROW_CLASS}>
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Checkpoints</span>
-              <InfoHint>
-                Checkpoints kept per slot (--ctx-checkpoints), which let a
-                sliding-window model rewind instead of re-processing the prompt.
-                Leave blank for the default ({CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0
-                disables them. Each one costs host memory.
-              </InfoHint>
               <SettingResetButton
                 label="Checkpoints"
                 setting="ctxCheckpoints"
                 config={config}
                 update={update}
               />
+              <InfoHint>
+                Checkpoints kept per slot (--ctx-checkpoints), which let a
+                sliding-window model rewind instead of re-processing the prompt.
+                Leave blank for the default ({CTX_CHECKPOINTS_LLAMA_DEFAULT}); 0
+                disables them. Each one costs host memory.
+              </InfoHint>
             </div>
             <input
               type="number"
@@ -1906,18 +1907,18 @@ function GgufAdvancedSettings({
           <div className={ROW_CLASS}>
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Cache RAM</span>
-              <InfoHint>
-                Host memory in MiB for caching prompt state evicted from a slot
-                (--cache-ram), so a returning conversation is not re-processed.
-                Leave blank for the default ({CACHE_RAM_LLAMA_DEFAULT}); 0
-                disables it and -1 lifts the limit.
-              </InfoHint>
               <SettingResetButton
                 label="Cache RAM"
                 setting="cacheRam"
                 config={config}
                 update={update}
               />
+              <InfoHint>
+                Host memory in MiB for caching prompt state evicted from a slot
+                (--cache-ram), so a returning conversation is not re-processed.
+                Leave blank for the default ({CACHE_RAM_LLAMA_DEFAULT}); 0
+                disables it and -1 lifts the limit.
+              </InfoHint>
             </div>
             <input
               type="number"
@@ -3227,10 +3228,24 @@ export function ModelConfigPage({
     });
 
   const rememberChanged = remember !== savedRemember;
+  // Against the saved record, not the edited flag: a field put back is no longer a change.
+  const storedRunSettings = useSavedRunSettings(target);
+  const savedNow = savedRemember && storedRunSettings != null;
+  const matchesSaved =
+    savedNow &&
+    perModelConfigsEqual(
+      config,
+      reconcileConfigGpuSelection(
+        storedRunSettings,
+        resolvedIsDiffusion,
+        gpuDevices,
+      ),
+      { followGlobal: true },
+    );
   const saveState =
-    isModelConfigDraftEdited(draftKey) || rememberChanged
+    rememberChanged || (savedNow && !matchesSaved)
       ? "Unsaved changes"
-      : savedRemember
+      : savedNow
         ? "Saved for this model"
         : atDefault
           ? "Using defaults"
@@ -3564,6 +3579,12 @@ export function ModelConfigPage({
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className={LABEL_CLASS}>Context Length</span>
+                  <SettingResetButton
+                    label="Context Length"
+                    setting="contextLength"
+                    config={config}
+                    update={update}
+                  />
                   <InfoHint>
                     Drag all the way left for Auto, which picks a context that
                     fits while keeping GPU speed. Custom values request an exact
@@ -3575,12 +3596,6 @@ export function ModelConfigPage({
                       ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
                       : ""}
                   </InfoHint>
-                  <SettingResetButton
-                    label="Context Length"
-                    setting="contextLength"
-                    config={config}
-                    update={update}
-                  />
                 </div>
                 <NumericValueInput
                   ref={contextInputRef}

@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { RotateLeft01Icon } from "@hugeicons/core-free-icons";
+import { Undo02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import {
@@ -39,11 +39,7 @@ export function SettingResetButton({
           aria-label={`Reset ${label} to default`}
           className="flex size-4 shrink-0 items-center justify-center rounded-full text-primary transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
-          <HugeiconsIcon
-            icon={RotateLeft01Icon}
-            strokeWidth={2}
-            className="size-3"
-          />
+          <HugeiconsIcon icon={Undo02Icon} strokeWidth={2} className="size-3" />
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">

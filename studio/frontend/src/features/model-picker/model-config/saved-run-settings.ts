@@ -4,6 +4,11 @@
 import { useSyncExternalStore } from "react";
 import { syncModelOverride } from "../api/model-overrides";
 import type { ModelPickTarget } from "../components/model-selector/types";
+import {
+  modelConfigDraftKey,
+  readModelConfigDraft,
+  setModelConfigDraftRemember,
+} from "./model-config-draft";
 import { modelStorageKey } from "./model-identity";
 import {
   PER_MODEL_CONFIG_STORAGE_KEY,
@@ -80,6 +85,17 @@ export function subscribeSavedRunSettings(onChange: () => void): () => void {
   };
 }
 
+/** The saved record itself, re-read when any model's saved settings change. */
+export function useSavedRunSettings(
+  target: ModelPickTarget | null,
+): PerModelConfig | null {
+  return useSyncExternalStore(
+    subscribeSavedRunSettings,
+    () => (target ? savedRunSettings(target) : null),
+    () => null,
+  );
+}
+
 export function useHasSavedRunSettings(
   target: ModelPickTarget | null,
 ): boolean {
@@ -108,12 +124,21 @@ export function forgetRunSettings(
   if (mirrored) {
     syncModelOverride(id, variant, null);
   }
+  // The loaded model's editor stays mounted in the sidebar, so its draft would keep saying saved.
+  const draftKey = modelConfigDraftKey(id, variant);
+  const draft = readModelConfigDraft(draftKey);
+  if (draft?.savedRemember) {
+    setModelConfigDraftRemember(draftKey, false, false);
+  }
   return () => {
     if (!savePerModelConfig(id, variant, snapshot)) {
       return false;
     }
     if (mirrored) {
       syncModelOverride(id, variant, snapshot);
+    }
+    if (draft?.savedRemember) {
+      setModelConfigDraftRemember(draftKey, true, true);
     }
     return true;
   };

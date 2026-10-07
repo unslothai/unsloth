@@ -30,7 +30,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
-  RotateLeft01Icon,
+  Undo02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -209,6 +209,8 @@ export function ModelRowMenu({
     }
     toast.success(`Run settings reset for ${runSettings.displayName}`, {
       description: "Takes effect the next time it loads.",
+      // Longer than a status toast: this one carries the only way back.
+      duration: 10000,
       action: {
         label: "Undo",
         onClick: () => {
@@ -292,7 +294,7 @@ export function ModelRowMenu({
               }}
             >
               <HugeiconsIcon
-                icon={RotateLeft01Icon}
+                icon={Undo02Icon}
                 strokeWidth={1.75}
                 className="size-icon"
               />

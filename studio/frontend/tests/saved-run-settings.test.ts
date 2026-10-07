@@ -125,3 +125,35 @@ test("forget with nothing saved does nothing", () => {
   store.clear();
   assert.equal(forgetRunSettings(ggufTarget()), null);
 });
+
+test("forget marks a mounted editor's draft unsaved, and undo marks it saved again", async () => {
+  store.clear();
+  const {
+    modelConfigDraftKey,
+    primeModelConfigDraft,
+    readModelConfigDraft,
+    retainModelConfigDraft,
+  } = await import(
+    "../src/features/model-picker/model-config/model-config-draft.ts"
+  );
+  setAuthFetchHandler(() => new Response("{}", { status: 200 }));
+  const key = modelConfigDraftKey(REPO, QUANT);
+  // The sidebar keeps the loaded model's editor mounted, so its draft outlives the picker.
+  const release = retainModelConfigDraft(key);
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    primeModelConfigDraft(key, { config: tuned(), remembered: true }, "none");
+    const undo = forgetRunSettings(ggufTarget());
+    assert.ok(undo);
+    assert.equal(readModelConfigDraft(key)?.savedRemember, false);
+    assert.equal(readModelConfigDraft(key)?.remember, false);
+    // The editor keeps showing what is loaded; only the saved flags change.
+    assert.equal(readModelConfigDraft(key)?.config.kvCacheDtype, "q8_0");
+    assert.equal(undo(), true);
+    assert.equal(readModelConfigDraft(key)?.savedRemember, true);
+    assert.equal(readModelConfigDraft(key)?.remember, true);
+  } finally {
+    release();
+    setAuthFetchHandler(null);
+  }
+});

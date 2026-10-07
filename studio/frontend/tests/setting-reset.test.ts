@@ -79,3 +79,23 @@ test("a patch is a copy, so a caller cannot edit the table", () => {
   patch.nParallel = 8;
   assert.equal(settingResetPatch("nParallel").nParallel, null);
 });
+
+test("Auto speculative decoding reads as the default, as the select and a loaded model write it", () => {
+  for (const value of [null, "auto", "Auto", "default"]) {
+    assert.equal(
+      settingIsDefault(
+        { ...DEFAULT_PER_MODEL_CONFIG, speculativeType: value },
+        "speculative",
+      ),
+      true,
+      `speculativeType=${value}`,
+    );
+  }
+  assert.equal(
+    settingIsDefault(
+      { ...DEFAULT_PER_MODEL_CONFIG, speculativeType: "ngram" },
+      "speculative",
+    ),
+    false,
+  );
+});

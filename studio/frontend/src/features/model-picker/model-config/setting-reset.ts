@@ -24,7 +24,11 @@ const SETTING_RESETS = {
   },
   // The draft depth and draft cache only exist under a strategy, so they go with it.
   speculative: {
-    isDefault: (c) => c.speculativeType == null,
+    // The Auto option and a loaded model's status both write "auto", which reads as the default.
+    isDefault: (c) => {
+      const type = c.speculativeType?.trim().toLowerCase();
+      return !type || type === "auto" || type === "default";
+    },
     patch: {
       speculativeType: null,
       specDraftNMax: null,
