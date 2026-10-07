@@ -17,6 +17,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/lib/toast";
 import { useT, type TranslationKey } from "@/i18n";
+import { authFetch } from "@/features/auth";
 
 type ConvertJob = { state: "running" | "done" | "error"; stage: string };
 
@@ -43,7 +44,7 @@ export function ConvertPage() {
     if (!modelId) return;
     const timer = setInterval(async () => {
       try {
-        const res = await fetch(
+        const res = await authFetch(
           `/api/convert/status?model_id=${encodeURIComponent(modelId)}`,
         );
         if (!res.ok) return;
@@ -166,7 +167,7 @@ export function ConvertPage() {
               className="w-fit"
               onClick={async () => {
                 try {
-                  const res = await fetch("/api/convert", {
+                  const res = await authFetch("/api/convert", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({

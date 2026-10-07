@@ -239,6 +239,7 @@ import {
   searchRowFitsDevice,
   searchableRecommendedIds,
   intelIntRecommendations,
+  isOpenVinoId,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -4707,7 +4708,7 @@ export function HubModelPicker({
 
   // Non-GGUF cached rows are hidden in chat-only mode, so the empty-state logic must use this or the
   // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
-  const visibleCachedModelRows = chatOnly && !task ? visibleCachedModels.filter(c => c.repo_id.toLowerCase().includes("int4") || c.repo_id.toLowerCase().includes("int8") || c.repo_id.toLowerCase().includes("openvino")) : visibleCachedModels;
+  const visibleCachedModelRows = chatOnly && !task ? visibleCachedModels.filter((c) => isOpenVinoId(c.repo_id)) : visibleCachedModels;
 
   // Intel GPU with a model on disk both raw and OpenVINO-converted: point at the INT variant.
   const intelIntRecs = useMemo(

@@ -41,8 +41,16 @@ export function isRecommendableFormat(
   isMac: boolean,
 ): boolean {
   if (isGgufId(id, hintedIsGguf)) return true;
-  if (id.toLowerCase().includes("int4") || id.toLowerCase().includes("int8") || id.toLowerCase().includes("openvino")) return true;
+  if (isOpenVinoId(id)) return true;
   return isMac;
+}
+
+// OpenVINO IR repos ("OpenVINO/...", "...-int4-ov", "...-ov_int8"). Not a bare "int4": GPTQ/AWQ
+// repos say that too, and chat-only installs cannot load them.
+const OPENVINO_ID_RE = /openvino|(^|[-_/])ov([-_]|$)/i;
+
+export function isOpenVinoId(id: string): boolean {
+  return OPENVINO_ID_RE.test(id);
 }
 
 /** Format filter for the listing toggle. "safetensors" means anything that is neither GGUF nor MLX. */
