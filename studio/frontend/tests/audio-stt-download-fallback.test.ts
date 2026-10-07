@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 const mirrorSource = readSrc("features/settings/lib/stt-download-mirror.ts");
 
 test("STT download polling uses the available engine fallback", () => {

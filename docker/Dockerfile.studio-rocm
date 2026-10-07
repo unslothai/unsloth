@@ -60,10 +60,10 @@ RUN apt-get update \
  && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
-RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.0"
+RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.4"
 COPY jupyter/unsloth_labext /opt/labext-src
 RUN cd /opt/labext-src \
- && /opt/unsloth-venv/bin/jlpm install \
+ && /opt/unsloth-venv/bin/jlpm install --immutable \
  && /opt/unsloth-venv/bin/jlpm build:prod
 
 FROM ${BASE_IMAGE}
@@ -85,6 +85,7 @@ ARG UNSLOTH_NOTEBOOKS_REF=main
 # $UNSLOTH_STUDIO_HOME/cache/uv, which would fill a volume on the home with wheels.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UNSLOTH_STUDIO_DOCUMENTS_HOME=/opt/unsloth-studio/documents \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     JUPYTER_PORT=8888 \
     UNSLOTH_STUDIO_PORT=8000 \
@@ -115,7 +116,7 @@ RUN set -eux \
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
  && BASE_NUMPY="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('numpy'))")" \
  && /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
-        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "jupyterlab==4.6.4" "notebook==7.6.3" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
         "langid==1.1.6" "easydict==1.13" "omegaconf==2.3.1" "einx==0.4.3" \
         "librosa==0.11.0" "ftfy==6.3.1" "decord==0.6.0" \
@@ -240,15 +241,16 @@ RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get
 # No transformers sidecars are baked: the CUDA image derives its set from the vLLM
 # it carries, and this image carries none, so a recorded transformers pin resolves
 # to the base venv's transformers.
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_root_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
  && cp /opt/unsloth-nb/unsloth_nb_pip_magic.py "$SP/unsloth_nb_pip_magic.py" \
  && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \
- && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_root_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
  && mkdir -p /opt/unsloth-nb/bin \
  && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
+ && for t in apt apt-get dpkg sudo; do ln -sf /opt/unsloth-nb/unsloth_root_shim.py /opt/unsloth-nb/bin/$t; done \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
  && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \

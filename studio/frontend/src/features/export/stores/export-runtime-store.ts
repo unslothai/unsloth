@@ -142,6 +142,8 @@ export interface RunExportParams {
   /** GGUF: use an importance matrix, auto-downloaded unless imatrixPath is set; required for the IQ quants. */
   useImatrix?: boolean;
   imatrixPath?: string;
+  /** GGUF: also write a FastFlowLM Q4NX folder for the AMD Ryzen AI NPU. */
+  npuQ4nx?: boolean;
   /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
    *  `label` is the display name for the success banner's per-format output line. */
   mergedSelections?: {
@@ -504,9 +506,14 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               ? params.imatrixPath?.trim() || null
               : null,
             private: params.privateRepo,
+            npu_q4nx: params.npuQ4nx,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
+        if (outputPath && params.npuQ4nx) {
+          const sep = outputPath.includes("\\") ? "\\" : "/";
+          outputs.push({ label: "AMD NPU (Q4NX)", path: `${outputPath}${sep}npu-q4nx` });
+        }
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {

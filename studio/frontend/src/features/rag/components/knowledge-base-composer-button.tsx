@@ -8,7 +8,7 @@ import {
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -21,7 +21,10 @@ import {
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { listKnowledgeBases } from "../api/rag-api";
+import {
+  listKnowledgeBases,
+  subscribeKnowledgeBasesChanged,
+} from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
@@ -43,20 +46,24 @@ export function KnowledgeBaseComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Refreshes overlap; an older answer landing last would restore a deleted KB.
+  const latestRefreshRef = useRef(0);
   const refresh = useCallback(async () => {
+    const request = ++latestRefreshRef.current;
     try {
       const rows = await listKnowledgeBases();
-      setKbs(rows);
+      if (request === latestRefreshRef.current) setKbs(rows);
     } catch {
       // Keep prior state on failure.
     } finally {
-      setKbsLoaded(true);
+      if (request === latestRefreshRef.current) setKbsLoaded(true);
     }
   }, []);
 
   // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
+    return subscribeKnowledgeBasesChanged(() => void refresh());
   }, [refresh]);
 
   // If the selected KB was deleted, fall back to thread source so we never send a
@@ -182,10 +189,7 @@ export function KnowledgeBaseComposerButton({
       </DropdownMenu>
       <KnowledgeBaseDialog
         open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) void refresh();
-        }}
+        onOpenChange={setDialogOpen}
       />
     </>
   );

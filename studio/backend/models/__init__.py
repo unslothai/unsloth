@@ -40,6 +40,7 @@ from .export import (
     ExportMergedModelRequest,
     ExportBaseModelRequest,
     ExportGGUFRequest,
+    ConvertQ4NXRequest,
     ExportLoRAAdapterRequest,
     LlmCompressorExportProbeResponse,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "ExportMergedModelRequest",
     "ExportBaseModelRequest",
     "ExportGGUFRequest",
+    "ConvertQ4NXRequest",
     "ExportLoRAAdapterRequest",
     "LlmCompressorExportProbeResponse",
     "Token",

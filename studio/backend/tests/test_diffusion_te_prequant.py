@@ -985,13 +985,17 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
 
     def unreachable(**kw):
         asked.append(kw["filename"])
+        online.append(not kw.get("local_files_only"))
         raise LocalEntryNotFoundError("Hub unreachable")
 
+    online: list = []
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", unreachable)
-    # ONLINE: surfaces as itself, and the second candidate is never attempted.
-    with pytest.raises(LocalEntryNotFoundError):
+    # ONLINE: surfaces as itself, and the second candidate is never fetched: only looked up in the cache, which
+    # costs no network attempt (a cached fallback is still usable during an outage).
+    with pytest.raises(LocalEntryNotFoundError, match = "Hub unreachable"):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
-    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
+    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
+    assert online == [True, False], online
 
     # OFFLINE: a cache miss is the only verdict there is, so the chain is walked.
     asked.clear()
@@ -1048,15 +1052,17 @@ def test_every_family_default_scheme_is_one_we_actually_host_for_that_family():
     default load, which is the opposite of why the field exists. Catches a family opting in
     before its artifact is published, and a scheme/component pair that does not line up."""
     from core.inference.diffusion_families import _FAMILIES
-    from core.inference.diffusion_te_prequant import family_te_prequant_repo
+    from core.inference.diffusion_te_prequant import resolve_te_prequant_source
 
     offenders = []
     for fam in _FAMILIES:
         scheme = getattr(fam, "te_quant_auto", None)
         if scheme is None:
             continue
+        # The resolver, not the fp8 table alone: a hosted int8 encoder (TE_INT8_CONVROT_FILES) lists the family's fp8
+        # file behind it, so the default never costs a dense download.
         if not any(
-            family_te_prequant_repo(fam, scheme, component)
+            resolve_te_prequant_source(fam, component, scheme)
             for component in tpq.TE_PREQUANT_COMPONENTS
         ):
             offenders.append(
@@ -1067,16 +1073,22 @@ def test_every_family_default_scheme_is_one_we_actually_host_for_that_family():
     )
 
 
-def test_qwen_image_2_1_defaults_to_the_hosted_fp8_encoder():
+def test_qwen_image_2_1_defaults_to_a_hosted_encoder():
     """The family this was built for. Its encoder (Qwen3-VL-8B, 16.33 GiB dense) is bigger than
     its INT8 denoiser (6.76 GiB), so leaving it dense is what made a quantised pick still cost
     ~26 GB. Named rather than covered only by the sweep above, because the whole change is
-    pointless if this one row regresses."""
+    pointless if this one row regresses. The default is the int8 ConvRot encoder, with the fp8
+    one behind it in the same repo."""
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_te_prequant import resolve_te_prequant_source
 
     fam = detect_family("Qwen/Qwen-Image-2.1")
-    assert fam.te_quant_auto == "fp8"
+    assert fam.te_quant_auto == "int8"
+    source = resolve_te_prequant_source(fam, "text_encoder", "int8")
+    assert source is not None and source.kind == "repo"
+    assert source.location == "unsloth/Qwen-Image-2.1-FP8"
+    assert source.filename == "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"
+    assert source.fallback_filenames[0] == "Qwen-Image-2.1-text_encoder-FP8.safetensors"
     source = resolve_te_prequant_source(fam, "text_encoder", "fp8")
     assert source is not None and source.kind == "repo"
     assert source.location == "unsloth/Qwen-Image-2.1-FP8"

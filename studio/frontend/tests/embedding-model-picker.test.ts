@@ -39,6 +39,14 @@ test("an empty query lists unsloth, a typed one searches everything", () => {
   assert.match(PICKER, /useDebouncedValue\(query\.trim\(\)\)/);
 });
 
+test("embeddinggemma-2 leads the empty list, ahead of the older embeddinggemma", () => {
+  // Pinned ahead of the by-downloads listing, where a new release would sit last.
+  assert.match(PICKER, /PINNED_EMBEDDING_MODELS: readonly string\[\] = \["unsloth\/embeddinggemma-2"\]/);
+  assert.match(PICKER, /priorityIds: PINNED_EMBEDDING_MODELS,/);
+  // The older model comes from the listing, so it isn't pinned above the new one.
+  assert.doesNotMatch(PICKER, /PINNED_EMBEDDING_MODELS[^\n]*embeddinggemma-300m/);
+});
+
 test("only the query searches; the saved model never becomes one", () => {
   assert.ok(
     !PICKER.includes("useDebouncedValue(value)"),

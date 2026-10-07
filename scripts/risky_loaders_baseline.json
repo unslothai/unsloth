@@ -83,6 +83,14 @@
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
+      "file": "studio/backend/core/inference/diffusion_int8_fused.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "8a43c55c018acccf",
+      "count": 1,
+      "reason": "Imports a name from the constant _TORCHAO_INTMM_MODULES tuple (torchao's safe_int_mm homes); never a model, request or download name."
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_prequant.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -129,6 +137,14 @@
       "digest": "0d420008334333ee",
       "count": 1,
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_rocm_fused.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "install_rope only imports a name already in _ROPE_FNS, which is built from the fixed _MODULES tuple of two diffusers Flux transformer modules."
     },
     {
       "file": "studio/backend/core/inference/diffusion_torchao_patches.py",
@@ -185,6 +201,14 @@
       "digest": "7ff41ce8b4bc8d80",
       "count": 1,
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
+    },
+    {
+      "file": "studio/backend/core/inference/video_wan_fused.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "0d420008334333ee",
+      "count": 1,
+      "reason": "Imports the module-level _MODULE constant (diffusers' transformer_wan) to patch WanTransformerBlock; never a model, request or download name."
     },
     {
       "file": "studio/backend/core/inference/vllm_server.py",
@@ -513,6 +537,14 @@
       "digest": "7de1f016ac2d1555",
       "count": 1,
       "reason": "Reads back a .pt file this function just wrote with torch.save into the local offload folder; never a downloaded file."
+    },
+    {
+      "file": "unsloth/models/decision.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "3738585f7559a2ad",
+      "count": 1,
+      "reason": "Imports the laya copy vendored in this repository at a fixed path (studio/backend/vendor/laya/__init__.py); never a downloaded or user-supplied file."
     },
     {
       "file": "unsloth/models/loader.py",

@@ -12,11 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import {
-  PermissionModeDropdown,
-  useActivePermissionMode,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -88,7 +84,6 @@ import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
@@ -123,6 +118,7 @@ const PREFS_KEYS: string[] = [
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
@@ -197,20 +193,6 @@ function resetAllPrefs() {
 export function GeneralTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
-  const permissionsRef = useRef<HTMLElement | null>(null);
-  const activePermission = useActivePermissionMode();
-  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
-
-  // Learn more in the permission menus.
-  useEffect(() => {
-    if (scrollTarget !== "general-permissions") return;
-    const frame = window.requestAnimationFrame(() => {
-      permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-      consumeScrollTarget("general-permissions");
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
 
@@ -561,19 +543,6 @@ export function GeneralTab() {
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection
-        ref={permissionsRef}
-        title={t("settings.general.permissions.sectionTitle")}
-      >
-        {/* The selected level, explained in full. */}
-        <SettingsRow
-          label={t(`settings.general.permissions.names.${activePermission.value}`)}
-          description={t(`settings.general.permissions.details.${activePermission.value}`)}
-        >
-          <PermissionModeDropdown learnMore={false} />
         </SettingsRow>
       </SettingsSection>
 

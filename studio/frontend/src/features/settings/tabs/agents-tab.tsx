@@ -190,6 +190,12 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
     logo: "deepseek",
   },
+  {
+    id: "vibe",
+    name: "Mistral Vibe",
+    docsUrl: "https://github.com/mistralai/mistral-vibe",
+    logo: "mistral",
+  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
