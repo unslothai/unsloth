@@ -3454,6 +3454,15 @@ class TestOpenAICompatibilityHelpers:
         line = _openai_stream_usage_chunk(payload, "c", 1, "m", single, None)
         assert "context_tokens" not in json.loads(line.removeprefix("data: "))["usage"]
 
+    def test_non_streaming_usage_omits_unset_context_tokens(self):
+        from models.inference import CompletionUsage
+
+        assert "context_tokens" not in json.loads(CompletionUsage(total_tokens = 5).model_dump_json())
+        assert "context_tokens" not in CompletionUsage(total_tokens = 5).model_dump()
+        assert (
+            json.loads(CompletionUsage(context_tokens = 4).model_dump_json())["context_tokens"] == 4
+        )
+
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         import routes.inference as inf_mod
 

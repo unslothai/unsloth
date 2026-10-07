@@ -19,6 +19,7 @@ from pydantic import (
     PrivateAttr,
     Tag,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -3451,6 +3452,14 @@ class CompletionUsage(BaseModel):
             "rejected_prediction_tokens": 0,
         }
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_context_tokens(self, handler):
+        # Only tool loops set it; elsewhere the OpenAI usage object stays byte-identical.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("context_tokens") is None:
+            data.pop("context_tokens", None)
+        return data
 
 
 class ChatCompletion(BaseModel):
