@@ -79,6 +79,14 @@ def test_exact_question_column_wins_over_a_case_variant():
     assert [_turns(sample) for sample in out] == list(zip(questions, answers))
 
 
+def test_populated_case_variant_wins_over_an_empty_exact_column():
+    questions = ["Find x in the triangle.", "How many red cubes are left?"]
+    answers = ["x = 42", "3"]
+    out = _format({"Question": questions, "question": [None, None], "answer": answers})
+
+    assert [_turns(sample) for sample in out] == list(zip(questions, answers))
+
+
 def test_structured_input_column_is_not_used_as_the_question():
     answers = ["a red square", "a dark red square"]
     out = _format({"inputs": [[101, 102], [103]], "caption": answers})
@@ -94,4 +102,15 @@ def test_missing_question_value_uses_the_generic_instruction():
     assert [_turns(sample) for sample in out] == [
         (questions[0], answers[0]),
         (GENERIC_SENTENCE, answers[1]),
+    ]
+
+
+def test_later_question_value_is_kept_when_the_first_is_missing():
+    questions = [None, "How many red cubes are left?"]
+    answers = ["x = 42", "3"]
+    out = _format({"problem": questions, "answer": answers})
+
+    assert [_turns(sample) for sample in out] == [
+        (GENERIC_SENTENCE, answers[0]),
+        (questions[1], answers[1]),
     ]

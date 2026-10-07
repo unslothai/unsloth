@@ -19,8 +19,8 @@ def generate_smart_vlm_instruction(
     dataset_name = None,
 ):
     """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default."""
-    column_names = set(next(iter(dataset)).keys())
     sample = next(iter(dataset))
+    column_names = set(sample.keys())
 
     question_columns = [
         "question",
@@ -35,10 +35,14 @@ def generate_smart_vlm_instruction(
     columns = [col for col in sample if col not in (text_column, image_column)]
 
     for name in question_columns:
-        col = name if name in columns else next((c for c in columns if c.lower() == name), None)
-        if col is not None:
-            sample_content = sample[col]
-            if isinstance(sample_content, str) and sample_content.strip():
+        matches = ([name] if name in columns else []) + [
+            col for col in columns if col != name and col.lower() == name
+        ]
+        for col in matches:
+            has_text = any(
+                isinstance(row.get(col), str) and row[col].strip() for row in islice(dataset, 100)
+            )
+            if has_text:
                 return {
                     "instruction": None,
                     "instruction_column": col,
