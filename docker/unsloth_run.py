@@ -171,7 +171,7 @@ def _host_owned_command(cmd, host_ids):
         "/usr/bin/setpriv",
         f"--reuid={uid}",
         f"--regid={gid}",
-        "--clear-groups",
+        "--keep-groups",
         f"--inh-caps={capabilities}",
         f"--ambient-caps={capabilities}",
         *cmd,

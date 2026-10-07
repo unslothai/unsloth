@@ -146,7 +146,7 @@ def test_url_run_uses_host_identity_without_scanning_the_worktree(runner):
         "/usr/bin/setpriv",
         "--reuid=1234",
         "--regid=5678",
-        "--clear-groups",
+        "--keep-groups",
         "--inh-caps=-all,+chown,+dac_override,+fowner",
         "--ambient-caps=-all,+chown,+dac_override,+fowner",
         *cmd,
