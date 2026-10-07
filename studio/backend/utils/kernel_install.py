@@ -217,8 +217,23 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
     return _PINNED[name].wheel_url(env)
 
 
+# Kernels Unsloth only uses on Ampere or newer. FlashAttention 2 does not run below sm80, and
+# unsloth_zoo turns mamba_ssm's Triton kernels off there (patch_mamba_ssm_pre_ampere_fallback), so a
+# wheel below sm80 is never used and only prints that fallback warning in every notebook.
+_NEEDS_SM80 = ("flash_attn", "mamba_ssm")
+_CAPABILITY: dict = {}
+
+
 def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[int, int] | None:
-    """The best compute capability across the visible GPUs, or None."""
+    """The best compute capability across the visible GPUs, or None. Probed once per runner."""
+    if run not in _CAPABILITY:
+        _CAPABILITY[run] = _probe_gpu_capability(run)
+    return _CAPABILITY[run]
+
+
+def _probe_gpu_capability(
+    run: Callable[..., subprocess.CompletedProcess],
+) -> tuple[int, int] | None:
     check = (
         "import torch; n = torch.cuda.device_count() if torch.cuda.is_available() else 0; "
         "print(*max(torch.cuda.get_device_capability(i) for i in range(n))) if n else None"
@@ -271,8 +286,7 @@ def install_kernel(
 ) -> int:
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
-    if name == "flash_attn" and url is not None:
-        # FlashAttention 2 needs Ampere or newer, and Unsloth only enables it there.
+    if name in _NEEDS_SM80 and url is not None:
         capability = _gpu_capability(run)
         if capability is None or capability < (8, 0):
             gpu = (
@@ -280,7 +294,7 @@ def install_kernel(
                 if capability is None
                 else "the best GPU is sm%d%d" % capability
             )
-            print(f"Unsloth: skipping flash_attn, which needs sm80 or newer ({gpu}).")
+            print(f"Unsloth: skipping {name}, which needs sm80 or newer ({gpu}).")
             return 0
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
     # Only a 404 proves nothing is published; an unreachable check falls through to the install.
