@@ -116,7 +116,11 @@ def test_device_budget_reads_each_cards_own_entry():
 
 
 class _FakeCuda:
-    def __init__(self, totals, current = None):
+    def __init__(
+        self,
+        totals,
+        current = None,
+    ):
         self.totals, self.set, self.current = totals, {}, current or {}
 
     def is_available(self):
@@ -180,7 +184,11 @@ def test_worker_routes_both_budgets_through_the_helper():
     assert "_apply_training_vram_budget(" in src
 
 
-def _trainer(offload_layers = 0, prefetch_depth = 2, model = None):
+def _trainer(
+    offload_layers = 0,
+    prefetch_depth = 2,
+    model = None,
+):
     from core.training.trainer import UnslothTrainer
 
     t = UnslothTrainer.__new__(UnslothTrainer)
@@ -230,13 +238,11 @@ def test_snapshot_keys_layers_as_strings(monkeypatch):
 
 def _block(device):
     import torch
-
     return SimpleNamespace(home = torch.device(device))
 
 
 def _layer(device):
     import torch
-
     return SimpleNamespace(parameters = lambda: iter([SimpleNamespace(device = torch.device(device))]))
 
 
@@ -273,10 +279,24 @@ def test_snapshot_reports_every_card_and_each_layers_card(monkeypatch):
     # The single-card keys stay for older panels.
     assert snap["vram_total_bytes"] == 32 * GIB and snap["vram_allocated_bytes"] == 5 * GIB
     assert snap["vram_devices"] == [
-        {"index": 0, "gpu_id": 2, "name": "card0", "allocated_bytes": 5 * GIB,
-         "peak_bytes": 6 * GIB, "total_bytes": 32 * GIB, "fraction": 1.0},
-        {"index": 1, "gpu_id": 0, "name": "card1", "allocated_bytes": 3 * GIB,
-         "peak_bytes": 4 * GIB, "total_bytes": 16 * GIB, "fraction": 0.5},
+        {
+            "index": 0,
+            "gpu_id": 2,
+            "name": "card0",
+            "allocated_bytes": 5 * GIB,
+            "peak_bytes": 6 * GIB,
+            "total_bytes": 32 * GIB,
+            "fraction": 1.0,
+        },
+        {
+            "index": 1,
+            "gpu_id": 0,
+            "name": "card1",
+            "allocated_bytes": 3 * GIB,
+            "peak_bytes": 4 * GIB,
+            "total_bytes": 16 * GIB,
+            "fraction": 0.5,
+        },
     ]
     assert snap["layer_device"] == {"0": 0, "1": 0, "2": 1, "3": 1}
 
@@ -312,7 +332,6 @@ def test_offload_route_reports_inactive_until_a_step_carries_stats(monkeypatch):
 def test_worker_progress_events_carry_the_snapshot():
     import inspect
     from core.training import worker
-
     assert '"offload": getattr(progress, "offload", None)' in inspect.getsource(
         worker._create_trainer_progress_callback
     )

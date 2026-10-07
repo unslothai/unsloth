@@ -1653,10 +1653,7 @@ def _training_vram_budget_fraction(
 
 
 def _apply_training_vram_budget(
-    torch_mod: Any,
-    single_gb: float | None,
-    per_device_gb: list | None,
-    gpu_ids: list | None,
+    torch_mod: Any, single_gb: float | None, per_device_gb: list | None, gpu_ids: list | None
 ) -> dict[int, float]:
     """Cap each visible device at its own budget; returns {ordinal: fraction} for what was set."""
     applied: dict[int, float] = {}
@@ -4259,7 +4256,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"):
         try:
             import torch as _torch_budget
-
             _apply_training_vram_budget(
                 _torch_budget,
                 config.get("offload_vram_gb"),

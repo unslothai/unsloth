@@ -591,7 +591,9 @@ class UnslothTrainer:
 
     def _offload_snapshot(self) -> Optional[dict]:
         """Where each decoder layer is and what the last steps' copies cost, for the live panel."""
-        swapper = getattr(self.model, "_unsloth_block_swap", None) if self.model is not None else None
+        swapper = (
+            getattr(self.model, "_unsloth_block_swap", None) if self.model is not None else None
+        )
         stats = getattr(swapper, "stats", None)
         if stats is None:
             return None
@@ -645,7 +647,6 @@ class UnslothTrainer:
                 devices[str(li)] = home.index
         try:
             from unsloth_zoo.block_swap import find_decoder_layers
-
             for li, layer in enumerate(find_decoder_layers(self.model)):
                 if str(li) in devices:
                     continue

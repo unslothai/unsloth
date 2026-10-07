@@ -582,13 +582,13 @@ class TrainingStartRequest(BaseModel):
         le = 4096,
         description = "VRAM this run may use, in GiB; offload_layers = 'auto' sizes to it",
     )
-    offload_vram_gb_per_device: Optional[
-        List[Optional[Annotated[float, Field(gt = 0, le = 4096)]]]
-    ] = Field(
-        None,
-        max_length = 64,
-        description = "Per-GPU VRAM budget in GiB, entry i for the GPU /api/system lists as index i "
-        "(null = no cap); replaces offload_vram_gb when given",
+    offload_vram_gb_per_device: Optional[List[Optional[Annotated[float, Field(gt = 0, le = 4096)]]]] = (
+        Field(
+            None,
+            max_length = 64,
+            description = "Per-GPU VRAM budget in GiB, entry i for the GPU /api/system lists as index i "
+            "(null = no cap); replaces offload_vram_gb when given",
+        )
     )
     prefetch_depth: Union[Literal["auto"], Annotated[int, Field(ge = 1, le = 8)]] = Field(
         2,

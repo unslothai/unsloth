@@ -743,7 +743,10 @@ def test_prefetch_depth_is_a_get_peft_model_option():
 
 
 def test_auto_prefetch_depth_plans_one_slot_ahead_and_reaches_the_swapper():
-    assert _fns("planned_prefetch_depth")["planned_prefetch_depth"]({"prefetch_depth": "auto"}) == "auto"
+    assert (
+        _fns("planned_prefetch_depth")["planned_prefetch_depth"]({"prefetch_depth": "auto"})
+        == "auto"
+    )
     ns, calls = _load(auto_pick = ([5, 7], 0))
     ns["BlockSwap"].stats = lambda self: {}  # a zoo with adaptive depth
     planned = []
