@@ -469,11 +469,10 @@ def test_comfy_int8_krea2_file_loads_with_codes_exact(tmp_path, monkeypatch):
 
 
 def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch):
-    """Krea2Transformer2DModel has no from_single_file, so a plain bf16 ComfyUI file goes through Studio's
-    loader: same tensors as the diffusers weights, the _keep_in_fp32_modules norms in float32 as
-    from_pretrained leaves them, strict on keys."""
+    """A plain bf16 ComfyUI file through Studio's loader (used while diffusers gives Krea 2 no
+    from_single_file): same tensors as the diffusers weights, the _keep_in_fp32_modules norms in float32
+    as from_pretrained leaves them, strict on keys."""
     cls = _class("Krea2Transformer2DModel")
-    assert not hasattr(cls, "from_single_file")
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     path = tmp_path / "krea2_tiny_bf16.safetensors"
     safetensors_torch.save_file(
@@ -507,12 +506,13 @@ def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch):
 def test_the_single_file_branch_uses_studio_loader_only_without_from_single_file():
     import inspect
 
-    source = inspect.getsource(studio)
-    gate = source.index('if kind != "gguf" and not hasattr(transformer_cls, "from_single_file"):')
+    # Whitespace-free, so a formatter rewrapping the condition cannot break the check.
+    source = "".join(inspect.getsource(studio).split())
+    gate = source.index('ifkind!="gguf"andnothasattr(transformer_cls,"from_single_file"):')
     assert (
         gate
-        < source.index("load_original_layout_transformer(\n", gate)
-        < source.index("transformer = transformer_cls.from_single_file(", gate)
+        < source.index("transformer=load_original_layout_transformer(", gate)
+        < source.index("transformer=transformer_cls.from_single_file(", gate)
     )
 
 
