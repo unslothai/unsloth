@@ -135,7 +135,10 @@ const BACKTICK_RUN_RE = /`+/g;
 const BLANK_LINE_RE = /\n[ \t]*\n/g;
 
 // find closers from the right so unmatched openers do not rescan the paragraph.
-function codeSpanRegions(text: string): [number, number][] {
+function codeSpanRegions(
+  text: string,
+  inlineLinks: readonly [number, number][] = [],
+): [number, number][] {
   const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
   const runs: { start: number; end: number; paragraph: number }[] = [];
   let paragraph = 0;
@@ -160,12 +163,36 @@ function codeSpanRegions(text: string): [number, number][] {
     nearest.set(width, i);
   }
   const regions: [number, number][] = [];
+  let linkIndex = 0;
   for (let i = 0; i < runs.length; i += 1) {
+    while (
+      linkIndex < inlineLinks.length &&
+      inlineLinks[linkIndex][1] <= runs[i].start
+    ) {
+      linkIndex += 1;
+    }
+    if (
+      linkIndex < inlineLinks.length &&
+      inlineLinks[linkIndex][0] < runs[i].start
+    ) {
+      const linkEnd = inlineLinks[linkIndex][1];
+      while (i + 1 < runs.length && runs[i + 1].start < linkEnd) {
+        i += 1;
+      }
+      linkIndex += 1;
+      continue;
+    }
     const closer = closers[i];
     if (closer < 0 || isEscaped(text, runs[i].start)) {
       continue;
     }
     regions.push([runs[i].start, runs[closer].end]);
+    while (
+      linkIndex < inlineLinks.length &&
+      inlineLinks[linkIndex][0] < runs[closer].end
+    ) {
+      linkIndex += 1;
+    }
     i = closer;
   }
   return regions;
@@ -304,6 +331,22 @@ function inlineLinkEnd(text: string, from: number): number {
   return at > destinationEnd ? inlineTitleEnd(text, at) : -1;
 }
 
+function inlineLinkRegions(text: string): [number, number][] {
+  const regions: [number, number][] = [];
+  let coveredEnd = -1;
+  for (const match of text.matchAll(LINK_LABEL_USE_RE)) {
+    if (match.index < coveredEnd || isEscaped(text, match.index)) {
+      continue;
+    }
+    const end = inlineLinkEnd(text, match.index + match[0].length);
+    if (end >= 0) {
+      regions.push([match.index, end]);
+      coveredEnd = end;
+    }
+  }
+  return regions;
+}
+
 // micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.
 function normalizeLabel(label: string): string {
   return label
@@ -331,7 +374,9 @@ function hasShortcutReference(
   const uses = references.replace(LINK_DEFINITION_KEY_RE, (definition) =>
     definition.replace(NON_LINE_ENDING_RE, " "),
   );
-  const code = exact ? codeSpanRegions(uses) : [];
+  const code = exact
+    ? codeSpanRegions(uses, inlineLinkRegions(uses))
+    : [];
   let codeIndex = 0;
   let inlineEnd = -1;
   for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
