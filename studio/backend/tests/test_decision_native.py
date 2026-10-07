@@ -309,9 +309,6 @@ def _post(
 PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 
 
-# ---- the export contract
-
-
 def _clef_folder(root: Path, name = "clef_run") -> Path:
     folder = root / name
     folder.mkdir(parents = True)
@@ -411,9 +408,6 @@ def test_a_malformed_export_is_not_served(tmp_path, edit):
     edit(data)
     path.write_text(json.dumps(data), encoding = "utf-8")
     assert contract.read_export(folder) is None
-
-
-# ---- the server process
 
 
 def test_cpu_flags_hide_the_gpu_and_keep_weights_unrepacked(home, stub, tmp_path):
@@ -584,9 +578,6 @@ def test_answers_are_rebuilt_with_the_pytorch_formatter():
     bad = {"answers": {**native["answers"], "c": {"probabilities": {"a": 0.8}}}}
     with pytest.raises(native_worker.NativeError, match = '"c"'):
         native_worker.normalise(bad, questions)
-
-
-# ---- routing through the Decision API
 
 
 def test_auto_serves_a_stock_clef_through_llama_cpp(home, client, stub):

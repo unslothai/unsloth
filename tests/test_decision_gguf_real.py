@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Fine-tune, calibrate, export to GGUF and serve through llama.cpp's /v1/systemone, then compare
-# with FastDecisionModel.predict. Needs CUDA, a llama.cpp >= b11443 at UNSLOTH_LLAMA_CPP_PATH and
-# a llama-server binary of that release at UNSLOTH_TEST_LLAMA_SERVER.
+# Needs CUDA, llama.cpp >= b11443 at UNSLOTH_LLAMA_CPP_PATH and its llama-server at UNSLOTH_TEST_LLAMA_SERVER.
 
 import json
 import math
@@ -286,8 +284,7 @@ def test_clef_fine_tune_exports_and_serves_like_pytorch(tmp_path):
     # Q8_0 moved a sharply calibrated Clef-Flash fine-tune by 0.045 (BF16: 0.0047).
     _assert_parity(results, "Q8_0", 0.05)
 
-    # The 0.05 floor with a fold _fold_temperature refuses (a logit scale just past 100 * 0.05):
-    # the head temperature lives only in the config, so the GGUF must carry it.
+    # Just under the 0.05 fold floor: the head temperature lives only in the config, so the GGUF must carry it.
     with torch.no_grad():
         model.head.joint_logit_scale.fill_(math.log(5.5))
     config["head_temperature"] = 0.05

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# GGUF export of decision models (Clef and Laya) for llama.cpp's /v1/systemone server. The
-# upstream converter (llama.cpp >= b11443) writes the graph; Unsloth then writes the per-type
-# temperatures its PyTorch serving applies, which the Clef converter never reads.
+# Decision model (Clef, Laya) GGUF export for llama.cpp's /v1/systemone: the upstream converter writes
+# the graph, then the temperatures PyTorch serving applies are written, which the Clef converter drops.
 
 __all__ = [
     "DECISION_GGUF_QUANTIZATIONS",
@@ -715,8 +714,7 @@ def _export_decision_gguf(
                 moved.append(quant)
             data = _write_export(output, layout, merged, source_fingerprint)
         except BaseException:
-            # Windows refuses to replace a GGUF llama-server has mapped: the export of these
-            # same weights stays listed rather than vanishing.
+            # Windows refuses to replace a GGUF llama-server has mapped: keep the same-weights export listed.
             if (
                 previous is not None
                 and previous["source_fingerprint"] == source_fingerprint
@@ -791,8 +789,7 @@ def _save_pretrained_gguf(
             merged, tokenizer, **({} if token is None else {"token": token})
         )
         if source_folder is None and _layout(output) == layout:
-            # The folder on disk names the export only if it holds these weights: after an
-            # in-memory calibration or more training it is stale.
+            # Only a folder holding these weights names the export (not after in-memory calibration).
             contract = _contract()
             if contract.fingerprint(output, layout) == contract.fingerprint(merged, layout):
                 source_folder = output
