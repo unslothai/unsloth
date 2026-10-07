@@ -8074,11 +8074,15 @@ def _owner_chosen_launch(
     or was the owner's). Replaying these is not a new path, so auto-switch loads and the UI resending
     an inherited or echoed setting keep working."""
     from core.inference.llama_server_args import owner_only_path_args
+    from utils.account_context import OWNER
     from utils.openai_auto_switch_settings import resolve_override_for_load
 
     sources = []
     if identifier:
-        _, override = resolve_override_for_load(identifier, config_identifier, variant)
+        # The owner's row only: a managed account's own saved override is not the owner's choice.
+        _, override = run_as(
+            OWNER, resolve_override_for_load, identifier, config_identifier, variant
+        )
         sources.append(override.get("llama_extra_args"))
         intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
         if (

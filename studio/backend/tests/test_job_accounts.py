@@ -257,6 +257,8 @@ def test_export_owner_single_mode_preserves_operation_and_status_bytes(export, m
         "last_op_status": "success",
         "last_op_output_path": None,
         "last_op_error": None,
+        # Not a decision model checkpoint, so the decision export details stay null.
+        "decision": None,
     }
     assert result.model_dump_json() == json.dumps(expected, separators = (",", ":"))
     exported = backend.export_lora_adapter("/arbitrary/export")

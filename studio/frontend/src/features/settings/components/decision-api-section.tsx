@@ -409,7 +409,9 @@ export function DecisionApiSection(): ReactElement | null {
   const longLabel = isRemote || current?.kind === "fine_tune";
   // Laya is PyTorch only; Clef runs on either runtime, a GGUF-only model on llama.cpp only.
   const runtimeChoice =
-    isClefDecisionModel(settings.model) || !!current?.llamaCppOnly;
+    isClefDecisionModel(settings.model) ||
+    settings.layout === "clef" ||
+    !!current?.llamaCppOnly;
   const connectionGroups = [
     ...new Set(connections?.map((c) => c.providerId)),
   ].map((id) => connections?.filter((c) => c.providerId === id) ?? []);
