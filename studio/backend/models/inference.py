@@ -5101,7 +5101,13 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    # Additive per-control provenance {control: {value, source, reason}}; null when nothing is loaded. Declared explicitly so pydantic extra='ignore' keeps it.
+    supports_negative_prompt: bool = Field(
+        True,
+        description = "Whether the loaded model applies a negative prompt on this engine "
+        "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
+        "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
@@ -5110,11 +5116,7 @@ class DiffusionStatusResponse(BaseModel):
 
 
 class DiffusionInferenceInfo(BaseModel):
-    """One family's bf16 component sizes + estimated resident footprint per quant scheme.
-
-    Mirrors the dicts ``family_inference_infos()`` returns: the bf16-resident transformer /
-    text-encoder / VAE sizes, and the estimated resident GB under bf16 and each dense
-    transformer-quant scheme (transformer * factor + companions), rounded to 1 decimal."""
+    """bf16 component sizes and 0.1 GB resident estimates by transformer quantization scheme."""
 
     family: str = Field(..., description = "Diffusion family name (auto-policy table key).")
     transformer_bf16_gb: float = Field(..., description = "bf16-resident transformer size in GB.")
@@ -5197,8 +5199,8 @@ class ImageGenerationResponse(BaseModel):
 class AudioSpeechRequest(BaseModel):
     """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
 
-    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
-    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
+    ``voice`` picks a saved voice or a built-in speaker; OpenAI's own voice names are accepted
+    and ignored. ``reference`` clones from uploaded audio, a history clip or a saved voice."""
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(
@@ -5208,11 +5210,31 @@ class AudioSpeechRequest(BaseModel):
             "model auto-switch is on; otherwise the loaded audio model is used."
         ),
     )
-    voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
-    response_format: Optional[str] = Field(
-        "wav", description = "Output container. Only 'wav' is supported."
+    voice: Optional[Union[str, "AudioSpeechVoice"]] = Field(
+        None,
+        description = (
+            'A saved voice\'s id (or {"id": ...}), else a built-in speaker of the model. Other '
+            "names, such as OpenAI's, are ignored."
+        ),
     )
-    speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    reference: Optional["AudioSourceRef"] = Field(
+        None,
+        description = "[x-unsloth] Audio to clone: an uploaded input, a history clip or a saved voice.",
+    )
+    reference_text: Optional[str] = Field(
+        None,
+        max_length = 4000,
+        description = "[x-unsloth] What is said in the reference, for models that use it.",
+    )
+    response_format: Optional[str] = Field(
+        "wav", description = "Output format: wav, mp3, flac, opus, aac or pcm."
+    )
+    stream_format: Optional[Literal["audio", "sse"]] = Field(
+        None, description = "Only 'audio' (the whole file in one response) is supported."
+    )
+    speed: Optional[float] = Field(
+        None, ge = 0.25, le = 4.0, description = "Speech rate, applied where the model supports it."
+    )
     instructions: Optional[str] = Field(
         None,
         description = "Scene or music-description instructions for compatible audio models.",
@@ -5345,6 +5367,28 @@ class AudioSourceRef(BaseModel):
         return self
 
 
+class AudioSpeechVoice(BaseModel):
+    """OpenAI's custom-voice object: here a saved voice's id."""
+
+    id: str = Field(..., pattern = _AUDIO_ID_PATTERN)
+
+
+class AudioGenerateRequest(ChatCompletionRequest):
+    """``POST /audio/generate``: speak the last user message, as chat's read aloud does."""
+
+    voice_id: Optional[str] = Field(
+        None,
+        pattern = _AUDIO_ID_PATTERN,
+        description = (
+            "[x-unsloth] A saved voice to speak in, as the Audio page's Speak does; the loaded "
+            "model must clone. Language, instructions, options, seed and the token cap apply."
+        ),
+    )
+    persist: bool = Field(
+        True, description = "[x-unsloth] Keep the clip in Audio history. Read aloud sends false."
+    )
+
+
 class AudioRunInputs(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -5410,6 +5454,12 @@ class AudioRunRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"]
+    model: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "A downloaded audio model to load first when model auto-switch is on; "
+        "otherwise the loaded model runs it",
+    )
     # Required except for a conversion or a separation (the routes answer those given text with a 400).
     text: Optional[str] = None
     language: Optional[str] = Field(None, max_length = 64)

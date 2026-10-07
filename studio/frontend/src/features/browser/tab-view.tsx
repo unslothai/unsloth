@@ -242,11 +242,21 @@ function WebPage({
         const name = page.fileName ?? fileNameFromUrl(page.url);
         setPageDownload(tab.id, { blob: page.blob, name, contentType: page.contentType });
         fitZoomToPage(tab.id, true);
-        updateTab(tab.id, { loading: false, title: name, displayUrl: page.url, documentType: page.contentType });
+        updateTab(tab.id, {
+          loading: false,
+          title: name,
+          displayUrl: page.url,
+          documentType: page.contentType,
+          pageError: false,
+        });
         if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
       } else {
         fitZoomToPage(tab.id, false);
-        updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
+        updateTab(tab.id, {
+          title: hostOf(page.url),
+          displayUrl: page.url === url ? null : page.url,
+          pageError: false,
+        });
       }
     };
     const cached = cachedPage(entry);
@@ -255,7 +265,7 @@ function WebPage({
       return () => setPageDownload(tab.id, null);
     }
     if (blocked) {
-      updateTab(tab.id, { loading: false, title: hostOf(url) });
+      updateTab(tab.id, { loading: false, title: hostOf(url), pageError: true });
       return;
     }
     if (method === "POST") {
@@ -277,7 +287,7 @@ function WebPage({
           message: error instanceof Error ? error.message : String(error),
           botCheck: error instanceof BrowserFetchError && error.botCheck,
         });
-        updateTab(tab.id, { loading: false, title: hostOf(url) });
+        updateTab(tab.id, { loading: false, title: hostOf(url), pageError: true });
       });
     return () => {
       controller.abort();

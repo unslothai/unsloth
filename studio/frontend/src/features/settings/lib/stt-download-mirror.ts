@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import {
   type SttEngine,
   cancelSttDownload,
@@ -11,6 +12,7 @@ import {
 } from "@/features/chat";
 import {
   finishExternalJob,
+  invalidateGgufVariantsCache,
   startExternalJob,
   updateExternalJob,
 } from "@/features/hub";
@@ -20,6 +22,7 @@ import {
   type SttModel,
   getSttModelRepo,
   sttModelName,
+  sttModelVariant,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 import { SttDownloadTrackers } from "./stt-download-trackers";
@@ -37,6 +40,8 @@ const START_GRACE_MS = 8_000;
 
 const trackers = new SttDownloadTrackers();
 const warmSelectedVoiceModelOnComplete = new Map<string, boolean>();
+// The quant each tracked download fetches, when its starter knew it.
+const trackedVariants = new Map<string, string | null>();
 
 function trackerKey(model: SttModel, engine?: SttEngine): string {
   return engine && engine !== "transformers" ? `${engine}:${model}` : model;
@@ -51,9 +56,10 @@ function jobKey(model: SttModel, engine?: SttEngine): string {
 async function loadAndAnnounce(
   model: SttModel,
   engine?: SttEngine,
+  ggufVariant?: string | null,
 ): Promise<void> {
   try {
-    await loadSttModel(model, engine);
+    await loadSttModel(model, engine, undefined, undefined, ggufVariant);
     toast.success(
       translate("settings.voice.dictation.sttModelReady", {
         model: sttModelName(model),
@@ -74,21 +80,31 @@ function settle(
 ): void {
   const key = trackerKey(model, engine);
   finishExternalJob(jobKey(model, engine), outcome, error);
+  // A cached listing would still call the new quant not downloaded.
+  if (outcome === "complete" && isAudioCppFolderId(model)) {
+    invalidateGgufVariantsCache(model);
+  }
   trackers.stop(key);
   const shouldWarmVoiceModel =
     warmSelectedVoiceModelOnComplete.get(key) ?? true;
   warmSelectedVoiceModelOnComplete.delete(key);
-  // Only warm what the user is still pointed at. Selecting another model, or
-  // leaving local dictation, during the download means this one is not wanted
-  // and loading it would undo the unload that switch performed.
-  const { sttModel, dictationEngine } = useVoiceSettingsStore.getState();
+  const tracked = trackedVariants.get(key);
+  trackedVariants.delete(key);
+  // Only warm what the user is still pointed at. Selecting another model or
+  // quant, or leaving local dictation, during the download means this one is
+  // not wanted and loading it would undo the unload that switch performed.
+  const { sttModel, sttGgufVariant, dictationEngine } =
+    useVoiceSettingsStore.getState();
+  const variant = sttModelVariant(model, sttGgufVariant);
   if (
     shouldWarmVoiceModel &&
     outcome === "complete" &&
     dictationEngine === "model" &&
-    sttModel === model
+    sttModel === model &&
+    // An adopted download's quant is unknown; it can only be what an unpinned row runs.
+    (tracked === undefined ? variant === null : tracked === variant)
   ) {
-    void loadAndAnnounce(model, engine);
+    void loadAndAnnounce(model, engine, variant);
   }
 }
 
@@ -121,16 +137,18 @@ async function poll(
     return;
   }
 
-  if (engineStatus?.downloaded_models.includes(model)) {
-    settle(model, "complete", undefined, engine);
-    return;
-  }
-  if (download?.cancelled) {
+  // Before the downloaded check: a row lists as downloaded once any quant of it is cached, so a
+  // stopped download of another quant would read as complete. start() clears both flags.
+  if (download?.cancelled && (download.cancelled_model ?? model) === model) {
     settle(model, "cancelled", undefined, engine);
     return;
   }
   if (download?.error) {
     settle(model, "error", download.error, engine);
+    return;
+  }
+  if (engineStatus?.downloaded_models.includes(model)) {
+    settle(model, "complete", undefined, engine);
     return;
   }
   if (Date.now() - startedAt > START_GRACE_MS) {
@@ -162,6 +180,8 @@ export function trackSttDownload(
     warmSelectedVoiceModelOnComplete?: boolean;
     engine?: SttEngine;
     repoId?: string;
+    /** The quant this download fetches, so a quant picked meanwhile is not warmed. */
+    ggufVariant?: string | null;
   } = {},
 ): void {
   const resolvedEngine = options.engine ?? sttEngineFor(model);
@@ -177,6 +197,9 @@ export function trackSttDownload(
     key,
     options.warmSelectedVoiceModelOnComplete ?? true,
   );
+  if (options.ggufVariant !== undefined) {
+    trackedVariants.set(key, options.ggufVariant);
+  }
   startExternalJob({
     key: jobKey(model, resolvedEngine),
     repoId: options.repoId ?? getSttModelRepo(model),

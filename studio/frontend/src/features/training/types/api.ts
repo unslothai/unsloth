@@ -72,6 +72,8 @@ export interface TrainingStartRequest {
   is_dataset_image: boolean;
   is_dataset_audio: boolean;
   is_embedding: boolean;
+  is_decision: boolean;
+  model_subfolder: string | null;
   enable_wandb: boolean;
   wandb_token: string | null;
   wandb_project: string | null;

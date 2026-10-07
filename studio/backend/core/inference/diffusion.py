@@ -212,6 +212,7 @@ from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
+from .diffusion_postprocess import install as install_device_postprocess
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -344,6 +345,20 @@ from utils.paths.path_utils import (
 )
 
 logger = get_logger(__name__)
+
+_ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES = frozenset(("z-image", KREA2_FAMILY_NAME))
+
+
+def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
+    if not family.uses_negative_prompt:
+        return False
+    if family.cfg_kwarg == "true_cfg_scale":
+        return float(guidance) > 1.0
+    if family.cfg_kwarg == "guidance_scale":
+        threshold = 0.0 if family.name in _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES else 1.0
+        return float(guidance) > threshold
+    return True
+
 
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
@@ -9947,7 +9962,11 @@ class DiffusionBackend:
                         kwargs["width"] = iw
                     if "height" in call_params:
                         kwargs["height"] = ih
-                if negative_prompt and "negative_prompt" in call_params:
+                if (
+                    negative_prompt
+                    and _negative_prompt_engaged(state.family, guidance)
+                    and "negative_prompt" in call_params
+                ):
                     kwargs["negative_prompt"] = negative_prompt
                 elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
                     state.family.cfg_kwarg, guidance
@@ -10261,6 +10280,8 @@ class DiffusionBackend:
                         elif state.transformer_cache:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
+                        # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
+                        install_device_postprocess(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
@@ -10419,6 +10440,7 @@ class DiffusionBackend:
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
+                    "negative_prompt": kwargs.get("negative_prompt") or None,
                     "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD this ran on, not just the repo id: a GGUF quant and a torchao scheme each change the
                     # pixels.
@@ -10747,6 +10769,7 @@ class DiffusionBackend:
             "resolved": resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
+            "supports_negative_prompt": state.family.uses_negative_prompt,
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
