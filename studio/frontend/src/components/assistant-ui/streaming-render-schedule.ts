@@ -291,10 +291,11 @@ function inlineTitleEnd(text: string, from: number): number {
   }
   at += 1;
   for (; at < text.length; at += 1) {
-    if (text[at] === "\\") {
-      if (text[at + 1] === undefined || text[at + 1] === "\n") {
-        return -1;
-      }
+    if (
+      text[at] === "\\" &&
+      text[at + 1] !== undefined &&
+      isAsciiPunctuation(text[at + 1])
+    ) {
       at += 1;
     } else if (text[at] === closer) {
       at = skipInlineWhitespace(text, at + 1);
