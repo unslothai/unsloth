@@ -13,13 +13,17 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
   return core.invoke<T>(command, args);
 }
 
+/** `marked` is false when the file couldn't be marked as downloaded from the internet (FAT, exFAT, some
+ *  network drives), null when nothing marks it. */
+export type SavedNativeDownload = { id: string; name: string; marked: boolean | null };
+
 /** Null if cancelled. A website file (`source`) is quarantine-marked so Gatekeeper/SmartScreen check it. */
 export async function saveNativeDownload(
   blob: Blob,
   name: string,
   ask: boolean,
   source: string | null,
-): Promise<{ id: string; name: string } | null> {
+): Promise<SavedNativeDownload | null> {
   const core = await import("@tauri-apps/api/core");
   const headers: Record<string, string> = {
     [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(name),
@@ -28,7 +32,7 @@ export async function saveNativeDownload(
   // href is ASCII (punycode host, escaped path), as a header value must be.
   const href = source && isWebUrl(source) ? safeHref(source) : null;
   if (href) headers["x-unsloth-source"] = href;
-  return core.invoke<{ id: string; name: string } | null>("browser_download_save", new Uint8Array(await blob.arrayBuffer()), {
+  return core.invoke<SavedNativeDownload | null>("browser_download_save", new Uint8Array(await blob.arrayBuffer()), {
     headers,
   });
 }
