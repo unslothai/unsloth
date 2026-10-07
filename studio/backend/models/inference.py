@@ -4269,8 +4269,9 @@ class DiffusionLoadRequest(BaseModel):
         description = "How to load the model (null = auto-detect from gguf_filename): gguf "
         "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
         "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
-        "from_pretrained, embedded quant auto-applied). Non-GGUF kinds are restricted to "
-        "unsloth/* repos (or a local path).",
+        "from_pretrained, embedded quant auto-applied). A single_file .safetensors loads from "
+        "any repo; pipeline loads are restricted to unsloth/* repos, the official base repos, "
+        "or a local path.",
     )
     base_repo: Optional[str] = Field(
         None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
@@ -5772,8 +5773,8 @@ class VideoLoadRequest(BaseModel):
         description = "How to load the model (null = auto-detect from gguf_filename): gguf "
         "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
         "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
-        "from_pretrained). Non-GGUF kinds are restricted to unsloth/* repos, the official "
-        "family base repos, or a local path.",
+        "from_pretrained). A single_file .safetensors loads from any repo; pipeline loads are "
+        "restricted to unsloth/* repos, the official family base repos, or a local path.",
     )
     base_repo: Optional[str] = Field(
         None,

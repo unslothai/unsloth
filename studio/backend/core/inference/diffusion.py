@@ -8,7 +8,9 @@ GGUF transformer dequantised on-device via ``GGUFQuantizationConfig``, a single-
 transformer (e.g. fp8), or a full diffusers pipeline via ``from_pretrained`` (which re-applies an
 embedded quant config such as bnb-4bit). The single-file kinds pull the rest of the pipeline (VAE,
 text encoders, scheduler) from the matching base repo; the pipeline kind pulls everything from the
-repo itself. Non-GGUF kinds are gated to the ``unsloth/*`` org (or a local path) for safety.
+repo itself. Pipeline loads are gated to the ``unsloth/*`` org, the official bases, or a local path
+for safety; a single ``.safetensors`` file is trusted per file from any repo (see
+``diffusion_single_file_trust``).
 
 torch/diffusers are imported lazily so this stays importable in a no-torch runtime. ``begin_load``
 runs on a background thread; poll ``load_progress`` for the download bar. GPU-handoff policy lives
@@ -283,6 +285,7 @@ from .diffusion_comfy_quant import (
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
+from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
@@ -842,7 +845,9 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     arbitrary repo, which fetches and deserialises third-party weights. So the non-GGUF paths are
     gated to the ``unsloth/*`` org, a short allowlist of official safetensors-only base repos
     (``_TRUSTED_NON_GGUF_REPOS``), and local paths the user explicitly pointed at. The GGUF path
-    stays open to any repo.
+    stays open to any repo, and so does a single ``.safetensors`` file, which is trusted per file
+    instead (``diffusion_single_file_trust.single_file_load_allowed``); this predicate still decides
+    pipeline loads and every ``base_repo``.
 
     A bare ``owner/name`` HF id is never a real filesystem path, and an id with invalid characters
     makes ``Path.exists()`` raise OSError; treat any such failure as not a local path so the trust
@@ -3027,11 +3032,15 @@ class DiffusionBackend:
                 f"multiple transformers), not from a single-file or GGUF checkpoint; "
                 f"select the pipeline repo."
             )
-        # Non-GGUF loads fetch + deserialise weights, so gate to unsloth/ or a local path.
-        if kind != "gguf" and not _is_trusted_diffusion_repo(repo_id):
+        # Non-GGUF loads deserialise weights: repo-gated, except a lone .safetensors file (diffusion_single_file_trust).
+        if kind != "gguf" and not single_file_load_allowed(
+            _is_trusted_diffusion_repo(repo_id), kind, gguf_filename
+        ):
             raise ValueError(
-                f"Non-GGUF diffusion loads are restricted to unsloth/* repos (or a local "
-                f"path); got '{repo_id}'. Pass a gguf_filename to load a GGUF instead."
+                f"Non-GGUF diffusion loads from '{repo_id}' are limited to a single .safetensors "
+                f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
+                f"repos, the official base repos, or a local path. Pass a gguf_filename to load "
+                f"a GGUF instead."
             )
         # The companion base repo also loads via from_pretrained, so it must clear the same trust bar
         if base_repo and base_repo.strip() and not _is_trusted_diffusion_repo(base_repo):
@@ -5611,6 +5620,9 @@ class DiffusionBackend:
                 # A renamed or hand-picked FLUX.2 GGUF can still land on a different-size base, and no name-based rule
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
+                if kind == "single_file" and not _is_trusted_diffusion_repo(repo_id):
+                    # Admitted per file: prove it is a safetensors container before any probe or loader opens it.
+                    assert_safetensors_file(single_file_path)
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.

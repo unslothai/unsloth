@@ -63,6 +63,7 @@ from .diffusion_comfy_quant import (
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
+from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
 from .diffusion_prequant import scoped_local_files_only
 from .video_moe_pair import moe_expert_of, moe_partner_filename, moe_pick_pairs
 from .diffusion_cache import (
@@ -2809,10 +2810,14 @@ class VideoBackend:
                         "MiniMax-H3 needs the Diffusers revision bundled with this Unsloth "
                         "version. Reinstall Unsloth dependencies and retry."
                     )
-        if kind != "gguf" and not _is_trusted_video_repo(repo_id):
+        # A lone .safetensors file is trusted per file, from any repo (diffusion_single_file_trust).
+        if kind != "gguf" and not single_file_load_allowed(
+            _is_trusted_video_repo(repo_id), kind, gguf_filename
+        ):
             raise ValueError(
-                f"Non-GGUF video loads are limited to unsloth/* repos, the official "
-                f"family base repos, and local paths; '{repo_id}' is neither."
+                f"Non-GGUF video loads from '{repo_id}' are limited to a single .safetensors "
+                f"checkpoint; full pipelines and other weight formats load only from unsloth/* "
+                f"repos, the official family base repos, and local paths."
             )
         # Companions load with from_pretrained, so a base repo is held to the non-GGUF bar: a GGUF pick must not smuggle
         # in a remote base.
@@ -5857,6 +5862,8 @@ class VideoBackend:
                         repo_id, gguf_filename, hf_token, local_files_only = local_files_only
                     )
                 )
+                if not _is_trusted_video_repo(repo_id):
+                    assert_safetensors_file(comfy_checkpoint)
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,
@@ -5935,6 +5942,10 @@ class VideoBackend:
             checkpoint_path = self._resolve_checkpoint_path(
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
             )
+            # Admitted per file from an untrusted repo: prove each file is a safetensors container before any probe.
+            untrusted_single_file = kind == "single_file" and not _is_trusted_video_repo(repo_id)
+            if untrusted_single_file:
+                assert_safetensors_file(checkpoint_path)
             if fam.name == "ltx-2":
                 from .video_ltx2 import ltx23_variant_identifier
                 variant_id = ltx23_variant_identifier(checkpoint_path)
@@ -5951,6 +5962,8 @@ class VideoBackend:
                 """Resident MiB of one checkpoint file's DiT and its ComfyUI quant scan (None: a plain file)."""
                 scan = None
                 mib: Optional[int] = None
+                if untrusted_single_file:
+                    assert_safetensors_file(path)
                 size_mib = file_size_mib(str(path))
                 if kind == "single_file":
                     scan = refuse_comfy_quant(str(path))

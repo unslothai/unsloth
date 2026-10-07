@@ -120,7 +120,8 @@ export interface DiffusionLoadRequest {
   display_repo_id?: string;
   // Optional now: required for the gguf / single_file kinds, omitted for a full pipeline loaded via from_pretrained.
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename). Non-GGUF kinds are restricted to unsloth/* repos.
+  // How to load the model (omit to auto-detect from gguf_filename). A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* repos, the official bases, or a local path.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;

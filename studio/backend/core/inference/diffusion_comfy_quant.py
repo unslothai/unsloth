@@ -103,8 +103,14 @@ def _read_header(path: str) -> tuple[dict, int]:
         return json.loads(handle.read(size)), 8 + size
 
 
+# A comfy_quant declaration is a few hundred bytes of JSON; a file can claim any span, so never read a large one.
+_MAX_COMFY_QUANT_BYTES = 1 << 20
+
+
 def _read_json_tensor(path: str, entry: dict, base: int) -> Any:
     start, end = entry["data_offsets"]
+    if not 0 <= int(end) - int(start) <= _MAX_COMFY_QUANT_BYTES:
+        raise ValueError(f"comfy_quant declaration spans {int(end) - int(start)} bytes")
     with open(path, "rb") as handle:
         handle.seek(base + int(start))
         return json.loads(handle.read(int(end) - int(start)).decode("utf-8"))

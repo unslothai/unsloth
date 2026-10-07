@@ -13048,3 +13048,56 @@ def test_previewer_is_finished_when_the_render_fails_before_its_loop(fake_runtim
     with pytest.raises(RuntimeError, match = "protect refused"):
         backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
     assert all(p.finished for p in started)
+
+
+def test_h3_modular_single_file_from_an_untrusted_repo_checks_the_header_first(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The modular H3 branch returns before the generic single-file check, so it validates the header itself.
+    import pickle
+
+    bogus = tmp_path / "minimax_h3_fp8.safetensors"
+    bogus.write_bytes(pickle.dumps({"weights": 1}))
+    reached = []
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "ModularPipeline", _FakeModularPipeline, raising = False)
+    monkeypatch.setattr(diffusers, "ComponentsManager", _FakeComponentsManager, raising = False)
+    monkeypatch.setattr(diffusers, "MiniMaxH3Transformer3DModel", _FakeTransformer, raising = False)
+    monkeypatch.setattr(
+        VideoBackend, "_resolve_checkpoint_path", lambda self, *args, **kwargs: bogus
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_load_h3_modular_pipeline",
+        lambda self, **kwargs: reached.append(kwargs["comfy_checkpoint"]),
+    )
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        VideoBackend().load_pipeline(
+            "someone/minimax-h3-repack",
+            gguf_filename = bogus.name,
+            family_override = "minimax-h3",
+        )
+    assert reached == []
+
+
+def test_untrusted_a14b_pair_checks_the_partner_files_header_too(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Both experts come from the untrusted repo, so the partner is validated like the picked file.
+    import json
+    import pickle
+
+    high = tmp_path / "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+    low = tmp_path / "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+    raw = json.dumps({"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
+    high.write_bytes(len(raw).to_bytes(8, "little") + raw + b"\x00\x00\x80\x3f")
+    low.write_bytes(pickle.dumps({"weights": 1}))
+    monkeypatch.setattr(VideoBackend, "_resolve_checkpoint_path", lambda self, *a, **k: high)
+    monkeypatch.setattr(VideoBackend, "_resolve_moe_partner_path", lambda self, *a, **k: low)
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        VideoBackend().load_pipeline(
+            "someone/wan-a14b-repack",
+            gguf_filename = high.name,
+            base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            family_override = "wan2.2-t2v-a14b",
+        )
