@@ -153,7 +153,7 @@ const BLANK_LINE_RE = /\n[ \t]*\n/g;
 
 // One pass: each run's closer is the next run of the same width in its paragraph, found from
 // the right, so an opener with no closer costs nothing instead of a rescan of the paragraph.
-function stripCodeSpans(text: string): string {
+function codeSpanRegions(text: string): [number, number][] {
   const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
   const runs: { start: number; end: number; paragraph: number }[] = [];
   let paragraph = 0;
@@ -177,21 +177,142 @@ function stripCodeSpans(text: string): string {
     closers[i] = nearest.get(width) ?? -1;
     nearest.set(width, i);
   }
-  let stripped = "";
-  let from = 0;
+  const regions: [number, number][] = [];
   for (let i = 0; i < runs.length; i += 1) {
     const closer = closers[i];
     if (closer < 0 || isEscaped(text, runs[i].start)) {
       continue;
     }
-    stripped += text.slice(from, runs[i].start);
-    from = runs[closer].end;
+    regions.push([runs[i].start, runs[closer].end]);
     i = closer;
   }
-  return stripped + text.slice(from);
+  return regions;
 }
 
 const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const NON_LINE_ENDING_RE = /[^\n]/g;
+
+function isAsciiControl(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return code <= 0x1f || code === 0x7f;
+}
+
+function skipInlineWhitespace(text: string, from: number): number {
+  let at = from;
+  while (text[at] === " " || text[at] === "\t") {
+    at += 1;
+  }
+  if (text[at] !== "\n") {
+    return at;
+  }
+  at += 1;
+  while (text[at] === " " || text[at] === "\t") {
+    at += 1;
+  }
+  return text[at] === "\n" ? -1 : at;
+}
+
+function angleDestinationEnd(text: string, from: number): number {
+  for (let at = from + 1; at < text.length; at += 1) {
+    if (text[at] === "\n" || text[at] === "<") {
+      return -1;
+    }
+    if (text[at] === "\\") {
+      if (text[at + 1] === "\n" || text[at + 1] === undefined) {
+        return -1;
+      }
+      at += 1;
+    } else if (text[at] === ">") {
+      return at + 1;
+    }
+  }
+  return -1;
+}
+
+function bareDestinationEnd(
+  text: string,
+  from: number,
+): [number, number] {
+  let depth = 0;
+  for (let at = from; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === "\\") {
+      const next = text[at + 1];
+      if (next === undefined || next === " " || isAsciiControl(next)) {
+        return [-1, -1];
+      }
+      at += 1;
+    } else if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      if (depth === 0) {
+        return [at, at + 1];
+      }
+      depth -= 1;
+    } else if (char === " " || char === "\t" || char === "\n") {
+      return depth === 0 ? [at, -1] : [-1, -1];
+    } else if (isAsciiControl(char)) {
+      return [-1, -1];
+    }
+  }
+  return depth === 0 ? [text.length, -1] : [-1, -1];
+}
+
+function inlineTitleEnd(text: string, from: number): number {
+  let at = from;
+  const opener = text[at];
+  const closer = opener === "(" ? ")" : opener;
+  if (opener !== '"' && opener !== "'" && opener !== "(") {
+    return -1;
+  }
+  at += 1;
+  for (; at < text.length; at += 1) {
+    if (text[at] === "\\") {
+      if (text[at + 1] === undefined || text[at + 1] === "\n") {
+        return -1;
+      }
+      at += 1;
+    } else if (text[at] === closer) {
+      at = skipInlineWhitespace(text, at + 1);
+      return at >= 0 && text[at] === ")" ? at + 1 : -1;
+    } else if (text[at] === "\n") {
+      let next = at + 1;
+      while (text[next] === " " || text[next] === "\t") {
+        next += 1;
+      }
+      if (text[next] === "\n") {
+        return -1;
+      }
+    }
+  }
+  return -1;
+}
+
+function inlineLinkEnd(text: string, from: number): number {
+  if (text[from] !== "(") {
+    return -1;
+  }
+  let at = skipInlineWhitespace(text, from + 1);
+  if (at < 0) {
+    return -1;
+  }
+
+  let linkEnd = -1;
+  if (text[at] === "<") {
+    at = angleDestinationEnd(text, at);
+  } else {
+    [at, linkEnd] = bareDestinationEnd(text, at);
+  }
+  if (linkEnd >= 0 || at < 0) {
+    return linkEnd;
+  }
+
+  at = skipInlineWhitespace(text, at);
+  if (at < 0) {
+    return -1;
+  }
+  return text[at] === ")" ? at + 1 : inlineTitleEnd(text, at);
+}
 
 // micromark's label normalisation, so `[SS]` finds `[ẞ]:` the way the renderer does.
 function normalizeLabel(label: string): string {
@@ -216,13 +337,27 @@ function hasShortcutReference(
   if (labels.size === 0) {
     return false;
   }
-  const uses = references.replace(LINK_DEFINITION_LABEL_RE, "");
+  const uses = references.replace(LINK_DEFINITION_KEY_RE, (definition) =>
+    definition.replace(NON_LINE_ENDING_RE, " "),
+  );
+  const code = codeSpanRegions(uses);
+  let codeIndex = 0;
+  let inlineEnd = -1;
   for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
+    if (match.index < inlineEnd) continue;
+    while (codeIndex < code.length && code[codeIndex][1] <= match.index) {
+      codeIndex += 1;
+    }
+    if (codeIndex < code.length && code[codeIndex][0] <= match.index) {
+      continue;
+    }
     if (
       match[1][0] !== "^" &&
       !isEscaped(uses, match.index) &&
       labels.has(normalizeLabel(match[1]))
     ) {
+      inlineEnd = inlineLinkEnd(uses, match.index + match[0].length);
+      if (inlineEnd >= 0) continue;
       return true;
     }
   }
@@ -356,8 +491,7 @@ function documentProse(markdown: string): string | null {
       .join("\n"),
   );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
-    (hasLinkReference(prose) ||
-      hasShortcutReference(prose, stripCodeSpans(prose)))
+    (hasLinkReference(prose) || hasShortcutReference(prose, prose))
     ? prose
     : null;
 }
