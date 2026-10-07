@@ -9233,7 +9233,7 @@ class DiffusionBackend:
                 target,
                 text_encoder_quant,
                 base_local_dir,
-                skip_components = supplied_te,
+                **({"skip_components": supplied_te} if supplied_te else {}),
             )
             if precast:
                 precast_mib, precast_components, _exact = precast

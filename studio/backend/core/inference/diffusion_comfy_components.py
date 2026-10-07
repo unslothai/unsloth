@@ -1042,10 +1042,9 @@ def _component_class_and_config(
     local_files_only: bool,
     cache_dir: Optional[str],
 ) -> tuple[Any, Any]:
-    import diffusers
-    import transformers
-
     if component == COMPONENT_VAE:
+        import diffusers
+
         vae_cls = getattr(diffusers, class_name, None)
         if vae_cls is None:
             raise ComponentFileError(f"diffusers has no {class_name}; update diffusers")
@@ -1056,6 +1055,8 @@ def _component_class_and_config(
             cache_dir = cache_dir,
             local_files_only = local_files_only,
         )
+    import transformers
+
     encoder_cls = getattr(transformers, class_name, None)
     if encoder_cls is None:
         raise ComponentFileError(f"transformers has no {class_name}; update transformers")
