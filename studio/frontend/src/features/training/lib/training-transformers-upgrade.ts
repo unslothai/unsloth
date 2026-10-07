@@ -73,7 +73,7 @@ export function getTrainingTransformersUpgradeRequiredMessage(
 export function getTrainingTransformersUpgradeUnavailableMessage(
   modelName: string,
 ): string {
-  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, which Unsloth does not install. Wait for the next transformers release, or pick a model the installed transformers supports.`;
+  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, whose version could not be checked right now. Try again in a few minutes to install it, or pick a model the installed transformers supports.`;
 }
 
 /** The resume that installing would strand: the checkpoint is attested against a 4-bit
@@ -156,9 +156,8 @@ export async function confirmTrainingTransformersUpgrade({
         requiresTrustRemoteCode,
       };
     }
-    // Dev-only: no release to install, so nothing can strand anything, and "start a new
-    // run instead" cannot work either. Fall through to the dev-only path, which says the
-    // true thing: wait for the next release.
+    // Nothing installable (main's version unknown), so nothing can strand anything, and
+    // "start a new run instead" cannot work either. Fall through to the retry message.
   }
 
   const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -183,8 +182,7 @@ export async function confirmTrainingTransformersUpgrade({
       .catch(() => undefined);
   }
   if (!upgraded) {
-    // "Start again to install it" only means something when there is something to
-    // install; a dev-only upgrade would send the user round a loop that never ends.
+    // "Start again to install it" only means something when there is something to install.
     return {
       proceed: false,
       error: installable
