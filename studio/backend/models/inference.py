@@ -755,9 +755,20 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_main: bool = Field(
         False,
-        description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Unsloth yet).",
+        description = "True if transformers GitHub main ships this model_type; with main_version "
+        "set, Unsloth can install main into the persistent sidecar after user consent.",
     )
+    main_version: Optional[str] = Field(
+        None, description = "transformers main __version__ (a .devN string) at check time"
+    )
+
+    @property
+    def installable(self) -> bool:
+        """The consent dialog can install it: the PyPI release, else transformers main."""
+        return bool(
+            (self.supported_in_pypi and self.pypi_version)
+            or (self.supported_in_main and self.main_version)
+        )
 
 
 class TransformersUpgradeCheckRequest(BaseModel):
@@ -918,7 +929,7 @@ class ValidateModelResponse(BaseModel):
         False,
         description = "True when the model's architecture is unknown to every installed "
         "transformers but a newer transformers ships it; the UI should offer the "
-        "install-latest-transformers consent dialog (or the dev-only notice).",
+        "install-transformers consent dialog (a PyPI release, else transformers main).",
     )
     transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
         None,
@@ -1341,6 +1352,9 @@ class InstallLatestTransformersResponse(BaseModel):
         None,
         description = "On a version-mismatch failure: the release that superseded "
         "the requested one, so the client can retry with it",
+    )
+    latest_main_version: Optional[str] = Field(
+        None, description = "On a version-mismatch failure: transformers main's current version"
     )
 
 
