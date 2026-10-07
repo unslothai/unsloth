@@ -2629,6 +2629,8 @@ export function ChatPage({
       // llama-server -hf instead would run a multi-GB transfer inside the
       // server's startup health-check window and time out with no progress.
       if (needsDownload) {
+        // the download is part of the load: voice mode keeps the mic shut until it lands
+        setVoiceSlotLoading(true);
         const ok = await new Promise<boolean>((resolve) => {
           const unsub = subscribeJobListeners(DOWNLOAD_KIND.MODEL, id, {
             onComplete: (completedVariant) => {
@@ -2675,6 +2677,7 @@ export function ChatPage({
         if (!ok) {
           // Roll back to the prior voice; any loaded slot stays intact and the
           // selector keeps matching what /api/inference/audio/speech will use.
+          setVoiceSlotLoading(false);
           setSelectedVoiceModelId(previousId);
           return;
         }
