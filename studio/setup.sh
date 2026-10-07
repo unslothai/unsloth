@@ -3167,9 +3167,9 @@ elif {
     if _setup_install_uv_pinned || { [ "$_SIUP_UNFETCHED" = true ] && _mirror_switch uvbin && _setup_install_uv_pinned; }; then
         _SETUP_UV_PINNED_OK=true
     elif _is_verbose; then
-        _setup_http_get https://astral.sh/uv/install.sh | sh
+        _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" | sh
     else
-        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" | sh > /dev/null 2>&1
     fi
 }; then
     # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
