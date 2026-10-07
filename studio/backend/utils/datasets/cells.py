@@ -42,15 +42,27 @@ def cell_text(value):
     return str(value)
 
 
+_SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
+
+
+def _message(turn):
+    if not isinstance(turn, dict):
+        return None
+    if {"role", "content"} <= turn.keys():
+        return turn
+    if {"from", "value"} <= turn.keys():
+        return {"role": _SHAREGPT_ROLES.get(turn["from"], turn["from"]), "content": turn["value"]}
+    return None
+
+
 def cell_turns(value, role):
-    if isinstance(value, list) and all(
-        isinstance(turn, dict) and {"role", "content"} <= turn.keys() for turn in value
-    ):
+    messages = [_message(turn) for turn in value] if isinstance(value, list) else [None]
+    if all(message is not None for message in messages):
         return [
-            turn
-            if turn["content"] is None and turn.get("tool_calls")
-            else {**turn, "content": cell_text(turn["content"])}
-            for turn in value
+            message
+            if message["content"] is None and message.get("tool_calls")
+            else {**message, "content": cell_text(message["content"])}
+            for message in messages
         ]
     return [{"role": role, "content": cell_text(value)}]
 

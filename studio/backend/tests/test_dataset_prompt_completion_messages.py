@@ -122,3 +122,18 @@ def test_tool_calls_and_empty_message_lists(mapping):
         ],
         [_user("Sky?")],
     ]
+
+
+@pytest.mark.parametrize("mapping", [None, _MAPPING], ids = ["auto_mapping", "user_mapping"])
+def test_sharegpt_message_lists_train_as_one_conversation(mapping):
+    row = {
+        "prompt": [{"from": "system", "value": "Be brief."}, {"from": "human", "value": "Sky?"}],
+        "completion": [{"from": "gpt", "value": "Blue"}],
+    }
+    result = format_dataset(Dataset.from_list([row]), custom_format_mapping = mapping)
+
+    assert result["dataset"][0]["conversations"] == [
+        {"role": "system", "content": "Be brief."},
+        _user("Sky?"),
+        _assistant("Blue"),
+    ]
