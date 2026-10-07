@@ -11,7 +11,20 @@ import yaml
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/studio-frontend-ci.yml"
-pytestmark = pytest.mark.skipif(not shutil.which("bash"), reason = "requires bash")
+
+
+def _workflow_bash():
+    if os.name != "nt":
+        return shutil.which("bash")
+    git = shutil.which("git")
+    if not git:
+        return None
+    candidate = Path(git).resolve().parent.parent / "bin" / "bash.exe"
+    return str(candidate) if candidate.is_file() else None
+
+
+BASH = _workflow_bash()
+pytestmark = pytest.mark.skipif(not BASH, reason = "requires the workflow's bash shell")
 
 
 @pytest.mark.parametrize("failing", ["", "chromium", "firefox"])
@@ -35,7 +48,7 @@ python() {
 }
 """
     result = subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+        [BASH, "-e", "-o", "pipefail", "-c", stub + script],
         cwd = tmp_path,
         env = {**os.environ, "RUNNER_TEMP": str(tmp_path), "FAIL_ENGINE": failing},
         text = True,
