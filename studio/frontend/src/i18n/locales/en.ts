@@ -178,6 +178,7 @@ export const en = {
     downloadPrompt: {
       title: "Download this file?",
       description: "{host} wants to save {name} to your computer.",
+      dangerous: "Files like this can run programs on your computer. Only download it if you trust {host}.",
       remember: "Remember for next time",
       cancel: "Cancel",
       download: "Download",
@@ -365,6 +366,7 @@ export const en = {
       downloading: "Downloading {name}",
       downloaded: "Saved {name} to Downloads",
       downloadFailed: "Couldn't download {name}",
+      notMarked: "{name} was saved but couldn't be marked as downloaded from the internet, so your system won't warn before opening it.",
       blocked: "This address can't open in the browser panel. It only opens public websites.",
       clearDataSettingDescription: "Clear browsing history, download history, cached pages, and the cookies and site data pages keep, which signs you out of sites.",
       clearDataDescription: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",

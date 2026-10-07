@@ -181,6 +181,7 @@ export const fr = {
     downloadPrompt: {
       title: "Télécharger ce fichier ?",
       description: "{host} souhaite enregistrer {name} sur votre ordinateur.",
+      dangerous: "Ce type de fichier peut exécuter des programmes sur votre ordinateur. Ne le téléchargez que si vous faites confiance à {host}.",
       remember: "Se souvenir pour la prochaine fois",
       cancel: "Annuler",
       download: "Télécharger",
@@ -368,6 +369,7 @@ export const fr = {
       downloading: "Téléchargement de {name}",
       downloaded: "{name} enregistré dans Téléchargements",
       downloadFailed: "Impossible de télécharger {name}",
+      notMarked: "{name} a été enregistré mais n'a pas pu être marqué comme téléchargé depuis Internet ; votre système n'avertira donc pas avant de l'ouvrir.",
       blocked: "Cette adresse ne peut pas s'ouvrir dans le panneau du navigateur. Il n'ouvre que les sites web publics.",
       clearDataSettingDescription: "Effacer l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites.",
       clearDataDescription: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",

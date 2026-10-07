@@ -190,6 +190,7 @@ export const he = {
     downloadPrompt: {
       title: "להוריד את הקובץ הזה?",
       description: "{host} רוצה לשמור את {name} במחשב שלכם.",
+      dangerous: "קבצים כאלה יכולים להריץ תוכנות במחשב שלך. הורד אותו רק אם אתה סומך על {host}.",
       remember: "לזכור לפעם הבאה",
       cancel: "ביטול",
       download: "הורדה",
@@ -384,6 +385,7 @@ export const he = {
       downloading: "מוריד את {name}",
       downloaded: "{name} נשמר בהורדות",
       downloadFailed: "הורדת {name} נכשלה",
+      notMarked: "{name} נשמר, אך לא ניתן היה לסמן אותו כקובץ שהורד מהאינטרנט, ולכן המערכת לא תזהיר לפני שתפתח אותו.",
       blocked:
         "לא ניתן לפתוח כתובת זו בחלונית הדפדפן. היא פותחת רק אתרים ציבוריים.",
       clearDataSettingDescription:
