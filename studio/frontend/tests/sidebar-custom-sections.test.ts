@@ -6,6 +6,7 @@
 // and Projects with the same header menu every other list carries.
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
 import {
@@ -52,6 +53,7 @@ function resetStore() {
     customSections: initial.customSections,
     sectionByChatId: initial.sectionByChatId,
     sectionByProjectId: initial.sectionByProjectId,
+    sectionByPageId: initial.sectionByPageId,
     hiddenSections: initial.hiddenSections,
     sectionOrder: initial.sectionOrder,
     pendingNewChatSection: null,
@@ -1116,4 +1118,36 @@ test("pages file into sections, and a deleted section gives them back to Pinned"
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { b: kept });
   store.setPagesSection(["b"], null);
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
+});
+
+test("an empty Pinned takes a dragged page as its first row", () => {
+  const empty = context({
+    sectionByPageId: { pg: S },
+    orders: { ...context().orders, pinned: [], sections: (sectionId) => (sectionId === S ? ["pg"] : []) },
+  });
+  for (const zone of [{ section: "pinned" as const }, { section: "pinned" as const, header: true }]) {
+    const plan = plannedDrop(planSidebarDrop(page("pg", SCOPE, SCOPE), zone, "bottom", empty));
+    assert.deepEqual(plan.cue, { ring: sectionRingKey("pinned") });
+    assert.deepEqual(plan.effects.orders, [{ scope: PINNED_ORDER_SCOPE, ids: ["pg"] }]);
+    assert.deepEqual(plan.effects.fileInSection, { kind: "page", id: "pg", sectionId: null });
+  }
+});
+
+test("undoing a removed section files its pages back into it", async () => {
+  // remove-custom-section.ts imports without an extension.
+  const resolver = `export function resolve(specifier, context, next) {
+    if (specifier === "./sidebar-organization-store") return next(specifier + ".ts", context);
+    return next(specifier, context);
+  }`;
+  register(`data:text/javascript,${encodeURIComponent(resolver)}`);
+  const { removeCustomSectionWithUndo } = await import("../src/features/chat/stores/remove-custom-section.ts");
+  resetStore();
+  const store = useSidebarOrganizationStore.getState();
+  const id = store.createCustomSection("Reading")!;
+  store.setPagesSection(["pg"], id);
+  const section = useSidebarOrganizationStore.getState().customSections.find((s) => s.id === id)!;
+  const undo = removeCustomSectionWithUndo(section);
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
+  undo();
+  assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { pg: id });
 });

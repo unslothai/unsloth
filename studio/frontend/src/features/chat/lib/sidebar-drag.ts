@@ -378,16 +378,20 @@ function planPinnedDrop(
     // The section's own space: last.
     target = { id: ids[ids.length - 1], edge: "bottom" };
   }
-  if (!target) return null;
-  if (target.id === drag.id) return STAY;
+  if (target?.id === drag.id) return STAY;
   const resorts = ctx.pinnedSort !== "manual";
-  const next = inList
-    ? insertIdAt(ids, drag.id, target.id, target.edge)
-    : placeIdAt(ids, drag.id, target.id, target.edge);
+  // No target: Pinned is empty (shown while its pages are filed elsewhere), so this is its first row.
+  const next = !target
+    ? [drag.id]
+    : inList
+      ? insertIdAt(ids, drag.id, target.id, target.edge)
+      : placeIdAt(ids, drag.id, target.id, target.edge);
   if (next === ids) return STAY;
   // folderLine is the plain line unless the zone names a block end to land below, so the section's
   // own tail draws under the last row of the folder that ends it, not under that folder's title.
-  const cue = folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone);
+  const cue = target
+    ? folderLine(PINNED_ORDER_SCOPE, target.id, target.edge, zone)
+    : ring(sectionRingKey("pinned"));
   const effects: SidebarDropEffects = {
     orders: [{ scope: PINNED_ORDER_SCOPE, ids: next }],
     switchSort: resorts ? "pinned" : undefined,

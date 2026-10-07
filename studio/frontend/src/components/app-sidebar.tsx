@@ -3999,7 +3999,8 @@ export function AppSidebar() {
   // them into decides where it goes.
   // Pinned: folders and chats in one list, in the order they were dropped into.
   function renderPinnedSection(): ReactNode {
-    if (isStudioRoute || showTrainingRecents || pinnedRows.length === 0) return null;
+    // Kept while pages are filed elsewhere, so they can be dragged back.
+    if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPages.length === 0)) return null;
     const firstPinnedRow = pinnedRows[0];
     return (
       <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
@@ -4037,7 +4038,11 @@ export function AppSidebar() {
           <CollapsibleContent>
             {/* The space under the rows lands a drop last. */}
             <SidebarGroupContent
-              className={cn(unrailedRowPadding, "relative")}
+              className={cn(
+                unrailedRowPadding,
+                "relative",
+                dnd.ringLit(sectionRingKey("pinned")) && DROP_INTO_CUE,
+              )}
               {...dnd.dropZoneProps({ section: "pinned" })}
             >
               <SidebarMenu>
@@ -4065,6 +4070,14 @@ export function AppSidebar() {
                           sort: { value: pinnedSort, set: setPinnedSort },
                         }),
                 )}
+                {pinnedRows.length === 0 ? (
+                  // Every pinned page is filed elsewhere: somewhere to drag them back to.
+                  <SidebarMenuItem>
+                    <p className="flex h-[calc(30px*var(--ui-space-scale,1))] items-center pl-3 pr-4 text-ui-13 leading-ui-18 tracking-nav text-nav-fg-muted">
+                      {t("shell.sections.empty")}
+                    </p>
+                  </SidebarMenuItem>
+                ) : null}
                 {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
@@ -4708,6 +4721,7 @@ export function AppSidebar() {
         key={page.id}
         page={page}
         className={cn(
+          DROP_ROW_HIT,
           draggingRow?.id === page.id && "opacity-40",
           dropCueClass(list.scope, page.id),
         )}
