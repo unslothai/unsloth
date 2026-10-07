@@ -378,6 +378,13 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
   }
 });
 
+test("inline math does not lend its backticks to a later code span", () => {
+  assert.equal(
+    markdownRenderScope("Math $a ` b$ [1] `\n\n[1]: /one\n"),
+    "document",
+  );
+});
+
 test("a bracketed label that is not a shortcut reference keeps block rendering", () => {
   for (const reply of [
     "Use `[1]` here.\n\n[1]: https://x.test\n",
@@ -387,6 +394,7 @@ test("a bracketed label that is not a shortcut reference keeps block rendering",
     "Use ``[a [b]](https://x.test/`tag) [1]`` here.\n\n[1]: https://x.test/unused\n",
     'Use ``<span title="`"> [1]`` here.\n\n[1]: https://x.test/unused\n',
     "Use <span title=`bad> [1] ` here.\n\n[1]: https://x.test/unused\n",
+    "Use ``$a ` b$ [1]`` here.\n\n[1]: https://x.test/unused\n",
     "Use [1](https://x.test/inline).\n\n[1]: https://x.test/unused\n",
     "Use [1](https://x.test/a_(b)).\n\n[1]: https://x.test/unused\n",
     "Use [1](foo(and(bar))).\n\n[1]: https://x.test/unused\n",

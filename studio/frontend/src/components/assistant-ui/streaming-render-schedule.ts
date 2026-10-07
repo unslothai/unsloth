@@ -488,12 +488,38 @@ function inlineHtmlRegions(text: string): [number, number][] {
   return regions;
 }
 
+const DOLLAR_RUN_RE = /\$+/g;
+
+function inlineMathRegions(text: string): [number, number][] {
+  const runs = Array.from(text.matchAll(DOLLAR_RUN_RE), (match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    width: match[0].length,
+  }));
+  const closers = new Array<number>(runs.length).fill(-1);
+  const nearest = new Map<number, number>();
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    closers[index] = nearest.get(runs[index].width) ?? -1;
+    nearest.set(runs[index].width, index);
+  }
+
+  const regions: [number, number][] = [];
+  for (let index = 0; index < runs.length; index += 1) {
+    const closer = closers[index];
+    if (closer < 0 || isEscaped(text, runs[index].start)) continue;
+    regions.push([runs[index].start, runs[closer].end]);
+    index = closer;
+  }
+  return regions;
+}
+
 function opaqueInlineRegions(text: string): [number, number][] {
   if (!text.includes("`")) return [];
   const candidates = [
     ...inlineLinkRegions(text),
     ...autolinkRegions(text),
     ...inlineHtmlRegions(text),
+    ...inlineMathRegions(text),
   ].sort((left, right) => left[0] - right[0]);
   return candidates;
 }
