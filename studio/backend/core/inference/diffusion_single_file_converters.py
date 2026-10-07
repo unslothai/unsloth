@@ -1,20 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Original-layout (ComfyUI / reference repo) single files -> diffusers state dicts, for transformer
-classes diffusers ships without a single-file converter: Krea 2 and HunyuanImage 2.1.
+"""Original-layout (ComfyUI / reference repo) single files -> diffusers state dicts for Krea 2 and
+HunyuanImage 2.1, which diffusers ships without a single-file converter.
 
-Every rule is a rename, a split along dim 0 (rows), or a reorder of whole rows. Nothing mixes or
-slices columns, which is what lets the ComfyUI quantized loader (``diffusion_comfy_quant``) keep
-int8 / fp8 codes and their per-row scales exact through the conversion: it tags each source row,
-runs the converter, and refuses any output whose rows it cannot trace back to whole source rows.
-A GGUF tensor survives the same way, since GGML packs blocks along the last (input) dimension.
-
-Both converters are strict about what they understand: a key they have no rule for raises
-instead of passing through, so a different architecture or a new upstream layout fails here
-with the key named, not later as a model that silently left weights at their init values.
-
-No torch import at module level: the registry in ``diffusion.py`` imports this on every load.
+Rules only rename, split rows or reorder whole rows, never columns: ``diffusion_comfy_quant`` traces
+each int8 / fp8 row (and GGUF block) back to its source and refuses anything else. Unknown keys raise.
+No module-level torch import: ``diffusion.py`` imports this on every load.
 """
 
 from __future__ import annotations
@@ -22,8 +14,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Container prefixes the original-layout files are stored under. ComfyUI's HunyuanImage 2.1 files
-# nest the model twice (``model.model.``), sd.cpp / ComfyUI checkpoints use ``model.diffusion_model.``.
 _CONTAINER_PREFIXES = ("model.diffusion_model.", "model.model.", "diffusion_model.")
 
 
@@ -35,11 +25,8 @@ def _strip_prefix(key: str) -> str:
 
 
 def _plain_1d(value: Any) -> Any:
-    """A one-dimensional GGUF tensor as real values; anything else unchanged.
-
-    diffusers only dequantises inside the Linears its GGUF quantizer swaps in, so a norm or
-    modulation vector stored in a packed type would otherwise reach the forward as raw bytes.
-    These are a few KB per model, so there is nothing to save by keeping them packed."""
+    """Dequantise a 1-D GGUF tensor: diffusers only dequantises inside swapped Linears, so a packed
+    norm / modulation vector would reach the forward as raw bytes."""
     quant_shape = getattr(value, "quant_shape", None)
     if quant_shape is not None and len(quant_shape) == 1:
         from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
@@ -83,7 +70,6 @@ _KREA2_TOP = {
     "last.modulation.lin": "final_layer.scale_shift_table",
 }
 
-# Inside a DiT block or a text-fusion block (both use the same sub-layout).
 _KREA2_BLOCK = {
     "attn.wq.weight": "attn.to_q.weight",
     "attn.wk.weight": "attn.to_k.weight",
@@ -110,14 +96,8 @@ _KREA2_BLOCK_STEM = {
 
 
 def krea2_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict:
-    """Krea 2 original layout (the ComfyUI ``diffusion_models/krea2_*`` files) -> diffusers
-    ``Krea2Transformer2DModel``.
-
-    Pure renames except one: a DiT block's AdaLN-single table ``blocks.N.mod.lin`` is stored flat,
-    ``[6 * hidden]``, where diffusers keeps ``scale_shift_table`` as ``[6, hidden]``. Both sides add
-    it to the projected timestep split into six equal chunks along the last dim, so the flat vector
-    is that same six-chunk table in row-major order and a view is exact (it is never quantized: a
-    1-D tensor holds no Linear)."""
+    """Krea 2 original layout -> ``Krea2Transformer2DModel``. Renames, plus ``blocks.N.mod.lin``
+    ``[6 * hidden]`` viewed as ``scale_shift_table`` ``[6, hidden]`` (same six chunks, row-major)."""
     converted: dict = {}
     for raw_key, value in (checkpoint or {}).items():
         key = _strip_prefix(raw_key)
@@ -213,8 +193,7 @@ _HYIMG_SINGLE_RE = re.compile(r"^single_blocks\.(\d+)\.(.+)\.(weight|bias|scale)
 _HYIMG_TOP_RE = re.compile(r"^(.+)\.(weight|bias|scale)$")
 
 
-# The reference repo's own names (Comfy-Org's bf16 file keeps them) -> the ComfyUI names the tables above use.
-# Each rewrites only a name, so the two layouts share every row rule below.
+# Reference-repo names (Comfy-Org's bf16 file) -> the ComfyUI names the tables above use.
 _HYIMG_REFERENCE_NAMES = (
     (re.compile(r"^((?:double_blocks\.\d+\.)(?:img|txt))_attn_(qkv|proj)\."), r"\1_attn.\2."),
     (
@@ -251,7 +230,6 @@ def _hyimg_comfy_name(key: str) -> str:
 
 
 def _hyimg_param(suffix: str) -> str:
-    # The original QK norms are RMSNorms holding ``scale``; diffusers' hold ``weight``.
     return "weight" if suffix == "scale" else suffix
 
 
@@ -260,19 +238,9 @@ def hunyuanimage_checkpoint_to_diffusers(
     config: Any = None,
     **kwargs: Any,
 ) -> dict:
-    """HunyuanImage 2.1 original layout -> diffusers ``HunyuanImageTransformer2DModel``. Both original
-    namings load: the reference repo's (``img_attn_qkv``, ``mlp.fc1``, ``mod.linear``; Comfy-Org's bf16
-    file) and ComfyUI's (``img_attn.qkv``, ``mlp.0``, ``mod.lin``, under ``model.model.``; its fp8 and
-    distilled files), the base model or the guidance-distilled MeanFlow one.
-
-    Beyond renames, three row-only rules:
-
-    * every fused ``qkv`` is split into q, k, v by rows (three equal parts);
-    * a single-stream block's ``linear1`` is split by rows into q, k, v (``hidden`` each) and the
-      MLP input projection (the remainder);
-    * ``final_layer.adaLN_modulation.1`` holds (shift, scale) where diffusers' continuous AdaLN norm
-      reads (scale, shift), so its two row halves swap.
-    """
+    """HunyuanImage 2.1 original layout (reference or ComfyUI naming, base or distilled) ->
+    ``HunyuanImageTransformer2DModel``. Fused ``qkv`` and single-block ``linear1`` (q, k, v, MLP in)
+    split by rows; ``final_layer.adaLN_modulation.1`` is (shift, scale), diffusers reads (scale, shift)."""
     hidden = None
     if config is not None:
         try:
@@ -392,15 +360,9 @@ def load_original_layout_transformer(
     sf_kwargs: dict,
     logger: Any = None,
 ) -> Any:
-    """``transformer_cls`` from a plain (unquantized) original-layout safetensors file, for a class
-    diffusers gives no ``from_single_file`` at all (Krea 2: no ``FromOriginalModelMixin``).
-
-    ``sf_kwargs`` are the kwargs the caller would have passed to ``from_single_file`` (``config`` = the
-    base repo, ``subfolder``, ``torch_dtype``, ``token``, ``cache_dir``, ``local_files_only``, plus any
-    config overrides). The weights are cast the way ``from_pretrained`` casts the base repo's own
-    shards: ``torch_dtype``, except the class's ``_keep_in_fp32_modules``, which stay float32. So a
-    bf16 ComfyUI file of the base model loads into the same tensors as the base repo does. Strict:
-    a missing or unused key raises with the key named."""
+    """Load a plain original-layout safetensors file for a class without ``from_single_file``
+    (Krea 2 on diffusers 0.40). ``sf_kwargs`` = the ``from_single_file`` kwargs. Cast like
+    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes."""
     import torch
     from accelerate import init_empty_weights
     from diffusers.loaders import single_file_model as sfm

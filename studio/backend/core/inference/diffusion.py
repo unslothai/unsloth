@@ -1368,7 +1368,6 @@ def _qwen_image_21_checkpoint_to_diffusers(checkpoint = None, **kwargs):
 # currently only compatible with ..."), and on a CUDA, ROCm or XPU host that is every GGUF load of the
 # family, because a GPU backend routes GGUFs to diffusers. The native engine is no way round it
 # there: the pinned sd.cpp prebuilt carries no Windows GPU build at all.
-# Krea 2 and HunyuanImage 2.1 (their ComfyUI ``diffusion_models`` files) convert in diffusion_single_file_converters.
 _UNREGISTERED_SINGLE_FILE_CLASSES: dict = {
     "QwenImage21Transformer2DModel": _qwen_image_21_checkpoint_to_diffusers,
     **_ORIGINAL_LAYOUT_CONVERTERS,
@@ -6820,8 +6819,7 @@ class DiffusionBackend:
                                 if fam.name == "hunyuanimage-2.1" and getattr(
                                     getattr(transformer, "config", None), "guidance_embeds", False
                                 ):
-                                    # A guidance-distilled HunyuanImage file on the base repo: its distilled guidance
-                                    # replaces the base's CFG guiders, which would otherwise double every step.
+                                    # Distilled file on the base repo: the base's CFG guiders would double every step.
                                     pipe_kwargs["guider"] = None
                                     pipe_kwargs["ocr_guider"] = None
                                 if fam.name == HIDREAM_FAMILY_NAME:
