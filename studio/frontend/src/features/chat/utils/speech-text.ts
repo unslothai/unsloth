@@ -7,6 +7,8 @@ import { gfmFromMarkdown } from "mdast-util-gfm";
 import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
+import { normalizeEscapedInlineMath } from "../../../lib/escaped-inline-math.ts";
+import { preprocessLaTeX } from "../../../lib/latex.ts";
 
 /** The words of a markdown reply, for read-aloud. A voice speaks the source it is handed, so
  *  "**Note**" comes out as "asterisk asterisk Note" (#12547): keep what the page shows as text,
@@ -14,8 +16,9 @@ import { math } from "micromark-extension-math";
 export function markdownToSpeechText(markdown: string): string {
   let root: Root;
   try {
-    root = fromMarkdown(markdown, {
-      extensions: [gfm(), math()],
+    // Same preprocessing as the chat renderer, else "$5 and $10" parses as math and loses its "$".
+    root = fromMarkdown(preprocessLaTeX(normalizeEscapedInlineMath(markdown)), {
+      extensions: [gfm(), math({ singleDollarTextMath: true })],
       mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
     });
   } catch {

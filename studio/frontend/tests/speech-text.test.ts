@@ -57,5 +57,10 @@ test("math is read from its source and plain text passes through unchanged", () 
     "Euler: e^{i\\pi}+1=0",
   );
   assert.equal(markdownToSpeechText("Just a sentence."), "Just a sentence.");
+  assert.equal(
+    markdownToSpeechText("It costs $5 and $10 today."),
+    "It costs $5 and $10 today.",
+  );
+  assert.equal(markdownToSpeechText("Inline \\(x^2\\)"), "Inline x^2");
   assert.equal(markdownToSpeechText(""), "");
 });
