@@ -309,7 +309,8 @@ def mxfp8_runtime_reason(target: Any) -> Optional[str]:
                     err = float((y - ref).norm() / ref.norm())
                     _MX_PROBE[index] = None if err < 0.1 else f"probe error {err:.3f}"
             except Exception as exc:  # noqa: BLE001 -- any failure means dequantize
-                _MX_PROBE[index] = f"{type(exc).__name__}: {str(exc)[:160]}"
+                # not cached: a transient failure (an OOM on a busy GPU) must not pin this process to dequant
+                return f"{type(exc).__name__}: {str(exc)[:160]}"
         return _MX_PROBE[index]
 
 

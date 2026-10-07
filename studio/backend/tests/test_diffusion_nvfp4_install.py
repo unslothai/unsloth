@@ -933,6 +933,8 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
     assert comfy.index("comfy_nvfp4_runtime_possible(") < comfy.index(
         "_comfy_single_file_holds_nvfp4("
     )
+    # a LoRA dequantizes the block layers, so it never needs FlashInfer either
+    assert comfy.index("_has_active_lora(loras)") < comfy.index("_comfy_single_file_holds_nvfp4(")
     assert dense.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[vid.index("_nvfp4_install_wanted = (") + len("_nvfp4_install_wanted = (") :]

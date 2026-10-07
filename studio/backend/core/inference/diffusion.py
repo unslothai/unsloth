@@ -5479,6 +5479,7 @@ class DiffusionBackend:
             kind == "single_file"
             and nvfp4_diffusion_enabled()
             and comfy_nvfp4_runtime_possible(getattr(fam, "name", None))
+            and not _has_active_lora(loras)
             and self._comfy_single_file_holds_nvfp4(repo_id, gguf_filename)
         ) or (
             dense_quant_supported_kind(kind)
@@ -5576,6 +5577,7 @@ class DiffusionBackend:
                     memory_mode,
                     cpu_offload,
                     kind = kind,
+                    lora = _has_active_lora(loras),
                     repo_id = repo_id,
                     # The base may be resolved off the OTHER cache root, which the plan's live-root scans read as zero
                     # companions.
@@ -6655,6 +6657,7 @@ class DiffusionBackend:
                                         memory_mode,
                                         cpu_offload,
                                         kind = kind,
+                                        lora = _has_active_lora(loras),
                                         repo_id = repo_id,
                                         base_local_dir = _base_local_dir,
                                         fetch_base = fetch_base,
@@ -7835,7 +7838,12 @@ class DiffusionBackend:
 
     @staticmethod
     def _comfy_single_file_resident_mib(
-        single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
+        single_file_path: Optional[str],
+        fam: Any,
+        target: Any,
+        base: Optional[str],
+        *,
+        lora: bool = False,
     ) -> Optional[int]:
         """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
         try:
@@ -7865,7 +7873,8 @@ class DiffusionBackend:
                     "mxfp8": divisible_for_scheme(TQ_MXFP8),
                 },
                 **{
-                    f"keep_{fmt}": backend is not None
+                    # a LoRA dequantizes the block layers (comfy_block_backends)
+                    f"keep_{fmt}": backend is not None and not lora
                     for fmt, backend in (
                         ("nvfp4", comfy_block_backend("nvfp4", target, name)[0]),
                         (
@@ -8806,6 +8815,7 @@ class DiffusionBackend:
         fetch_base: Optional[str] = None,
         device_memory_override: Optional[DeviceMemory] = None,
         text_encoder_quant: Optional[str] = None,
+        lora: bool = False,
     ):
         """Build the memory plan for this load: snapshot free device memory and estimate the model's
         resident footprint, then let the planner pick an offload policy + VAE memory savers. Kept on
@@ -8966,7 +8976,7 @@ class DiffusionBackend:
                 if not getattr(fam, "single_file_is_pipeline", False):
                     # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
                     _comfy_mib = self._comfy_single_file_resident_mib(
-                        single_file_path, fam, target, base
+                        single_file_path, fam, target, base, lora = lora
                     )
                     if _comfy_mib is not None:
                         transformer_resident = _comfy_mib

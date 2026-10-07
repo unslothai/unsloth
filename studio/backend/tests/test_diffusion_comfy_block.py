@@ -592,3 +592,35 @@ def test_backends_are_logged_per_format_present(caplog):
         out = cb.comfy_block_backends(scan, _target("cpu"), "z-image", logger = logger)
     assert out == {"nvfp4_backend": None, "mxfp8_backend": None}
     assert "3 nvfp4 layer(s) are dequantized" in caplog.text and "mxfp8" not in caplog.text
+
+
+def test_a_failed_mxfp8_probe_is_not_cached(monkeypatch):
+    import contextlib
+
+    cb.reset_probe_cache()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (10, 0))
+    monkeypatch.setattr(torch.cuda, "device", lambda index: contextlib.nullcontext())
+
+    def boom(*_a, **_k):
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(cb, "mx_quantize_activation", boom)
+    assert "OutOfMemoryError" in cb.mxfp8_runtime_reason(_target("cuda:0"))
+    # a transient failure leaves the next load free to probe again
+    assert cb._MX_PROBE == {}
+
+
+def test_a_lora_load_prices_block_layers_dequantized(monkeypatch, tmp_path):
+    import core.inference.diffusion as d
+
+    path = str(_layer_file(tmp_path, "mxfp8", rows = 2048, cols = 2048))
+    monkeypatch.setattr(d, "comfy_block_backend", lambda fmt, *a, **k: ("scaled_mm", "ok"))
+    monkeypatch.setattr(d, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(d, "comfy_fp8_backend", lambda *a, **k: None)
+    fam = types.SimpleNamespace(name = "krea-2")
+    kept = d.DiffusionBackend._comfy_single_file_resident_mib(path, fam, _target("cuda:0"), None)
+    lora = d.DiffusionBackend._comfy_single_file_resident_mib(
+        path, fam, _target("cuda:0"), None, lora = True
+    )
+    assert kept is not None and lora > kept
