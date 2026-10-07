@@ -5,8 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The update's dependency pass upgrades the package that ships this file, and bash keeps reading
-# the old copy through its open descriptor. Captured first, for _setup_rerun_if_replaced.
+# The deps pass can replace this file while bash reads the old one (_setup_rerun_if_replaced).
 _SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 _SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
 _SETUP_ARGV=("$@")
@@ -2555,9 +2554,7 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
-# install_python_stack.py upgraded the package that ships this file, so every phase a release adds
-# below would otherwise be skipped by the update that installs it. Finish with the new copy, once:
-# the rerun carries UNSLOTH_SETUP_RERUN. exec keeps the PID the CLI waits on and the exported env.
+# Phases a release adds below would be skipped by the update installing it; exec keeps the CLI's PID.
 _setup_rerun_if_replaced() {
     if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
         return 0
@@ -2569,7 +2566,6 @@ _setup_rerun_if_replaced() {
     fi
     step "setup" "the update replaced this setup script; finishing with the new version"
     export UNSLOTH_SETUP_RERUN=1
-    # The forced pass just finished; the rerun would otherwise force a second one.
     unset UNSLOTH_STUDIO_FULL_DEPS
     cd "$_SETUP_START_PWD" 2>/dev/null || :
     # execfail alone is not enough: under set -e a failed exec still ends the shell.

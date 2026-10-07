@@ -31,9 +31,7 @@ $ProgressPreference = 'SilentlyContinue'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
-# The update's dependency pass upgrades the package that ships this file, and PowerShell keeps
-# running the copy it parsed. Captured here, before anything changes, so the run can tell after that
-# pass and finish with the new copy (the rerun after install_python_stack.py below).
+# The deps pass can replace this file while PowerShell keeps running the parsed copy (rerun below).
 $script:SetupSelfPath = $MyInvocation.MyCommand.Path
 $script:SetupSelfAtStart = $null
 try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
@@ -193,7 +191,6 @@ function Exit-SetupFailure {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
         [int]$Code = 1,
-        # The updated setup script already printed its own [TAURI:ERROR]; the app keeps the last one.
         [switch]$NoTauriMarker
     )
     if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
@@ -213,8 +210,6 @@ function Test-SetupScriptReplaced {
     return ($now -cne $script:SetupSelfAtStart)
 }
 
-# The environment the caller started this run with, so the rerun begins where a fresh
-# `unsloth studio update` would rather than on top of this run's changes.
 function Restore-SetupStartEnvironment {
     if (-not $script:SetupStartEnv) { return }
     $keep = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
@@ -2851,7 +2846,7 @@ function Test-VCRedistInstalled {
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     if ($StageRoot) { step "vcredist" "missing; unchanged during staging" "Yellow"; return }
-    # The run that handed off to this copy already tried, and its installer prompts for UAC.
+    # The first pass already tried; the installer prompts for UAC.
     if ($env:UNSLOTH_SETUP_RERUN -eq '1') {
         step "vcredist" "missing; already tried earlier in this update" "Yellow"
         substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
@@ -3260,7 +3255,6 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         $ElevationState = if ($_principal.IsInRole(
                 [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
     } catch { }
-    # The rerun of an updated setup script runs as the same user; one line per update is enough.
     if ($env:UNSLOTH_SETUP_RERUN -ne '1' -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
         (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
@@ -4979,7 +4973,6 @@ if ($LongPathsEnabled) {
 } elseif ($StageRoot) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
 } elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
-    # The run that handed off to this copy already asked; a declined UAC prompt should not come back.
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
@@ -5046,7 +5039,7 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    # Optional here, and the run that handed off to this copy already tried; its installer prompts for UAC.
+    # Optional here; the first pass already tried and the installer prompts for UAC.
     if ($env:UNSLOTH_SETUP_RERUN -eq '1' -and -not $gitNeeded) {
         step "git" "not found; already tried earlier in this update" "Yellow"
     } elseif ($gitNeeded -or -not $StageRoot) {
@@ -9286,17 +9279,12 @@ if ($stackExit -ne 0) {
 }
 
 # ── Finish with the setup script this update installed ──
-# install_python_stack.py upgraded the package that ships this file, so every phase a release adds
-# below would otherwise be skipped by the update that installs it. Once only: the rerun carries
-# UNSLOTH_SETUP_RERUN. A dynamic module gives the new copy its own scope chain -- invoked from here,
-# it would read this run's variables wherever it reads one before assigning it -- and the proxy
-# defaults the CLI prelude left in $PSDefaultParameterValues are handed across explicitly, since a
-# module does not see them.
+# Phases a release adds below would be skipped by the update installing it. A module scope keeps this
+# run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
     step "setup" "the update replaced this setup script; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
-    # The forced pass just finished; the rerun would otherwise force a second one.
     Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
     $env:UNSLOTH_SETUP_RERUN = '1'
     $_setupRerunner = New-Module -ScriptBlock { $script:Ok = $false; $script:Code = 1 }
@@ -9314,8 +9302,7 @@ if (Test-SetupScriptReplaced) {
         Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
         Remove-WoaMergedOverrides
     }
-    # $? first: under `-Command "& ... *>&1"` a run that fell off its end is a success whatever
-    # its last native command returned; the new copy already printed its own [TAURI:ERROR].
+    # $? first: under -Command a run that fell off its end succeeded whatever its last native exit.
     if ($_setupRerunOk) { return }
     Exit-SetupFailure -Message "the updated setup script failed (exit code $_setupRerunCode)" -Code $_setupRerunCode -NoTauriMarker
 }
