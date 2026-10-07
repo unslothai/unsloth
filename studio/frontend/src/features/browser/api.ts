@@ -20,6 +20,8 @@ export type BrowserRequest = {
   body?: string;
   /** Refuse bodies past this size (favicons); the backend's own cap otherwise. */
   maxBytes?: number;
+  /** Show the site's own page for an HTTP error (tab loads only). */
+  errorPage?: boolean;
 };
 
 let annotateCode: Promise<string> | null = null;
@@ -57,6 +59,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
       method: request.method ?? "GET",
       body: request.body ?? null,
       max_bytes: request.maxBytes ?? null,
+      error_page: request.errorPage ?? false,
     }),
     signal,
   });

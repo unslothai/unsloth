@@ -15671,8 +15671,9 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     re-checked (and the socket timeout re-tightened toward the deadline) each round. The joined
     bytes are identical to one capped read. Returns ``(error_or_None, body_bytes)``."""
     # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
-    # doubles, where the between-chunk budget check still bounds the read.
-    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    # doubles, where the between-chunk budget check still bounds the read. An HTTPError wraps the response.
+    fp = getattr(resp, "fp", None)
+    sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
     # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
     # budget check; read1 returns after one receive.
     read = getattr(resp, "read1", None) or resp.read
@@ -15798,6 +15799,7 @@ def _fetch_url_raw(
     post_data: bytes | None = None,
     meta_out: dict | None = None,
     host_headers = None,
+    error_page: bool = False,
 ) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
 
@@ -15813,6 +15815,8 @@ def _fetch_url_raw(
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
     or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
     gates apply either way.
+
+    ``error_page`` (binary mode) also returns an HTTP error's body, under the same caps.
 
     ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
     private/loopback/link-local targets and caps the download size. No input reaches the caller as
@@ -15853,6 +15857,7 @@ def _fetch_url_raw(
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
         pending_post = post_data
+        http_error = None
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15911,23 +15916,27 @@ def _fetch_url_raw(
                 if e.code not in (301, 302, 303, 307, 308):
                     if meta_out is not None:
                         meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
-                location = e.headers.get("Location")
-                if not location:
-                    return "Failed to fetch URL: redirect missing Location header.", "", ""
-                current_url = urljoin(current_url, location)
-                # 307/308 keep the POST; other redirects turn it into a GET.
-                if e.code not in (307, 308):
-                    pending_post = None
-                hop_error, current_host, pinned_ips = _redirect_hop(
-                    current_url,
-                    website_policy,
-                    deadline,
-                    cancel_event,
-                )
-                if hop_error is not None:
-                    return hop_error, "", ""
-                continue
+                    http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    if not error_page or raw_bytes_max is None:
+                        return http_error, "", ""
+                    resp = e
+                else:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return "Failed to fetch URL: redirect missing Location header.", "", ""
+                    current_url = urljoin(current_url, location)
+                    # 307/308 keep the POST; other redirects turn it into a GET.
+                    if e.code not in (307, 308):
+                        pending_post = None
+                    hop_error, current_host, pinned_ips = _redirect_hop(
+                        current_url,
+                        website_policy,
+                        deadline,
+                        cancel_event,
+                    )
+                    if hop_error is not None:
+                        return hop_error, "", ""
+                    continue
 
             # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
             # callers can tell a missing header apart from a server that really declared text/plain.
@@ -15967,7 +15976,7 @@ def _fetch_url_raw(
                     meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
                     meta_out["cache_control"] = resp.headers.get("Cache-Control")
                     meta_out["age"] = resp.headers.get("Age")
-                return None, raw_bytes, content_type
+                return http_error, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,

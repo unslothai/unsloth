@@ -1102,6 +1102,7 @@ class BrowserFetchRequest(BaseModel):
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
     # Smaller cap for favicons, so an icon can't be 50 MB.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
+    error_page: bool = False
 
 
 _BOMS = (
@@ -1430,6 +1431,7 @@ def _fetch(
         meta_out = meta,
         cancel_event = cancel_event,
         host_headers = _studio_headers,
+        error_page = request.error_page,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
@@ -1452,7 +1454,11 @@ def _build_response(
     cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
-    if error is not None:
+    looks_html = not content_type and body[:512].lstrip().lower().startswith(
+        (b"<!doctype html", b"<html")
+    )
+    is_html = content_type in _HTML_TYPES or looks_html
+    if error is not None and (meta.get("bot_check") or not (is_html and body.strip())):
         # The host only: a page address can carry a sign-in token.
         try:
             host = urlsplit(url).hostname
@@ -1464,10 +1470,7 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    looks_html = not content_type and body[:512].lstrip().lower().startswith(
-        (b"<!doctype html", b"<html")
-    )
-    if content_type in _HTML_TYPES or looks_html:
+    if is_html:
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(
                 status_code = 502,

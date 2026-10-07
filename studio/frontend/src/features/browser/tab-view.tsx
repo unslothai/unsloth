@@ -284,7 +284,7 @@ function WebPage({
     }
     const controller = new AbortController();
     updateTab(tab.id, { loading: true });
-    fetchBrowserPage({ url, method, body }, controller.signal)
+    fetchBrowserPage({ url, method, body, errorPage: true }, controller.signal)
       .then((page) => {
         cachePage(entry, page);
         setState({ status: "ready", page });
