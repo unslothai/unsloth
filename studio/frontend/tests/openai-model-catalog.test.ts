@@ -56,3 +56,16 @@ test("the audio examples see only speech and transcription models", () => {
   ]);
   assert.deepEqual(audioModelsFromCatalog(null), []);
 });
+
+test("the audio examples keep the workflows a row advertises, separators included", () => {
+  const models = audioModelsFromCatalog({
+    data: [
+      { id: "MiniMaxAI/MiniMax-Music3", loaded: true, task: "text-to-speech", audio_workflows: ["music"] },
+      { id: "audio-cpp/audio.cpp-gguf/BS-RoFormer-GGUF", loaded: true, task: "audio-to-audio", audio_workflows: ["separate", 3] },
+    ],
+  });
+  assert.deepEqual(models, [
+    { id: "MiniMaxAI/MiniMax-Music3", loaded: true, task: "text-to-speech", workflows: ["music"] },
+    { id: "audio-cpp/audio.cpp-gguf/BS-RoFormer-GGUF", loaded: true, task: "audio-to-audio", workflows: ["separate"] },
+  ]);
+});

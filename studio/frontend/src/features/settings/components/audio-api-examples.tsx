@@ -219,7 +219,8 @@ export function AudioApiExamples({
   const needsLoad =
     !placeholder &&
     autoSwitch === false &&
-    !models?.some((m) => m.id === model && m.loaded);
+    models !== null &&
+    !models.some((m) => m.id === model && m.loaded);
   const shikiLang =
     lang === "curl" ? (os === "windows" ? "powershell" : "bash") : lang;
 

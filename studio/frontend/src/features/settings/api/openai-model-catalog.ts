@@ -10,23 +10,35 @@ export type OpenAIModel = {
 };
 
 type ApiOpenAIModelList = {
-  data?: { id?: unknown; loaded?: unknown; quant?: unknown; task?: unknown }[];
+  data?: {
+    id?: unknown;
+    loaded?: unknown;
+    quant?: unknown;
+    task?: unknown;
+    audio_workflows?: unknown;
+  }[];
 };
 
 const CHAT_TASKS = new Set(["text-generation"]);
 
-export type AudioApiTask = "text-to-speech" | "automatic-speech-recognition";
+export type AudioApiTask =
+  | "text-to-speech"
+  | "automatic-speech-recognition"
+  | "audio-to-audio";
 
 export type AudioApiModel = {
   id: string;
   loaded: boolean;
   // text-to-speech also covers music models, which /v1/audio/speech serves too.
   task: AudioApiTask;
+  // The Audio page workflows the server says this row runs, when it says.
+  workflows?: string[];
 };
 
 const AUDIO_TASKS = new Set<string>([
   "text-to-speech",
   "automatic-speech-recognition",
+  "audio-to-audio",
 ]);
 
 export function chatModelsFromCatalog(body: unknown): OpenAIModel[] {
@@ -64,6 +76,13 @@ export function audioModelsFromCatalog(body: unknown): AudioApiModel[] {
             id: entry.id,
             loaded: entry.loaded === true,
             task: entry.task as AudioApiTask,
+            ...(Array.isArray(entry.audio_workflows)
+              ? {
+                  workflows: entry.audio_workflows.filter(
+                    (item): item is string => typeof item === "string",
+                  ),
+                }
+              : {}),
           },
         ]
       : [],

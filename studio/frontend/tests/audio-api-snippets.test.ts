@@ -360,3 +360,23 @@ test("each Audio page opens the example for its workflow", () => {
     run: "edit",
   });
 });
+
+test("the workflows a row advertises win over the name hints", () => {
+  const music = {
+    id: "MiniMaxAI/MiniMax-Music3",
+    loaded: true,
+    task: "text-to-speech" as const,
+    workflows: ["music"],
+  };
+  const separator = {
+    id: cpp("BS-RoFormer-GGUF"),
+    loaded: true,
+    task: "audio-to-audio" as const,
+    workflows: ["separate"],
+  };
+  assert.equal(S.pickAudioApiModel([music], "speak"), null);
+  assert.equal(S.pickAudioApiModel([music], "music"), music.id);
+  assert.equal(S.pickAudioApiModel([separator], "separate"), separator.id);
+  assert.ok(!S.audioApiModelFits([music], music.id, "speak"));
+  assert.ok(S.audioApiModelFits([], cpp("HTDemucs-GGUF"), "separate"));
+});
