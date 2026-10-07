@@ -564,3 +564,13 @@ def test_resident_single_file_answers_only_for_its_own_file():
     }
     assert resident_is_pick(status, a.model_id, a)
     assert not resident_is_pick(status, b.model_id, b)
+
+
+@pytest.mark.parametrize("name", ["flux1-fill-dev.safetensors", "my_flux_model.safetensors"])
+def test_recognised_unsupported_dit_is_refused_whatever_its_name(tmp_path, name):
+    shapes = dict(_row("/flux1-krea-dev_fp8_scaled.safetensors")["shapes"])
+    shapes["img_in.weight"] = [3072, 384]  # FLUX.1 Fill: the name says flux1, the header says Fill
+    _write_safetensors(tmp_path / name, shapes)
+    assert df.detect_family_for_pick(str(tmp_path), name, None) is None
+    with pytest.raises(ValueError, match = "cannot load"):
+        dc.assert_local_pick_is_dit(str(tmp_path), name, dc.PAGE_IMAGE)

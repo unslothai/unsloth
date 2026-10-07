@@ -598,6 +598,8 @@ def refusal_for(path: str, page: str) -> Optional[str]:
             f"model. In a ComfyUI layout it belongs in {kind}; pick the diffusion model file "
             f"(diffusion_models/, unet/ or checkpoints/) instead."
         )
+    if info.role == ROLE_DIT and not info.family:
+        return f"'{name}' is {info.what}, which Studio cannot load."
     if info.role == ROLE_DIT and info.family and info.page and info.page != page:
         other = "Video" if info.page == PAGE_VIDEO else "Image"
         return f"'{name}' is {info.what} ({info.family}); load it from the {other} page."
@@ -618,8 +620,11 @@ def resolve_family_with_content(
     info = inspect_checkpoint(path)
     if info.role in NON_DIT_ROLES:
         return None, True
-    if info.role != ROLE_DIT or not info.family:
+    if info.role != ROLE_DIT:
         return name_family, False
+    if not info.family:
+        # a positively recognised unsupported DiT (FLUX Fill, SD3): its name never revives it
+        return None, True
     if info.page != page:
         return None, True
     if name_family and name_family in SAME_ARCH_VARIANTS.get(info.family, frozenset({info.family})):
