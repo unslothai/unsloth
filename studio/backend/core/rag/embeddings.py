@@ -851,6 +851,33 @@ def _model_names_gguf_repo(model: str | None) -> bool:
     return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
+# With a GPU present, auto picks sentence-transformers and _device keeps it on the CPU in float32, where
+# EmbeddingGemma indexes many times slower than llama-server offloaded to the GPU. Exact repo ids, not a name
+# match: each publishes a -GGUF companion, which a fine-tune or a local folder need not have.
+_LLAMA_SERVER_PREFERRED_MODELS = frozenset(
+    {"unsloth/embeddinggemma-300m", "unsloth/embeddinggemma-2"}
+)
+
+
+def _plan_prefers_llama_server(model: str) -> bool:
+    """Whether the picker should plan ``model`` on llama-server under auto.
+
+    The plan only: the save records the backend and the runtime follows that record, so a model configured
+    any other way (``RAG_EMBEDDING_MODEL``, a saved sentence-transformers plan) keeps its embedding space.
+    """
+    if model.strip().rstrip("/").lower() not in _LLAMA_SERVER_PREFERRED_MODELS:
+        return False
+    # A pinned GGUF repo would serve other weights under this name, and an explicit device setting already
+    # chose where torch runs.
+    if config.gguf_repo_is_explicit() or config.embed_device_preference() != "auto":
+        return False
+    try:
+        from utils.embedding_model_settings import get_stored_backend
+        return not get_stored_backend(model)
+    except Exception:  # noqa: BLE001 - store unavailable: keep the hardware plan
+        return False
+
+
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
@@ -913,6 +940,13 @@ def resolved_backend_for_model(model_name: str) -> str:
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
+    if (
+        key in _ST_ALIASES
+        and raw in _AUTO_ALIASES
+        and _plan_prefers_llama_server(model_name)
+        and _llama_server_runtime_available()
+    ):
+        key = "llama-server"
     if key in _ST_ALIASES and not sentence_transformers_runtime_available():
         # Without a real llama binary ST is the only possible plan, and its eventual error is more useful
         # than a fabricated GGUF destination.
