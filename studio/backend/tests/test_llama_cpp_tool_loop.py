@@ -4521,6 +4521,21 @@ def test_metadata_event_preserves_prompt_tokens_details(monkeypatch):
     assert usage["completion_tokens"] == 4
 
 
+def test_metadata_event_omits_context_tokens_on_a_single_pass(monkeypatch):
+    stream = [
+        _sse({"content": "hi"}),
+        _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
+        _done(),
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, [stream])
+
+    events = _run_tool_loop(backend, [{"role": "user", "content": "hi"}], [_web_search_tool()])
+
+    usage = [e for e in events if e.get("type") == "metadata"][-1]["usage"]
+    assert usage["total_tokens"] == 7
+    assert "context_tokens" not in usage
+
+
 def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     """No KV-cache block from the server -> the key isn't fabricated, so the
     route falls back to its 0-default instead of reading a bogus value."""
