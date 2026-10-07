@@ -282,6 +282,13 @@ def test_citation_title_with_a_pipe_keeps_its_table_row_intact():
     assert row[1][0].content == "128K"
 
 
+def test_citation_title_with_an_escaped_pipe_keeps_its_backslash_and_its_row():
+    report = "| Tool | Note |\n|---|---|\n| grep [doc](https://g.example/) | alternation |"
+    sources = [{"url": "https://g.example/", "title": r"grep a\|b | Docs"}]
+    validated = _validate_report(report, sources, [])
+    assert r"[grep a\\\|b \| Docs](https://g.example/)" in validated
+
+
 def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     # Budgeting only the evidence cannot prevent an overflow: at a small context the
     # untrimmable scaffolding (system prompt, plan, source catalogs) is already several times
