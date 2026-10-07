@@ -14643,6 +14643,19 @@ def test_flux_neither_receives_nor_reports_a_negative_prompt(fake_runtime, tmp_p
     assert out["negative_prompt"] is None
 
 
+def test_qwen_reports_no_negative_when_true_cfg_is_off(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
+    assert out["negative_prompt"] == "blurry"
+
+
 def test_cfg_family_reports_the_negative_prompt_it_applied(fake_runtime, tmp_path):
     backend = _loaded_backend(tmp_path)
     assert backend.status()["supports_negative_prompt"] is True

@@ -9948,9 +9948,13 @@ class DiffusionBackend:
                         kwargs["width"] = iw
                     if "height" in call_params:
                         kwargs["height"] = ih
+                true_cfg_off = state.family.cfg_kwarg == "true_cfg_scale" and not (
+                    true_cfg_needs_empty_negative(state.family.cfg_kwarg, guidance)
+                )
                 if (
                     negative_prompt
                     and state.family.uses_negative_prompt
+                    and not true_cfg_off
                     and "negative_prompt" in call_params
                 ):
                     kwargs["negative_prompt"] = negative_prompt
