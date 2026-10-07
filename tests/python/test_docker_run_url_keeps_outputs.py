@@ -6,6 +6,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
+import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = REPO_ROOT / "docker" / "unsloth_run.py"
+RUN_SH = REPO_ROOT / "docker" / "run.sh"
 
 NOTEBOOK = {
     "cells": [{"cell_type": "code", "source": ["print(1)\n"], "metadata": {}, "outputs": []}],
@@ -112,6 +116,45 @@ def test_a_failed_url_run_keeps_what_it_saved(runner, monkeypatch, cwd):
 
     assert (cwd / "lora_model" / "adapter_model.safetensors").is_file()
     assert json.loads((cwd / "Llama.ipynb").read_text(encoding = "utf-8")) == NOTEBOOK
+
+
+def _run_sh_argv(tmp_path, *command):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_log = tmp_path / "argv"
+    docker = bindir / "docker"
+    docker.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{argv_log}"\n', encoding = "utf-8")
+    docker.chmod(docker.stat().st_mode | stat.S_IEXEC)
+    env = {
+        "PATH": f"{bindir}:/usr/bin:/bin",
+        "HOME": str(tmp_path / "home"),
+        "UNSLOTH_WORKDIR": str(tmp_path),
+        "UNSLOTH_GPUS": "none",
+    }
+    proc = subprocess.run(
+        [shutil.which("bash"), str(RUN_SH), *command],
+        cwd = tmp_path,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return argv_log.read_text(encoding = "utf-8").splitlines()
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required")
+def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
+    argv = _run_sh_argv(tmp_path, "unsloth-run", "https://example.invalid/nb/Llama.ipynb")
+    image = argv.index("unsloth/unsloth:latest")
+    assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
+    assert f"{tmp_path}:/workspace/host" in argv[:image]
+
+
+@pytest.mark.skipif(os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required")
+def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path):
+    argv = _run_sh_argv(tmp_path, "jupyter", "lab")
+    assert "-w" not in argv[: argv.index("unsloth/unsloth:latest")]
 
 
 if __name__ == "__main__":
