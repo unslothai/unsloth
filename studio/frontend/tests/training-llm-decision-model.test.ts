@@ -146,7 +146,10 @@ test("an LLM trained as a decision model gets the decision recipe and keeps QLoR
   assert.equal(payload.is_decision, true);
   assert.equal(payload.training_type, "LoRA/QLoRA");
   assert.equal(payload.load_in_4bit, true);
-  assert.equal(payload.max_seq_length, LLM_DECISION_YAML.training.max_seq_length);
+  assert.equal(
+    payload.max_seq_length,
+    LLM_DECISION_YAML.training.max_seq_length,
+  );
   assert.equal(payload.model_subfolder, null);
   assert.equal(payload.use_dora, false);
   assert.equal(payload.train_on_completions, false);
@@ -185,6 +188,23 @@ test("a model the backend cannot train as a decision model turns the choice off"
   await waitFor((state) => !state.trainAsDecision);
 
   assert.equal(useTrainingConfigStore.getState().modelType, "audio");
+});
+
+test("a failed decision config request turns the choice back off", async () => {
+  useTrainingConfigStore.getState().reset();
+  await selectLlm();
+  setAuthFetchHandler((input) =>
+    input.includes("as_decision=true")
+      ? new Response("down", { status: 500 })
+      : Response.json({}),
+  );
+
+  useTrainingConfigStore.getState().setTrainAsDecision(true);
+  await waitFor((state) => state.modelDefaultsError !== null);
+
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.trainAsDecision, false);
+  assert.equal(buildTrainingStartPayload(state, null).is_decision, false);
 });
 
 test("Laya stays a 16-bit LoRA run whatever the choice", async () => {

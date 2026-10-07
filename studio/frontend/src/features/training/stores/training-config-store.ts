@@ -81,7 +81,6 @@ export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
 
-
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
@@ -200,8 +199,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const patch = typeof update === "function" ? update(state) : update;
           const invariantPatch = datasetSourceInvariantPatch({
             datasetSource: patch.datasetSource ?? state.datasetSource,
-            datasetStreaming:
-              patch.datasetStreaming ?? state.datasetStreaming,
+            datasetStreaming: patch.datasetStreaming ?? state.datasetStreaming,
           });
           const normalizedPatch = { ...patch, ...invariantPatch };
           if (trainingConfigPatchTouchesModelDefaults(normalizedPatch)) {
@@ -685,6 +683,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     get(),
                     settingsBeforeDecision.trainingMethod,
                   )
+                : {}),
+              // The decision switch only holds once the backend answered for it.
+              ...(requestedAsDecision && get().modelType !== "decision"
+                ? { trainAsDecision: false }
                 : {}),
             });
 

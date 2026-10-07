@@ -588,3 +588,52 @@ def test_backbone_stays_on_one_device_unless_the_caller_places_it(monkeypatch):
     with pytest.raises(Captured):
         FastDecisionModel.from_pretrained(TINY_QWEN3, max_seq_length = 64)
     assert seen == [{"": f"cuda:{index}"}, "auto", {"": f"cuda:{index}"}]
+
+
+def _tiny_lm(
+    monkeypatch,
+    name = TINY_QWEN3,
+    **kwargs,
+):
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
+    return FastDecisionModel.from_pretrained(
+        name, decision_head = "clef", head_width = 32, max_seq_length = 256, **kwargs
+    )
+
+
+def test_a_gpt2_style_lm_runs_as_a_decision_model(monkeypatch):
+    model, processor = _tiny_lm(monkeypatch, "trl-internal-testing/tiny-GPT2LMHeadModel")
+    row = _rows(1)[0]
+    answers = FastDecisionModel.predict(model, processor, row["state"], row["questions"])
+    assert answers["team"]["choice"] in ("billing", "tech")
+
+
+def test_adapters_refuse_a_full_finetune_and_keep_the_base_revision(tmp_path, monkeypatch):
+    model, processor = _tiny_lm(monkeypatch, revision = "main")
+    assert model.decision_config["base_revision"] == "main"
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4)
+    model.save_pretrained(str(tmp_path / "adapters"))
+    adapter = json.loads((tmp_path / "adapters" / "adapter_config.json").read_text())
+    assert adapter["revision"] == "main"
+    with pytest.raises(ValueError, match = "save_pretrained_merged"):
+        FastDecisionModel.from_pretrained(str(tmp_path / "adapters"), full_finetuning = True)
+    reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "adapters"))
+    assert reloaded.decision_config["base_revision"] == "main"
+
+
+def test_a_full_finetune_restores_its_own_checkpoint(tmp_path, monkeypatch):
+    model, processor = _tiny_lm(monkeypatch, full_finetuning = True)
+    trainer = DecisionTrainer(
+        model = model,
+        tokenizer = processor,
+        train_dataset = [],
+        args = TrainingArguments(output_dir = str(tmp_path / "run"), report_to = "none"),
+    )
+    trainer._save(str(tmp_path / "ckpt"))
+    saved = {k: v.clone() for k, v in model.state_dict().items()}
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(1.0)
+    decision._load_clef_checkpoint(model, tmp_path / "ckpt")
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, saved[k]), k

@@ -197,6 +197,7 @@ def load_lm_as_decision_model(
         "max_len": max_len,
         "temperature": [1.0] * 3,
         "base_model": str(model_name),
+        **({"base_revision": revision} if revision else {}),
         # How the backbone loaded, so a server puts saved adapters back on the same base.
         "load_in_4bit": bool(load_in_4bit),
     }
