@@ -10,13 +10,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-try:
-    from core.inference.inference import InferenceBackend  # noqa: E402
-except (ImportError, RuntimeError) as exc:  # pragma: no cover
-    pytest.skip(
-        f"full inference backend unavailable ({type(exc).__name__}: {exc})",
-        allow_module_level = True,
-    )
+from utils.datasets.model_mappings import MODEL_TO_TEMPLATE_MAPPER  # noqa: E402
 
 MODEL = "unsloth/Qwen3.6-27B"
 
@@ -49,6 +43,10 @@ def _tokenizer():
 
 
 def _prompt(monkeypatch, messages, **kwargs):
+    try:
+        from core.inference.inference import InferenceBackend
+    except (ImportError, RuntimeError) as exc:
+        pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
     backend = InferenceBackend.__new__(InferenceBackend)
     backend.active_model_name = MODEL
     backend.models = {MODEL: {"tokenizer": _tokenizer(), "is_vision": False}}
@@ -83,3 +81,11 @@ def test_preserve_thinking_keeps_earlier_reasoning_for_qwen36(monkeypatch):
     prompt = _prompt(monkeypatch, messages, enable_thinking = True, preserve_thinking = True)
     assert "<think>\ntwo plus two is four\n</think>\n\n4<|im_end|>" in prompt
     assert prompt.endswith("<|im_start|>assistant\n<think>\n")
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["unsloth/Qwen3.6-27B", "Qwen/Qwen3.6-27B", "unsloth/Qwen3.6-35B-A3B", "Qwen/Qwen3.6-35B-A3B"],
+)
+def test_qwen36_keeps_own_template_like_qwen35(name):
+    assert MODEL_TO_TEMPLATE_MAPPER[name.lower()] == MODEL_TO_TEMPLATE_MAPPER["unsloth/qwen3.5-27b"]
