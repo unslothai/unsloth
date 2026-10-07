@@ -823,15 +823,18 @@ export function ThreadDocumentsBar({
             attach(files);
           }}
         />
+        {ragToolDisabled && chipCount > 0 ? (
+          <span
+            className="composer-pill-btn shrink-0 cursor-default !text-foreground/60"
+            title="The selected model can't search documents, so these files aren't used. Pick a model with tool support to use them."
+          >
+            Not used
+          </span>
+        ) : null}
         {/* Cap height so a large set scrolls; fade the cut-off row. */}
         <div
           ref={chipScrollRef}
           onScroll={updateChipFade}
-          title={
-            ragToolDisabled
-              ? "The selected model can't search documents, so these files aren't used. Pick a model with tool support to use them."
-              : undefined
-          }
           className={cn(
             "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
             chipsOverflow && "rag-docs-bottom-fade",

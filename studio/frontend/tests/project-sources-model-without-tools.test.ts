@@ -152,7 +152,7 @@ test("with Docs on, a model without tool calling dims the files it will not sear
     true,
   );
   assert.match(html, /handbook\.pdf/);
-  assert.match(html, /these files aren&#x27;t used/);
+  assert.match(html, /title="[^"]*these files aren&#x27;t used[^"]*">Not used</);
   assert.match(html, /opacity-50/);
 });
 
@@ -162,6 +162,6 @@ test("with Docs on, a model with tool calling keeps the files in effect", () => 
     true,
   );
   assert.match(html, /handbook\.pdf/);
-  assert.doesNotMatch(html, /aren&#x27;t used/);
+  assert.doesNotMatch(html, /Not used|aren&#x27;t used/);
   assert.doesNotMatch(html, /opacity-50/);
 });
