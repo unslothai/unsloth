@@ -26,7 +26,7 @@ from .chat_templates import (
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
 )
-from .cells import cell_text, cell_turns
+from .cells import cell_text, cell_turns, message_list_columns
 from .raw_text import prepare_raw_text_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
@@ -164,6 +164,14 @@ _CHATML_TO_ALPACA = {"user": "instruction", "system": "input", "assistant": "out
 _KNOWN_CHAT_COLUMNS = {"messages", "conversations", "texts"}
 
 
+def _mapped_message_columns(dataset, columns):
+    messages = message_list_columns(dataset)
+    prompt_completion = {"prompt", "completion"}
+    if prompt_completion <= set(columns) and messages & prompt_completion:
+        messages.update(prompt_completion)
+    return messages
+
+
 def _chatml_final_format(chat_column: str | None) -> str:
     return "chatml_messages" if chat_column == "messages" else "chatml_conversations"
 
@@ -193,6 +201,7 @@ def _apply_user_mapping(
         canonical = _TO_CHATML.get(role)
         if canonical:
             role_groups[canonical].append(col_name)
+    message_columns = _mapped_message_columns(dataset, column_roles)
 
     def _convert(examples):
         num = len(next(iter(examples.values())))
@@ -202,7 +211,13 @@ def _apply_user_mapping(
             for chatml_role in _CHATML_ROLE_ORDER:
                 for col in role_groups[chatml_role]:
                     if col in examples:
-                        convo.extend(cell_turns(examples[col][i], chatml_role))
+                        convo.extend(
+                            cell_turns(
+                                examples[col][i],
+                                chatml_role,
+                                empty_is_messages = col in message_columns,
+                            )
+                        )
             conversations.append(convo)
         return {"conversations": conversations}
 
@@ -505,6 +520,7 @@ def format_dataset(
                 custom_mapping = detect_custom_format_heuristic(dataset)
                 if custom_mapping:
                     warnings.append(f"Auto-detected column mapping: {custom_mapping}")
+                    message_columns = _mapped_message_columns(dataset, custom_mapping)
 
                     def _apply_auto_mapping(examples):
                         conversations = []
@@ -525,7 +541,11 @@ def format_dataset(
                                     if role == target_role and col_name in examples:
                                         convo.extend(
                                             turn
-                                            for turn in cell_turns(examples[col_name][i], role)
+                                            for turn in cell_turns(
+                                                examples[col_name][i],
+                                                role,
+                                                empty_is_messages = col_name in message_columns,
+                                            )
                                             if turn.get("tool_calls") or turn["content"].strip()
                                         )
                             conversations.append(convo)

@@ -55,9 +55,27 @@ def _message(turn):
     return None
 
 
-def cell_turns(value, role):
+def message_list_columns(dataset):
+    features = getattr(dataset, "features", None) or {}
+    columns = set()
+    for column, feature in features.items():
+        item = getattr(feature, "feature", None)
+        if item is None and isinstance(feature, list) and len(feature) == 1:
+            item = feature[0]
+        if isinstance(item, dict) and (
+            {"role", "content"} <= item.keys() or {"from", "value"} <= item.keys()
+        ):
+            columns.add(column)
+    return columns
+
+
+def cell_turns(
+    value,
+    role,
+    empty_is_messages = False,
+):
     messages = [_message(turn) for turn in value] if isinstance(value, list) else [None]
-    if all(message is not None for message in messages):
+    if (messages or empty_is_messages) and all(message is not None for message in messages):
         return [
             message
             if message["content"] is None and message.get("tool_calls")

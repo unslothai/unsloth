@@ -117,6 +117,21 @@ def test_plain_prompt_completion_keeps_existing_column_priority():
     assert result["dataset"][0]["conversations"] == [_user(question), _assistant("c")]
 
 
+@pytest.mark.parametrize("mapping", [None, {"question": "user", "answer": "assistant"}])
+def test_empty_generic_list_remains_training_text(mapping):
+    rows = [
+        {"question": "Return an empty JSON array", "answer": []},
+        {"question": "Return one labelled item", "answer": [{"label": "x"}]},
+    ]
+
+    result = format_dataset(Dataset.from_list(rows), custom_format_mapping = mapping)
+
+    assert result["dataset"][0]["conversations"] == [
+        _user("Return an empty JSON array"),
+        _assistant("[]"),
+    ]
+
+
 _CALL = {"id": "c1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}
 
 
