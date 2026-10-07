@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Public datasets in the decision-model row format {state, questions, gold} that
-# FastDecisionModel.build_dataset reads, plus schema augmentation and a mixture builder.
-# Converters take plain dict rows, so they run offline on any iterable.
+# Public datasets as FastDecisionModel.build_dataset rows {state, questions, gold}, schema augmentation
+# and a mixture builder. Converters take plain dict rows, so they run offline.
 
 __all__ = [
     "DecisionSource",
@@ -436,7 +435,7 @@ SOURCES = {
         ),
     )
 }
-# Decision Index benchmarks Kev also keeps out of training (temp/dm_research plan, section 3).
+# Decision Index benchmarks: evaluation only, never trained on.
 EVAL_ONLY_SOURCES = frozenset({"bfcl", "when2call"})
 
 
@@ -465,8 +464,6 @@ def load_source(
     return list(source.convert(dataset, _label_names(dataset, source.label_column)))
 
 
-# Augmentation ---------------------------------------------------------------
-
 GENERIC_IDS = ("q1", "field_a", "decision", "answer_1", "label")
 
 
@@ -493,7 +490,6 @@ def _random_code(rng, used) -> str:
 
 
 def _gold_label(gold):
-    # A plain label (str / bool / int) or {"label": ...} without soft probabilities.
     if isinstance(gold, dict):
         if gold.get("probabilities") is not None or gold.get("noul") is not None:
             return None
@@ -530,7 +526,6 @@ def _rename_options(question, gold, rng):
 
 
 def _derived(qid, question, gold, rng):
-    # A second question on the same state, of another type, from the same gold label.
     label = _gold_label(gold)
     kind = question["type"]
     if label is None:
@@ -637,9 +632,6 @@ def canonical_row(
     return out
 
 
-# Decontamination -----------------------------------------------------------
-
-
 def _words(text) -> list:
     if not isinstance(text, str):
         text = json.dumps(text, ensure_ascii = False, sort_keys = True)
@@ -667,9 +659,6 @@ class Decontaminator:
 
     def contaminated(self, row) -> bool:
         return not self.shingles.isdisjoint(self._shingles(row["state"]))
-
-
-# Mixture ---------------------------------------------------------------------
 
 
 def build_decision_mixture(

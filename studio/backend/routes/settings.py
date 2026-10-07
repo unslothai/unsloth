@@ -4874,7 +4874,7 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
-    """Blocking. Only a direct local request may be offered the setup button."""
+    """Blocking. The setup button: a direct local request, or a Linux install that prompts nobody here."""
     from core.inference import sandbox_setup_plan
     from utils.client_ip import is_direct_local_request
 
@@ -4883,9 +4883,9 @@ def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStat
         return status
     local = bool(setup.action) and is_direct_local_request(request)
     update: dict = {"can_run": False}
-    if local and setup.action == sandbox_setup_plan.LINUX_INSTALL:
-        elevation, _path = sandbox_setup_plan.linux_elevation()
-        update = {"can_run": elevation is not None, "elevation": elevation}
+    if setup.action == sandbox_setup_plan.LINUX_INSTALL:
+        can_run, elevation = sandbox_setup_plan.linux_install_allowed(local = local)
+        update = {"can_run": can_run, "elevation": elevation}
     elif local:
         update = {"can_run": True}
     return status.model_copy(update = {"setup": setup.model_copy(update = update)})
@@ -5080,7 +5080,8 @@ async def start_sandbox_setup(
 ) -> SandboxSetupJob:
     """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer.
 
-    The Windows runtime-only install needs no prompt, so unlike the rest it also works from a remote browser.
+    Steps that need no prompt (the Windows runtime-only install, a Linux install as root or with
+    passwordless sudo) also work from a remote browser.
     """
     import sys
 
@@ -5089,9 +5090,9 @@ async def start_sandbox_setup(
     from utils.client_ip import is_direct_local_request
 
     # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
-    # The runtime-only install has no prompt (it is setup.ps1's unelevated step), so it works remotely.
-    if payload.operation != sandbox_setup_plan.WINDOWS_RUNTIME and not is_direct_local_request(
-        request
+    local = is_direct_local_request(request)
+    if not local and not await asyncio.to_thread(
+        sandbox_setup_plan.remote_start_allowed, payload.operation
     ):
         raise HTTPException(
             status_code = 403,
@@ -5126,7 +5127,7 @@ async def start_sandbox_setup(
         )
     sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
     try:
-        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation)
+        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation, interactive = local)
     except sandbox_setup_job.SetupUnavailable as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     if consent:

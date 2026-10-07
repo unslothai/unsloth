@@ -233,6 +233,8 @@ enum BrowserEvent {
         size: Option<u64>,
         done: bool,
         success: bool,
+        /// A finished download's handle for Download history (browser_downloads.rs).
+        download_id: Option<String>,
     },
 }
 
@@ -993,6 +995,7 @@ fn create_view<R: Runtime>(
                                     size: None,
                                     done: true,
                                     success: false,
+                                    download_id: None,
                                 },
                             );
                             return false;
@@ -1028,6 +1031,7 @@ fn create_view<R: Runtime>(
                             size: None,
                             done: false,
                             success: false,
+                            download_id: None,
                         },
                     );
                     true
@@ -1048,9 +1052,13 @@ fn create_view<R: Runtime>(
                         recorded
                     };
                     let path = path.or(recorded);
-                    if let (true, Some(path)) = (success, path.as_deref()) {
-                        mark_downloaded(path, &url);
-                    }
+                    let download_id = match (success, path.as_deref()) {
+                        (true, Some(saved)) => {
+                            mark_downloaded(saved, &url);
+                            Some(crate::browser_downloads::record(app, saved.to_path_buf()))
+                        }
+                        _ => None,
+                    };
                     emit(
                         app,
                         BrowserEvent::Download {
@@ -1068,6 +1076,7 @@ fn create_view<R: Runtime>(
                             path: path.map(|p| p.to_string_lossy().into_owned()),
                             done: true,
                             success,
+                            download_id,
                         },
                     );
                     true
@@ -1306,6 +1315,8 @@ pub fn browser_view_action<R: Runtime>(
         "reload" => page.reload(),
         "stop" => page.eval("window.stop()"),
         "focus" => page.set_focus(),
+        // Key focus back to the panel, e.g. for an annotation comment.
+        "blur" => webview.set_focus(),
         _ => return Err("unknown action".into()),
     };
     result.map_err(|error| error.to_string())
@@ -1355,6 +1366,117 @@ pub async fn browser_view_find<R: Runtime>(
         .ok()
         .and_then(Result::ok)
         .unwrap_or(false))
+}
+
+// Same cap as the page shell's `install` (routes/browser.py).
+const MAX_ANNOTATE_CODE: usize = 262_144;
+const MAX_ANNOTATE_NUMBERS: usize = 500;
+
+/// Commands for a page's annotate code (`_ANNOTATE_JS` in routes/browser.py).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command", rename_all = "camelCase")]
+pub enum AnnotateCommand {
+    Install { code: String },
+    Start { color: String },
+    Stop,
+    Forget { id: u32 },
+    Number { numbers: Vec<(u32, u32)> },
+    Poll,
+}
+
+// Installs the annotate code under a non-enumerable key. `post` queues reports for the panel to
+// poll, keeping only the latest `rects`. Each call returns whether the code is installed (a
+// navigation drops it) and the reports since the last call.
+const ANNOTATE_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.annotate");
+  const command = __COMMAND__;
+  let shell = window[key];
+  if (!shell && command.command === "install") {
+    const queue = [];
+    const post = (message) => {
+      if (!message || message.type !== "annotate") return;
+      if (message.event === "rects") {
+        const at = queue.findIndex((queued) => queued.event === "rects");
+        if (at !== -1) queue.splice(at, 1);
+      }
+      if (queue.length < 200) queue.push(message);
+    };
+    try {
+      shell = { queue, annotation: (function (post) {
+__CODE__
+      })(post) };
+      Object.defineProperty(window, key, { value: shell, configurable: true });
+    } catch { shell = null; }
+  }
+  if (!shell) return JSON.stringify({ installed: false, events: [] });
+  const { annotation, queue } = shell;
+  if (command.command === "start") annotation.start(command.color);
+  else if (command.command === "stop") annotation.stop();
+  else if (command.command === "forget") annotation.forget(command.id);
+  else if (command.command === "number") annotation.number(command.numbers);
+  return JSON.stringify({ installed: true, events: queue.splice(0) });
+})()"#;
+
+fn annotate_script(command: &AnnotateCommand) -> Result<String, String> {
+    let (args, code) = match command {
+        AnnotateCommand::Install { code } => {
+            if code.len() > MAX_ANNOTATE_CODE {
+                return Err("annotate code too large".into());
+            }
+            (serde_json::json!({ "command": "install" }), code.as_str())
+        }
+        AnnotateCommand::Start { color } => (
+            serde_json::json!({ "command": "start", "color": color.chars().take(64).collect::<String>() }),
+            "",
+        ),
+        AnnotateCommand::Stop => (serde_json::json!({ "command": "stop" }), ""),
+        AnnotateCommand::Forget { id } => {
+            (serde_json::json!({ "command": "forget", "id": id }), "")
+        }
+        AnnotateCommand::Number { numbers } => {
+            let numbers: Vec<_> = numbers.iter().take(MAX_ANNOTATE_NUMBERS).collect();
+            (
+                serde_json::json!({ "command": "number", "numbers": numbers }),
+                "",
+            )
+        }
+        AnnotateCommand::Poll => (serde_json::json!({ "command": "poll" }), ""),
+    };
+    // Spliced in, not compiled in the page, so a CSP without 'unsafe-eval' can't block it.
+    // Single pass, so neither part can inject the other's placeholder.
+    let (head, rest) = ANNOTATE_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad annotate script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad annotate script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs an annotate command in a tab's page and returns `{ installed, events }`. The panel
+/// validates events like frame messages, since the page can write to the queue.
+#[tauri::command]
+pub async fn browser_view_annotate<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AnnotateCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = annotate_script(&command)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    // The script returns a JSON string, which the engine JSON-encodes again.
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
 }
 
 /// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
@@ -1812,6 +1934,42 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(bounds.viewport_width, 5.0);
+    }
+
+    #[test]
+    fn annotate_commands_match_the_panel() {
+        let parse = |value| serde_json::from_value::<AnnotateCommand>(value).unwrap();
+        assert!(matches!(
+            parse(serde_json::json!({ "command": "number", "numbers": [[3, 1]] })),
+            AnnotateCommand::Number { numbers } if numbers == vec![(3, 1)]
+        ));
+        assert!(matches!(
+            parse(serde_json::json!({ "command": "poll" })),
+            AnnotateCommand::Poll
+        ));
+        assert!(serde_json::from_value::<AnnotateCommand>(
+            serde_json::json!({ "command": "eval" })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn annotate_code_is_spliced_once() {
+        let script = annotate_script(&AnnotateCommand::Install {
+            code: "return __COMMAND__;".into(),
+        })
+        .unwrap();
+        assert!(script.contains(r#"const command = {"command":"install"};"#));
+        assert!(script.contains("return __COMMAND__;"));
+        let start = annotate_script(&AnnotateCommand::Start {
+            color: "__CODE__".into(),
+        })
+        .unwrap();
+        assert!(start.contains(r#""color":"__CODE__""#));
+        assert!(annotate_script(&AnnotateCommand::Install {
+            code: "x".repeat(MAX_ANNOTATE_CODE + 1)
+        })
+        .is_err());
     }
 
     #[test]

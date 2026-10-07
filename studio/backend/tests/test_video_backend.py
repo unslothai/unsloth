@@ -4124,6 +4124,15 @@ def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_
     assert "0" not in offload
 
 
+def test_h3_native_preserves_vram_headroom_on_current_builds(monkeypatch, tmp_path):
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _H3_HELP + "  --max-vram <string> VRAM budget\n"
+    )
+    assert "--offload-to-cpu" in offload
+    assert offload[-2:] == ["--max-vram", "-1"]
+    assert "--stream-layers" not in offload
+
+
 def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path):
     """fast keeps the params resident on the device, and upstream only honours --stream-layers when
     the diffusion params backend is CPU: without --offload-to-cpu it warns and ignores the flag.

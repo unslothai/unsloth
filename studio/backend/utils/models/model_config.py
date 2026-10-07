@@ -3752,8 +3752,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 
 _LAYA_MARKER = "rl_agent_config.json"
-# Cloudflare's Clef layout: a Qwen3.5 backbone plus the joint schema head. Unsloth also saves a
-# Clef head with LoRA adapters over the base LLM it was trained on (save_pretrained).
+# Clef: a backbone (merged, or LoRA adapters over the base LLM) plus the joint schema head.
 CLEF_HEAD_MARKERS = ("joint_head.safetensors", "joint_head_config.json")
 CLEF_MARKERS = ("config.json", *CLEF_HEAD_MARKERS)
 CLEF_ADAPTER_MARKERS = ("adapter_config.json", *CLEF_HEAD_MARKERS)
@@ -4145,6 +4144,51 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error reading base model from LoRA config: {e}")
         return None
+
+
+def load_mlx_adapter_tokenizer(
+    tokenizer,
+    lora_path: str,
+    hf_token: HfTokenArg = None,
+):
+    # FastMLXModel hands back the base repo's tokenizer, not the one trained and saved with the adapter.
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer
+    adapter_dir = Path(lora_path)
+    if not adapter_dir.is_dir():
+        try:
+            from huggingface_hub import snapshot_download
+            adapter_dir = Path(
+                call_with_anonymous_retry(
+                    lambda token: snapshot_download(
+                        lora_path,
+                        allow_patterns = [
+                            "*.json",
+                            "*.jinja",
+                            "*.txt",
+                            "tokenizer.model",
+                            "*.tiktoken",
+                        ],
+                        token = token,
+                        cache_dir = active_hf_hub_cache(),
+                    ),
+                    hf_token,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Could not fetch the tokenizer saved with the adapter {lora_path}: {e}")
+            return tokenizer
+    if not (adapter_dir / "tokenizer_config.json").is_file():
+        return tokenizer
+    try:
+        from mlx_lm.utils import load_tokenizer
+        adapter_tokenizer = load_tokenizer(
+            adapter_dir, eos_token_ids = getattr(tokenizer, "eos_token_ids", None)
+        )
+    except Exception as e:
+        logger.warning(f"Could not load the tokenizer saved with the adapter at {lora_path}: {e}")
+        return tokenizer
+    return adapter_tokenizer if adapter_tokenizer.chat_template else tokenizer
 
 
 def get_base_model_from_lora_identifier(

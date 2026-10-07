@@ -1271,8 +1271,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         hf_token_arg(request.hf_token, allow_ambient_token = via_api_key is not True),
         subfolder = request.model_subfolder,
     )
-    # Not a decision checkpoint: a text or vision LLM that gets a fresh Clef head. A subfolder or
-    # a catalog repo still means Laya, so an uncached Laya checkpoint is not loaded as an LLM.
+    # A subfolder or a catalog repo still means Laya, so an uncached Laya checkpoint is not loaded as an LLM.
     llm = (
         layout is None
         and request.model_subfolder is None
@@ -4394,16 +4393,17 @@ async def get_diffusion_dataset_image(
     def make_thumb() -> Path:
         from PIL import Image
 
+        from core.inference.mcp_images import flattened_rgb
+
         thumbs_dir = folder / _THUMBS_DIRNAME
         thumbs_dir.mkdir(exist_ok = True)
-        # Key on the full filename, not the stem: two images sharing a stem would collide on one cache file and the
-        # mtime-newer entry would be served for both.
-        thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
+        # use the full filename because same-stem images would otherwise share a cache entry
+        thumb_path = thumbs_dir / f"{image_path.name}_{size}_w.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
             return thumb_path
         with Image.open(image_path) as im:
-            im = im.convert("RGB")
+            im = flattened_rgb(im, background = (255, 255, 255))
             im.thumbnail((size, size), Image.LANCZOS)
             im.save(thumb_path, format = "JPEG", quality = 85)
         return thumb_path

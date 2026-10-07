@@ -130,6 +130,36 @@ test("More opens Audio's workflows in a submenu that keeps the flyout open on th
   assert.doesNotMatch(submenu, /max-h/);
 });
 
+test("clicking Audio in More opens the page, and the open page keeps the row out of More", () => {
+  const submenu = block(
+    SIDEBAR,
+    "function AudioMoreSubmenu(",
+    "export function AppSidebar()",
+  );
+  // preventing the click stops Radix from opening the submenu; keys keep the parent behavior.
+  assert.match(
+    submenu,
+    /onClick=\{\(event\) => \{\s*if \(disabled\) return;\s*event\.preventDefault\(\);\s*onOpen\(\);\s*\}\}/,
+  );
+  assert.doesNotMatch(submenu, /onKeyDown/);
+
+  const more = block(SIDEBAR, "{overflowNavIds.map((id) => {", "<MoreMenuItem");
+  assert.match(
+    more,
+    /onOpen=\{\(\) => \{\s*setMoreOpen\(false\);\s*row\.onClick\(\);\s*\}\}/,
+  );
+  // omitting a workflow request preserves the page's current workflow.
+  assert.match(
+    SIDEBAR,
+    /audio: \{[\s\S]*?onClick: \(\) => \{\s*navigateFromRow\(\{ to: "\/audio" \}\);\s*closeMobileIfOpen\(\);\s*\}/,
+  );
+
+  assert.match(
+    SIDEBAR,
+    /const \{ inline: inlineNavIds, overflow: overflowNavIds \} = placeNavRows\(\s*sidebarNav\.map\(\(item\) => \(\{ id: item\.id, pinned: navRowPinned\(item\) \}\)\),\s*navRows\.audio\.active \? "audio" : null,\s*\);/,
+  );
+});
+
 test("the Audio row stays lit while hovered, like Images", () => {
   const css = readSrc("index.css");
   assert.match(
@@ -140,6 +170,26 @@ test("the Audio row stays lit while hovered, like Images", () => {
     css,
     /\.dark \.group\\\/audio-item:hover > \.relative > \.sidebar-nav-btn,/,
   );
+});
+
+test("a nav row's New pill sits beside its label, clear of the trailing disclosure", () => {
+  const item = block(
+    SIDEBAR,
+    "function NavItem(",
+    "const WORKFLOW_UNAVAILABLE",
+  );
+  // no ml-auto: a trailing pill would sit under the overlay's chevron.
+  assert.match(
+    item,
+    /<Badge\s+variant="secondary"\s+className="group-data-\[collapsible=icon\]:hidden"\s*>\s*\{badge\}/,
+  );
+  assert.match(item, /\{overlay\}/);
+  const more = block(
+    SIDEBAR,
+    "{overflowNavIds.map((id) => {",
+    "<DropdownMenuSeparator",
+  );
+  assert.equal(more.match(/badge=\{row\.badge\}/g)?.length, 2);
 });
 
 test("Audio is still unpinned by default", () => {

@@ -1844,6 +1844,7 @@ export function ImagesPage({
 
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
+  const negativeCapable = status?.supports_negative_prompt !== false;
   useEffect(() => {
     if (!controlnetCapable) {
       setAvailableControlNets([]);
@@ -4292,7 +4293,8 @@ export function ImagesPage({
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+            negative_prompt:
+              negativeCapable && guidance > 0 ? negativePrompt.trim() || undefined : undefined,
             width: w,
             height: h,
             steps,
@@ -4395,7 +4397,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5295,14 +5297,16 @@ export function ImagesPage({
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
-            <NegativePromptField
-              value={negativePrompt}
-              onChange={setNegativePrompt}
-              open={negativeOpen}
-              onOpenChange={setNegativeOpen}
-              hint="What to steer the image away from. Only used when guidance is above 0."
-              textareaClassName={IMAGE_PROMPT_BOX}
-            />
+            {negativeCapable && (
+              <NegativePromptField
+                value={negativePrompt}
+                onChange={setNegativePrompt}
+                open={negativeOpen}
+                onOpenChange={setNegativeOpen}
+                hint="What to steer the image away from. Only used when guidance is above 0."
+                textareaClassName={IMAGE_PROMPT_BOX}
+              />
+            )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
               <Field

@@ -243,7 +243,11 @@ def test_status_fields_carry_the_edit_rules():
         fields = acb.model_info_fields(_model(family))
         assert fields["audio_edit"] == _RULES.get(family), family
         assert ("edit" in fields["audio_workflows"]) == (family in _RULES), family
-    assert acb.model_info_fields(_model("dots_tts"))["audio_workflows"] == ["speak", "edit"]
+    assert acb.model_info_fields(_model("dots_tts"))["audio_workflows"] == [
+        "speak",
+        "clone",
+        "edit",
+    ]
     assert acb.model_info_fields(_model("vevo2"))["audio_workflows"] == ["clone", "edit"]
 
 

@@ -227,6 +227,14 @@ export async function deleteAudioClip(id: string): Promise<void> {
   if (!response.ok) throw new Error(await readFastApiError(response));
 }
 
+export async function deleteAudioGroup(groupId: string): Promise<void> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/group/${encodeURIComponent(groupId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await readFastApiError(response));
+}
+
 export async function clearAudioGallery(
   workflow?: "speak" | "clone" | "edit" | "convert" | "music" | "separate",
 ): Promise<number> {

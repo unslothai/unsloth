@@ -3101,28 +3101,66 @@ html[data-chat-font] .aui-root {
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
-	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
-	   same-color surface (e.g. a menu overlapping the composer). The page
-	   colour rather than black, so over the page there is nothing to see and
-	   over the composer it is only the step between the two surfaces. Black
-	   ringed every menu several levels below the page. */
+	/* Dark: glow in the darkest surface the menu touches, set per menu by
+	   lib/dropdown-surround.ts. .dropdown-surface marks bespoke dropdowns. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
+	.dark [data-slot="context-menu-content"],
+	.dark [data-slot="context-menu-sub-content"],
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
-	.dark [data-slot="popover-content"] {
-		box-shadow: 0 8px 28px -6px var(--background) !important;
+	.dark [data-slot="popover-content"],
+	.dark .dropdown-surface {
+		box-shadow: 0 0 16px 0 var(--dropdown-surround-bg, var(--background)) !important;
+	}
+	/* Sidebar and account menus stay flat in dark. */
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot],
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: none !important;
+	}
+	/* Account button hover/open matches the account menu. */
+	.dark .app-user-trigger:is(:hover, [data-state="open"], [aria-expanded="true"]) {
+		background-color: color-mix(in srgb, var(--card), white 6.5%) !important;
+	}
+	/* More menu and its sub-menus use the sidebar colour. */
+	.dark .sidebar-more-menu[data-slot] {
+		background-color: var(--sidebar) !important;
+	}
+
+	/* Menus that would blend into their surface get the Hub menu tone.
+	   Defined on <html> so --accent can be reassigned without a cycle. */
+	.dark {
+		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
+		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
+	}
+	.dark [data-surround-blend] {
+		--accent: var(--dropdown-lift-accent);
+		background-color: var(--dropdown-lift-surface) !important;
+	}
+
+	/* Browser menus in dark: the toolbar pills' colour, with one shadow colour.
+	   The surface resolves on <html> so --accent can be reassigned below. */
+	.dark {
+		--browser-menu-surface: var(--accent);
+	}
+	.dark .browser-menu[data-slot] {
+		--accent: color-mix(in srgb, var(--browser-menu-surface), white 10%);
+		--accent-foreground: #fff;
+		background-color: var(--browser-menu-surface) !important;
+		box-shadow: 0 0 10px 0 var(--background) !important;
+	}
+	.dark .browser-menu [data-slot$="-separator"] {
+		background-color: color-mix(in srgb, var(--card), white 16%);
 	}
 
 	/* Library menus in dark: the sidebar menus' surface, text, hover, dividers and red. */
 	.dark :is([data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"]):is(.library-actions-menu, .library-menu) {
-		--library-menu-surface: color-mix(in srgb, var(--card), white 7%);
+		--library-menu-surface: color-mix(in srgb, var(--card), white 6.5%);
 		--accent: color-mix(in srgb, var(--library-menu-surface), white 10%);
 		--accent-foreground: #fff;
 		--destructive: #ed716a;
 		background-color: var(--library-menu-surface);
 		color: #fff;
-		box-shadow: 0 4px 14px var(--background) !important;
 	}
 
 	.dark :is(.library-actions-menu, .library-menu) [data-slot="dropdown-menu-separator"] {
@@ -3136,15 +3174,6 @@ html[data-chat-font] .aui-root {
 	}
 	.dark .library-header-row[data-stuck] {
 		box-shadow: 0 2px 10px -2px var(--background);
-	}
-
-	/* Model selector: tighter than the menus above so it lifts off the
-	   composer it overlaps (chatbox geometry). Account menu stays flat. */
-	.dark .unsloth-model-selector-menu {
-		box-shadow: 0 2px 8px -2px var(--background) !important;
-	}
-	.dark .app-user-menu.menu-soft-surface-up {
-		box-shadow: none !important;
 	}
 
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
@@ -3237,9 +3266,17 @@ html[data-chat-font] .aui-root {
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Attachment target pill: resting fill so it reads as clickable. */
+	.composer-pill-btn.attachment-target-pill:not([data-state="open"]):not(:hover) {
+		background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
+	}
 	/* A pill keeps its hover fill while its menu is open. */
 	.composer-pill-btn[data-state="open"] {
 		@apply bg-primary/10 dark:bg-accent;
+	}
+	/* Dark composer controls: softer hover and open state. */
+	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
+		background-color: color-mix(in srgb, var(--accent) 60%, var(--card));
 	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
@@ -3758,10 +3795,11 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Smaller tick for selected Thinking options. */
+	/* Menu selection tick. Raised 1px so it reads level with the label. */
 	.unsloth-tick {
-		width: calc(0.8rem * var(--ui-font-scale, 1)) !important;
-		height: calc(0.8rem * var(--ui-font-scale, 1)) !important;
+		width: calc(1.125rem * var(--ui-font-scale, 1)) !important;
+		height: calc(1.125rem * var(--ui-font-scale, 1)) !important;
+		translate: 0 -1px;
 	}
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
@@ -3794,11 +3832,6 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 4px 14px var(--background);
 	}
 
-	/* Sidebar and account menus in dark mode: flat, no shadow. Light mode keeps the shared menu
-	   shadow, which is what lifts the menu off the light sidebar. Important to beat that shadow. */
-	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
-		box-shadow: none !important;
-	}
 
 	/* System font at 14px, scaled with the UI font size. */
 	:is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
@@ -3832,7 +3865,7 @@ html[data-chat-font] .aui-root {
 	/* Dark: a step above the sidebar, from the palette so other themes keep their hue, with the
 	   rows in full white. Muted labels and shortcuts keep their own color. */
 	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
-		background-color: color-mix(in srgb, var(--card), white 7%);
+		background-color: color-mix(in srgb, var(--card), white 6.5%);
 		color: #fff;
 		--destructive: #ed716a;
 	}
@@ -4023,6 +4056,14 @@ html[data-chat-font] .aui-root {
 		height: var(--ui-icon-size) !important;
 	}
 
+	/* "Sandbox High ›" chip: pill on hover or while open, same wash as menu rows. */
+	.sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	.dark .sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+	}
+
 	/* Permission menu tick, 2px above the icons. Outranks the rule above. */
 	:is([data-slot="dropdown-menu-content"], .unsloth-plus-menu)
 		[data-slot="dropdown-menu-item"]
@@ -4061,13 +4102,6 @@ html[data-chat-font] .aui-root {
 		) {
 		@apply gap-1.5 pl-2.5 pr-2.5;
 		white-space: nowrap;
-	}
-	.artifact-panel-shell {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
-	}
-
-	.dark .artifact-panel-shell {
-		box-shadow: none;
 	}
 
 	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
@@ -4123,69 +4157,6 @@ html[data-chat-font] .aui-root {
 		transform: translate3d(-125%, 0, 0) scaleX(0.78);
 		transform-origin: center center;
 		animation: artifact-loading-line 1.7s linear infinite;
-	}
-
-	.artifact-panel-shell::before,
-	.artifact-panel-shell::after {
-		content: "";
-		position: absolute;
-		z-index: 20;
-		pointer-events: none;
-		transition:
-			border-color 150ms var(--ease-out-cubic),
-			background-color 150ms var(--ease-out-cubic),
-			box-shadow 150ms var(--ease-out-cubic),
-			transform 150ms var(--ease-out-cubic);
-	}
-
-	.artifact-panel-shell::before {
-		inset: 0;
-		border: 2px solid transparent;
-		border-radius: inherit;
-		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
-		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
-	}
-
-	.artifact-panel-shell::after {
-		top: 50%;
-		left: -2px;
-		height: calc(28px * var(--ui-space-scale, 1));
-		width: 4px;
-		border-radius: 999px;
-		background: transparent;
-		transform: translateY(-50%);
-	}
-
-	[data-slot="resizable-handle"]:hover
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"]:active
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before {
-		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
-	}
-
-	[data-slot="resizable-handle"]:hover
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"]:active
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after {
-		background: color-mix(in oklch, var(--primary) 58%, var(--border));
-		box-shadow: none;
-		transform: translateY(-50%) scaleY(1.06);
 	}
 
 	@keyframes artifact-card-shimmer {
@@ -4325,10 +4296,16 @@ html[data-chat-font] .aui-root {
 		width: 0 !important;
 	}
 
-	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	/* Chat code is 12px at any width (CODE_FONT_SIZE_RANGE.default); the header steps up when wide. */
 	.aui-thread-root [data-streamdown="code-block"] {
-		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
+	}
+
+	/* The body's text-sm would otherwise override the size above. */
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		font-size: inherit;
+		line-height: inherit;
 	}
 
 	.aui-thread-root [data-streamdown="code-block-header"] {
@@ -4336,10 +4313,6 @@ html[data-chat-font] .aui-root {
 	}
 
 	@container (min-width: 36rem) {
-		.aui-thread-root [data-streamdown="code-block"] {
-			font-size: calc(0.875rem * var(--ui-font-scale, 1));
-		}
-
 		.aui-thread-root [data-streamdown="code-block-header"] {
 			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}
@@ -5727,7 +5700,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .dark .find-bar-surface {
-	/* Sidebar menu surface (7%) a step lighter; 8% stays under --border. */
+	/* Sidebar menu surface (6.5%) a step lighter; 8% stays under --border. */
 	background-color: color-mix(in srgb, var(--card), white 8%);
 	box-shadow: 0 4px 20px 6px var(--background);
 }
@@ -5886,7 +5859,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 }
 
 .browser-file-toolbar > :not([aria-hidden]) {
-	box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
 }
 
 .dark .browser-file-toolbar > :not([aria-hidden]) {

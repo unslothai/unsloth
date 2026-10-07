@@ -312,6 +312,38 @@ def test_media_galleries_save_natively_with_feedback():
     assert "function saveLink(" not in video_page
 
 
+def test_audio_clips_and_stems_save_natively():
+    save_audio = _ui_source(FRONTEND / "features/audio/save-audio.ts")
+    helper = _ui_source(NATIVE_FILES)
+    dialogs = _ui_source(NATIVE_DIALOGS)
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+
+    # desktop re-reads blob URLs because the page CSP blocks fetch()
+    assert 'isTauri && url.startsWith("blob:")' in save_audio
+    assert "await downloadBlobStreaming(blob, filename);" in save_audio
+    assert "await downloadUrl(url, filename);" in save_audio
+    assert "if (isDownloadCancelled(error)) return;" in save_audio
+    # tests/audio-stem-mixer-state.test.ts forbids raw anchors in features/audio
+    for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
+        assert "saveAudio(" in _ui_source(FRONTEND / "features/audio" / page)
+
+    streaming = helper[helper.index("export async function downloadBlobStreaming") :]
+    assert ".slice(offset, offset + NATIVE_FILE_CHUNK_BYTES)" in streaming
+    assert "NATIVE_FILE_CHUNK_BYTES" in streaming
+    assert "await content.arrayBuffer()" not in streaming
+    for command in (
+        "begin_native_file_save",
+        "append_native_file_save_chunk",
+        "finish_native_file_save",
+        "cancel_native_file_save",
+    ):
+        assert f'"{command}"' in streaming
+        assert f"native_file_dialogs::{command}," in main_rs
+    assert "MAX_NATIVE_FILE_SAVE_CHUNK_BYTES" in dialogs
+    assert "staged_temp_file(&destination)" in dialogs
+    assert "spawn_blocking(move || append_native_save" in dialogs
+
+
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
@@ -326,7 +358,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    # #12122 moved chat export into the Library and project menu
     chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
     project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
     for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
@@ -2676,9 +2708,9 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Seven rows: #11589 added the drop-cue row, and #12016 a second section header for the
-    # custom sidebar sections, both scaled like the rest.
-    (APP_SIDEBAR, "", "h", "30px", 7),
+    # Eight rows: #11589 added the drop-cue row, #12016 a second section header for the
+    # custom sidebar sections, and #12927 the pinned-pages label, all scaled like the rest.
+    (APP_SIDEBAR, "", "h", "30px", 8),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The

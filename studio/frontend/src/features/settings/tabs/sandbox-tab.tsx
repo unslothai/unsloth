@@ -5,18 +5,28 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { useIsAccountOwner } from "@/features/auth";
 import {
+  PermissionModeDropdown,
+  SandboxSetupDialog,
   type SandboxSetupJob,
   type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
+  pickSandboxLevel,
+  sandboxSwitchState,
   startSandboxSetup,
+  useActivePermissionMode,
+  useChatRuntimeStore,
+  useSandboxCapability,
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { RefreshIcon } from "@hugeicons/core-free-icons";
+import { ShieldIcon } from "@/lib/shield-cog-icon";
+import { cn } from "@/lib/utils";
+import { Refresh01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
@@ -31,6 +41,7 @@ import {
 import { isSettingsRouteAbsent } from "../api/settings-route-absent";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   HOST_PREP_POLL_MS,
   type HostPrepStatus,
@@ -88,7 +99,12 @@ function ToolRow({
   );
   return (
     <SettingsRow label={label} description={description}>
-      <Badge variant={view.isolated ? "secondary" : "outline"}>
+      <Badge
+        variant="outline"
+        // Grey and sized like the dropdown pills.
+        className="h-8 gap-1.5 border-transparent bg-muted px-3 text-sm text-foreground [&>svg]:size-3.5!"
+      >
+        {view.isolated ? <HugeiconsIcon icon={ShieldIcon} strokeWidth={1.75} /> : null}
         {view.isolated
           ? t("settings.sandbox.osIsolation", { backend: view.backendLabel })
           : t("settings.sandbox.softwareSafeguards")}
@@ -97,7 +113,155 @@ function ToolRow({
   );
 }
 
+const SANDBOX_LEVEL_TEXT = {
+  off: { name: "settings.sandbox.levelOff", detail: "settings.sandbox.levelFullAccessNote" },
+  low: { name: "settings.sandbox.levelLow", detail: "settings.sandbox.levelLowDetail" },
+  high: { name: "settings.sandbox.levelHigh", detail: "settings.sandbox.levelHighDetail" },
+} as const satisfies Record<string, { name: TranslationKey; detail: TranslationKey }>;
+
+/** "Name: detail", so the text clearly describes the selected option. */
+function SelectedOptionDescription({ name, detail }: { name: string; detail: string }) {
+  return (
+    <>
+      <span className="font-medium text-foreground">{name}:</span> {detail}
+    </>
+  );
+}
+
+/** Per account, so every account sees it; the OS sandbox sections below are the owner's. */
+function PermissionsSection() {
+  const t = useT();
+  const permissionsRef = useRef<HTMLElement | null>(null);
+  const activePermission = useActivePermissionMode();
+  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(
+    sandboxLevel,
+    activePermission.value,
+    capability,
+  );
+  const [setupOpen, setSetupOpen] = useState(false);
+  const levelDescriptionId = useId();
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  useEffect(() => {
+    if (scrollTarget !== "sandbox-permissions") return;
+    const frame = window.requestAnimationFrame(() => {
+      permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("sandbox-permissions");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
+  // Full access turns the sandbox off: show Disabled and lock Low and High.
+  const activeLevel = disabled ? "off" : checked ? "high" : "low";
+  const levels = disabled ? (["off", "low", "high"] as const) : (["low", "high"] as const);
+
+  return (
+    <SettingsSection
+      ref={permissionsRef}
+      title={t("settings.general.permissions.sectionTitle")}
+      description={t("settings.sandbox.permissionsIntro")}
+    >
+      <SettingsRow
+        label={t("settings.sandbox.permissionLabel")}
+        description={
+          <SelectedOptionDescription
+            name={t(`settings.general.permissions.names.${activePermission.value}`)}
+            detail={t(`settings.general.permissions.details.${activePermission.value}`)}
+          />
+        }
+      >
+        <PermissionModeDropdown sandboxControls={false} />
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.sandbox.levelLabel")}
+        description={
+          <span id={levelDescriptionId}>
+            <SelectedOptionDescription
+              name={t(SANDBOX_LEVEL_TEXT[activeLevel].name)}
+              detail={t(SANDBOX_LEVEL_TEXT[activeLevel].detail)}
+            />
+          </span>
+        }
+      >
+        {/* Same toggle as Follow-up behavior. */}
+        <div
+          className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+          role="group"
+          aria-label={t("settings.sandbox.levelLabel")}
+          aria-describedby={levelDescriptionId}
+        >
+          {levels.map((level) => {
+            const selected = level === activeLevel;
+            return (
+              <button
+                key={level}
+                type="button"
+                aria-pressed={selected}
+                disabled={disabled && !selected}
+                onClick={() => {
+                  if (selected || level === "off") return;
+                  void pickSandboxLevel(level, setSandboxLevel, () => setSetupOpen(true));
+                }}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+                  selected
+                    ? "hub-tab-toggle-pill cursor-default text-foreground"
+                    : "text-muted-foreground hover:text-foreground disabled:hover:text-muted-foreground",
+                )}
+              >
+                {t(SANDBOX_LEVEL_TEXT[level].name)}
+              </button>
+            );
+          })}
+        </div>
+      </SettingsRow>
+      {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
+      <SandboxSetupDialog
+        open={setupOpen}
+        onOpenChange={setSetupOpen}
+        onLearnMore={() =>
+          permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })
+        }
+      />
+    </SettingsSection>
+  );
+}
+
 export function SandboxTab() {
+  const t = useT();
+  const isOwner = useIsAccountOwner();
+  return (
+    <div className="settings-page">
+      <header className="flex min-w-0 flex-col gap-1">
+        <h1
+          data-settings-label={t("settings.sandbox.title")}
+          className="text-xl font-semibold font-heading"
+        >
+          {t("settings.sandbox.title")}
+        </h1>
+        <p
+          data-settings-label={t("settings.sandbox.description")}
+          className="text-xs text-muted-foreground"
+        >
+          {t("settings.sandbox.description")}
+        </p>
+      </header>
+      <PermissionsSection />
+      {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
+      {isOwner ? (
+        <OsSandboxSections />
+      ) : (
+        <p className="text-xs text-muted-foreground">{t("settings.sandbox.managedNote")}</p>
+      )}
+    </div>
+  );
+}
+
+function OsSandboxSections() {
   const t = useT();
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
@@ -332,29 +496,36 @@ export function SandboxTab() {
   const setupRunning = setupJob?.state === "running";
 
   return (
-    <div className="settings-page">
-      <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.sandbox.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.sandbox.title")}
-        </h1>
-        <p
-          data-settings-label={t("settings.sandbox.description")}
-          className="text-xs text-muted-foreground"
-        >
-          {t("settings.sandbox.description")}
-        </p>
-      </header>
-
+    <>
       {absent ? (
         <p className="text-sm text-muted-foreground">
           {t("settings.sandbox.unsupported")}
         </p>
       ) : (
         <>
-          <SettingsSection title={t("settings.sandbox.toolsSection")}>
+          <SettingsSection
+            title={t("settings.sandbox.toolsSection")}
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground"
+                // A read started mid-save can see the old value and would drop the save's answer.
+                disabled={loading || saving}
+                onClick={() => {
+                  setLoading(true);
+                  void refresh(true);
+                }}
+              >
+                {loading ? (
+                  <Spinner />
+                ) : (
+                  <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
+                )}
+                {t("settings.sandbox.refresh")}
+              </Button>
+            }
+          >
             {status ? (
               <>
                 <ToolRow
@@ -461,30 +632,9 @@ export function SandboxTab() {
                 ) : null}
               </>
             ) : null}
-            <div className="flex items-center justify-end gap-2 py-2">
-              {error ? (
-                <span className={`${NOTE_CLASS} text-destructive`}>
-                  {error}
-                </span>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                // A read started mid-save can see the old value and would drop the save's answer.
-                disabled={loading || saving}
-                onClick={() => {
-                  setLoading(true);
-                  void refresh(true);
-                }}
-              >
-                {loading ? (
-                  <Spinner />
-                ) : (
-                  <HugeiconsIcon strokeWidth={1.75} icon={RefreshIcon} />
-                )}
-                {t("settings.sandbox.refresh")}
-              </Button>
-            </div>
+            {error ? (
+              <p className="pb-2 text-xs text-destructive">{error}</p>
+            ) : null}
           </SettingsSection>
 
           {windows && view ? (
@@ -647,6 +797,6 @@ export function SandboxTab() {
           ) : null}
         </>
       )}
-    </div>
+    </>
   );
 }
