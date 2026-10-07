@@ -347,6 +347,49 @@ function inlineLinkRegions(text: string): [number, number][] {
   return regions;
 }
 
+const URI_AUTOLINK_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]{1,31}:/u;
+const EMAIL_AUTOLINK_RE =
+  /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u;
+const AUTOLINK_CANDIDATE_RE = /<([^<>\r\n]*)>/gu;
+
+function isUriAutolink(candidate: string): boolean {
+  const scheme = URI_AUTOLINK_SCHEME_RE.exec(candidate);
+  if (scheme === null) return false;
+  for (let at = scheme[0].length; at < candidate.length; at += 1) {
+    if (candidate[at] === " " || isAsciiControl(candidate[at])) return false;
+  }
+  return true;
+}
+
+function autolinkRegions(text: string): [number, number][] {
+  const regions: [number, number][] = [];
+  for (const match of text.matchAll(AUTOLINK_CANDIDATE_RE)) {
+    if (
+      !isEscaped(text, match.index) &&
+      (isUriAutolink(match[1]) || EMAIL_AUTOLINK_RE.test(match[1]))
+    ) {
+      regions.push([match.index, match.index + match[0].length]);
+    }
+  }
+  return regions;
+}
+
+function opaqueInlineRegions(text: string): [number, number][] {
+  const candidates = [...inlineLinkRegions(text), ...autolinkRegions(text)].sort(
+    (left, right) => left[0] - right[0],
+  );
+  const regions: [number, number][] = [];
+  for (const candidate of candidates) {
+    const previous = regions.at(-1);
+    if (previous !== undefined && candidate[0] < previous[1]) {
+      previous[1] = Math.max(previous[1], candidate[1]);
+    } else {
+      regions.push(candidate);
+    }
+  }
+  return regions;
+}
+
 // micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.
 function normalizeLabel(label: string): string {
   return label
@@ -375,7 +418,7 @@ function hasShortcutReference(
     definition.replace(NON_LINE_ENDING_RE, " "),
   );
   const code = exact
-    ? codeSpanRegions(uses, inlineLinkRegions(uses))
+    ? codeSpanRegions(uses, opaqueInlineRegions(uses))
     : [];
   let codeIndex = 0;
   let inlineEnd = -1;
