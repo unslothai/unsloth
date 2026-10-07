@@ -702,13 +702,16 @@ export function VoiceTab() {
     sttDownloadAvailability.repoId === sttRepoId
       ? sttDownloadAvailability.state
       : "checking";
-  // Status knows rows, not quants: a pinned quant of a row with another one cached is missing.
+  // Status knows rows, not quants: a pinned quant of a row with another one cached is missing, or
+  // failed when its download did, as a row's would.
   const effectiveSttDownloadAvailability =
     rowSttDownloadAvailability === "downloaded" &&
     sttVariant &&
     sttVariantListing?.model === sttModel &&
     !sttListedQuantDownloaded(sttVariantListing.listing, sttVariant)
-      ? "missing"
+      ? sttDownload?.error
+        ? "error"
+        : "missing"
       : rowSttDownloadAvailability;
   useEffect(() => {
     if (!isLocalEngine || !modelSttSupported) {

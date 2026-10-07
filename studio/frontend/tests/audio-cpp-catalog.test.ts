@@ -585,7 +585,7 @@ test("every Settings dictation path carries the saved quant", () => {
   // Status only knows rows; the listing says whether the pinned quant is on disk.
   assert.match(
     voiceTab,
-    /!sttListedQuantDownloaded\(sttVariantListing\.listing, sttVariant\)\s*\?\s*"missing"/,
+    /!sttListedQuantDownloaded\(sttVariantListing\.listing, sttVariant\)\s*\?\s*sttDownload\?\.error\s*\?\s*"error"\s*:\s*"missing"/,
   );
   // The Select is bound to the pin, so picking the quant that runs now still saves it.
   assert.match(voiceTab, /value=\{sttVariant \?\? ""\}/);
