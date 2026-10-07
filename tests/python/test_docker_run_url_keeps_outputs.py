@@ -353,6 +353,7 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path):
     [
         ("jupyter", "lab"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
+        ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb", "--out", "/workspace/host/Llama.ipynb"),
         ("python", "/workspace/smoke_test.py"),
     ],
 )
