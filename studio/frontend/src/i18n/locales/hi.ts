@@ -3950,4 +3950,15 @@ export const hi = {
       openFileFailed: "फ़ाइल खोली नहीं जा सकी",
     },
   },
+  exportDecision: {
+    title: "निर्णय मॉडल",
+    description: "{layout} निर्णय मॉडल llama.cpp के निर्णय सर्वर के लिए GGUF में एक्सपोर्ट होते हैं। एक या अधिक क्वांटाइज़ेशन चुनें।",
+    adapterNote: "इस चेकपॉइंट में LoRA एडैप्टर हैं; कन्वर्ज़न से पहले उन्हें मर्ज किया जाता है।",
+    notEligibleTitle: "GGUF एक्सपोर्ट उपलब्ध नहीं है",
+    ggufOnly: "निर्णय मॉडल केवल GGUF में एक्सपोर्ट होते हैं",
+    existing: "पहले से एक्सपोर्ट किया गया: {quantizations}",
+    outputNote: "GGUF फ़ाइलें रन फ़ोल्डर में सहेजी जाती हैं: {path}",
+    methodLabel: "निर्णय मॉडल GGUF",
+    outputLabel: "निर्णय GGUF ({quantizations})",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

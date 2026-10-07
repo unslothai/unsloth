@@ -52,6 +52,7 @@ from models import (
     ExportLoRAAdapterRequest,
     ConvertQ4NXRequest,
     LlmCompressorExportProbeResponse,
+    ExportDecisionInfoResponse,
 )
 
 router = APIRouter()
@@ -238,8 +239,11 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         # does, so the success banner shows an identical path on either route.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
-            details = await asyncio.to_thread(_export_details, last_op["output_path"])
-            last_op_output_path = (details or {}).get("output_path")
+            if getattr(backend, "decision", None):
+                last_op_output_path = last_op["output_path"]
+            else:
+                details = await asyncio.to_thread(_export_details, last_op["output_path"])
+                last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
             is_vision = bool(getattr(backend, "is_vision", False)),
@@ -251,6 +255,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
             last_op_status = last_op.get("status") if last_op else None,
             last_op_output_path = last_op_output_path,
             last_op_error = last_op.get("error") if last_op else None,
+            decision = getattr(backend, "decision", None),
         )
     except Exception as e:
         logger.error(f"Error getting export status: {e}", exc_info = True)
@@ -356,6 +361,37 @@ def _export_details(
         return {"output_path": rel}
     except Exception:
         return {"output_path": output_path}
+
+
+def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
+    if not output_path:
+        return None
+    from core.export.decision import read_existing_export
+
+    export = read_existing_export(output_path)
+    return {
+        "output_path": str(output_path),
+        "decision_export": export,
+        "quantizations": (export or {}).get("quantizations") or [],
+    }
+
+
+@router.get("/decision-info", response_model = ExportDecisionInfoResponse)
+async def get_decision_export_info(
+    checkpoint_path: str = Query(..., description = "Local checkpoint folder"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """GGUF export options for a decision model checkpoint (Clef / Laya); decision is null otherwise."""
+    validate_job_paths({"checkpoint_path": checkpoint_path})
+    from core.export.decision import decision_preview
+
+    try:
+        decision = await asyncio.to_thread(decision_preview, checkpoint_path)
+    except Exception as e:
+        logger.warning(f"Could not inspect {checkpoint_path} for decision export: {e}")
+        decision = None
+    return ExportDecisionInfoResponse(checkpoint_path = checkpoint_path, decision = decision)
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
@@ -504,11 +540,11 @@ async def export_gguf(
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(
-            success = True,
-            message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
-        )
+        if getattr(backend, "decision", None):
+            details = await asyncio.to_thread(_decision_export_details, output_path)
+        else:
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+        return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
     except Exception as e:

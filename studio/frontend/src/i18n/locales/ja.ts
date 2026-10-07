@@ -3891,4 +3891,15 @@ export const ja = {
       openFileFailed: "ファイルを開けませんでした",
     },
   },
+  exportDecision: {
+    title: "意思決定モデル",
+    description: "{layout} 意思決定モデルは llama.cpp の意思決定サーバー向けに GGUF へエクスポートされます。量子化を 1 つ以上選択してください。",
+    adapterNote: "このチェックポイントには LoRA アダプターが含まれています。変換前にマージされます。",
+    notEligibleTitle: "GGUF エクスポートは利用できません",
+    ggufOnly: "意思決定モデルは GGUF にのみエクスポートできます",
+    existing: "エクスポート済み: {quantizations}",
+    outputNote: "GGUF ファイルは実行フォルダーに保存されます: {path}",
+    methodLabel: "意思決定モデルの GGUF",
+    outputLabel: "意思決定 GGUF ({quantizations})",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -3849,4 +3849,15 @@ export const zhCN = {
       openFileFailed: "无法打开文件",
     },
   },
+  exportDecision: {
+    title: "决策模型",
+    description: "{layout} 决策模型会导出为 GGUF，供 llama.cpp 决策服务器使用。请选择一个或多个量化级别。",
+    adapterNote: "此检查点包含 LoRA 适配器，转换前会先合并。",
+    notEligibleTitle: "无法导出 GGUF",
+    ggufOnly: "决策模型仅支持导出为 GGUF",
+    existing: "已导出：{quantizations}",
+    outputNote: "GGUF 文件保存在运行文件夹中：{path}",
+    methodLabel: "决策模型 GGUF",
+    outputLabel: "决策 GGUF（{quantizations}）",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

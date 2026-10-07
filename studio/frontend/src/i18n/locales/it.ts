@@ -4013,4 +4013,15 @@ export const it = {
       openFileFailed: "Impossibile aprire il file",
     },
   },
+  exportDecision: {
+    title: "Modello decisionale",
+    description: "I modelli decisionali {layout} si esportano in GGUF per il server decisionale di llama.cpp. Scegli una o più quantizzazioni.",
+    adapterNote: "Questo checkpoint contiene adattatori LoRA; vengono uniti prima della conversione.",
+    notEligibleTitle: "Esportazione GGUF non disponibile",
+    ggufOnly: "I modelli decisionali si esportano solo in GGUF",
+    existing: "Già esportato: {quantizations}",
+    outputNote: "I file GGUF vengono salvati nella cartella dell'esecuzione: {path}",
+    methodLabel: "GGUF del modello decisionale",
+    outputLabel: "GGUF decisionale ({quantizations})",
+  },
 } as const;

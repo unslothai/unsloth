@@ -689,6 +689,9 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
 
 
 class ExportBackend:
+    # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
+    decision: Optional[dict] = None
+
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
@@ -697,6 +700,7 @@ class ExportBackend:
         self.is_vision = False
         self.is_peft = False
         self._audio_type = None
+        self.decision = None
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -711,6 +715,7 @@ class ExportBackend:
             self.current_tokenizer = None
             self.current_checkpoint = None
             self._audio_type = None
+            self.decision = None
 
             clear_gpu_cache()
 
@@ -765,6 +770,13 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+
+            # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
+            from core.export.decision import decision_kind
+
+            decision = decision_kind(checkpoint_path)
+            if decision is not None:
+                return self._load_decision_checkpoint(checkpoint_path, *decision)
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -975,6 +987,61 @@ class ExportBackend:
             _device_map_override = {"device_map": "sequential"},
         )
 
+    def _load_decision_checkpoint(
+        self, checkpoint_path: str, layout: str, adapter_only: bool
+    ) -> Tuple[bool, str]:
+        """Records a decision checkpoint; its weights load (adapters) or convert (merged) at export."""
+        from core.export.decision import DecisionExportError, check_decision_eligibility
+
+        if not _export_runtime_available():
+            return False, _export_runtime_message()
+        try:
+            check_decision_eligibility(checkpoint_path)
+        except DecisionExportError as exc:
+            return False, str(exc)
+        self.decision = {"layout": layout, "adapter_only": adapter_only}
+        self.is_vision = False
+        self.is_peft = adapter_only
+        self.current_checkpoint = checkpoint_path
+        name = "Clef" if layout == "clef" else "Laya"
+        kind = "LoRA adapters" if adapter_only else "merged"
+        logger.info(f"Decision checkpoint ({name}, {kind}) ready for GGUF export")
+        return True, f"Loaded {name} decision model ({kind}); it exports to GGUF only"
+
+    def _export_decision_gguf(
+        self, quantization_method, push_to_hub: bool, imatrix_file, npu_q4nx: bool
+    ) -> Tuple[bool, str, Optional[str]]:
+        if push_to_hub:
+            return (
+                False,
+                "Decision model GGUF export saves to the run folder only; Hub upload is not supported.",
+                None,
+            )
+        if imatrix_file or npu_q4nx:
+            return (
+                False,
+                "Decision model GGUF export does not support imatrix or Q4NX conversion.",
+                None,
+            )
+        from core.export.decision import DecisionExportError, run_decision_gguf_export
+
+        try:
+            data = run_decision_gguf_export(
+                self.current_checkpoint,
+                quantization_method,
+                local_files_only = _hf_offline(),
+                print_output = True,
+            )
+        except (DecisionExportError, ValueError, RuntimeError) as exc:
+            logger.error(f"Decision GGUF export failed: {exc}")
+            return False, str(exc), None
+        output_dir = str(Path(self.current_checkpoint).resolve() / "gguf")
+        quants = ", ".join((data or {}).get("quantizations") or [])
+        return True, f"Decision model exported to GGUF ({quants}) in {output_dir}", output_dir
+
+    def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
+        return False, "Decision models export to GGUF only.", None
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1015,6 +1082,8 @@ class ExportBackend:
         w4a16, mxfp4, mxfp8, nvfp4); it overrides ``format_type`` and is resolved against
         unsloth.save COMPRESSED_EXPORT_SCHEMES.
         """
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1309,6 +1378,8 @@ class ExportBackend:
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1444,6 +1515,10 @@ class ExportBackend:
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
+        if self.decision is not None:
+            return self._export_decision_gguf(
+                quantization_method, push_to_hub, imatrix_file, npu_q4nx
+            )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -1975,6 +2050,8 @@ class ExportBackend:
         q8_0/f16/bf16/f32. ``adapter_format`` is 'mlx' or 'peft' (MLX servers only offer both);
         omitted resolves to the platform's native format.
         """
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:

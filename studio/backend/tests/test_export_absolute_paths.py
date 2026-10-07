@@ -117,6 +117,9 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core.export", core_export)
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
     core_export.q4nx = _load_module("core.export.q4nx", "core/export/q4nx.py", monkeypatch)
+    core_export.decision = _load_module(
+        "core.export.decision", "core/export/decision.py", monkeypatch
+    )
     _load_module(
         "core.inference.model_ids",
         "core/inference/model_ids.py",
@@ -213,6 +216,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ConvertQ4NXRequest",
         "ExportLoRAAdapterRequest",
         "LlmCompressorExportProbeResponse",
+        "ExportDecisionInfoResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo

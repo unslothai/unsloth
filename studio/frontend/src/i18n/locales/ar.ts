@@ -3942,4 +3942,15 @@ export const ar = {
       openFileFailed: "تعذّر فتح الملف",
     },
   },
+  exportDecision: {
+    title: "نموذج القرار",
+    description: "تُصدَّر نماذج القرار {layout} إلى GGUF لخادم القرار في llama.cpp. اختر مستوى تكميم واحدًا أو أكثر.",
+    adapterNote: "تحتوي نقطة الحفظ هذه على محولات LoRA، ويتم دمجها قبل التحويل.",
+    notEligibleTitle: "تصدير GGUF غير متاح",
+    ggufOnly: "تُصدَّر نماذج القرار إلى GGUF فقط",
+    existing: "تم التصدير مسبقًا: {quantizations}",
+    outputNote: "تُحفظ ملفات GGUF في مجلد التشغيل: {path}",
+    methodLabel: "GGUF لنموذج القرار",
+    outputLabel: "GGUF للقرار ({quantizations})",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

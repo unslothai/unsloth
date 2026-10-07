@@ -3970,4 +3970,15 @@ export const ru = {
       openFileFailed: "Не удалось открыть файл",
     },
   },
+  exportDecision: {
+    title: "Модель принятия решений",
+    description: "Модели принятия решений {layout} экспортируются в GGUF для сервера решений llama.cpp. Выберите одну или несколько квантизаций.",
+    adapterNote: "Этот чекпоинт содержит адаптеры LoRA; они объединяются перед конвертацией.",
+    notEligibleTitle: "Экспорт в GGUF недоступен",
+    ggufOnly: "Модели принятия решений экспортируются только в GGUF",
+    existing: "Уже экспортировано: {quantizations}",
+    outputNote: "Файлы GGUF сохраняются в папке запуска: {path}",
+    methodLabel: "GGUF модели принятия решений",
+    outputLabel: "GGUF решений ({quantizations})",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;
