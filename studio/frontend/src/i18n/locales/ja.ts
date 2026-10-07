@@ -182,6 +182,7 @@ export const ja = {
     downloadPrompt: {
       title: "このファイルをダウンロードしますか？",
       description: "{host} が {name} をこのコンピュータに保存しようとしています。",
+      dangerous: "このようなファイルはコンピューター上でプログラムを実行できます。{host} を信頼できる場合のみダウンロードしてください。",
       remember: "次回から記憶する",
       cancel: "キャンセル",
       download: "ダウンロード",
@@ -369,6 +370,7 @@ export const ja = {
       downloading: "{name} をダウンロード中",
       downloaded: "{name} をダウンロードに保存しました",
       downloadFailed: "{name} をダウンロードできませんでした",
+      notMarked: "{name} は保存されましたが、インターネットからダウンロードしたファイルとしてマークできなかったため、開く前にシステムの警告が表示されません。",
       blocked: "このアドレスはブラウザパネルでは開けません。開けるのは公開ウェブサイトのみです。",
       clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去します。サイトからはログアウトされます。",
       clearDataDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページ、サイトの Cookie とデータを消去し、サイトからログアウトします。ダウンロードしたファイルはコンピューターに残ります。",

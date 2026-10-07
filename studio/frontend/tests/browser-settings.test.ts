@@ -315,6 +315,78 @@ test("a remembered answer settles the site's other waiting downloads", async () 
   useDownloadSitesStore.getState().setSite("https://a.example", null);
 });
 
+test("a file that runs code asks whatever the site's remembered answer or the ask setting", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  useDownloadSitesStore.getState().setSite("https://c.example", "allow");
+  assert.equal(await approveDownload("https://c.example/notes.pdf", "notes.pdf"), true);
+  const setup = approveDownload("https://c.example/setup.exe", "setup.exe");
+  assert.deepEqual(
+    useApprovalStore.getState().queue.map(({ name, dangerous }) => [name, dangerous]),
+    [["setup.exe", true]],
+  );
+  answerDownload(useApprovalStore.getState().queue[0], false, false);
+  assert.equal(await setup, false);
+  useDownloadSitesStore.getState().setSite("https://c.example", null);
+
+  useBrowserPrefsStore.getState().setAskBeforeDownloading(false);
+  try {
+    assert.equal(await approveDownload("https://d.example/a.zip", "a.zip"), true);
+    // Bidi controls are shown as "_", so the name can't read as another type.
+    const disguised = approveDownload("https://d.example/x", "invoice\u202efdp.exe");
+    assert.equal(useApprovalStore.getState().queue[0]?.name, "invoice_fdp.exe");
+    answerDownload(useApprovalStore.getState().queue[0], true, false);
+    assert.equal(await disguised, true);
+  } finally {
+    useBrowserPrefsStore.getState().setAskBeforeDownloading(true);
+  }
+
+  // Remembering Allow on one file settles the site's other waiting files, except ones that run code.
+  const first = approveDownload("https://e.example/1.zip", "1.zip");
+  const tool = approveDownload("https://e.example/tool.msi", "tool.msi");
+  const second = approveDownload("https://e.example/2.zip", "2.zip");
+  answerDownload(useApprovalStore.getState().queue[0], true, true);
+  assert.equal(await first, true);
+  assert.equal(await second, true);
+  assert.deepEqual(
+    useApprovalStore.getState().queue.map(({ name }) => name),
+    ["tool.msi"],
+  );
+  // A later one still asks.
+  const later = approveDownload("https://e.example/run.bat", "run.bat");
+  assert.equal(useApprovalStore.getState().queue.length, 2);
+  answerDownload(useApprovalStore.getState().queue[0], true, false);
+  answerDownload(useApprovalStore.getState().queue[0], false, false);
+  assert.equal(await tool, true);
+  assert.equal(await later, false);
+  useDownloadSitesStore.getState().setSite("https://e.example", null);
+});
+
+test("files that run code are recognised however the name is cased, padded or pathed", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { isDangerousDownload } = await import("../src/features/browser/download-safety.ts");
+  const fixture = JSON.parse(
+    readFileSync(new URL("./fixtures/dangerous-download-names.json", import.meta.url), "utf8"),
+  ) as { cases: { name: string; dangerous: boolean }[] };
+  assert.ok(fixture.cases.length > 50);
+  for (const { name, dangerous } of fixture.cases) assert.equal(isDangerousDownload(name), dangerous, name);
+  assert.equal(isDangerousDownload("C:\\Users\\a\\setup.exe"), true);
+  assert.equal(isDangerousDownload("dir.exe/readme.txt"), false);
+  // Saved names are cut to 240 bytes: a tail too long to keep as the extension is cut off, leaving .exe last.
+  assert.equal(isDangerousDownload(`${"a".repeat(236)}.exe${"x".repeat(40)}`), true);
+  assert.equal(isDangerousDownload(`${"a".repeat(300)}.txt`), false);
+  assert.equal(isDangerousDownload(`${"a".repeat(236)}.txt${"x".repeat(40)}`), false);
+  // A Windows device name gets a leading "_", which moves the cut by one byte.
+  assert.equal(isDangerousDownload(`con.${"a".repeat(231)}.exe${"x".repeat(40)}`), true);
+  assert.equal(isDangerousDownload(`cox.${"a".repeat(231)}.exe${"x".repeat(40)}`), false);
+  // A decoded "dir/" before the name: the desktop app may save only the last part, cut to end in .exe.
+  assert.equal(isDangerousDownload(`dir/${"a".repeat(236)}.exe${"x".repeat(40)}`), true);
+  // Controls are one-byte "_" when saved, so two-byte C1 controls move the cut.
+  assert.equal(isDangerousDownload(`${"\u0085".repeat(236)}.exe${"x".repeat(40)}`), true);
+});
+
 test("download answers are kept per origin, never for every site", async () => {
   const { downloadSiteOf: siteOf } = await import("../src/features/browser/download-approval-queue.ts");
   // A blob: URL is its creator's; an opaque one, or data: and about:, belongs to no site.
@@ -371,7 +443,8 @@ test("a download whose click has expired waits for Save rather than skip the sav
   prefs.setAskBeforeDownloading(false);
   (globalThis as { __toasts?: unknown[] }).__toasts = [];
   const blob = new Blob(["x"]);
-  await saveBrowserDownload({ blob, name: "setup.dmg", contentType: "application/octet-stream", url: "https://a.example/setup.dmg" });
+  // Not a file that runs code: those ask first whatever the setting.
+  await saveBrowserDownload({ blob, name: "data.zip", contentType: "application/zip", url: "https://a.example/data.zip" });
   const toasts = (globalThis as { __toasts?: { message: string; options?: { action?: { onClick: () => void } } }[] }).__toasts!;
   assert.equal(toasts.length, 1);
   assert.equal(toasts[0].message, "browser.downloadPrompt.ready");
@@ -379,7 +452,7 @@ test("a download whose click has expired waits for Save rather than skip the sav
   active = true;
   toasts[0].options!.action!.onClick();
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(picked, ["setup.dmg"]);
+  assert.deepEqual(picked, ["data.zip"]);
   assert.equal(written.length, 1);
   prefs.setAskWhereToSave(false);
   prefs.setAskBeforeDownloading(true);
@@ -415,6 +488,49 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   await saving;
   useDownloadSitesStore.getState().setSite("https://b.example", null);
   store.closeTab(tabId);
+});
+
+test("Save link as asks again when the file it named by the address turns out to run code", async () => {
+  const { saveLinkAs } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
+  // The picker fails without a cancel, so the save falls back to a plain download by the server's name.
+  g.showSaveFilePicker = async () => {
+    throw new DOMException("no picker here", "NotAllowedError");
+  };
+  // Slower than the wait before asking, so the address's name ("download") is the one approved first.
+  g.__authFetch = () =>
+    new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve(
+            new Response(new Blob(["MZ"]), {
+              headers: { "Content-Type": "application/octet-stream", "X-Unsloth-Browser-Filename": "setup.exe" },
+            }),
+          ),
+        1200,
+      ),
+    );
+  try {
+    const saving = saveLinkAs("https://a.example/download");
+    for (let i = 0; i < 40 && useApprovalStore.getState().queue.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const asked = useApprovalStore.getState().queue[0];
+    assert.equal(asked?.name, "setup.exe");
+    assert.equal(asked?.dangerous, true);
+    answerDownload(asked, false, false);
+    await saving;
+    assert.equal(useApprovalStore.getState().queue.length, 0);
+  } finally {
+    delete g.showSaveFilePicker;
+    delete g.__authFetch;
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+  }
 });
 
 test("a blocked site's blob: page can't download past the block", async () => {
