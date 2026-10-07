@@ -4410,3 +4410,13 @@ def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
     assert "if (busy !== null && !downloadOnlyPick) return;" in text
     # Decided before the guard, or the guard reads an undefined binding.
     assert text.index("const downloadOnlyPick =") < text.index("if (busy !== null")
+
+
+def test_every_run_settings_gear_marks_saved_settings():
+    # A gear that opens run settings but skips savedFor saves settings the row never shows.
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gears = [m.group(0) for m in re.finditer(r"<ModelLoadSettingsAction\b.*?/>", picker, re.S)]
+    run_settings = [g for g in gears if "onConfigure(" in g]
+    assert len(run_settings) >= 10, "the run-settings gears moved; update this guard"
+    missing = [g.splitlines()[1].strip() for g in run_settings if "savedFor=" not in g]
+    assert not missing, f"run-settings gears without savedFor: {missing}"

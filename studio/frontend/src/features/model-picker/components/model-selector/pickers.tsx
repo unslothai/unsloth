@@ -5981,21 +5981,22 @@ export function HubModelPicker({
         </div>
       );
     }
+    const configId = cachedIdFor(id) ?? id;
+    const configMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      isGguf: false,
+      isDownloaded: cachedIdFor(id) !== null,
+      pipelineTag: pipelineTagById.get(id) ?? null,
+    };
     return (
       <div className={downloadedRowShellClassName(isValueRow(id))}>
         <div className="min-w-0 flex-1">{row}</div>
         <span className={ROW_ACTIONS_CLASS}>
           <ModelLoadSettingsAction
             ariaLabel={`Inference settings for ${id}`}
-            onConfigure={() =>
-              onConfigure(cachedIdFor(id) ?? id, {
-                source: "hub",
-                isLora: false,
-                isGguf: false,
-                isDownloaded: cachedIdFor(id) !== null,
-                pipelineTag: pipelineTagById.get(id) ?? null,
-              })
-            }
+            onConfigure={() => onConfigure(configId, configMeta)}
+            savedFor={modelConfigTarget(configId, configMeta)}
           />
         </span>
       </div>
@@ -6911,16 +6912,13 @@ export function HubModelPicker({
       />
     );
     // Downloads do not load the model, so show settings only after download.
+    const configMeta = { ...meta, contextLength: model.max_context_length };
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
           ariaLabel={`Inference settings for ${model.id}`}
-          onConfigure={() =>
-            onConfigure(model.model_path, {
-              ...meta,
-              contextLength: model.max_context_length,
-            })
-          }
+          onConfigure={() => onConfigure(model.model_path, configMeta)}
+          savedFor={modelConfigTarget(model.model_path, configMeta)}
         />
       ) : null;
     if (!onDevice && !onConfigure) return <div key={model.id}>{row}</div>;
@@ -7747,6 +7745,10 @@ export function HubModelPicker({
                                         localDirectGgufMeta(m.task),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localDirectGgufMeta(m.task),
+                                    )}
                                   />
                                 )}
                                 {!isGguf && onConfigure && (
@@ -7760,6 +7762,10 @@ export function HubModelPicker({
                                         localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                    )}
                                   />
                                 )}
                               </span>
@@ -7890,6 +7896,10 @@ export function HubModelPicker({
                                         localDirectGgufMeta(m.task),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localDirectGgufMeta(m.task),
+                                    )}
                                   />
                                 )}
                                 {!isGguf && onConfigure && (
@@ -7903,6 +7913,10 @@ export function HubModelPicker({
                                         localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                    )}
                                   />
                                 )}
                               </span>
@@ -8020,6 +8034,10 @@ export function HubModelPicker({
                                         localDirectGgufMeta(m.task),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localDirectGgufMeta(m.task),
+                                    )}
                                   />
                                 )}
                                 {!isGguf && onConfigure && (
@@ -8033,6 +8051,10 @@ export function HubModelPicker({
                                         localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
+                                    savedFor={modelConfigTarget(
+                                      m.id,
+                                      localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                                    )}
                                   />
                                 )}
                               </span>
@@ -8630,6 +8652,10 @@ function FineTunedRows({
           audioType: adapter.audioType ?? null,
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
+        const configTarget =
+          canConfigure && onConfigure
+            ? modelConfigTarget(adapter.id, selectionMeta)
+            : undefined;
         const optionKey = makeModelOptionKey("lora", adapter.id);
         const tag = isLocal
           ? isLocalGgufDir || isLocalDirectGguf
@@ -8717,10 +8743,12 @@ function FineTunedRows({
                   <ModelLoadSettingsAction
                     ariaLabel={`Inference settings for ${adapter.name}`}
                     onConfigure={() => onConfigure(adapter.id, selectionMeta)}
+                    savedFor={configTarget}
                   />
                 )}
                 <ModelRowMenu
                   ariaLabel={`More options for ${adapter.name}`}
+                  runSettings={configTarget}
                   pin={{
                     pinned: pinnedKeys.includes(pinKey(adapter.id)),
                     pinLabel: "Pin",
