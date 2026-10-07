@@ -135,6 +135,40 @@ test("recalling a quantized model carries the selected adapters into its load", 
   });
   await callbacks.handleGenerateWithRecall();
   assert.equal((loads[0][2] as { family_override?: string }).family_override, "flux.1");
+
+  // A recalled build loads with its own encoder / VAE files, never the live fields.
+  type Files = { text_encoder_file?: string[]; vae_file?: string };
+  const supplied = {
+    repoId: "/comfy/models/diffusion_models",
+    kind: "gguf",
+    filename: "z.gguf",
+    textEncoderFiles: ["../text_encoders/qwen_3_4b.safetensors"],
+    vaeFile: "../vae/ae.safetensors",
+  };
+  const withFiles = recall({ rememberedModel: supplied, textEncoderFiles: "live.safetensors", vaeFile: "live_vae.safetensors" });
+  await withFiles.callbacks.handleGenerateWithRecall();
+  assert.deepEqual((withFiles.loads[0][2] as Files).text_encoder_file, supplied.textEncoderFiles);
+  assert.equal((withFiles.loads[0][2] as Files).vae_file, supplied.vaeFile);
+  const without = recall({ rememberedModel: { ...supplied, textEncoderFiles: undefined, vaeFile: undefined }, textEncoderFiles: "live.safetensors" });
+  await without.callbacks.handleGenerateWithRecall();
+  assert.equal((without.loads[0][2] as Files).text_encoder_file, undefined);
+  assert.equal((without.loads[0][2] as Files).vae_file, undefined);
+});
+
+test("recall keeps supplied encoder / VAE file paths", () => {
+  const model = {
+    repoId: "/comfy/models/diffusion_models",
+    kind: "gguf" as const,
+    filename: "z.gguf",
+    textEncoderFiles: ["../text_encoders/clip_l.safetensors", "../text_encoders/t5xxl.safetensors"],
+    vaeFile: "../vae/ae.safetensors",
+  };
+  rememberImageModel(model);
+  assert.deepEqual(readImageModel(), model);
+  storage.setItem("unsloth:images:last-model", JSON.stringify({ ...model, textEncoderFiles: [1, ""], vaeFile: 2 }));
+  const read = readImageModel();
+  assert.equal(read?.textEncoderFiles, undefined);
+  assert.equal(read?.vaeFile, undefined);
 });
 
 test("recall keeps an explicit family and drops Auto", () => {

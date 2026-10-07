@@ -270,11 +270,18 @@ import {
 } from "./train/train-base-selector";
 
 function withEngagedFamily(
-  { repoId, kind, filename }: RememberedImageModel,
+  { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
   status: Pick<DiffusionStatus, "resolved">,
 ): RememberedImageModel {
   const family = explicitFamily(resolvedFamilyOverrideSelection(status.resolved?.family_override));
-  return { repoId, kind, ...(filename ? { filename } : {}), ...(family ? { familyOverride: family } : {}) };
+  return {
+    repoId,
+    kind,
+    ...(filename ? { filename } : {}),
+    ...(family ? { familyOverride: family } : {}),
+    ...(textEncoderFiles?.length ? { textEncoderFiles } : {}),
+    ...(vaeFile ? { vaeFile } : {}),
+  };
 }
 
 /** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
@@ -1365,6 +1372,7 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 
 type Busy = "loading" | "unloading" | "generating" | null;
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1599,7 +1607,7 @@ export function ImagesPage({
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
-  const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
+  const lastLoad = useRef<LastLoad | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed
@@ -2976,7 +2984,15 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId };
+      const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      lastLoad.current = {
+        repoId,
+        kind: opts.kind,
+        filename: opts.filename,
+        displayRepoId: opts.displayRepoId,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -3002,7 +3018,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
-          ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
+          ...componentFiles,
         });
         await startRequest;
       } catch (err) {
@@ -4507,7 +4523,12 @@ export function ImagesPage({
         (kind === "pipeline" ||
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
-        const model = withEngagedFamily({ repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined }, status);
+        const model = withEngagedFamily(
+          lastLoad.current && matchesRememberedModel(lastLoad.current, status)
+            ? lastLoad.current
+            : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -4533,7 +4554,13 @@ export function ImagesPage({
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
       // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
-      { ...currentLoadAdvanced(rememberedModel.repoId, false, true), family_override: rememberedModel.familyOverride },
+      {
+        ...currentLoadAdvanced(rememberedModel.repoId, false, true),
+        family_override: rememberedModel.familyOverride,
+        // The recalled build's own encoder / VAE files, not whatever the fields hold now.
+        text_encoder_file: rememberedModel.textEncoderFiles,
+        vae_file: rememberedModel.vaeFile,
+      },
     );
     if (!started) pendingRecalledGeneration.current = null;
   }, [
