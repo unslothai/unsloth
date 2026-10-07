@@ -286,8 +286,7 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 
 
 def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
-    """The loaders' own single-file refusals: pipeline-only image families, dual-expert video
-    families (one file is one expert), and modular MiniMax-H3 unless its ComfyUI name parses."""
+    """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
     if image_fam is not None and not image_fam.pipeline_only:
         return True
     if video_fam is None or video_fam.is_moe:

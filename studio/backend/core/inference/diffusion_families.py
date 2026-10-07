@@ -134,8 +134,7 @@ class DiffusionFamily:
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(
         default_factory = tuple
     )
-    # Variants with different transformer weights but one config (canonical keys, first match wins), so a GGUF of
-    # one is never swapped for the base repo's transformer of another.
+    # Same config, different weights: a GGUF of one must never get the base's transformer of another.
     checkpoint_variants: tuple[str, ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0

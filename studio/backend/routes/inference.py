@@ -47511,7 +47511,7 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Same order as the load: file name, its header's variant, repo, then the base (FLUX.1's is schnell).
+        # Same order as the load (FLUX.1's base is schnell).
         from core.inference.diffusion_content import content_variant_hint
 
         steps, guidance = default_generation_params(

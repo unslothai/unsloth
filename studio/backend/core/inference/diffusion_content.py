@@ -623,7 +623,7 @@ def resolve_family_with_content(
     if info.role != ROLE_DIT:
         return name_family, False
     if not info.family:
-        # a positively recognised unsupported DiT (FLUX Fill, SD3): its name never revives it
+        # recognised but unsupported (FLUX Fill, SD3): the name never revives it
         return None, True
     if info.page != page:
         return None, True

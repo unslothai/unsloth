@@ -13,7 +13,6 @@ from typing import Optional
 _SEPARATOR_RUN = re.compile(r"[-_.\s]+")
 
 
-# Cached: the family / defaults tables normalise the same names once per token on every lookup.
 @lru_cache(maxsize = 4096)
 def normalize_family_name(text: str) -> str:
     return _SEPARATOR_RUN.sub("-", (text or "").lower())
