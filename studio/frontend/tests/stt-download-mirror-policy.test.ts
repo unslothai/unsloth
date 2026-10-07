@@ -23,6 +23,15 @@ test("an adopted STT transfer keeps progress and merges its Voice owner", () => 
     source,
     /requestedDownloadId !== download\.download_id[\s\S]*elapsed > START_GRACE_MS[\s\S]*settle\(/,
   );
+  assert.match(
+    source,
+    /download\.download_id === candidate[\s\S]*current === previousDownloadId[\s\S]*trackSttDownloadNow\(model, options\)/,
+  );
+  assert.match(source, /current !== candidate[\s\S]*retry = true/);
+  assert.match(
+    source,
+    /previousDownloadId !== options\.downloadId[\s\S]*confirmSttDownloadReplacement\(/,
+  );
 });
 
 test("tracking-only STT jobs never invoke the Voice-owned completion load", () => {

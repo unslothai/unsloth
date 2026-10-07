@@ -44,6 +44,17 @@ const warmSelectedVoiceModelOnComplete = new Map<string, boolean>();
 const trackedVariants = new Map<string, string | null>();
 const trackedDownloadIds = new Map<string, string | null>();
 const trackedStartedAt = new Map<string, number>();
+const replacementChecks = new Map<string, string>();
+
+interface TrackSttDownloadOptions {
+  warmSelectedVoiceModelOnComplete?: boolean;
+  engine?: SttEngine;
+  repoId?: string;
+  /** The quant this download fetches, so a quant picked meanwhile is not warmed. */
+  ggufVariant?: string | null;
+  /** The backend attempt this row may cancel. */
+  downloadId?: string | null;
+}
 
 function trackerKey(model: SttModel, engine?: SttEngine): string {
   return engine && engine !== "transformers" ? `${engine}:${model}` : model;
@@ -187,17 +198,9 @@ async function poll(
  * Mirror an already-started download of `model` into the panel. Any other
  * model's download keeps its own row: switching models does not stop it.
  */
-export function trackSttDownload(
+function trackSttDownloadNow(
   model: SttModel,
-  options: {
-    warmSelectedVoiceModelOnComplete?: boolean;
-    engine?: SttEngine;
-    repoId?: string;
-    /** The quant this download fetches, so a quant picked meanwhile is not warmed. */
-    ggufVariant?: string | null;
-    /** The backend attempt this row may cancel. */
-    downloadId?: string | null;
-  } = {},
+  options: TrackSttDownloadOptions,
 ): void {
   const resolvedEngine = options.engine ?? sttEngineFor(model);
   const key = trackerKey(model, resolvedEngine);
@@ -263,4 +266,70 @@ export function trackSttDownload(
   }, POLL_MS);
   trackers.start(key, () => window.clearInterval(timer));
   void poll(model, startedAt, resolvedEngine);
+}
+
+async function confirmSttDownloadReplacement(
+  model: SttModel,
+  options: TrackSttDownloadOptions,
+  resolvedEngine: SttEngine,
+  key: string,
+  previousDownloadId: string,
+): Promise<void> {
+  const candidate = options.downloadId;
+  if (!candidate || replacementChecks.get(key) === candidate) return;
+  replacementChecks.set(key, candidate);
+  let retry = false;
+  try {
+    const status = await fetchSttStatus(
+      undefined,
+      resolvedEngine === "transformers" ? model : undefined,
+    );
+    if (
+      sttEngineStatusFor(status, model, resolvedEngine)?.download.download_id === candidate
+    ) {
+      const current = trackedDownloadIds.get(key);
+      if (trackers.has(key) && current === previousDownloadId) {
+        trackSttDownloadNow(model, options);
+      } else if (trackers.has(key) && current !== candidate) {
+        retry = true;
+      }
+    }
+  } catch {
+    retry = true;
+  } finally {
+    if (replacementChecks.get(key) === candidate) replacementChecks.delete(key);
+  }
+  if (retry) {
+    // Re-check after either a transient fetch failure or another candidate changing local state.
+    window.setTimeout(() => {
+      if (trackers.has(key) && trackedDownloadIds.get(key) !== candidate) {
+        trackSttDownload(model, options);
+      }
+    }, POLL_MS);
+  }
+}
+
+export function trackSttDownload(
+  model: SttModel,
+  options: TrackSttDownloadOptions = {},
+): void {
+  const resolvedEngine = options.engine ?? sttEngineFor(model);
+  const key = trackerKey(model, resolvedEngine);
+  const previousDownloadId = trackedDownloadIds.get(key);
+  if (
+    trackers.has(key) &&
+    previousDownloadId &&
+    options.downloadId &&
+    previousDownloadId !== options.downloadId
+  ) {
+    void confirmSttDownloadReplacement(
+      model,
+      options,
+      resolvedEngine,
+      key,
+      previousDownloadId,
+    );
+    return;
+  }
+  trackSttDownloadNow(model, options);
 }
