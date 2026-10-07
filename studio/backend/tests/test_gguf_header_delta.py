@@ -87,10 +87,14 @@ def cache_with_old(tmp_path: Path, *, symlinks: bool, data: bytes = OLD) -> Path
 
 
 @pytest.fixture(autouse = True)
-def _small_ranges(monkeypatch):
+def _small_ranges(monkeypatch, tmp_path):
     monkeypatch.delenv(delta.DELTA_ENV, raising = False)
     monkeypatch.setattr(delta, "_FIRST_RANGE", 64)
     monkeypatch.setattr(delta, "_HEADER_SLACK", 64)
+    memo = tmp_path / "refused.json"
+    monkeypatch.setattr(delta, "_refused_path", lambda: memo)
+    delta.reset_for_tests()
+    yield
     delta.reset_for_tests()
 
 
@@ -469,3 +473,93 @@ def test_download_worker_leaves_chat_ggufs_alone(tmp_path, monkeypatch):
     assert [f.path for f in left] == [name]
     assert fetch.calls == []
     assert not (repo_dir / "snapshots" / COMMIT_NEW).exists()
+
+
+def test_refused_verdict_survives_a_restart(tmp_path):
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    other = make_gguf({"general.architecture": "llama"}, [TENSORS[1], TENSORS[0]])
+    assert rebuild(repo_dir, new = other).reason == "tensor table differs"
+    delta.reset_for_tests()  # a new backend process: only the file remains
+    fetch = Fetcher(other)
+    assert rebuild(repo_dir, new = other, fetch = fetch).reason == "refused before"
+    assert fetch.calls == []
+    # A different new sha (a later republish) is tried again.
+    assert rebuild(repo_dir).placed
+
+
+BACKEND = Path(__file__).resolve().parents[1]
+OPT_IN_MODULES = {
+    "core/inference/diffusion.py",
+    "core/inference/sd_cpp_backend.py",
+    "core/inference/video.py",
+    "core/inference/video_ltx2.py",
+    "core/inference/video_minimax_h3_te.py",
+}
+
+
+def _opt_in_sites() -> dict:
+    import ast
+
+    found: dict = {}
+    for path in BACKEND.rglob("*.py"):
+        rel = path.relative_to(BACKEND).as_posix()
+        if rel.startswith("tests/"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if kw.arg == "gguf_header_delta":
+                        found.setdefault(rel, []).append(ast.unparse(kw.value))
+    return found
+
+
+def test_only_the_images_and_video_paths_opt_in():
+    sites = _opt_in_sites()
+    sites.pop("utils/hf_xet_fallback.py", None)
+    assert set(sites) == OPT_IN_MODULES
+    assert all(v == "True" for values in sites.values() for v in values)
+    assert "core/inference/llama_cpp.py" not in sites
+
+
+def test_a_chat_gguf_download_never_reaches_the_delta(tmp_path, monkeypatch):
+    # Called the way llama_cpp._download_gguf / the mmproj fetch call it: no opt-in. Even with an older snapshot
+    # present and the target missing, neither the delta, a HEAD nor a Range request is made.
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    (repo_dir / "refs" / "main").write_text(COMMIT_NEW)
+    seen = {}
+    fallback = _fake_shared(monkeypatch, seen)
+    monkeypatch.setattr(delta, "prepare_media_gguf", lambda *a, **k: _no_head())
+    monkeypatch.setattr(delta, "hub_range_fetcher", lambda *a, **k: _no_head())
+    monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", lambda *a, **k: _no_head())
+    assert (
+        fallback.hf_hub_download_with_xet_fallback(
+            "unsloth/Model-GGUF", NAME, None, cache_dir = str(tmp_path)
+        )
+        == "path"
+    )
+
+
+def test_the_image_gguf_prefetch_opts_in(monkeypatch):
+    import threading as _threading
+
+    from core.inference.diffusion import DiffusionBackend
+    from utils import hf_xet_fallback
+
+    calls = []
+
+    def fake(repo_id, filename, token, **kwargs):
+        calls.append((filename, kwargs))
+        return "/nonexistent"
+
+    monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", fake)
+    stub = SimpleNamespace(_cancel_event = _threading.Event())
+    DiffusionBackend._prefetch_files(
+        stub, "unsloth/Qwen-Image-2.1-GGUF", "qwen-image-2.1-Q4_K_M.gguf", "base/x", [], None,
+        fetch_base = "base/x",
+    )
+    assert calls and calls[0][0] == "qwen-image-2.1-Q4_K_M.gguf"
+    assert calls[0][1].get("gguf_header_delta") is True

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -52,8 +53,11 @@ _STRING, _ARRAY, _UINT32 = 8, 9, 4
 
 FetchRange = Callable[[int, int], bytes]
 
-# Verdicts that failed, keyed by (repo cache dir, path, new sha256 or the local ref commit): not retried this process.
-_refused: set[tuple[str, str, str]] = set()
+# Refused rebuilds, keyed by (repo cache dir, path, new sha256): not retried on later loads. Persisted under Studio's
+# state dir so a restart does not try again either; in memory only when there is no state dir.
+_REFUSED_FILE = "gguf_header_delta_refused.json"
+_REFUSED_LIMIT = 512
+_refused: Optional[list] = None
 _refused_lock = threading.Lock()
 
 
@@ -218,16 +222,61 @@ def _other_snapshot_copies(repo_dir: Path, commit: str, rel_path: str) -> list[P
     return out
 
 
-def _refuse(repo_dir: Path, rel_path: str, *keys: str) -> None:
-    with _refused_lock:
-        for key in keys:
-            if key:
-                _refused.add((str(repo_dir), rel_path, key))
+def _refused_path() -> Optional[Path]:
+    try:
+        from hub.utils.state_dir import state_root
+
+        root = state_root(create = True)
+    except Exception:  # noqa: BLE001 - no state dir: the memo stays in memory
+        return None
+    return None if root is None else root / _REFUSED_FILE
 
 
-def _was_refused(repo_dir: Path, rel_path: str, key: str) -> bool:
+def _refused_keys() -> list:
+    global _refused
+    if _refused is None:
+        _refused = []
+        path = _refused_path()
+        if path is not None:
+            try:
+                data = json.loads(path.read_text(encoding = "utf-8"))
+                if isinstance(data, list):
+                    _refused = [k for k in data if isinstance(k, str)][-_REFUSED_LIMIT:]
+            except (OSError, ValueError):
+                pass
+    return _refused
+
+
+def _refused_key(repo_dir: Path, rel_path: str, digest: str) -> str:
+    return "|".join((os.path.normcase(os.path.abspath(str(repo_dir))), rel_path, digest))
+
+
+def _refuse(repo_dir: Path, rel_path: str, digest: str) -> None:
+    key = _refused_key(repo_dir, rel_path, digest)
     with _refused_lock:
-        return (str(repo_dir), rel_path, key) in _refused
+        keys = _refused_keys()
+        if key in keys:
+            return
+        keys.append(key)
+        del keys[:-_REFUSED_LIMIT]
+        path = _refused_path()
+        if path is None:
+            return
+        tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
+        try:
+            tmp.write_text(json.dumps(keys), encoding = "utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.debug("could not persist the gguf header delta memo: %s", exc)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _was_refused(repo_dir: Path, rel_path: str, digest: str) -> bool:
+    with _refused_lock:
+        return _refused_key(repo_dir, rel_path, digest) in _refused_keys()
 
 
 def _lock_path(repo_dir: Path, digest: str) -> Path:
@@ -531,5 +580,6 @@ def prepare_media_gguf(
 
 
 def reset_for_tests() -> None:
+    global _refused
     with _refused_lock:
-        _refused.clear()
+        _refused = None
