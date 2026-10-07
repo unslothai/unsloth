@@ -8172,7 +8172,7 @@ def test_generate_reclaims_model_offload_memory_once_after_success(
 
 
 def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_runtime, tmp_path):
-    # A prompt list needs a matching negative list: encode_prompt asserts equal lengths, and pipes that encode the negative separately would build batch-1 embeds against batch-N latents.
+    # encode_prompt requires matching lengths to avoid batch-1 embeds with batch-N latents.
     backend = _load_zimage_backend(tmp_path)
     backend.generate(
         prompt = "fallback",
@@ -8183,13 +8183,13 @@ def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_ru
     call = backend._state.pipe.last_kwargs
     assert call["prompt"] == ["a", "b", "c"]
     assert call["negative_prompt"] == ["blurry", "blurry", "blurry"]
-    # An empty negative prompt is still omitted entirely (never sent as [""] * n).
+    # empty negatives remain omitted instead of expanding to [""] * n.
     backend.generate(prompt = "fallback", prompts = ["a", "b"])
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
 
 
 def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime, tmp_path):
-    # Uniform-prompt and single-image forwards pass a SCALAR prompt, so the negative prompt must stay scalar too.
+    # scalar prompts require scalar negatives on uniform-prompt and single-image paths.
     backend = _load_zimage_backend(tmp_path)
     backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry", guidance = 0.5)
     assert backend._state.pipe.last_kwargs["prompt"] == "a sloth"
@@ -8199,8 +8199,6 @@ def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime
 
 
 class _TracingPipe(_CountingPipe):
-    """Appends ``("call", n)`` to a shared trace so resets can be interleaved with forwards."""
-
     def __init__(
         self,
         trace,
@@ -14623,7 +14621,7 @@ def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path,
     backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
     call = backend._state.pipe.last_kwargs
     assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == ""
-    # An explicit negative is kept; guidance <= 1 never asks for CFG.
+    # true CFG engages only above guidance 1 and preserves explicit negatives when engaged.
     backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
     backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
@@ -14631,7 +14629,7 @@ def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path,
 
 
 def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path):
-    backend = _loaded_backend(tmp_path)  # z-image: guidance_scale, its own CFG handling
+    backend = _loaded_backend(tmp_path)  # z-image owns guidance_scale CFG handling
     backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
 
