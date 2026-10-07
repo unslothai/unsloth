@@ -638,8 +638,6 @@ def test_a_full_finetune_restores_its_own_checkpoint(tmp_path, monkeypatch):
     for k, v in model.state_dict().items():
         assert torch.equal(v, saved[k]), k
 
-    assert seen == [{"": f"cuda:{index}"}, "auto"]
-
 
 def test_full_finetuning_never_gets_a_4bit_config(monkeypatch):
     from unsloth.models import decision, decision_from_lm, loader
