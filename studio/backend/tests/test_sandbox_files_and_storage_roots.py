@@ -3310,6 +3310,28 @@ def test_attachments_are_copied_into_the_sandbox_once(tmp_path, monkeypatch, dir
     assert list(outside.iterdir()) == []
 
 
+def test_a_python_call_that_edits_an_attachment_reports_it(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    tools = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    sheet, _ = chat_originals.save([b"a,b\n1,2\n"])
+    session = "__LOCALID_attachedit"
+    tools.materialize_sandbox_attachments(session, [(sheet, "report.csv")])
+    path = tools.sandbox_attachment_path(sheet, "report.csv")
+    beside = path.replace("report.csv", "report_filled.csv")
+
+    read_only = tools._python_exec(f"print(open({path!r}).read())", session_id = session)
+    assert "__FILES__" not in read_only
+
+    result = tools._python_exec(
+        f"open({path!r}, 'a').write('3,4\\n'); open({beside!r}, 'w').write('x\\n')",
+        session_id = session,
+    )
+    files = json.loads(result.split("__FILES__:")[1].split("\n")[0])
+    assert {entry["name"] for entry in files} == {path, beside}
+
+
 def test_sandbox_attachment_paths_match_the_frontend():
     """Same table as sandbox-attachments.test.ts: the client notes these paths to the model."""
     from core.inference.tools import sandbox_attachment_path

@@ -21837,7 +21837,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+            ]
         )
         for name in names:
             # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
