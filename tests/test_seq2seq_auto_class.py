@@ -125,7 +125,6 @@ def test_a_marked_head_is_counted_by_unsloth_zoo(monkeypatch):
     for name in ("T5Gemma2Config", "WhisperConfig", "LlamaConfig"):
         assert dispatch(SimpleNamespace(model = MarkedHead(name)), iter([]), 1) == "unsloth"
         assert dispatch(SimpleNamespace(model = Peft(MarkedHead(name))), iter([]), 1) == "unsloth"
-    # Unmarked seq2seq keeps stock HF, so an older unsloth_zoo never sees a different count.
     unmarked = SimpleNamespace(config = _config("T5Gemma2Config"))
     assert dispatch(SimpleNamespace(model = unmarked), iter([]), 1) == "stock"
 

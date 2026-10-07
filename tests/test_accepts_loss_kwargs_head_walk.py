@@ -13,12 +13,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Under LoRA the accepts_loss_kwargs walk must reach the loss head, not the backbone.
-
-LoraModel forwards unknown attributes to the wrapped model, whose HF `base_model` property is the
-backbone, so the old getattr walk went PeftModel -> LoraModel -> Gemma4Model / Qwen2_5_VLModel,
-read their `accepts_loss_kwargs = False`, and dropped num_items_in_batch for a head whose loss
-divides by it. Helpers loaded by AST, CPU only."""
+"""Under LoRA the accepts_loss_kwargs walk must reach the loss head, not the backbone."""
 
 import os
 import sys
@@ -562,7 +557,6 @@ def mods(tmp_path):
 
 
 def _trainer_sees(model):
-    # transformers 5: hasattr on unwrap_peft_model(model), else a **kwargs signature.
     head = model.get_base_model() if hasattr(model, "get_base_model") else model
     if hasattr(head, "accepts_loss_kwargs"):
         return head.accepts_loss_kwargs
@@ -575,7 +569,6 @@ def _trainer_sees(model):
 
 
 def test_old_getattr_walk_lands_on_the_backbone(mods):
-    # The trap itself: HF's base_model property, reached through LoraModel forwarding.
     peft = mods.PeftModelForCausalLM(mods.NativeForConditionalGeneration())
     assert type(peft.base_model.base_model).__name__ == "Backbone"
 
@@ -604,8 +597,6 @@ def test_walk_reaches_the_head_through_training_wrappers(ns, mods, wrap):
 
 @pytest.mark.parametrize("attr", ["module", "_orig_mod", "_fsdp_wrapped_module"])
 def test_a_plain_module_with_a_wrapper_named_child_is_not_a_training_wrapper(ns, mods, attr):
-    # Only real DDP / DataParallel / compile / FSDP wrappers are unwrapped; a user container with a
-    # child called `module` keeps its own forward, so it is not mistaken for that child.
     outer = nn.Module()
     outer.add_module(attr, mods.NativeForConditionalGeneration())
     assert ns["_loss_head"](outer) is None
@@ -637,7 +628,6 @@ def test_full_finetuning_head_gets_the_count(ns, mods):
 
 def test_a_legacy_mean_head_falls_back(ns, mods):
     head = mods.LegacyMeanForConditionalGeneration()
-    # Its own attention-filtered CrossEntropyLoss mean: a micro-batch mean, so no count.
     assert ns["_forward_consumes_num_items_in_batch"](head) is False
     peft = mods.PeftModelForCausalLM(head)
     ns["apply_accepts_loss_kwargs_fix"](peft)
@@ -659,7 +649,6 @@ def test_mixed_main_and_aux_mean_is_undecided(ns, mods):
 def test_a_mean_fallback_branch_is_undecided(ns, mods):
     head = mods.ReturnLogitsFallbackForConditionalGeneration()
     assert ns["_forward_consumes_num_items_in_batch"](head) is None
-    # Undecided defers to the flag the backbone declares, so the mean branch is never undivided.
     peft = mods.PeftModelForCausalLM(head)
     ns["apply_accepts_loss_kwargs_fix"](peft)
     assert _trainer_sees(peft) is False
@@ -670,14 +659,12 @@ def test_copied_kwargs_dict_counts(ns, mods):
 
 
 def test_a_second_call_redecides_its_own_shadow(ns, mods):
-    # from_pretrained decides on the bare head, Trainer.__init__ again on the PEFT model.
     head = mods.StaleFlagForConditionalGeneration()
     ns["apply_accepts_loss_kwargs_fix"](head)
     assert head.accepts_loss_kwargs is True
     peft = mods.PeftModelForCausalLM(head)
     ns["apply_accepts_loss_kwargs_fix"](peft)
     assert _trainer_sees(peft) is True
-    # Our own True is not a declaration: a forward that stops passing the count flips it back.
     legacy = mods.AstLegacyForCausalLM.forward.__get__(head)
     head.forward = legacy
     ns["apply_accepts_loss_kwargs_fix"](peft)
@@ -703,7 +690,6 @@ def test_remote_mean_loss_stays_false_under_the_peft_walk(ns, tmp_path, mods):
 
 
 def _bare(cls):
-    # The class forward without building weights: the classifier reads source and children only.
     obj = cls.__new__(cls)
     nn.Module.__init__(obj)
     return obj
@@ -743,8 +729,6 @@ def test_installed_transformers_heads_consume(ns, module, name):
         for node in ast.walk(ast.parse(textwrap.dedent(source)))
     )
     if not counted:
-        # Its own mean CE, or a stock loss call with no count (Qwen2.5-VL on 4.55):
-        # must never be read as consuming the count.
         assert result is not True
         return
     assert result is True
@@ -828,7 +812,6 @@ class AlignedUncountedForCausalLM(AlignedCountedForCausalLM):
 def test_a_mean_loss_reached_through_labels_is_false(ns, mods, cls):
     head = getattr(mods, cls)()
     assert ns["_forward_consumes_num_items_in_batch"](head) is False
-    # Their **kwargs signature would read True: the fix writes False where Trainer looks.
     peft = mods.PeftModelForCausalLM(head)
     ns["apply_accepts_loss_kwargs_fix"](peft)
     assert _trainer_sees(peft) is False
@@ -854,10 +837,8 @@ def test_a_forwarding_wrapper_head_is_shadowed_too(ns, mods):
     peft = mods.PeftModelForCausalLM(wrapper)
     assert ns["_loss_head"](peft) is head
     ns["apply_accepts_loss_kwargs_fix"](peft)
-    # Every level from the wrapper down to the head carries the answer, not just the wrapper.
     assert wrapper.accepts_loss_kwargs is True
     assert head.accepts_loss_kwargs is True
-    # A later call re-decides it: our own value, not a declaration.
     assert ns["_instance_accepts_loss_kwargs"](peft) is None
 
 
@@ -900,7 +881,6 @@ def test_the_count_through_unsloth_loss_count_kwargs_is_consuming(ns, mods):
 
 
 def test_a_wrapper_with_its_own_stale_flag_gets_the_decision(ns, mods):
-    # The head's own signature already reads True, but Trainer can land on the wrapper.
     outer = mods.FlaggedForwardingWrapper(mods.NativeForConditionalGeneration())
     ns["apply_accepts_loss_kwargs_fix"](outer)
     assert outer.accepts_loss_kwargs is True

@@ -4969,15 +4969,13 @@ def _is_seq2seq_lm_config(config):
 
 
 def _head_counts_unshifted_labels(model):
-    # unsloth_zoo marks a head whose loss averages unshifted labels and then counts them itself; an
-    # older unsloth_zoo has neither the marker nor that count, so this stays False with it.
+    # unsloth_zoo marks heads that average unshifted labels and counts them; an older zoo has neither.
     try:
         from unsloth_zoo.loss_utils import counts_unshifted_labels
     except Exception:
         return False
     if model is None:
         return False
-    # What apply_accepts_loss_kwargs_fix recorded for the head it resolved through DDP / compile / PEFT.
     recorded = _num_items_labels(model)
     if recorded is not None:
         return recorded == "unshifted"
@@ -4996,7 +4994,6 @@ def _head_counts_unshifted_labels(model):
 def _make_seq2seq_aware_get_batch_samples(original):
     def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
-        # A marked head is counted unshifted by unsloth_zoo, the one place that knows which heads it rewrote.
         if _head_counts_unshifted_labels(getattr(self, "model", None)):
             return _unsloth_get_batch_samples(self, *args, **kwargs)
         if _is_seq2seq_lm_config(getattr(self.model, "config", None)):
@@ -5185,9 +5182,7 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
 
-# Real children only. PEFT's LoraModel forwards unknown attributes to the wrapped model, whose
-# `base_model` property is the backbone (`base_model_prefix`), so a getattr walk went
-# PeftModel -> LoraModel -> backbone and never saw the head that computes the loss.
+# Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
 _LOSS_KWARGS_CHILDREN = ("base_model", "model") + _UNSLOTH_WRAPPED_MODULE_ATTRS
 
 
@@ -5200,7 +5195,6 @@ def _loss_kwargs_child(m):
             nxt = d.get(name)
         if nxt is not None and nxt is not m:
             return nxt
-    # A user wrapper forwarding to a differently named child: the head Trainer trains sits there.
     if isinstance(m, torch.nn.Module) and not any(k in type(m).__name__ for k in _LOSS_HEAD_NAMES):
         return _pass_through_child(m, modules)
     return None
@@ -5215,7 +5209,6 @@ def _loss_kwargs_chain(model):
         seen.add(id(m))
         yield m
         m = _loss_kwargs_child(m)
-    # transformers 5 reads the flag off get_base_model(); a custom wrapper may hide it from the walk.
     try:
         head = model.get_base_model() if hasattr(model, "get_base_model") else None
     except Exception:
@@ -5240,7 +5233,6 @@ _GUESSED_LOSS_KWARGS = "_unsloth_guessed_accepts_loss_kwargs"
 
 
 def _loss_kwargs_levels(model):
-    # Every wrapper level plus the resolved loss head, which a wrapper chain can leave out.
     levels = list(_loss_kwargs_chain(model))
     try:
         head = _loss_head(model)
@@ -5252,7 +5244,6 @@ def _loss_kwargs_levels(model):
 
 
 def _shadow_accepts_loss_kwargs(model, value):
-    # Set the attribute at every wrapper level (head included) so HF's hasattr check resolves wherever accelerate or peft unwrap lands.
     # A value the model or user set on an instance is left alone.
     for m in _loss_kwargs_levels(model):
         d = getattr(m, "__dict__", None)
@@ -5293,15 +5284,11 @@ def _training_wrapper_types():
 
 
 def _is_training_wrapper(m):
-    # Only the real DDP / DataParallel / torch.compile / FSDP wrappers: a user module with a child
-    # that happens to be called `module` keeps its own forward and loss.
+    # Only real training wrappers: a user module with a child named `module` keeps its own loss.
     return isinstance(m, _training_wrapper_types())
 
 
 def _loss_head(model):
-    # The module Trainer reads and calls once DDP / torch.compile / FSDP / PEFT are unwrapped
-    # (PeftModelForCausalLM itself matches "CausalLM"). A custom outer module holding an HF head is
-    # not that head: its own forward may compute a different loss, so it is left undecided.
     m, seen = model, set()
     while m is not None and id(m) not in seen:
         seen.add(id(m))
@@ -5321,7 +5308,6 @@ def _loss_head(model):
             m = wrapped
             continue
         if type(m).__module__.startswith("peft."):
-            # A bare tuner (LoraModel) holds the head under `model`.
             m = modules.get("model")
             continue
         if any(k in type(m).__name__ for k in _LOSS_HEAD_NAMES):
@@ -5331,8 +5317,6 @@ def _loss_head(model):
 
 
 def _pass_through_child(m, modules):
-    # A user wrapper whose forward only returns `self.<child>(...)`, handing it its **kwargs (or the
-    # count by name), trains exactly that child with the count. Anything else is not transparent.
     try:
         tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(type(m).forward))))
     except Exception:
@@ -5362,7 +5346,6 @@ def _pass_through_child(m, modules):
     params = {a.arg for a in node.args.args + node.args.kwonlyargs}
 
     def carries_count(value):
-        # The wrapper's own count parameter, or a read of it out of its **kwargs; not `None`.
         if isinstance(value, ast.Name):
             return value.id == "num_items_in_batch" and value.id in params
         return _is_count_get(value)
@@ -5382,8 +5365,6 @@ def _pass_through_child(m, modules):
 
 
 def _forward_function_node(forward, depth = 0):
-    # (FunctionDef, source, globals) of a forward, following a thin `return impl(self, ...)` class
-    # forward (the compile cache's standalone classes) into the function that does the work.
     try:
         forward = inspect.unwrap(forward)
     except ValueError:
@@ -5433,7 +5414,6 @@ _FUSED_LOSS_CALLEES = (
 
 
 def _nested_scope_ids(node):
-    # Nodes inside a def / lambda nested in the forward: their names are another scope.
     ids = set()
     for sub in ast.walk(node):
         if sub is not node and isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -5442,7 +5422,6 @@ def _nested_scope_ids(node):
 
 
 def _local_assignments(node, nested):
-    # {name: [assigned value, or None when not a plain `name = value`]} over the forward's own scope.
     plain, out = {}, {}
     for sub in ast.walk(node):
         if id(sub) in nested:
@@ -5464,8 +5443,6 @@ def _local_assignments(node, nested):
 
 
 def _is_count_get(value):
-    # `<dict>.get("num_items_in_batch" | "n_items", ...)`, how kwargs and the compile cache read it,
-    # or a conditional choosing between such reads (`a if a is not None else b`, the n_items fallback).
     if isinstance(value, ast.IfExp):
         return _is_count_get(value.body) and _is_count_get(value.orelse)
     return (
@@ -5478,8 +5455,6 @@ def _is_count_get(value):
 
 
 def _kwargs_carriers(node, assigned):
-    # The forward's **kwargs and dicts copied straight from it (`loss_kwargs = kwargs`, `{**kwargs}`,
-    # `dict(kwargs)`). A name stays a carrier only if every assignment to it is one of those.
     kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
     candidates = {kwarg} if kwarg else set()
 
@@ -5520,14 +5495,12 @@ _CARRIER_MUTATORS = ("clear", "update", "popitem", "__delitem__", "__setitem__",
 
 
 def _known_loss_function(head):
-    # A transformers LOSS_MAPPING loss or Unsloth's: these divide by num_items_in_batch when given it.
     # A user-assigned `loss_function` may accept the keyword and still return a mean.
     try:
         fn = getattr(head, "loss_function", None)
     except Exception:
         return None
     if fn is None:
-        # Not resolvable off the instance (a bare head): the HF property maps it from LOSS_MAPPING.
         return True
     fn = getattr(fn, "__func__", fn)
     module = getattr(fn, "__module__", "") or ""
@@ -5578,7 +5551,6 @@ def _ce_reductions(node, namespace, subst):
 
 
 def _resolve_callee(obj, call, namespace):
-    # (callee object, function) for `self.<child>(...)`, `self.<method>(...)` or a module-level function.
     func = call.func
     if (
         isinstance(func, ast.Attribute)
@@ -5603,13 +5575,8 @@ def _resolve_callee(obj, call, namespace):
 def _forward_consumes_num_items_in_batch(head):
     """Does the loss head's forward hand num_items_in_batch to its loss?
 
-    True: every loss call receives the count (self.loss_function(..., **kwargs), Unsloth's fused
-    losses fed the count, or a module / method handed `labels` together with the count that
-    divides by it). False: the loss is a micro-batch mean (Unsloth's fused loss or a stock
-    loss_function called without the count, a mean CrossEntropyLoss / nll_loss, or `labels`
-    handed to a module / method that averages them). None: cannot tell, or the forward mixes both.
-    Anything it cannot follow (the count popped or filtered, a loss inside a nested function) is
-    None, never True.
+    True: every loss call gets the count. False: a micro-batch mean. None: cannot tell, mixed, or
+    anything it cannot follow (never True by default).
     """
     if head is None:
         return None
@@ -5622,15 +5589,12 @@ def _forward_consumes_num_items_in_batch(head):
 
 
 def _classify_loss_forward(head, node, source, namespace, depth, labels_name, subst):
-    # True / False / None as documented above, or "no_loss" when this function computes no loss.
     nested = _nested_scope_ids(node)
     assigned = _local_assignments(node, nested)
     carriers = _kwargs_carriers(node, assigned)
     params = {a.arg for a in node.args.args + node.args.kwonlyargs}
 
-    # A carrier emptied or rewritten in place no longer proves the count reaches the loss. Tampering
-    # only withholds True: a loss that is a mean (EncoderDecoderModel moves the count to its decoder,
-    # then averages its own CE) is still a mean.
+    # A carrier emptied or rewritten in place no longer proves the count reaches the loss.
     tampered = any(
         id(sub) not in nested
         and isinstance(sub, ast.Call)
@@ -5641,7 +5605,6 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         for sub in ast.walk(node)
     )
 
-    # Names holding the count: the parameter, or locals only ever set from a count read or None.
     count_names = set()
     if "num_items_in_batch" in params and all(
         v is not None and _is_count_get(v) for v in assigned.get("num_items_in_batch", [])
@@ -5654,14 +5617,12 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
             v is not None and (_is_count_get(v) or _is_const(v, (None,))) for v in values
         ):
             count_names.add(name)
-    # A named parameter takes the count out of **kwargs, so only passing it by name forwards it.
     star_carries_count = "num_items_in_batch" not in params
 
     def is_count(value):
         return (isinstance(value, ast.Name) and value.id in count_names) or _is_count_get(value)
 
-    # The count may only be read (`.get("num_items_in_batch")`) or re-keyed onto its value
-    # (`{"num_items_in_batch": n_items}`); a pop, del, or comparison filters it out.
+    # The count may only be read or re-keyed; a pop, del or comparison filters it out.
     allowed = set()
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call) and _is_count_get(sub):
@@ -5678,7 +5639,6 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
     )
 
     def counted_dict(value):
-        # `**({} if n_items is None else {"num_items_in_batch": n_items})`: passes the count whenever there is one.
         return any(
             isinstance(d, ast.Dict)
             and any(
@@ -5689,8 +5649,6 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         )
 
     def counted_helper(value):
-        # `**unsloth_loss_count_kwargs(self.loss_function, n_items)`: unsloth_zoo hands the count to
-        # any loss that takes it (a user's loss_function is judged separately as undecided).
         if not isinstance(value, ast.Call):
             return False
         if (_dotted_name(value.func) or "").rsplit(".", 1)[-1] != "unsloth_loss_count_kwargs":
@@ -5751,22 +5709,17 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         if tampered:
             return None
         if fused_without_count or uncounted:
-            # One branch divides by the count, another (UNSLOTH_RETURN_LOGITS=1, a non-causal loss) returns a mean.
             return None
         if ce_kinds or used:
-            # A main loss that divides by the count beside an auxiliary CE (CSM depth decoder): neither answer is right.
             return None
         if via_loss_function and not _known_loss_function(head):
-            # A user loss_function may take the keyword and still average.
             return None
         return True
     if fused_without_count:
         return False
     if uncounted:
-        # A stock loss_function without the count reduces by the mean (5.16 XGLM, older Qwen-VL).
         return False if _known_loss_function(head) else None
 
-    # `labels` handed elsewhere: the count has to travel with them, and the callee has to divide by it.
     delegates = []
     for call in ast.walk(node):
         if not isinstance(call, ast.Call) or id(call) in nested or id(call) in loss_calls:
@@ -5781,7 +5734,6 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         ):
             continue  # labels.view(...), labels.to(...)
 
-        # The compiler hands labels on wrapped (`labels=mask_attention_mask_out(labels=labels, ...)`).
         def mentions(value):
             return any(isinstance(x, ast.Name) and x.id == labels_name for x in ast.walk(value))
 
@@ -5817,7 +5769,6 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         if c_labels is None:
             verdicts.append(None)
             continue
-        # A reduction the caller passes (BLIP's text decoder) or the parameter's default.
         c_subst = {}
         defaults = c_node.args.defaults
         for arg, default in zip(
@@ -5840,7 +5791,6 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         if verdict == "no_loss":
             continue
         if verdict is True and not passes_count(call):
-            # It would divide by the count, but the count never reaches it: it falls back to a mean.
             verdict = False
         verdicts.append(verdict)
 
@@ -5874,15 +5824,11 @@ def _head_default_accepts_loss_kwargs(head):
 
 
 def apply_accepts_loss_kwargs_fix(model):
-    # Shadow accepts_loss_kwargs on the model so HF Trainer sees it via hasattr(unwrapped_model) (#4982).
-    # Priority: a value the model or user set on an instance > the head's forward hands the count to
-    # its loss -> True > Unsloth's fused loss gets no count -> False > the first class attr in the
-    # chain > a **kwargs forward that returns its own mean -> False > the HF default.
+    # Priority: instance value > head hands the count to its loss > fused loss without it > class attr > mean-loss guess > HF default.
     declared = _instance_accepts_loss_kwargs(model)
     # Re-decide every value written by an earlier call: the forward or the wrappers may have changed.
     _clear_guessed_accepts_loss_kwargs(model)
     if declared is not None:
-        # Set by the model itself: keep it, and carry it onto any wrapper added since.
         _shadow_accepts_loss_kwargs(model, declared)
         return f"{declared} (instance accepts_loss_kwargs)"
 
@@ -5890,15 +5836,12 @@ def apply_accepts_loss_kwargs_fix(model):
     value, reason = _find_concrete_accepts_loss_kwargs(model)
     consumes = _forward_consumes_num_items_in_batch(head)
     if consumes is not None:
-        # Only where Trainer would otherwise read the other answer off some level (Gemma 4 declares a
-        # stale False on the head; ProphetNet's **kwargs signature reads True over a mean loss; a
-        # wrapper can carry its own flag). Then every level gets the decision.
+        # Only where Trainer would read another answer off some level (Gemma 4's stale False, ProphetNet's **kwargs mean).
         def trainer_reads(level):
             if hasattr(level, "accepts_loss_kwargs"):
                 return getattr(level, "accepts_loss_kwargs")
             return _head_default_accepts_loss_kwargs(level)
 
-        # The levels Trainer can land on: the top model down to the head, not the backbone below it.
         above_head = []
         for level in _loss_kwargs_levels(model):
             above_head.append(level)
@@ -5918,7 +5861,6 @@ def apply_accepts_loss_kwargs_fix(model):
     causal_lm = _forward_ignores_num_items_in_batch(model)
     if causal_lm is not None:
         _shadow_accepts_loss_kwargs(model, False)
-        # transformers 5 reads the flag off get_base_model(), which a custom wrapper can hide from the walk.
         _shadow_accepts_loss_kwargs(causal_lm, False)
         return "False (forward takes **kwargs but computes its own mean loss)"
     return f"default (signature inspection, {reason})"
@@ -6099,9 +6041,6 @@ def _clear_guessed_accepts_loss_kwargs(model):
         d.pop(_NUM_ITEMS_LABELS, None)
 
 
-# How unsloth_zoo's batch counter must count num_items_in_batch for a head Unsloth decided consumes
-# it: "shifted" (labels[..., 1:], next-token targets) or "unshifted" (labels as given). Absent: the
-# counter keeps its own logic (an older Unsloth, or a head whose answer came from a flag).
 _NUM_ITEMS_LABELS = "_unsloth_num_items_labels"
 
 
@@ -6109,7 +6048,6 @@ def _record_num_items_labels(model, head):
     if getattr(head, "_unsloth_counts_unshifted_labels", False) is True:
         value = "unshifted"
     elif getattr(getattr(head, "config", None), "is_encoder_decoder", False):
-        # An encoder-decoder loss without the marker: which labels it averages is not known here.
         return
     else:
         value = "shifted"
@@ -6271,7 +6209,6 @@ def _forward_ignores_num_items_in_batch(model):
         return None
     if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
         return None
-    # Follow a thin compile-cache class forward into the function that computes the loss.
     resolved = _forward_function_node(forward)
     if resolved is None:
         return None
