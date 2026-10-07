@@ -21,6 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { annotateScript } from "./api";
 import { canScreenshot } from "./screenshot-support";
 import { screenshotPage } from "./capture";
@@ -933,7 +934,8 @@ export function WebAnnotateLayer({
     const listener = (event: AnnotateEvent) => handleRef.current(event);
     let stop: () => void;
     if (native) {
-      const channel = startNativeAnnotate(tabId, listener);
+      // One poll can carry several reports: render between them so each sees the last one's state.
+      const channel = startNativeAnnotate(tabId, (event) => flushSync(() => listener(event)));
       nativeSend.current = channel.send;
       stop = () => {
         nativeSend.current = null;

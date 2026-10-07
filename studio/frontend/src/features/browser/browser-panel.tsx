@@ -1368,7 +1368,7 @@ function annotateMode(tab: BrowserTab | undefined, native: boolean): "frame" | "
   if (entry.kind === "newtab" || entry.kind === "internal") return "dom";
   if (entry.kind !== "web" || tab.loading) return null;
   if (native) return tab.nativeError ? "dom" : "native";
-  return tab.documentType ? "dom" : "frame";
+  return tab.documentType || tab.pageError ? "dom" : "frame";
 }
 
 /** Ask about the page, as with a file's Request edits. */

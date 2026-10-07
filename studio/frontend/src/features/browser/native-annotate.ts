@@ -42,6 +42,9 @@ function answerOf(value: unknown): Answer | null {
   return typeof installed === "boolean" && Array.isArray(events) ? { installed, events } : null;
 }
 
+// One queue per tab across channels, so a closing channel's stop can't land after a new one's start.
+const tabQueues = new Map<string, Promise<void>>();
+
 /** Drives `tabId`'s page until `stop`. Reports `ready` when a navigation drops the code, so the layer reinstalls it. */
 export function startNativeAnnotate(
   tabId: string,
@@ -50,8 +53,8 @@ export function startNativeAnnotate(
   let live = true;
   // Null until the first answer; `ready` fires on installed -> not installed.
   let installed: boolean | null = null;
-  // Serial, so install lands before start.
-  let queue: Promise<void> = Promise.resolve();
+  // Install or start calls that failed (no view yet, mid-navigation), replayed after the next answer.
+  const failed = new Map<"install" | "start", NativeCommand>();
 
   const deliver = (answer: Answer) => {
     if (!live) return;
@@ -66,20 +69,38 @@ export function startNativeAnnotate(
     }
   };
 
-  const run = (command: NativeCommand) => {
-    queue = queue.then(() =>
-      live || command.command === "stop"
-        ? callNative<unknown>("browser_view_annotate", { tabId, command }).then(
-            (value) => {
-              const answer = answerOf(value);
-              if (answer) deliver(answer);
-            },
-            // No view yet or mid-navigation: the next poll retries.
-            () => undefined,
-          )
-        : undefined,
+  const run = (command: NativeCommand): Promise<void> => {
+    const call = () =>
+      callNative<unknown>("browser_view_annotate", { tabId, command }).then(
+        (value) => {
+          const answer = answerOf(value);
+          if (answer) deliver(answer);
+          replay();
+        },
+        () => {
+          if (live && (command.command === "install" || command.command === "start")) {
+            failed.set(command.command, command);
+          }
+        },
+      );
+    // Serial, so install lands before start. A closed channel only sends its stop.
+    const next = (tabQueues.get(tabId) ?? Promise.resolve()).then(() =>
+      live || command.command === "stop" ? call() : undefined,
     );
-    return queue;
+    tabQueues.set(tabId, next);
+    void next.finally(() => {
+      if (tabQueues.get(tabId) === next) tabQueues.delete(tabId);
+    });
+    return next;
+  };
+
+  const replay = () => {
+    if (!live) return;
+    for (const key of ["install", "start"] as const) {
+      const command = failed.get(key);
+      failed.delete(key);
+      if (command) void run(command);
+    }
   };
 
   let polling = false;
@@ -94,7 +115,9 @@ export function startNativeAnnotate(
   return {
     send: (command) => {
       const native = nativeCommand(command);
-      if (native) void run(native);
+      if (!native) return;
+      if (native.command === "stop") failed.delete("start");
+      void run(native);
     },
     stop: () => {
       window.clearInterval(timer);
