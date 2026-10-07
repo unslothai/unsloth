@@ -45,7 +45,11 @@ function runsCode(name: string): boolean {
 /** Whether `name` runs code when opened, judged as the OS will (Windows drops trailing dots and spaces),
  *  both as given and as the desktop app shortens it. */
 export function isDangerousDownload(name: string): boolean {
-  const flat = name.replace(/[/\\]/g, "_");
+  // As the desktop app cleans it before the cut: controls, bidi controls and reserved characters become
+  // one-byte "_", trailing dots and spaces go.
+  const flat = name
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069/\\:*?"<>|]/g, "_")
+    .replace(/[. ]+$/, "");
   return (
     runsCode(name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1)) ||
     runsCode(savedAs(flat))

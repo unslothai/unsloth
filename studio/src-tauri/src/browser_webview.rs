@@ -1749,16 +1749,19 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
     }
 }
 
-/// The path reserved for a finished download of one URL. No path (macOS reports none; its downloads
-/// of one URL run in turn): the first. A path matching none stands for the sole reservation only,
-/// else settling one of several would hand it another download's result.
+/// The path reserved for a finished download of one URL. No path: the first on macOS, which reports
+/// none and runs downloads of one URL in turn. Elsewhere a missing path (WebView2 sends none for a
+/// failed download) or one matching none stands for the sole reservation only, else settling one of
+/// several would hand it another download's result.
 fn take_reservation(pending: &mut Vec<PathBuf>, path: Option<&Path>) -> Option<PathBuf> {
+    let sole = (pending.len() == 1).then_some(0);
     let index = match path {
-        None => Some(0),
+        None if cfg!(target_os = "macos") => Some(0),
+        None => sole,
         Some(path) => pending
             .iter()
             .position(|p| crate::browser_downloads::same_path(p, path))
-            .or((pending.len() == 1).then_some(0)),
+            .or(sole),
     };
     index
         .filter(|&index| index < pending.len())
@@ -1781,7 +1784,11 @@ mod tests {
             None
         );
         assert_eq!(two.len(), 2);
-        assert_eq!(take_reservation(&mut two, None), Some(a.clone()));
+        // No path: macOS runs one URL's downloads in turn, so the first; elsewhere it could be any.
+        let expected = cfg!(target_os = "macos").then(|| a.clone());
+        assert_eq!(take_reservation(&mut two, None), expected);
+        let mut one = vec![b.clone()];
+        assert_eq!(take_reservation(&mut one, None), Some(b.clone()));
         let mut one = vec![b.clone()];
         assert_eq!(
             take_reservation(&mut one, Some(Path::new("/elsewhere"))),

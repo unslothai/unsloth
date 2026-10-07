@@ -45,7 +45,7 @@ async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   const picker = saveFilePicker();
   if (!picker || !asksWhereToSave()) return null;
   try {
-    return await picker({ suggestedName: name });
+    return await picker({ suggestedName: safeDownloadName(name) });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw new DownloadCancelledError();
     return null;
