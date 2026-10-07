@@ -272,25 +272,33 @@ Describe 'the rerun block in setup.ps1' {
     }
 }
 
-Describe 'the rerun does not ask for elevation a second time' {
-    # The first pass runs these blocks before its dependency step, so by the time the new copy runs
-    # the user has already answered (or could not answer) the UAC prompt once in this update.
+Describe 'elevation prompts across the rerun' {
     BeforeAll {
         $script:LongPathsBlock = Get-LineSlice 'the Long Paths block' `
             { param($i) $lines[$i] -eq '$LongPathsEnabled = $false' } `
             { param($j) $lines[$j] -eq '}' }
+        if (-not $script:LongPathsBlock.Contains('-Verb RunAs')) { throw "drift: the Long Paths block no longer elevates." }
         $script:CudaTargetsBlock = Get-LineSlice 'the CUDA .targets block' `
             { param($i) $lines[$i].StartsWith('# CUDA installed before VS Build Tools leaves .targets missing') } `
             { param($j) $lines[$j] -eq '}' }
-        foreach ($block in @($script:LongPathsBlock, $script:CudaTargetsBlock)) {
-            if (-not $block.Contains('-Verb RunAs')) { throw "drift: an elevation block no longer elevates." }
-        }
+        if (-not $script:CudaTargetsBlock.Contains('-Verb RunAs')) { throw "drift: the CUDA .targets block no longer elevates." }
+        $tokens = $null; $errors = $null
+        $script:Ast = [System.Management.Automation.Language.Parser]::ParseInput($script:SetupText, [ref]$tokens, [ref]$errors)
+        $script:HandoffAt = $script:SetupText.IndexOf('if (Test-SetupScriptReplaced) {')
+        if ($script:HandoffAt -lt 0) { throw "drift: the rerun block is gone." }
         function step { param([string]$Label, [string]$Value) }
         function substep { param([string]$Message) }
         function Write-StudioLine { param([string]$Text) }
         function Get-VcBuildCustomizationsDir { param($VsInstallPath, $Generator) $script:VsCustomDir }
     }
     AfterEach { Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue }
+
+    It 'Long Paths runs at top level before the handoff, so the first pass has already asked' {
+        $at = $script:SetupText.IndexOf('$LongPathsEnabled = $false')
+        $at | Should -BeLessThan $script:HandoffAt
+        $node = $script:Ast.Find({ param($n) $n.Extent.StartOffset -eq $at -and $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)
+        $node.Parent.Parent | Should -BeOfType [System.Management.Automation.Language.ScriptBlockAst]
+    }
 
     It 'Long Paths: asks on a first run and not on the rerun (<Guard>)' -ForEach @(
         @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
@@ -303,20 +311,22 @@ Describe 'the rerun does not ask for elevation a second time' {
         Should -Invoke Start-Process -Times $Expected -Exactly
     }
 
-    It 'CUDA .targets: asks on a first run and not on the rerun (<Guard>)' -ForEach @(
-        @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
+    # Resolve-CudaToolkit only runs for a llama.cpp source build, after the handoff, so a first pass
+    # that hands off never reaches this prompt and the rerun must still ask.
+    It 'CUDA .targets: still asks on the rerun (<Guard>)' -ForEach @(
+        @{ Guard = '' }, @{ Guard = '1' }
     ) {
-        $CudaToolkitRoot = Join-Path $TestDrive "cuda-$Expected"
-        $extras = Join-Path $CudaToolkitRoot 'extras\visual_studio_integration\MSBuildExtensions'
-        New-Item -ItemType Directory -Path $extras -Force | Out-Null
-        $script:VsCustomDir = Join-Path $TestDrive "vs-$Expected"
+        $id = if ($Guard) { 'rerun' } else { 'first' }
+        $CudaToolkitRoot = Join-Path $TestDrive "cuda-$id"
+        New-Item -ItemType Directory -Path (Join-Path $CudaToolkitRoot 'extras\visual_studio_integration\MSBuildExtensions') -Force | Out-Null
+        $script:VsCustomDir = Join-Path $TestDrive "vs-$id"
         New-Item -ItemType Directory -Path $script:VsCustomDir -Force | Out-Null
         $VsInstallPath = 'C:\VS'; $CmakeGenerator = 'Visual Studio 17 2022'
         Mock Copy-Item { throw 'access denied' }
         Mock Start-Process { }
         if ($Guard) { $env:UNSLOTH_SETUP_RERUN = $Guard }
         . ([scriptblock]::Create($script:CudaTargetsBlock))
-        Should -Invoke Start-Process -Times $Expected -Exactly
+        Should -Invoke Start-Process -Times 1 -Exactly
     }
 }
 

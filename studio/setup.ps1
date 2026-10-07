@@ -5339,8 +5339,6 @@ if ($VsInstallPath -and $CudaToolkitRoot) {
                 substep "CUDA VS integration files installed"
             } catch {
                 try {
-                    # As for Long Paths: the run that handed off to this copy already asked.
-                    if ($env:UNSLOTH_SETUP_RERUN -eq '1') { throw "elevation was already asked for earlier in this update" }
                     $copyCmd = "Copy-Item '$cudaExtras\*' '$vsCustomizations' -Force"
                     Start-Process powershell -ArgumentList "-NoProfile -Command $copyCmd" -Verb RunAs -Wait -ErrorAction Stop
                     $hasTargetsRetry = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
