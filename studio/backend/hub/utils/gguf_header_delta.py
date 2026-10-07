@@ -8,10 +8,9 @@ file's sha256 changes, so huggingface_hub downloads the whole file again. Here t
 request, its tensor table is checked against the cached copy's, and the new file is written as the new header plus the
 cached copy's tensor data, hashed in the same pass. It is kept only when its sha256 equals the Hub's.
 
-Opt-in only: the Images and Video load paths pass ``gguf_header_delta=True`` to ``hf_hub_download_with_xet_fallback``,
-and the download manager uses it only for GGUFs Studio classifies as image / video models. Nothing touches the network
-unless the file for the target commit is missing AND an older snapshot holds the same path. Anything that cannot be
-proven is left to the normal download, and nothing here raises."""
+Opt-in (Images / Video loads, and image / video GGUFs in the download manager). No network unless the file for the
+target commit is missing AND an older snapshot holds the same path; anything unproven falls back to the normal
+download, and nothing here raises."""
 
 from __future__ import annotations
 

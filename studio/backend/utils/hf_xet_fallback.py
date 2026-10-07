@@ -1016,8 +1016,7 @@ def hf_hub_download_with_xet_fallback(
             raise RuntimeError("Cancelled")
         return path
     if gguf_header_delta and str(filename).lower().endswith(".gguf"):
-        # Images / Video opt-in: a republished GGUF whose tensors did not change is rebuilt from the cached older copy
-        # instead of re-downloaded. Its sha256 matches the Hub's, so it already is the newer blob a forced fetch wants.
+        # A rebuilt file has the Hub's sha256, so it already is the newer blob a forced fetch wants.
         try:
             from hub.utils.gguf_header_delta import prepare_media_gguf
             if prepare_media_gguf(
