@@ -504,6 +504,24 @@ GLOW_CASES = (
         }""",
         "rgb(15 15 15)",
     ),
+    (
+        # The probe sits between a round corner's curve and a squircle's. Only engines with
+        # corner-shape paint (and hit-test) the squircle there.
+        "a corner-squircle surface follows the engine's corner-shape support",
+        """(r) => {
+          const add = (css) => {
+            const el = document.createElement('div');
+            el.dataset.glowFixture = '';
+            el.style.cssText = 'position: fixed; ' + css;
+            document.body.append(el);
+          };
+          add('inset: 0; z-index: 40; background: rgb(60, 60, 60)');
+          add(`left: ${r.right - 9.6}px; top: ${r.bottom - 9.6}px; width: 400px; height: 400px;`
+            + ' border-radius: 80px; corner-shape: squircle; z-index: 45;'
+            + ' background: rgb(15, 15, 15)');
+        }""",
+        {True: "rgb(15 15 15)", False: "rgb(60 60 60)"},
+    ),
 )
 
 
@@ -568,7 +586,10 @@ def check_dark_glow_probe(page, checks: Checks) -> None:
     checks.record("the dark glow probe still measures the modal menu", bool(glow), glow)
     close_all(page)
 
+    squircles = page.evaluate("() => CSS.supports('corner-shape', 'squircle')")
     for name, fixture_js, expected in GLOW_CASES:
+        if isinstance(expected, dict):
+            expected = expected[squircles]
         glow = glow_over(page, fixture_js)
         checks.record(f"glow colour: {name}", glow == expected, f"{glow!r}, want {expected!r}")
     page.evaluate("() => document.documentElement.classList.remove('dark')")

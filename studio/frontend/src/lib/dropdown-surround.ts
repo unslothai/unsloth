@@ -62,6 +62,26 @@ function alphaOf(ctx: CanvasRenderingContext2D, color: string): number {
   return ctx.getImageData(0, 0, 1, 1).data[3] / 255;
 }
 
+/** superellipse() parameter of a computed corner-shape; "" (unsupported) is round. */
+const CORNER_SHAPES: Record<string, number> = {
+  "": 1,
+  round: 1,
+  squircle: 2,
+  bevel: 0,
+  scoop: -1,
+  notch: Number.NEGATIVE_INFINITY,
+  square: Number.POSITIVE_INFINITY,
+};
+
+function superellipseOf(shape: string): number {
+  if (shape in CORNER_SHAPES) return CORNER_SHAPES[shape];
+  const arg = /^superellipse\((.+)\)$/.exec(shape)?.[1].trim();
+  if (arg === "infinity") return Number.POSITIVE_INFINITY;
+  if (arg === "-infinity") return Number.NEGATIVE_INFINITY;
+  const k = Number.parseFloat(arg ?? "");
+  return Number.isNaN(k) ? 1 : k;
+}
+
 /** Whether (x, y) falls in a cut-off rounded corner, which hit-testing skips. */
 function inRoundedCorner(
   style: CSSStyleDeclaration,
@@ -91,20 +111,26 @@ function inRoundedCorner(
     fit(box.height, tl[1], bl[1]),
     fit(box.height, tr[1], br[1]),
   );
-  const corners: [number[], number, number][] = [
-    [tl, box.left, box.top],
-    [tr, box.right, box.top],
-    [br, box.right, box.bottom],
-    [bl, box.left, box.bottom],
+  const corners: [number[], string, number, number][] = [
+    [tl, "corner-top-left-shape", box.left, box.top],
+    [tr, "corner-top-right-shape", box.right, box.top],
+    [br, "corner-bottom-right-shape", box.right, box.bottom],
+    [bl, "corner-bottom-left-shape", box.left, box.bottom],
   ];
-  for (const [[h, v], cornerX, cornerY] of corners) {
+  for (const [[h, v], shape, cornerX, cornerY] of corners) {
     const rx = h * scale;
     const ry = v * scale;
     if (!(rx > 0 && ry > 0)) continue;
-    // Distance from the corner's centre of curvature, in radii.
-    const dx = Math.abs(x - cornerX) - rx;
-    const dy = Math.abs(y - cornerY) - ry;
-    if (dx < 0 && dy < 0 && (dx / rx) ** 2 + (dy / ry) ** 2 > 1) return true;
+    // Distance from the outer corner, in radii.
+    const s = Math.abs(x - cornerX) / rx;
+    const t = Math.abs(y - cornerY) / ry;
+    if (s >= 1 || t >= 1) continue;
+    // corner-shape superellipse(k): |x|^(2^k) + |y|^(2^k) = 1 about the centre
+    // of curvature, mirrored about the outer corner when k < 0.
+    const k = superellipseOf(style.getPropertyValue(shape));
+    const a = 2 ** Math.abs(k);
+    if (k >= 0 ? (1 - s) ** a + (1 - t) ** a > 1 : s ** a + t ** a < 1)
+      return true;
   }
   return false;
 }
