@@ -3361,7 +3361,9 @@ def test_an_attachment_copied_in_during_a_call_is_not_claimed_by_it(tmp_path, mo
     assert [entry["name"] for entry in files] == ["out.txt"]
 
     other, _ = chat_originals.save([b"c,d\n"])
-    assert call(lambda: tools.materialize_sandbox_attachments(session, [(other, "other.csv")])) == ""
+    assert (
+        call(lambda: tools.materialize_sandbox_attachments(session, [(other, "other.csv")])) == ""
+    )
     assert os.path.isfile(os.path.join(workdir, tools.sandbox_attachment_path(other, "other.csv")))
 
 
