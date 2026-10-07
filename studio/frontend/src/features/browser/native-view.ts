@@ -91,6 +91,7 @@ function keepReachedPage(tabId: string): void {
 function closeView(tabId: string): void {
   keepReachedPage(tabId);
   views.delete(tabId);
+  viewBounds.delete(tabId);
   zooms.delete(tabId);
   icons.delete(tabId);
   pages.delete(tabId);
@@ -225,6 +226,12 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
+/** Gives key focus back to the panel's webview. */
+export function focusPanel(tabId: string): Promise<void> {
+  if (!views.has(tabId)) return Promise.resolve();
+  return call("browser_view_action", { tabId, action: "blur" }).catch(() => undefined);
+}
+
 export function returnToNativePage(tabId: string): boolean {
   const shown = pages.get(tabId);
   const store = useBrowserStore.getState();
@@ -241,14 +248,20 @@ export function hasNativeView(tabId: string): boolean {
   return views.has(tabId);
 }
 
+/** Last shown bounds of `tabId`'s view, in window coordinates. */
+export function nativeViewBounds(tabId: string): Bounds | null {
+  return viewBounds.get(tabId) ?? null;
+}
+
 export async function nativeFind(tabId: string, query: string, backwards: boolean): Promise<boolean> {
   if (!views.has(tabId)) return false;
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
 // exclude upward-opening tooltips to avoid hiding the native page on every hover; overlapping toasts still cover it.
+// `data-native-cover`: panel UI over the page, e.g. an annotation comment.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast], [data-native-cover]';
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -274,7 +287,10 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   }
   if (rect.width < 2 || rect.height < 2) return null;
   let bottom = rect.bottom;
-  for (const dock of document.querySelectorAll<HTMLElement>(".chat-full-view-dock, .chat-full-view-dock-minimized")) {
+  // `data-native-inset`: panel UI below the page, e.g. the annotate bar.
+  for (const dock of document.querySelectorAll<HTMLElement>(
+    ".chat-full-view-dock, .chat-full-view-dock-minimized, [data-native-inset]",
+  )) {
     const box = dock.getBoundingClientRect();
     if (box.height > 0 && intersects(box, rect)) bottom = Math.min(bottom, box.top - DOCK_GAP);
   }
@@ -379,6 +395,7 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
 // keep the last frame on the placeholder so overlays do not leave the panel blank.
 let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null;
 let shownBounds: Bounds | null = null;
+const viewBounds = new Map<string, Bounds>();
 
 function clearSnapshot(): void {
   if (!snapshot) return;
@@ -434,6 +451,7 @@ async function applyView(desired: Desired): Promise<void> {
     if (stale()) return;
     clearSnapshot();
     shownBounds = bounds;
+    viewBounds.set(tabId, bounds);
     setShownView(tabId);
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
@@ -485,6 +503,7 @@ onNativeViewsClosed(() => {
   for (const tabId of [...views.keys()]) keepReachedPage(tabId);
   setShownView(null);
   views.clear();
+  viewBounds.clear();
   zooms.clear();
   icons.clear();
   pages.clear();
