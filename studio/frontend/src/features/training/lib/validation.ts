@@ -159,6 +159,7 @@ export function validateTrainingConfig(
   config: TrainingConfigState,
   deviceType?: string,
   isOwner = true,
+  availableGpuIds?: number[] | null,
 ): StartValidationResult {
   if (!config.selectedModel) {
     return {
@@ -199,6 +200,48 @@ export function validateTrainingConfig(
     ) {
       return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
     }
+  }
+
+  if (
+    config.parallelismMode === "single" &&
+    (config.selectedGpuIds?.length ?? 0) !== 1
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.singleGpuRequired",
+    };
+  }
+  if (
+    config.parallelismMode === "ddp" &&
+    (config.selectedGpuIds?.length ?? 0) < 2
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.multipleGpusRequired",
+    };
+  }
+  if (
+    config.parallelismMode === "model_parallel" &&
+    (config.selectedGpuIds?.length ?? 0) < 2
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.multipleGpusRequired",
+    };
+  }
+
+  if (
+    config.parallelismMode !== "auto" &&
+    availableGpuIds !== undefined &&
+    (availableGpuIds === null ||
+      (config.selectedGpuIds ?? []).some(
+        (id) => !availableGpuIds.includes(id),
+      ))
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.gpuSelectionUnavailable",
+    };
   }
 
   if (!isTrainingConfigSupportedOnDevice(config, deviceType)) {

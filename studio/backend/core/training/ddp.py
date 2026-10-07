@@ -15,6 +15,20 @@ import traceback
 from typing import Any
 
 
+def _wait_for_stop(stop_event: Any, timeout: float | None) -> bool:
+    """Wait for an event using Queue.get-style timeout semantics."""
+    if timeout is None:
+        stop_event.wait()
+        return True
+    if timeout < 0:
+        raise ValueError("'timeout' must be a non-negative number")
+    if timeout == 0:
+        return bool(stop_event.is_set())
+    if stop_event.wait(timeout):
+        return True
+    return False
+
+
 def _nvidia_smi_child_env() -> dict[str, str]:
     from utils.native_path_leases import child_env_without_native_path_secret
     return child_env_without_native_path_secret()
@@ -25,8 +39,7 @@ def training_precision_flags_for_dtype(
 ) -> dict[str, bool]:
     """Resolve mutually exclusive Trainer flags from the DDP-wide dtype.
 
-    The local capability can differ by rank (e.g. RTX 3070 supports native BF16,
-    while a paired RTX 2080 Ti does not), so the coordinator override takes
+    The local capability can differ by rank, so the coordinator override takes
     precedence over Unsloth's per-process capability result.
     """
     if ddp_dtype == "fp16":
@@ -116,7 +129,12 @@ class _SharedStopQueue:
         self._delivered = False
 
     def get(self, timeout: float | None = None) -> dict[str, Any]:
-        if self._delivered or not self._stop_event.wait(timeout):
+        if self._delivered:
+            # Preserve Queue.get semantics: after consuming the one stop event,
+            # later polls still wait for their timeout rather than busy-spinning.
+            _wait_for_stop(threading.Event(), timeout)
+            raise queue.Empty
+        if not _wait_for_stop(self._stop_event, timeout):
             raise queue.Empty
         self._delivered = True
         return {"type": "stop", "save": bool(self._save_value.value)}

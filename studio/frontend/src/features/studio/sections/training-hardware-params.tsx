@@ -11,27 +11,21 @@ import {
 } from "@/components/ui/select";
 import { TabsContent } from "@/components/ui/tabs";
 import { useTrainingConfigStore } from "@/features/training";
+import { reconcileTrainingGpuSelection } from "@/features/training/lib/training-gpu-selection";
 import type { TrainingParallelismMode } from "@/features/training/types/config";
-import { useGpuDevices, useGpuInfo } from "@/hooks/use-gpu-info";
-import type { ReactElement } from "react";
+import {
+  cachedTrainingGpuIndices,
+  useTrainingGpuDevices,
+  useGpuInfo,
+} from "@/hooks/use-gpu-info";
+import { useT } from "@/i18n";
+import { useEffect, type ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
 
-const modeDescription: Record<TrainingParallelismMode, string> = {
-  auto: "Studio selects the least busy compatible GPU automatically.",
-  single: "One model copy on one selected GPU.",
-  model_parallel:
-    "One model sharded across the selected GPUs. This combines VRAM; it is not DDP.",
-  ddp:
-    "One model replica per selected GPU. Gradients are synchronized; each selected GPU must fit the model.",
-};
-
-function memoryLabel(free: number, total: number): string {
-  return `${free.toFixed(1)} / ${total.toFixed(1)} GiB free`;
-}
-
 export function TrainingHardwareParams(): ReactElement {
-  const devices = useGpuDevices();
+  const t = useT();
+  const devices = useTrainingGpuDevices();
   const gpu = useGpuInfo();
   const store = useTrainingConfigStore(
     useShallow((state) => ({
@@ -40,9 +34,46 @@ export function TrainingHardwareParams(): ReactElement {
       setGpuSelection: state.setGpuSelection,
     })),
   );
-  const selectable = devices.filter((device) => device.pinnable);
+  // Training consumes physical torch device IDs; inference's `pinnable` also
+  // encodes llama.cpp/GGUF support and incorrectly excludes valid XPU devices.
+  const selectable = devices.filter(
+    (device) => device.indexKind === "physical",
+  );
   const selected = store.selectedGpuIds ?? [];
+  useEffect(() => {
+    const next = reconcileTrainingGpuSelection(
+      store.parallelismMode,
+      store.selectedGpuIds,
+      cachedTrainingGpuIndices(),
+    );
+    if (
+      next.parallelismMode !== store.parallelismMode ||
+      JSON.stringify(next.selectedGpuIds) !==
+        JSON.stringify(store.selectedGpuIds)
+    ) {
+      store.setGpuSelection(next.parallelismMode, next.selectedGpuIds);
+    }
+  }, [
+    // Re-run when async device discovery updates its rendered inventory.
+    devices,
+    store.parallelismMode,
+    store.selectedGpuIds,
+    store.setGpuSelection,
+  ]);
   const canSelect = selectable.length > 0;
+  const modeDescription: Record<TrainingParallelismMode, string> = {
+    auto: t("studio.params.hardwareModeAuto"),
+    single: t("studio.params.hardwareModeSingle"),
+    model_parallel: t("studio.params.hardwareModeSharding"),
+    ddp: t("studio.params.hardwareModeDdp"),
+  };
+  const memoryLabel = (free: number, total: number, freeKnown?: boolean) =>
+    freeKnown === false
+      ? t("studio.params.memoryUnknown", { total: total.toFixed(1) })
+      : t("studio.params.memoryAvailable", {
+          free: free.toFixed(1),
+          total: total.toFixed(1),
+        });
 
   const chooseMode = (mode: TrainingParallelismMode) => {
     if (mode === "auto") {
@@ -59,13 +90,15 @@ export function TrainingHardwareParams(): ReactElement {
     }
     store.setGpuSelection(
       mode,
-      retained.length >= 2 ? retained : selectable.map((device) => device.index),
+      retained.length >= 2
+        ? retained
+        : selectable.map((device) => device.index),
     );
   };
 
   const toggleDevice = (id: number, checked: boolean) => {
     if (store.parallelismMode === "single") {
-      store.setGpuSelection("single", checked ? [id] : []);
+      if (checked) store.setGpuSelection("single", [id]);
       return;
     }
     const next = checked
@@ -74,11 +107,76 @@ export function TrainingHardwareParams(): ReactElement {
     store.setGpuSelection(store.parallelismMode, next);
   };
 
+  const renderDeviceSelection = (): ReactElement => {
+    if (!canSelect) {
+      return (
+        <p className="text-xs text-destructive">
+          {t("studio.params.noSelectableGpu")}
+        </p>
+      );
+    }
+    if (store.parallelismMode === "auto") {
+      return (
+        <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+          <span>{t("studio.params.liveInventory")}</span>
+          {selectable.map((device) => (
+            <span key={device.index}>
+              GPU {device.index}: {device.name} —{" "}
+              {memoryLabel(
+                device.memoryFreeGb,
+                device.memoryTotalGb,
+                device.memoryFreeKnown,
+              )}
+            </span>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col gap-2">
+        {selectable.map((device) => {
+          const checked = selected.includes(device.index);
+          return (
+            <label
+              key={device.index}
+              className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-xs"
+            >
+              <span className="min-w-0 truncate">
+                GPU {device.index} · {device.name}
+              </span>
+              <span className="ml-3 flex shrink-0 items-center gap-2 text-muted-foreground">
+                {memoryLabel(
+                  device.memoryFreeGb,
+                  device.memoryTotalGb,
+                  device.memoryFreeKnown,
+                )}
+                <Checkbox
+                  checked={checked}
+                  disabled={store.parallelismMode === "single" && checked}
+                  onCheckedChange={(value) =>
+                    toggleDevice(device.index, value === true)
+                  }
+                />
+              </span>
+            </label>
+          );
+        })}
+        {(store.parallelismMode === "model_parallel" ||
+          store.parallelismMode === "ddp") &&
+          selected.length < 2 && (
+            <p className="text-xs text-destructive">
+              {t("studio.params.multipleGpusRequired")}
+            </p>
+          )}
+      </div>
+    );
+  };
+
   return (
     <TabsContent value="hardware" className="mt-3 flex flex-col gap-3">
       <ParamsRow
-        label="GPU placement"
-        tooltip="Choose automatic selection, one GPU, model sharding, or data-parallel DDP. DDP replicates the model on each selected GPU."
+        label={t("studio.params.gpuPlacement")}
+        tooltip={t("studio.params.gpuPlacementTooltip")}
       >
         <Select
           value={store.parallelismMode}
@@ -91,19 +189,20 @@ export function TrainingHardwareParams(): ReactElement {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="auto">Automatic</SelectItem>
-            <SelectItem value="single">Single GPU</SelectItem>
-            <SelectItem
-              value="model_parallel"
-              disabled={selectable.length < 2}
-            >
-              Model sharding
+            <SelectItem value="auto">
+              {t("studio.params.hardwareModeAutoLabel")}
+            </SelectItem>
+            <SelectItem value="single">
+              {t("studio.params.hardwareModeSingleLabel")}
+            </SelectItem>
+            <SelectItem value="model_parallel" disabled={selectable.length < 2}>
+              {t("studio.params.hardwareModeShardingLabel")}
             </SelectItem>
             <SelectItem
               value="ddp"
               disabled={selectable.length < 2 || gpu.backend !== "cuda"}
             >
-              DDP (data parallel)
+              {t("studio.params.hardwareModeDdpLabel")}
             </SelectItem>
           </SelectContent>
         </Select>
@@ -111,54 +210,7 @@ export function TrainingHardwareParams(): ReactElement {
       <p className="text-xs text-muted-foreground">
         {modeDescription[store.parallelismMode]}
       </p>
-      {!canSelect ? (
-        <p className="text-xs text-destructive">
-          No GPU with a stable physical index is available for explicit selection.
-        </p>
-      ) : store.parallelismMode === "auto" ? (
-        <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-          <span>Live inventory:</span>
-          {selectable.map((device) => (
-            <span key={device.index}>
-              GPU {device.index}: {device.name} —{" "}
-              {memoryLabel(device.memoryFreeGb, device.memoryTotalGb)}
-            </span>
-          ))}
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {selectable.map((device) => {
-            const checked = selected.includes(device.index);
-            return (
-              <label
-                key={device.index}
-                className="flex cursor-pointer items-center justify-between rounded-md border px-3 py-2 text-xs"
-              >
-                <span className="min-w-0 truncate">
-                  GPU {device.index} · {device.name}
-                </span>
-                <span className="ml-3 flex shrink-0 items-center gap-2 text-muted-foreground">
-                  {memoryLabel(device.memoryFreeGb, device.memoryTotalGb)}
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={(value) =>
-                      toggleDevice(device.index, value === true)
-                    }
-                  />
-                </span>
-              </label>
-            );
-          })}
-          {(store.parallelismMode === "model_parallel" ||
-            store.parallelismMode === "ddp") &&
-            selected.length < 2 && (
-              <p className="text-xs text-destructive">
-                {store.parallelismMode === "ddp" ? "DDP" : "Model sharding"}{" "}
-                requires at least two selected GPUs.
-              </p>
-            )}
-        </div>
-      )}
+      {renderDeviceSelection()}
     </TabsContent>
   );
 }

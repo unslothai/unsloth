@@ -121,7 +121,7 @@ export function TrainingHyperparametersSection({
     { value: "optimization", label: t("studio.params.optimization") },
     { value: "schedule", label: t("studio.params.schedule") },
     { value: "memory", label: t("studio.params.memory") },
-    { value: "hardware", label: "Hardware" },
+    { value: "hardware", label: t("studio.params.hardware") },
   ] as const;
 
   return (

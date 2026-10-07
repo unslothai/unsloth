@@ -52,7 +52,6 @@ export function partializeTrainingConfig(
 ): Partial<TrainingConfigStore> {
   const partial = Object.fromEntries(
     Object.entries(state).filter(([key, value]) => {
-
       if (key === "hfToken") return false;
       if (typeof value === "function") {
         return false;
@@ -412,6 +411,35 @@ export function mergeTrainingConfig(
   const persistedRecord = { ...(persisted as PersistedTrainingConfig) };
   delete persistedRecord.hfToken;
   const persistedState = persistedRecord as Partial<TrainingConfigState>;
+  let parallelismMode = current.parallelismMode;
+  if (
+    persistedState.parallelismMode === "auto" ||
+    persistedState.parallelismMode === "single" ||
+    persistedState.parallelismMode === "model_parallel" ||
+    persistedState.parallelismMode === "ddp"
+  ) {
+    parallelismMode = persistedState.parallelismMode;
+  }
+  let selectedGpuIds = current.selectedGpuIds;
+  if (Array.isArray(persistedState.selectedGpuIds)) {
+    selectedGpuIds = [
+      ...new Set(
+        persistedState.selectedGpuIds.filter(
+          (id): id is number => Number.isSafeInteger(id) && id >= 0,
+        ),
+      ),
+    ];
+  } else if (persistedState.selectedGpuIds === null) {
+    selectedGpuIds = null;
+  }
+  if (
+    (parallelismMode === "single" && (selectedGpuIds?.length ?? 0) !== 1) ||
+    ((parallelismMode === "model_parallel" || parallelismMode === "ddp") &&
+      (selectedGpuIds?.length ?? 0) < 2)
+  ) {
+    parallelismMode = "auto";
+  }
+  if (parallelismMode === "auto") selectedGpuIds = null;
   const modelDefaultsAppliedFor =
     typeof persistedState.modelDefaultsAppliedFor === "string" &&
     persistedState.modelDefaultsAppliedFor.length > 0 &&
@@ -457,6 +485,8 @@ export function mergeTrainingConfig(
       persistedState.settingsBeforeDecision,
     ),
     trainAsDecision: persistedState.trainAsDecision === true,
+    parallelismMode,
+    selectedGpuIds,
   };
   return {
     ...merged,

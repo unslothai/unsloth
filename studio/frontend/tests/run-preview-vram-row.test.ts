@@ -2,34 +2,83 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The Run preview Hardware row truncates, so a long GPU name used to cut off the
- * VRAM figure appended to it ("AMD Radeon AI PRO R9700 · 31.86 …"). VRAM gets its
- * own row; this pins that it is not folded back into the name.
+ * GPU preview rows are rendered by the real presentation component.
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import test, { after } from "node:test";
+import { createServer } from "vite";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
-const source = readFileSync(
-  new URL("../src/features/studio/wizard/run-preview-card.tsx", import.meta.url),
-  "utf8",
+registerBundlerResolver();
+const server = await createServer({
+  appType: "custom",
+  logLevel: "silent",
+  server: { middlewareMode: true },
+});
+const { TrainingGpuPreview } = await server.ssrLoadModule(
+  "/src/features/studio/wizard/training-gpu-preview.tsx",
 );
+after(() => server.close());
 
-function metaRow(labelKey: string): string {
-  const start = source.indexOf(`label={t("${labelKey}")}`);
-  assert.ok(start >= 0, `no MetaRow labelled ${labelKey}`);
-  return source.slice(start, source.indexOf("/>", start));
-}
+const device = {
+  index: 1,
+  indexKind: "physical" as const,
+  name: "One GPU",
+  memoryTotalGb: 32.4,
+  memoryFreeGb: 24,
+  sharedMemory: false,
+  pinnable: true,
+  diffusionPinnable: true,
+};
+const labels = {
+  hardware: "Hardware",
+  vram: "VRAM",
+  automatic: "Automatic",
+  unavailable: "No GPU",
+  device: (index: number, name: string) => `GPU ${index}: ${name}`,
+  total: (total: string) => `Total: ${total} GiB`,
+};
 
-test("Hardware row carries the GPU name only, and wraps", () => {
-  const row = metaRow("studio.preview.hardware");
-  assert.doesNotMatch(row, /memoryTotalGb/);
-  assert.match(row, /\bwrap\b/);
+test("single-device hardware row does not fold VRAM into the device label", () => {
+  const html = renderToStaticMarkup(
+    createElement(TrainingGpuPreview, {
+      mode: "single",
+      devices: [device],
+      gpuAvailable: true,
+      totalMemoryGb: device.memoryTotalGb,
+      labels,
+    }),
+  );
+  assert.match(html, /GPU 1: One GPU/);
+  assert.match(html, />32\.4 GiB</);
+  assert.match(html, /title="32\.4 GiB"/);
 });
 
-test("VRAM has its own rounded row with the exact value on hover", () => {
-  const row = metaRow("studio.preview.vram");
-  assert.match(row, /Math\.round\(gpu\.memoryTotalGb\)\} GiB/);
-  assert.match(row, /title=\{`\$\{gpu\.memoryTotalGb\} GiB`\}/);
+test("multi-device preview adds per-device VRAM and aggregates only model sharding", () => {
+  const devices = [device, { ...device, index: 3, name: "Second GPU", memoryTotalGb: 16 }];
+  const ddpHtml = renderToStaticMarkup(
+    createElement(TrainingGpuPreview, {
+      mode: "ddp",
+      devices,
+      gpuAvailable: true,
+      totalMemoryGb: 48.4,
+      labels,
+    }),
+  );
+  const shardingHtml = renderToStaticMarkup(
+    createElement(TrainingGpuPreview, {
+      mode: "model_parallel",
+      devices,
+      gpuAvailable: true,
+      totalMemoryGb: 48.4,
+      labels,
+    }),
+  );
+  assert.match(ddpHtml, /32\.4 GiB/);
+  assert.match(ddpHtml, /16\.0 GiB/);
+  assert.doesNotMatch(ddpHtml, /Total:/);
+  assert.match(shardingHtml, /Total: 48\.4 GiB/);
 });

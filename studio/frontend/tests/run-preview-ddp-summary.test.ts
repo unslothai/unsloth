@@ -2,44 +2,68 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import test, { after } from "node:test";
+import { createServer } from "vite";
+import {
+  selectedTrainingPreviewDevices,
+  trainingPreviewGpuCount,
+} from "../src/features/training/lib/training-gpu-selection.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
-const source = await readFile(
-  new URL(
-    "../src/features/studio/wizard/run-preview-card.tsx",
-    import.meta.url,
-  ),
-  "utf8",
+registerBundlerResolver();
+const server = await createServer({
+  appType: "custom",
+  logLevel: "silent",
+  server: { middlewareMode: true },
+});
+const { TrainingGpuPreview } = await server.ssrLoadModule(
+  "/src/features/studio/wizard/training-gpu-preview.tsx",
 );
-const hardwareSource = await readFile(
-  new URL(
-    "../src/features/studio/sections/training-hardware-params.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+after(() => server.close());
 
-test("run preview computes global batch using selected DDP GPU count", () => {
-  assert.match(source, /const globalBatch = accumulatedBatch \* gpuCount/);
-  assert.match(source, /parallelismMode === "ddp"[\s\S]*selectedGpuIds\?\.length/);
-});
+test("run preview selects DDP physical devices and derives global batch from them", () => {
+  const allDevices = [
+    { index: 0, name: "Unselected", memoryTotalGb: 8 },
+    { index: 2, name: "Selected A", memoryTotalGb: 16 },
+    { index: 5, name: "Selected B", memoryTotalGb: 24 },
+  ].map((device) => ({
+    ...device,
+    indexKind: "physical" as const,
+    memoryFreeGb: device.memoryTotalGb,
+    sharedMemory: false,
+    pinnable: true,
+    diffusionPinnable: true,
+  }));
+  const selectedIds = [2, 5];
+  const selectedDevices = selectedTrainingPreviewDevices(
+    "ddp",
+    selectedIds,
+    allDevices,
+  );
+  assert.equal(trainingPreviewGpuCount("ddp", selectedIds), 2);
+  assert.equal(trainingPreviewGpuCount("single", selectedIds), 1);
+  const html = renderToStaticMarkup(
+    createElement(TrainingGpuPreview, {
+      mode: "ddp",
+      devices: selectedDevices,
+      gpuAvailable: true,
+      totalMemoryGb: 999,
+      labels: {
+        hardware: "Hardware",
+        vram: "VRAM",
+        automatic: "Automatic",
+        unavailable: "No GPU",
+        device: (index: number, name: string) => `GPU ${index}: ${name}`,
+        total: (total: string) => `Total: ${total} GiB`,
+      },
+    }),
+  );
 
-test("run preview shows selected GPUs as separate indexed entries", () => {
-  assert.match(source, /GPU \{device\.index\}: \{device\.name\}/);
-  assert.doesNotMatch(source, /gpu\.name\} · \$\{gpu\.memoryTotalGb/);
-  assert.match(source, /Total: \$\{displayedGpuMemoryGb\.toFixed\(1\)/);
-  assert.match(source, /const displayedGpuMemoryGb = displayedGpuDevices\.reduce/);
-  assert.match(source, /total \+ device\.memoryTotalGb/);
-  assert.doesNotMatch(source, /Total: \$\{gpu\.memoryTotalGb/);
-});
-
-test("hardware inventory renders one GPU per line", () => {
-  assert.match(hardwareSource, /selectable\.map\(\(device\) => \(/);
-  assert.match(hardwareSource, /GPU \{device\.index\}: \{device\.name\}/);
-  assert.doesNotMatch(hardwareSource, /\.join\(" · "\)/);
-});
-
-test("DDP is only selectable on a CUDA backend", () => {
-  assert.match(hardwareSource, /disabled=\{selectable\.length < 2 \|\| gpu\.backend !== "cuda"\}/);
+  assert.match(html, /GPU 2: Selected A/);
+  assert.match(html, /GPU 5: Selected B/);
+  assert.doesNotMatch(html, /Unselected/);
+  assert.doesNotMatch(html, /Total:/);
+  assert.doesNotMatch(html, />VRAM</);
 });
