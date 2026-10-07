@@ -345,9 +345,8 @@ function inlineLinkEnd(text: string, from: number): number {
 
 function inlineLinkRegions(text: string): [number, number][] {
   const regions: [number, number][] = [];
-  let coveredEnd = -1;
   for (let at = text.indexOf("]("); at >= 0; at = text.indexOf("](", at + 1)) {
-    if (at < coveredEnd || isEscaped(text, at)) continue;
+    if (isEscaped(text, at)) continue;
     const blankLine = text.lastIndexOf("\n\n", at);
     const paragraphStart = blankLine < 0 ? 0 : blankLine + 2;
     let opener = text.lastIndexOf("[", at - 1);
@@ -358,7 +357,6 @@ function inlineLinkRegions(text: string): [number, number][] {
     const end = inlineLinkEnd(text, at + 1);
     if (end < 0) continue;
     regions.push([at, end]);
-    coveredEnd = end;
   }
   return regions;
 }
@@ -498,16 +496,7 @@ function opaqueInlineRegions(text: string): [number, number][] {
     ...autolinkRegions(text),
     ...inlineHtmlRegions(text),
   ].sort((left, right) => left[0] - right[0]);
-  const regions: [number, number][] = [];
-  for (const candidate of candidates) {
-    const previous = regions.at(-1);
-    if (previous !== undefined && candidate[0] < previous[1]) {
-      previous[1] = Math.max(previous[1], candidate[1]);
-    } else {
-      regions.push(candidate);
-    }
-  }
-  return regions;
+  return candidates;
 }
 
 // micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.
