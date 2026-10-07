@@ -6,11 +6,11 @@
 import {
   ArrowReloadHorizontalIcon,
   ClosedCaptionIcon,
-  Copy01Icon,
   Edit03Icon,
   MusicThreeIcon,
   SpeechIcon,
   SplitIcon,
+  UserMultipleIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog.ts";
@@ -48,7 +48,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "clone",
     label: "Clone",
     heading: "Clone a voice",
-    icon: Copy01Icon,
+    icon: UserMultipleIcon,
     hint: "Speak in the voice from a short recording",
     slot: "speak",
     createTrain: true,

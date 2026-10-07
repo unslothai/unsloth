@@ -57,7 +57,7 @@ test("a clip names the Audio page workflow that made it; other audio names none"
     assert.equal(audioWorkflow(clip(id, { workflow: id }))?.id, id);
   }
   assert.equal(audioWorkflow(clip("upload", null)), null);
-  // A workflow a newer server adds falls back to the plain audio icon.
+  // A workflow a newer server adds names none.
   assert.equal(audioWorkflow(clip("future", { workflow: "dub" })), null);
 });
 
