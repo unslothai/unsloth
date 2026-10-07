@@ -488,7 +488,11 @@ def test_the_catalog_offers_the_stock_clef_models():
     for name, repo in (("clef", "Cloudflare/clef"), ("clef-flash", "Cloudflare/clef-flash")):
         checkpoint = catalog.CHECKPOINTS[name]
         assert (checkpoint.source, checkpoint.layout, checkpoint.subfolder) == (repo, "clef", None)
-    assert all(c.layout == "laya" for n, c in catalog.CHECKPOINTS.items() if n.startswith("laya"))
+    assert all(
+        c.layout == "laya"
+        for n, c in catalog.CHECKPOINTS.items()
+        if n.startswith("laya") and c.backend == "pytorch"
+    )
 
 
 @pytest.mark.parametrize("kind", ["mlx", "xpu", "cpu"])
@@ -505,7 +509,11 @@ def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef,
     for name in (served, "clef", "clef-flash"):
         assert models[name]["available"] is False
         assert models[name]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU
-    assert all(m["available"] for n, m in models.items() if n.startswith("laya"))
+    assert all(
+        m["available"]
+        for n, m in models.items()
+        if n.startswith("laya") and not m["llama_cpp_only"]
+    )
 
 
 @pytest.mark.parametrize("kind", ["cuda", "rocm"])
@@ -515,7 +523,12 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
     _spoof_device(monkeypatch, kind)
     assert _post(client).status_code == 200
     models = client.get("/api/settings/systemone").json()["models"]
-    assert all(m["available"] and m["unavailable_reason"] is None for m in models)
+    # The GGUF-only entries depend on a llama-server, which this test does not install.
+    assert all(
+        m["available"] and m["unavailable_reason"] is None
+        for m in models
+        if not m["llama_cpp_only"]
+    )
 
 
 def test_a_failed_device_probe_does_not_refuse_clef(monkeypatch):
