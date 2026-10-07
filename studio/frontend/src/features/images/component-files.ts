@@ -3,7 +3,7 @@
 
 const LIST_SEPARATOR = /[\n,]/;
 
-/** Split the "Text encoder file(s)" field: one path per line or comma separated, trimmed, blanks dropped. */
+/** One path per line or comma separated. */
 export function splitComponentFileList(raw: string | null | undefined): string[] {
   if (!raw) {
     return [];
@@ -14,9 +14,7 @@ export function splitComponentFileList(raw: string | null | undefined): string[]
     .filter((part) => part.length > 0);
 }
 
-/** The separate text-encoder / VAE fields a load or download plan sends. The backend accepts them
- *  only for a single-file or GGUF transformer, so any other kind (and empty values) sends nothing,
- *  which keeps the plan and the load requests identical. */
+/** Only a single-file / GGUF transformer takes these, so plan and load requests stay identical. */
 export function componentFileFields(
   kind: string | null | undefined,
   textEncoderFiles: string | readonly string[] | undefined,

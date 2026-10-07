@@ -1053,9 +1053,8 @@ def _te_quant_reason(
 
 
 def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
-    """``load_pipeline`` with any supplied text-encoder / VAE files (``text_encoder_files`` / ``vae_file``, or the
-    assignment ``_run_load`` already made as ``_component_overrides``) in place of the base repo's. The assignment
-    rides a context variable the assembly, the memory plan and the status read for the length of this load."""
+    """Supplied text-encoder / VAE files replace the base repo's for this load, via a context variable the
+    assembly, memory plan and status read."""
 
     @functools.wraps(load)
     def wrapper(self: Any, repo_id: str, **kwargs: Any) -> dict:
@@ -1068,7 +1067,6 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
         vae_file = kwargs.pop("vae_file", None)
         overrides = kwargs.pop("_component_overrides", None)
         if overrides is None and (text_encoder_files or vae_file):
-            # A direct call (no _run_load staging): validate and assign here.
             fam = self.validate_load_request(
                 repo_id,
                 gguf_filename = kwargs.get("gguf_filename"),
@@ -1103,8 +1101,7 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
 
 
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
-    """A supplied encoder file IS the precision the user picked, so an unset / auto request never re-casts it (a
-    family's automatic scheme would otherwise fetch a hosted encoder the file replaces). Explicit schemes stand."""
+    """Unset / auto never re-casts a supplied encoder (it would fetch the hosted encoder the file replaces)."""
     if requested is None or str(requested).strip().lower() in ("", "auto"):
         return "none"
     return requested
@@ -1182,7 +1179,7 @@ class _LoadState:
     resolved: Optional[dict] = None
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
-    # Supplied text-encoder / VAE files, {component: basename}; None when every companion came from the base repo.
+    # {component: basename} of supplied text-encoder / VAE files.
     component_files: Optional[dict] = None
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
     # pipeline, so a load in flight never moves the resident model's card.
@@ -3010,8 +3007,7 @@ class DiffusionBackend:
         text_encoder_files: Optional[Sequence[str]],
         vae_file: Optional[str],
     ) -> None:
-        """Separate text-encoder / VAE files ride beside a single-file or GGUF denoiser only: a full pipeline and a
-        whole-pipeline single file (SDXL) already carry theirs. Header-only, so a bad pick is a 400 before eviction."""
+        """Header-only, so a bad pick is a 400 before eviction. Single-file / GGUF denoisers only."""
         from .diffusion_comfy_components import validate_component_specs
 
         if kind not in ("gguf", "single_file") or fam.single_file_is_pipeline or fam.pipeline_only:
@@ -3044,8 +3040,6 @@ class DiffusionBackend:
         cancel_event: Optional[threading.Event] = None,
         download: bool = True,
     ) -> Any:
-        """Assign the supplied files to the base pipeline's components (reads ``model_index.json``), resolving a Hub
-        file to its local copy when ``download``. None when no file was supplied."""
         if not text_encoder_files and not vae_file:
             return None
         from .diffusion_comfy_components import plan_component_overrides, read_model_index
@@ -3403,8 +3397,7 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             kwargs["base_repo"] = base
-            # Supplied text-encoder / VAE files replace those base components: assigned (and a Hub file fetched)
-            # before the plan, so their shards are never staged.
+            # Assigned before the plan so replaced components' shards are never staged.
             component_overrides = self._plan_component_overrides(
                 fam,
                 kwargs["repo_id"],
@@ -4493,8 +4486,6 @@ class DiffusionBackend:
         incompatible = flux2_pick_mismatch(
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
-        # Supplied text-encoder / VAE files: their base components are not staged; a Hub-hosted file is (header
-        # read from the Hub, nothing downloaded here).
         component_overrides = None
         if (
             load_kwargs.get("text_encoder_files") or load_kwargs.get("vae_file")
@@ -5363,9 +5354,8 @@ class DiffusionBackend:
     def _supplied_component_mib(
         base: str, staged_dir: Optional[str], load_dtype: Any
     ) -> Optional[tuple[int, int, int, int]]:
-        """``(scanned MiB, scanned text-encoder MiB, supplied MiB, supplied text-encoder MiB)`` for this load's
-        supplied text-encoder / VAE files, or None when there are none. The scanned terms are what the base-repo
-        walk already counted for the replaced components."""
+        """``(scanned MiB, scanned TE MiB, supplied MiB, supplied TE MiB)``; scanned = what the base-repo walk
+        counted for the replaced components."""
         from .diffusion_comfy_components import active_component_overrides, scanned_component_bytes
 
         overrides = active_component_overrides()
@@ -9183,8 +9173,7 @@ class DiffusionBackend:
                 )
                 text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
                 companions_from_cache = True
-                # Supplied text-encoder / VAE files replace those components: drop whatever the base-repo scan saw
-                # for them (a cache from an earlier load) and price the files instead.
+                # Price supplied files instead of the replaced components a cached base repo still holds.
                 supplied = self._supplied_component_mib(
                     fetch_base or base, base_local_dir, load_dtype
                 )

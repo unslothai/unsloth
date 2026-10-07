@@ -4421,7 +4421,6 @@ class DiffusionLoadRequest(BaseModel):
     @field_validator("text_encoder_file")
     @classmethod
     def _normalize_text_encoder_file(cls, value):
-        # One string or a list; blanks dropped, duplicates refused, at most one file per encoder slot.
         if value is None:
             return None
         items = [value] if isinstance(value, str) else list(value)

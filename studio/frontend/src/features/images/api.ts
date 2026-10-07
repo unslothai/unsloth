@@ -40,8 +40,7 @@ export interface DiffusionStatus {
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
   gguf_filename?: string | null;
-  // Separate text-encoder / VAE files the load used instead of the base repo's, keyed by
-  // pipeline component ("text_encoder", "vae", ...) to the file basename. Null when none.
+  // Supplied text-encoder / VAE files: pipeline component -> basename.
   component_files?: Record<string, string> | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
@@ -128,11 +127,8 @@ export interface DiffusionLoadRequest {
   family_override?: string;
   hf_token?: string;
   cpu_offload?: boolean;
-  // Separate text-encoder .safetensors file(s) (e.g. ComfyUI models/text_encoders), each matched to the
-  // pipeline slot whose encoder class it fits. Absolute path, relative to model_path, or owner/repo/file
-  // on the Hub. Only valid with model_kind "gguf" or "single_file"; the backend refuses it otherwise.
+  // Separate .safetensors files (e.g. ComfyUI models/text_encoders, models/vae); gguf / single_file only.
   text_encoder_file?: string | string[];
-  // One separate VAE .safetensors file, same path rules and kind restriction as text_encoder_file.
   vae_file?: string;
   // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";

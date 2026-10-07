@@ -45673,8 +45673,7 @@ async def _refuse_disabled_nvfp4_checkpoint(request: Any) -> None:
 
 
 def _component_file_kwargs(request: DiffusionLoadRequest) -> dict:
-    """Supplied text-encoder / VAE files for the diffusers engine; empty when none, so the native engine and older
-    callers see the same keyword set as before."""
+    """Empty when none, so the native engine and older callers see the same keywords as before."""
     files = getattr(request, "text_encoder_file", None)
     files = [files] if isinstance(files, str) else list(files or ())
     out: dict = {}
@@ -45687,7 +45686,6 @@ def _component_file_kwargs(request: DiffusionLoadRequest) -> dict:
 
 
 def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
-    """The native sd.cpp engine takes its encoders from the base repo; refuse rather than ignore supplied files."""
     if _component_file_kwargs(request):
         raise HTTPException(
             status_code = 400,
@@ -45821,7 +45819,6 @@ async def diffusion_download_plan(
             # this the plan stages a file the load refuses and replaces with dense shards.
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             loras = request.loras,
-            # Supplied encoder / VAE files: their base components drop out of the plan.
             **_component_file_kwargs(request),
             # Only the verdict, not the probe: the panel stages exactly what this reports.
             # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit

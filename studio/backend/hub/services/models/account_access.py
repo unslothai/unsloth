@@ -887,7 +887,6 @@ def require_media_references(request) -> None:
             raise HTTPException(status_code = 404, detail = "Model not found")
         elif Path(request.model_path).is_absolute():
             require_model_access(str(Path(request.model_path) / path))
-    # Separate text-encoder / VAE files: the same bar as the single-file checkpoint they ride beside.
     supplied = getattr(request, "text_encoder_file", None)
     supplied = [supplied] if isinstance(supplied, str) else list(supplied or ())
     vae_file = getattr(request, "vae_file", None)

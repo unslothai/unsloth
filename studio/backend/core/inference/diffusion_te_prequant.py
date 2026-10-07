@@ -660,9 +660,8 @@ def supplied_component_pipe_kwargs(
     family: Optional[str] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """The text encoder(s) / VAE this load was handed as separate files (``diffusion_comfy_components``), built
-    once per load, keyed by pipeline component; ``{}`` when none were supplied. Never swallows a failure: the
-    base repo's weights for these components were deliberately not downloaded, so falling back is not an option."""
+    """Supplied text-encoder / VAE modules by component. Never swallows a failure: the base repo's weights for
+    these components were not downloaded, so there is nothing to fall back to."""
     from .diffusion_comfy_components import active_component_overrides, load_override_modules
 
     overrides = active_component_overrides()
@@ -701,7 +700,6 @@ def te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
-    """Pre-cast encoders (below) plus any supplied text-encoder / VAE file, which wins its component."""
     supplied = supplied_component_pipe_kwargs(
         base,
         dtype = dtype,

@@ -791,7 +791,6 @@ function ResolvedBadge({
 const COMPONENT_FILES_HINT =
   "Optional. Use separate ComfyUI text encoder / VAE .safetensors files instead of downloading the base model's. Absolute path, or relative to the model folder (e.g. ../text_encoders/clip_l.safetensors). Only for single-file or GGUF transformers.";
 
-/** A free-text Advanced load setting, laid out like AdvancedSelect (label row, control below). */
 function AdvancedTextField({
   label,
   hint,
@@ -1587,7 +1586,6 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  // Separate ComfyUI-style text encoder / VAE files for a single-file or GGUF transformer, as typed.
   const [textEncoderFiles, setTextEncoderFiles] = useState("");
   const [vaeFile, setVaeFile] = useState("");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
@@ -3004,7 +3002,6 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
-          // Only a single-file / GGUF transformer takes separate encoder / VAE files; same rule as the plan.
           ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
         });
         await startRequest;
@@ -3228,7 +3225,6 @@ export function ImagesPage({
         // The plan route preflights precision and sizes the file set against the card the load will
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
-        // Same separate encoder / VAE files the load sends, so the plan skips the base copies it replaces.
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       }),
     [],

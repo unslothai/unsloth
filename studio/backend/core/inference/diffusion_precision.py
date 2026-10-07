@@ -263,7 +263,6 @@ def quantize_text_encoders(
     leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
-        # A supplied int8 ConvRot text-encoder file (diffusion_comfy_components) stays as stored: report what runs.
         present = [
             getattr(pipe, a, None)
             for a in _TEXT_ENCODER_ATTRS

@@ -1,24 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate text-encoder / VAE files (ComfyUI ``models/text_encoders`` and ``models/vae``) beside a DiT.
+"""Separate text-encoder / VAE files (ComfyUI ``models/text_encoders``, ``models/vae``) beside a single-file DiT.
 
-A ComfyUI install keeps the denoiser, the text encoder(s) and the VAE as three single files. Without this
-module a single-file load always took the encoders and the VAE from the family's diffusers base repo, so a
-ComfyUI folder still pulled 10-20 GB of base-repo weights it already held. Here each supplied file is
-
-1. classified from its safetensors header (CLIP-L / CLIP-G / T5 / UMT5 / Qwen3 / Qwen2.5-VL / Qwen3-VL /
-   Mistral3 / Llama / Gemma2 / Gemma3 encoders; LDM ``ae`` / Wan-layout / diffusers-layout VAEs),
-2. assigned to the base pipeline component whose class it can fill (``model_index.json``),
-3. renamed into that class's state-dict naming with a rule the header proves (every model tensor present
-   with its exact shape; leftovers only from a short list of tensors the class never reads),
-4. loaded into the real class built from the base repo's component config, ComfyUI quantization handled:
-   legacy ``scaled_fp8`` and per-layer ``float8_e4m3fn`` / ``float8_e5m2`` dequantize to the compute dtype,
-   ``int8_tensorwise`` + ConvRot Linears stay int8 (the ConvRot runtime the hosted int8 encoders use), any
-   other int8 / embedding dequantizes, and every other format (w4a8, nvfp4, mxfp8, ...) is refused by name.
-
-The base repo still supplies configs, tokenizers and the scheduler (kilobytes); the weight shards of every
-replaced component are left out of the download plan, priced from the supplied file instead.
+Each file is classified from its header, assigned to the base pipeline slot whose class it fits, renamed under a
+rule that loads strictly, and built from the base repo's config (which still supplies configs and tokenizers).
+fp8 dequantizes, int8 ConvRot stays int8, every other ComfyUI quant format is refused by name.
 """
 
 from __future__ import annotations
@@ -50,7 +37,6 @@ _QUANT_COMPANION_SUFFIXES = (
     ".scale_input",
 )
 
-# File kind -> transformers classes it can fill.
 TE_KIND_CLASSES: dict[str, frozenset] = {
     "clip_l": frozenset({"CLIPTextModel", "CLIPTextModelWithProjection"}),
     "clip_g": frozenset({"CLIPTextModelWithProjection", "CLIPTextModel"}),
@@ -212,10 +198,6 @@ def parse_component_file(
     return ComponentFileRef(spec = spec, repo_id = repo_id, filename = filename)
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Headers and classification
-
-
 def read_safetensors_header(path: str) -> tuple[dict[str, dict], dict]:
     """``({tensor: {"dtype", "shape", "data_offsets"}}, metadata)`` from the file header alone."""
     from .diffusion_comfy_quant import _read_header
@@ -300,10 +282,6 @@ def classify_vae(keys: Iterable[str]) -> Optional[str]:
     if has("decoder.up_blocks.") or has("encoder.down_blocks."):
         return "diffusers"
     return None
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Key mapping
 
 
 def _rule_identity(key: str) -> str:
@@ -430,10 +408,6 @@ def match_keys(
     raise ComponentFileError("; ".join(parts) + f" under the closest key rule '{name}'")
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Quantization in a supplied text-encoder file
-
-
 def quant_layers(path: str) -> dict[str, Any]:
     """``{layer name (file naming, no .weight): ComfyQuantLayer}``; raises for a format Studio cannot run."""
     from .diffusion_comfy_quant import scan_comfy_quant
@@ -501,10 +475,6 @@ def resident_bytes(
         else:
             total += _numel(shape) * _HEADER_DTYPE_BYTES.get(dtype, dtype_itemsize)
     return total
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Building the components
 
 
 def _fp8_view(codes: Any, fmt: str) -> Any:
@@ -834,10 +804,6 @@ def build_vae(
             "diffusion.comfy_components: %s -> %s (%s layout)", name, vae_cls.__name__, kind
         )
     return vae
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# Planning a load
 
 
 @dataclass
