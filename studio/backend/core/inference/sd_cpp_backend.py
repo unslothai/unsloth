@@ -313,40 +313,25 @@ def help_text_supports_minimax_h3(help_text: str) -> bool:
 
 
 def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
-    """Both of ``ensure_h3_sd_cpp_binary``'s questions against a live binary, on ONE ``--help``. The
-    capability marker cannot stand alone here: ``--ref-video`` is a plain option name that
-    unrelated reference-video tools expose too, so a caller re-checking only capability would
-    accept a program the gate itself would have refused on identity -- the difference between "an
-    sd.cpp build too old for H3" and "not sd.cpp at all" (#8507). Same conservative default as
-    ``sd_cpp_supports_minimax_h3``: an unreadable ``--help`` is "could not tell", and the
-    caller's own ``version()`` gate already refuses a binary that will not run."""
+    """rejects unrelated --ref-video tools; version() rejects binaries an unreadable probe keeps."""
     text = _sd_cpp_probe_output(binary, "--help")
     if text is None:
         return True
     return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
 
 
-# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does
-# nothing without --max-vram.
-_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
-
-
-def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
-    """True only when ``binary``'s ``--help`` advertises the graph-cut executor. The opposite
-    default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe: that gate
-    refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and sd-cli exits
-    non-zero on an option it does not know. Guessing yes from an unreadable ``--help`` would
-    break every generation on an older build instead of merely leaving it as slow as it is today."""
+def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
+    """returns advertised graph-cut flags; missing help emits none because sd-cli rejects them."""
     if not binary:
-        return False
+        return frozenset()
     text = _sd_cpp_probe_output(binary, "--help")
-    if text is None:
-        return False
-    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+    if text is None or "--max-vram" not in text:
+        return frozenset()
+    return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
-    """Fails closed: sd-cli exits non-zero on an unknown option (u13b9d92 predates --sage-attn)."""
+    """fails closed because sd-cli rejects unknown flags (u13b9d92 predates --sage-attn)."""
     if not binary:
         return False
     text = _sd_cpp_probe_output(binary, "--help")
