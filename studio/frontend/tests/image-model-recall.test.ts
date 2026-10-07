@@ -6,6 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { explicitFamily } from "../src/features/model-picker/components/model-selector/family-override.ts";
 import {
+  componentFilesMatch,
   matchesRememberedModel,
   readImageModel,
   rememberImageModel,
@@ -152,8 +153,15 @@ test("recalling a quantized model carries the selected adapters into its load", 
   // After a refresh with the model still resident, the stored paths survive (status names only basenames).
   const resident = recall({
     rememberedModel: supplied,
-    status: { loaded: true, repo_id: supplied.repoId, model_kind: "gguf", gguf_filename: "z.gguf" },
+    status: {
+      loaded: true,
+      repo_id: supplied.repoId,
+      model_kind: "gguf",
+      gguf_filename: "z.gguf",
+      component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "ae.safetensors" },
+    },
     matchesRememberedModel,
+    componentFilesMatch,
     withEngagedFamily: (m: Record<string, unknown>) => m,
     rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
     setRememberedModel: () => {},
@@ -162,6 +170,20 @@ test("recalling a quantized model carries the selected adapters into its load", 
   await resident.callbacks.handleGenerateWithRecall();
   assert.deepEqual(readImageModel()?.textEncoderFiles, supplied.textEncoderFiles);
   assert.equal(readImageModel()?.vaeFile, supplied.vaeFile);
+  // Another client reloaded the same checkpoint without the files: the stale paths are dropped.
+  const reloaded = recall({
+    rememberedModel: supplied,
+    status: { loaded: true, repo_id: supplied.repoId, model_kind: "gguf", gguf_filename: "z.gguf", component_files: null },
+    matchesRememberedModel,
+    componentFilesMatch,
+    withEngagedFamily: (m: Record<string, unknown>) => m,
+    rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
+    setRememberedModel: () => {},
+    handleGenerate: async () => {},
+  });
+  await reloaded.callbacks.handleGenerateWithRecall();
+  assert.equal(readImageModel()?.textEncoderFiles, undefined);
+  assert.equal(readImageModel()?.vaeFile, undefined);
   const without = recall({ rememberedModel: { ...supplied, textEncoderFiles: undefined, vaeFile: undefined }, textEncoderFiles: "live.safetensors" });
   await without.callbacks.handleGenerateWithRecall();
   assert.equal((without.loads[0][2] as Files).text_encoder_file, undefined);

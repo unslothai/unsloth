@@ -1086,6 +1086,7 @@ def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
                 hf_token,
                 local_files_only = bool(kwargs.get("local_files_only")),
                 base_local_dir = kwargs.get("_base_local_dir"),
+                text_encoder_quant = kwargs.get("text_encoder_quant"),
             )
         if overrides is not None and overrides.text_encoder_components:
             kwargs["text_encoder_quant"] = _te_quant_for_supplied_encoders(
@@ -3039,6 +3040,7 @@ class DiffusionBackend:
         base_local_dir: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         download: bool = True,
+        text_encoder_quant: Optional[str] = None,
     ) -> Any:
         if not text_encoder_files and not vae_file:
             return None
@@ -3063,7 +3065,7 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
             )
 
-        return plan_component_overrides(
+        overrides = plan_component_overrides(
             text_encoder_files = list(text_encoder_files or ()),
             vae_file = vae_file,
             model_path = repo_id,
@@ -3073,6 +3075,19 @@ class DiffusionBackend:
             hf_token = hf_token,
             resolve_hub = _resolve_hub if download else None,
         )
+        if download and overrides is not None:
+            # The load path: fit every file to its real class before anything resident is unloaded.
+            from .diffusion_comfy_components import verify_override_fit
+            verify_override_fit(
+                overrides,
+                base = base_local_dir or prefer_ungated_mirror(base, hf_token),
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                family = fam.name,
+                cache_dir = hub_cache_dir(),
+                text_encoder_quant = text_encoder_quant,
+            )
+        return overrides
 
     def validate_load_request(
         self,
@@ -3421,6 +3436,7 @@ class DiffusionBackend:
                 kwargs.get("hf_token"),
                 local_files_only = local_files_only,
                 cancel_event = cancel_event,
+                text_encoder_quant = kwargs.get("text_encoder_quant"),
             )
             kwargs["_component_overrides"] = component_overrides
             replaced = tuple(component_overrides.components) if component_overrides else ()

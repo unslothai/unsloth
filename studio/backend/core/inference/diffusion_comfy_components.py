@@ -512,27 +512,14 @@ def _strip_meta(module: Any) -> list[str]:
     return stranded
 
 
-def build_text_encoder(
-    path: str,
-    *,
-    encoder_cls: Any,
-    config: Any,
-    dtype: Any,
-    trim_lm_head: bool = False,
-    logger: Any = None,
-) -> Any:
-    """``encoder_cls`` (a transformers class) built from ``config`` and loaded from the ComfyUI file at
-    ``path``, strictly. CPU; the pipeline assembly places it."""
-    import torch
+def _fit_text_encoder(
+    path: str, header: dict, encoder_cls: Any, config: Any, trim_lm_head: bool
+) -> tuple[Any, KeyMapping, tuple]:
+    """``encoder_cls`` on the meta device plus the strict key mapping of ``header`` onto it."""
     from accelerate import init_empty_weights
-    from safetensors import safe_open
 
-    from .diffusion_te_prequant import TE_PREQUANT_SCHEME_ATTR
     from .diffusion_text_encoder_trim import config_ties_lm_head, trim_text_encoder
 
-    name = os.path.basename(path)
-    header, _ = read_safetensors_header(path)
-    layers = quant_layers(path)
     with init_empty_weights(include_buffers = False):
         encoder = encoder_cls(config)
     if trim_lm_head:
@@ -545,8 +532,31 @@ def build_text_encoder(
         mapping = match_keys(_file_logical_shapes(header), expected, tied_missing = tied)
     except ComponentFileError as exc:
         raise ComponentFileError(
-            f"'{name}' does not fit this pipeline's {encoder_cls.__name__}: {exc}"
+            f"'{os.path.basename(path)}' does not fit this pipeline's {encoder_cls.__name__}: {exc}"
         ) from None
+    return encoder, mapping, tied
+
+
+def build_text_encoder(
+    path: str,
+    *,
+    encoder_cls: Any,
+    config: Any,
+    dtype: Any,
+    trim_lm_head: bool = False,
+    logger: Any = None,
+) -> Any:
+    """``encoder_cls`` (a transformers class) built from ``config`` and loaded from the ComfyUI file at
+    ``path``, strictly. CPU; the pipeline assembly places it."""
+    import torch
+    from safetensors import safe_open
+
+    from .diffusion_te_prequant import TE_PREQUANT_SCHEME_ATTR
+
+    name = os.path.basename(path)
+    header, _ = read_safetensors_header(path)
+    layers = quant_layers(path)
+    encoder, mapping, tied = _fit_text_encoder(path, header, encoder_cls, config, trim_lm_head)
 
     from .diffusion_comfy_quant import _dequant
 
@@ -749,30 +759,11 @@ def convert_vae_state_dict(state: dict, kind: str, config: dict) -> dict:
     return dict(state)
 
 
-def build_vae(
-    path: str,
-    *,
-    vae_cls: Any,
-    config: dict,
-    dtype: Any,
-    logger: Any = None,
-) -> Any:
-    """``vae_cls`` from ``config``, loaded strictly from the supplied VAE file."""
+def _fit_vae(name: str, raw: dict, kind: str, vae_cls: Any, config: dict) -> tuple[Any, dict, dict]:
+    """``vae_cls`` on the meta device and ``raw`` converted to its naming, checked strictly. ``raw`` may hold meta
+    tensors (a header-only check)."""
     from accelerate import init_empty_weights
-    from safetensors.torch import load_file
 
-    name = os.path.basename(path)
-    header, _ = read_safetensors_header(path)
-    if quant_layers(path):
-        raise ComponentFileError(
-            f"'{name}': quantized VAE files are not supported; use the bf16/fp32 VAE"
-        )
-    kind = classify_vae(weight_keys(header))
-    if kind is None or vae_cls.__name__ not in VAE_KIND_CLASSES.get(kind, ()):
-        raise ComponentFileError(
-            f"'{name}' is not a VAE this pipeline's {vae_cls.__name__} can load (detected {kind or 'unknown'})"
-        )
-    raw = {k: v for k, v in load_file(path).items() if k not in _NON_WEIGHT_KEYS}
     converted = convert_vae_state_dict(raw, kind, config)
     with init_empty_weights():
         vae = vae_cls.from_config(config)
@@ -788,6 +779,33 @@ def build_vae(
         raise ComponentFileError(
             f"'{name}' does not fit this pipeline's {vae_cls.__name__}: {exc}"
         ) from None
+    return vae, converted, expected
+
+
+def build_vae(
+    path: str,
+    *,
+    vae_cls: Any,
+    config: dict,
+    dtype: Any,
+    logger: Any = None,
+) -> Any:
+    """``vae_cls`` from ``config``, loaded strictly from the supplied VAE file."""
+    from safetensors.torch import load_file
+
+    name = os.path.basename(path)
+    header, _ = read_safetensors_header(path)
+    if quant_layers(path):
+        raise ComponentFileError(
+            f"'{name}': quantized VAE files are not supported; use the bf16/fp32 VAE"
+        )
+    kind = classify_vae(weight_keys(header))
+    if kind is None or vae_cls.__name__ not in VAE_KIND_CLASSES.get(kind, ()):
+        raise ComponentFileError(
+            f"'{name}' is not a VAE this pipeline's {vae_cls.__name__} can load (detected {kind or 'unknown'})"
+        )
+    raw = {k: v for k, v in load_file(path).items() if k not in _NON_WEIGHT_KEYS}
+    vae, converted, expected = _fit_vae(name, raw, kind, vae_cls, config)
     state = {}
     for key, tensor in converted.items():
         if key not in expected:
@@ -1002,6 +1020,105 @@ def plan_component_overrides(
     return out
 
 
+def _component_class_and_config(
+    component: str,
+    class_name: str,
+    *,
+    base: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    cache_dir: Optional[str],
+) -> tuple[Any, Any]:
+    import diffusers
+    import transformers
+
+    if component == COMPONENT_VAE:
+        vae_cls = getattr(diffusers, class_name, None)
+        if vae_cls is None:
+            raise ComponentFileError(f"diffusers has no {class_name}; update diffusers")
+        return vae_cls, vae_cls.load_config(
+            base,
+            subfolder = COMPONENT_VAE,
+            token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+    encoder_cls = getattr(transformers, class_name, None)
+    if encoder_cls is None:
+        raise ComponentFileError(f"transformers has no {class_name}; update transformers")
+    config = transformers.AutoConfig.from_pretrained(
+        base,
+        subfolder = component,
+        token = hf_token,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+    )
+    from .diffusion_krea2 import remap_rope_parameters
+
+    remap_rope_parameters(getattr(config, "text_config", config))
+    return encoder_cls, config
+
+
+def _resolved_path(overrides: ComponentOverrides, component: str) -> str:
+    path = overrides.paths.get(component)
+    if not path:
+        raise ComponentFileError(
+            f"'{overrides.files[component].name}' was not resolved to a local file before assembly"
+        )
+    return path
+
+
+def verify_override_fit(
+    overrides: ComponentOverrides,
+    *,
+    base: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    family: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    text_encoder_quant: Optional[str] = None,
+) -> None:
+    """Header-only strict fit of every supplied file against the base repo's real class, plus the precision
+    request, so a wrong-size or un-castable file is refused before the resident pipeline is unloaded."""
+    import torch
+
+    from .diffusion_precision import TE_QUANT_INT8, normalize_te_quant
+    from .diffusion_text_encoder_trim import family_trims_lm_head
+
+    requested = normalize_te_quant(text_encoder_quant)
+    for component, class_name in overrides.classes.items():
+        path = _resolved_path(overrides, component)
+        cls, config = _component_class_and_config(
+            component,
+            class_name,
+            base = base,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        header, _ = read_safetensors_header(path)
+        name = os.path.basename(path)
+        if component == COMPONENT_VAE:
+            meta = {
+                k: torch.empty(tuple(int(d) for d in (header[k].get("shape") or ())), device = "meta")
+                for k in weight_keys(header)
+            }
+            _fit_vae(
+                name, meta, overrides.kinds.get(component) or classify_vae(meta) or "", cls, config
+            )
+            continue
+        trim = component == "text_encoder" and family_trims_lm_head(family)
+        _fit_text_encoder(path, header, cls, config, trim)
+        if requested not in (None, TE_QUANT_INT8) and any(
+            layer.convrot and layer.format == "int8_tensorwise"
+            for layer in quant_layers(path).values()
+        ):
+            raise ComponentFileError(
+                f"'{name}' is stored as int8 ConvRot and cannot be re-cast to {requested}; leave "
+                "text_encoder_quant at auto or pick the bf16 file"
+            )
+
+
 def load_override_modules(
     overrides: ComponentOverrides,
     *,
@@ -1017,50 +1134,27 @@ def load_override_modules(
     missing = [c for c in overrides.files if c not in overrides.modules]
     if not missing:
         return dict(overrides.modules)
-    import diffusers
-    import transformers
-
     from .diffusion_text_encoder_trim import family_trims_lm_head
 
     for component in missing:
-        path = overrides.paths.get(component)
-        if not path:
-            raise ComponentFileError(
-                f"'{overrides.files[component].name}' was not resolved to a local file before assembly"
-            )
-        class_name = overrides.classes[component]
+        path = _resolved_path(overrides, component)
+        cls, config = _component_class_and_config(
+            component,
+            overrides.classes[component],
+            base = base,
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
         if component == COMPONENT_VAE:
-            vae_cls = getattr(diffusers, class_name, None)
-            if vae_cls is None:
-                raise ComponentFileError(f"diffusers has no {class_name}; update diffusers")
-            config = vae_cls.load_config(
-                base,
-                subfolder = COMPONENT_VAE,
-                token = hf_token,
-                cache_dir = cache_dir,
-                local_files_only = local_files_only,
-            )
             overrides.modules[component] = build_vae(
-                path, vae_cls = vae_cls, config = config, dtype = dtype, logger = logger
+                path, vae_cls = cls, config = config, dtype = dtype, logger = logger
             )
             continue
-        encoder_cls = getattr(transformers, class_name, None)
-        if encoder_cls is None:
-            raise ComponentFileError(f"transformers has no {class_name}; update transformers")
-        config = transformers.AutoConfig.from_pretrained(
-            base,
-            subfolder = component,
-            token = hf_token,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-        )
-        from .diffusion_krea2 import remap_rope_parameters
-
-        remap_rope_parameters(getattr(config, "text_config", config))
         trim = component == "text_encoder" and family_trims_lm_head(family)
         overrides.modules[component] = build_text_encoder(
             path,
-            encoder_cls = encoder_cls,
+            encoder_cls = cls,
             config = config,
             dtype = dtype,
             trim_lm_head = trim,

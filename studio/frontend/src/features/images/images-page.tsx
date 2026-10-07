@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type ReactNode,
@@ -4526,7 +4526,9 @@ export function ImagesPage({
         const model = withEngagedFamily(
           lastLoad.current && matchesRememberedModel(lastLoad.current, status)
             ? lastLoad.current
-            : rememberedModel && matchesRememberedModel(rememberedModel, status)
+            : rememberedModel &&
+                matchesRememberedModel(rememberedModel, status) &&
+                componentFilesMatch(rememberedModel, status.component_files)
               ? rememberedModel
               : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
           status,

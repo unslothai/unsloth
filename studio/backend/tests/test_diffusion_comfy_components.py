@@ -846,3 +846,84 @@ def test_quantized_hub_vae_refused_at_planning(tmp_path, monkeypatch):
             model_index = {"vae": ["diffusers", "AutoencoderKL"]},
             resolve_hub = lambda ref: vae,
         )
+
+
+def _base_with_configs(
+    tmp_path,
+    te_cfg,
+    vae_cfg = None,
+):
+    base = tmp_path / "base"
+    te_cfg.save_pretrained(base / "text_encoder")
+    if vae_cfg is not None:
+        (base / "vae").mkdir(parents = True)
+        (base / "vae" / "config.json").write_text(
+            json.dumps({"_class_name": "AutoencoderKL", **vae_cfg}), encoding = "utf-8"
+        )
+    return str(base)
+
+
+def _overrides(
+    paths: dict,
+    classes: dict,
+    kinds: dict | None = None,
+):
+    refs = {c: C.ComponentFileRef(spec = p, local_path = p) for c, p in paths.items()}
+    return C.ComponentOverrides(files = refs, paths = dict(paths), classes = classes, kinds = kinds or {})
+
+
+def test_verify_fit_refuses_wrong_size_encoder_before_load(tmp_path):
+    cfg, ref = _tiny_qwen3()
+    path = _save(
+        tmp_path / "qwen3.safetensors", {"model." + k: v for k, v in ref.state_dict().items()}
+    )
+    big = transformers.Qwen3Config(
+        **{**cfg.to_dict(), "hidden_size": 128, "num_attention_heads": 8}
+    )
+    ok = _overrides({"text_encoder": path}, {"text_encoder": "Qwen3Model"})
+    C.verify_override_fit(ok, base = _base_with_configs(tmp_path / "a", cfg), local_files_only = True)
+    with pytest.raises(C.ComponentFileError, match = "does not fit"):
+        C.verify_override_fit(
+            ok, base = _base_with_configs(tmp_path / "b", big), local_files_only = True
+        )
+
+
+def test_verify_fit_checks_vae_from_header_only(tmp_path):
+    pytest.importorskip("diffusers")
+    cfg, _ = _tiny_qwen3()
+    header = _ldm_vae_header()
+    good = _save(tmp_path / "ae.safetensors", {k: torch.zeros(s) for k, s in header.items()})
+    header.pop("decoder.conv_out.weight")
+    bad = _save(tmp_path / "ae_bad.safetensors", {k: torch.zeros(s) for k, s in header.items()})
+    base = _base_with_configs(tmp_path, cfg, _tiny_kl_config())
+    classes = {"vae": "AutoencoderKL"}
+    C.verify_override_fit(
+        _overrides({"vae": good}, classes, {"vae": "ldm_kl"}), base = base, local_files_only = True
+    )
+    with pytest.raises(C.ComponentFileError, match = "does not fit"):
+        C.verify_override_fit(
+            _overrides({"vae": bad}, classes, {"vae": "ldm_kl"}), base = base, local_files_only = True
+        )
+
+
+def test_verify_fit_refuses_recasting_a_stored_int8_encoder(tmp_path):
+    cfg, ref = _tiny_qwen3()
+    out = {}
+    for key, value in ref.state_dict().items():
+        comfy_key = "model." + key
+        if ".mlp." in key and key.endswith(".weight"):
+            codes, scale = _convrot_int8(value, 16)
+            stem = comfy_key[: -len(".weight")]
+            out[comfy_key], out[stem + ".weight_scale"] = codes, scale
+            out[stem + ".comfy_quant"] = _quant_blob(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": 16}
+            )
+        else:
+            out[comfy_key] = value.to(torch.bfloat16)
+    path = _save(tmp_path / "q_int8.safetensors", out)
+    base = _base_with_configs(tmp_path, cfg)
+    overrides = _overrides({"text_encoder": path}, {"text_encoder": "Qwen3Model"})
+    for ok in (None, "auto", "none", "int8"):
+        C.verify_override_fit(overrides, base = base, local_files_only = True, text_encoder_quant = ok)
+    with pytest.raises(C.ComponentFileError, match = "cannot be re-cast to fp8"):
+        C.verify_override_fit(overrides, base = base, local_files_only = True, text_encoder_quant = "fp8")

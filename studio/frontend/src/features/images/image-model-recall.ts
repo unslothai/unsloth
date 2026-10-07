@@ -74,3 +74,20 @@ export function matchesRememberedModel(
     (model.kind === "pipeline" || status.gguf_filename === model.filename)
   );
 }
+
+const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path;
+
+/** Whether the resident build's component files (basenames, from status) are the remembered paths. */
+export function componentFilesMatch(
+  model: Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">,
+  componentFiles: Record<string, string> | null | undefined,
+): boolean {
+  const remembered = [...(model.textEncoderFiles ?? []), ...(model.vaeFile ? [model.vaeFile] : [])]
+    .map(basename)
+    .sort();
+  const resident = Object.values(componentFiles ?? {}).sort();
+  return (
+    remembered.length === resident.length &&
+    remembered.every((name, i) => name === resident[i])
+  );
+}
