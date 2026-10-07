@@ -238,7 +238,7 @@ export function TabMenuItems({
             <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
             <span>{t("browser.tabMenu.fork")}</span>
           </P.SubTrigger>
-          <P.SubContent className="unsloth-plus-menu sidebar-row-menu w-48">
+          <P.SubContent className="browser-menu unsloth-plus-menu sidebar-row-menu w-48">
             <Row P={P} icon={BubbleChatAddIcon} onSelect={() => forkToChat(navigate, { tab, url }, false)}>
               {t("browser.tabMenu.forkNewChat")}
             </Row>

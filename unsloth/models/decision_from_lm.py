@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Turns a plain language model (Qwen3.5, Qwen3, Llama, ...) into a Clef-style decision model:
-# the backbone runs one prefill and a fresh joint schema head scores every option of every
-# question. The result trains, evaluates and saves exactly like a Cloudflare Clef checkpoint.
+# A plain language model plus a fresh joint schema head = a Clef-style decision model that trains,
+# evaluates and saves like a Cloudflare Clef checkpoint.
 
 __all__ = [
     "load_lm_as_decision_model",
@@ -28,8 +27,7 @@ def _text_config(config):
 
 
 def default_head_config(hidden_size: int, width: Optional[int] = None) -> dict:
-    # Clef's head is {width 1024, 2 routing + 4 decoder layers, 16 heads, ff 4096}. Its size is
-    # set by the width, so small backbones get width 512 unless asked otherwise.
+    # Clef's head: width 1024, 2 routing + 4 decoder layers, 16 heads, ff 4096; small backbones get width 512.
     if width is None:
         width = 1024 if hidden_size >= 3072 else 512
     width = int(width)
@@ -96,8 +94,7 @@ def _load_backbone(model_name, max_len, dtype, load_in_4bit, full_finetuning, to
     if _device().type != "cpu":
         from .loader import FastModel
 
-        # The rules a Clef checkpoint loads with (decision._load_clef): Unsloth's dynamic 4-bit
-        # config, and a float16 request puts Qwen3.5 on Unsloth's float32 path.
+        # Same rules as decision._load_clef: dynamic 4-bit config, float16 puts Qwen3.5 on the float32 path.
         if load_in_4bit and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
@@ -190,7 +187,6 @@ def load_lm_as_decision_model(
             raise ValueError(
                 f"Unsloth: head_config hidden_size {config['hidden_size']} != backbone {hidden_size}."
             )
-        # Seeded, so the same random_state gives the same fresh head.
         with torch.random.fork_rng(devices = []):
             torch.manual_seed(random_state)
             head = JointSchemaHead(**config)

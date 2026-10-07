@@ -1134,6 +1134,16 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
     return _META_TAG_RE.sub(strip_meta, page), base_url, refresh
 
 
+# unsloth.ai's Cloudflare skips its bot challenge for requests carrying this. Only its own hosts get
+# it: the challenge can't be solved from the proxied frame, and other sites have no use for it.
+_STUDIO_HEADERS = {"X-Unsloth-Studio": "1"}
+
+
+def _studio_headers(host: str) -> dict:
+    host = host.lower().rstrip(".")
+    return _STUDIO_HEADERS if host == "unsloth.ai" or host.endswith(".unsloth.ai") else {}
+
+
 def _fetch(
     request: BrowserFetchRequest, cancel_event: threading.Event
 ) -> tuple[Optional[str], bytes, str, dict]:
@@ -1151,6 +1161,7 @@ def _fetch(
         post_data = (request.body or "").encode() if request.method == "POST" else None,
         meta_out = meta,
         cancel_event = cancel_event,
+        host_headers = _studio_headers,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 

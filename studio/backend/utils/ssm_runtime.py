@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-install the SSM/Mamba kernels a hybrid model needs before it loads. Mamba/SSM hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, GraniteMoEHybrid, ...) lazy-``import mamba_ssm`` / ``causal_conv1d`` in their ``modeling_*.py`` during ``from_pretrained``; absent, the load dies with "mamba-ssm is required ... cannot be imported". The training worker installs them wheel-first before a fine-tune; this is the shared, callback-based version the inference load path calls so chat behaves the same. Detection and versions mirror the training worker (``tests/test_ssm_runtime.py`` guards drift)."""
+"""Auto-install the SSM/Mamba kernels a hybrid model lazy-imports during ``from_pretrained``;
+the inference-path counterpart of the training worker's install.
+"""
 
 from __future__ import annotations
 
 import importlib
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -17,14 +18,16 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from loggers import get_logger
-from utils.child_stdio import utf8_child_env
+from utils.kernel_install import (
+    CAUSAL_CONV1D,
+    MAMBA_SSM,
+    PinnedKernel,
+    hipcc_gcc_install_dir,
+    install_prebuilt,
+    source_build_command,
+    source_build_run_kwargs,
+)
 from utils.wheel_utils import (
-    CAUSAL_CONV1D_PACKAGE_VERSION,
-    CAUSAL_CONV1D_RELEASE_BASE_URL,
-    CAUSAL_CONV1D_RELEASE_TAG,
-    MAMBA_SSM_PACKAGE_VERSION,
-    MAMBA_SSM_RELEASE_BASE_URL,
-    MAMBA_SSM_RELEASE_TAG,
     direct_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
@@ -35,7 +38,7 @@ logger = get_logger(__name__)
 
 StatusCb = Optional[Callable[[str], None]]
 
-# Lowercased-id substring matches, mirroring the training worker. mamba-ssm models are a subset of the causal-conv1d set.
+# Lowercased-id substring matches, shared with the training worker. mamba-ssm models are a subset of the causal-conv1d set.
 SSM_MODEL_SUBSTRINGS = (
     "nemotron_h",
     "nemotron-h",
@@ -214,16 +217,7 @@ def _emit(status_cb: StatusCb, message: str) -> None:
         logger.debug("ssm_runtime status callback raised", exc_info = True)
 
 
-def _hipcc_gcc_install_dir() -> Optional[str]:
-    """Highest gcc dir with both runtime and C++ headers, for ROCm clang's ``--gcc-install-dir`` (Ubuntu 24.04 ships gcc-14 runtime without its headers)."""
-    if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
-        return None
-    for ver in (14, 13, 12, 11):
-        if os.path.isdir(f"/usr/lib/gcc/x86_64-linux-gnu/{ver}/include") and os.path.isdir(
-            f"/usr/include/c++/{ver}"
-        ):
-            return f"/usr/lib/gcc/x86_64-linux-gnu/{ver}"
-    return None
+_hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
 # Keep quiet downloads and builds inside the orchestrator's inactivity deadline.
@@ -297,27 +291,26 @@ def _install_kernel(
             f"Still installing {display_name} (prebuilt kernel)...",
         ):
             # A cold first import can also stay quiet for tens of seconds.
-            for installer, result in install_wheel(
+            outcome = install_prebuilt(
                 wheel_url,
-                python_executable = sys.executable,
-                use_uv = bool(shutil.which("uv")),
-                run = run,
-            ):
-                if getattr(result, "returncode", 1) == 0:
-                    # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before trusting it, else source-build to match the local ABI.
-                    if _is_importable(import_name):
-                        logger.info("Installed prebuilt %s wheel", display_name)
-                        return True
-                    logger.warning(
-                        "%s wheel installed but not importable; building from source",
-                        display_name,
-                    )
-                    break
-                logger.warning(
+                install = install_wheel,
+                verify = lambda: _is_importable(import_name),
+                on_failed = lambda installer, result: logger.warning(
                     "%s could not install %s wheel:\n%s",
                     installer,
                     display_name,
                     getattr(result, "stdout", ""),
+                ),
+                use_uv = bool(shutil.which("uv")),
+                run = run,
+            )
+            if outcome == "installed":
+                logger.info("Installed prebuilt %s wheel", display_name)
+                return True
+            if outcome == "rejected":
+                logger.warning(
+                    "%s wheel installed but not importable; building from source",
+                    display_name,
                 )
     elif wheel_available is None:
         _emit(
@@ -341,56 +334,9 @@ def _install_kernel(
         status_cb,
         f"Building {display_name} from source for this model (this can take several minutes)...",
     )
-    # Reinstall so the source build replaces a broken wheel instead of no-opping as "already satisfied"; --no-cache avoids stale partial HIP build artifacts.
-    if shutil.which("uv"):
-        cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--no-build-isolation",
-            "--no-deps",
-            "--reinstall",
-        ]
-        if is_hip:
-            cmd.append("--no-cache")
-        cmd.append(spec)
-    else:
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-build-isolation",
-            "--no-deps",
-            "--no-cache-dir",
-            "--force-reinstall",
-            spec,
-        ]
-
-    run_kwargs: dict[str, Any] = {
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.STDOUT,
-        "text": True,
-        # pip and the compilers it drives write UTF-8 down this pipe; the Windows ANSI codepage would mojibake or raise over a fine install.
-        "encoding": "utf-8",
-        "errors": "replace",
-        # Make the Python child emit the UTF-8 we decode above.
-        "env": utf8_child_env(),
-    }
-    if is_hip:
-        run_kwargs["timeout"] = 1800
-        existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
-        if "--gcc-install-dir" not in existing:
-            gcc_dir = _hipcc_gcc_install_dir()
-            if gcc_dir:
-                # Extends the UTF-8 env above rather than replacing it.
-                _env = dict(run_kwargs["env"])
-                _env["HIPCC_COMPILE_FLAGS_APPEND"] = (
-                    f"{existing} --gcc-install-dir={gcc_dir}".strip()
-                )
-                run_kwargs["env"] = _env
+    # Reinstall so the source build replaces a broken wheel instead of no-opping as "already satisfied".
+    cmd = source_build_command(spec, use_uv = bool(shutil.which("uv")), is_hip = is_hip, reinstall = True)
+    run_kwargs, _ = source_build_run_kwargs(is_hip = is_hip, gcc_install_dir = _hipcc_gcc_install_dir)
     try:
         result = _run_with_heartbeat(run, cmd, status_cb, display_name, **run_kwargs)
     except subprocess.TimeoutExpired:
@@ -400,6 +346,18 @@ def _install_kernel(
     if getattr(result, "returncode", 1) != 0:
         logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
     return _is_importable(import_name)
+
+
+def _pinned_kwargs(kernel: PinnedKernel) -> dict[str, str]:
+    """_install_kernel arguments for a pinned kernel release."""
+    return {
+        "import_name": kernel.import_name,
+        "display_name": kernel.display_name,
+        "pypi_name": kernel.pypi_name,
+        "package_version": kernel.package_version,
+        "release_tag": kernel.release_tag,
+        "release_base_url": kernel.release_base_url,
+    }
 
 
 def ensure_ssm_runtime(
@@ -423,25 +381,9 @@ def ensure_ssm_runtime(
 
     # causal-conv1d first: SSM modeling files lazy-import it, and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install_kernel(
-        import_name = "causal_conv1d",
-        display_name = "causal-conv1d",
-        pypi_name = "causal-conv1d",
-        package_version = CAUSAL_CONV1D_PACKAGE_VERSION,
-        release_tag = CAUSAL_CONV1D_RELEASE_TAG,
-        release_base_url = CAUSAL_CONV1D_RELEASE_BASE_URL,
-        status_cb = status_cb,
-        run = run,
+        **_pinned_kwargs(CAUSAL_CONV1D), status_cb = status_cb, run = run
     ):
         logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
 
-    if is_ssm and not _install_kernel(
-        import_name = "mamba_ssm",
-        display_name = "mamba-ssm",
-        pypi_name = "mamba-ssm",
-        package_version = MAMBA_SSM_PACKAGE_VERSION,
-        release_tag = MAMBA_SSM_RELEASE_TAG,
-        release_base_url = MAMBA_SSM_RELEASE_BASE_URL,
-        status_cb = status_cb,
-        run = run,
-    ):
+    if is_ssm and not _install_kernel(**_pinned_kwargs(MAMBA_SSM), status_cb = status_cb, run = run):
         raise RuntimeError("Could not install mamba-ssm, required by this Mamba model.")

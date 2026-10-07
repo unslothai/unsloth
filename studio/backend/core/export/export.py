@@ -32,7 +32,7 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
-from utils.models.model_config import detect_audio_type
+from utils.models.model_config import detect_audio_type, load_mlx_adapter_tokenizer
 from utils.paths import (
     ensure_dir,
     outputs_root,
@@ -900,6 +900,8 @@ class ExportBackend:
                     local_files_only = local_files_only,
                     **_device_map_kw,
                 )
+                if _IS_MLX and adapter_config.exists():
+                    tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
 
             # Only for the multi-GPU map: a single-GPU host has no second placement to retry on.
             _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0

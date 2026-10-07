@@ -22,7 +22,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
 import { useBrowserStore } from "./store";
 
-export const CONTEXT_MENU = "unsloth-plus-menu sidebar-row-menu w-56";
+export const CONTEXT_MENU = "browser-menu unsloth-plus-menu sidebar-row-menu w-56";
 const MENU_ICON = "size-icon";
 
 export function MenuRow({

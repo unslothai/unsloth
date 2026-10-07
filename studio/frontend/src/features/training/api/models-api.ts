@@ -114,7 +114,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }

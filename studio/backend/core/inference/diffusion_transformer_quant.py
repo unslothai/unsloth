@@ -135,6 +135,7 @@ _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    "qwen-image-layered": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
     # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's
     # exclusion list does not apply and this one was measured rather than inherited. ``txt_in`` is
     # here as a QUALITY lever, not the small-M crash guard it is on qwen-image: all four policy arms
@@ -435,6 +436,7 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
+    "qwen-image-layered": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
 
 

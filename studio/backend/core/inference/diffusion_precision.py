@@ -59,6 +59,7 @@ _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
     "qwen-image": (6, 6),
     "qwen-image-edit": (6, 6),
+    "qwen-image-layered": (6, 6),
     "flux.2-dev": (3, 0),
 }
 
