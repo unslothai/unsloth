@@ -196,7 +196,7 @@ let retainedSuppression: {
   persisted: boolean;
 } = { value: null, persisted: true };
 
-function offerKey(status: LlamaUpdateStatus): string {
+export function offerKey(status: LlamaUpdateStatus): string {
   return JSON.stringify({
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
@@ -212,6 +212,10 @@ function offerKey(status: LlamaUpdateStatus): string {
           status.to_backend,
         ]
       : null,
+    // Only when offered, so keys stored before audio.cpp joined the card still match.
+    ...(status.audio?.update_available
+      ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
+      : {}),
   });
 }
 
