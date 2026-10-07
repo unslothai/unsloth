@@ -552,11 +552,7 @@ test("an angle-bracketed destination keeps moving the render key", () => {
 
   // `>` closes the ANGLE form only: marked keeps it in `[g]: https://x.test/a>b`.
   let bareStep = markdownRenderKey(`${usage}[g]: `);
-  for (const step of [
-    "https://x.test/a",
-    "https://x.test/a>",
-    "https://x.test/a>b",
-  ]) {
+  for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
     const key = markdownRenderKey(`${usage}[g]: ${step}`);
     assert.notEqual(key, bareStep, `render key did not move for ${step}`);
     bareStep = key;
@@ -613,16 +609,13 @@ test("a bracket-dense reply does not stall the scan", () => {
     samples.push(performance.now() - started);
   }
   const median = samples.sort((a, b) => a - b)[2];
-  assert.ok(
-    median < 150,
-    `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`,
-  );
+  assert.ok(median < 150, `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`);
 });
 
 test("malformed inline-link titles do not rescan the remaining reply", () => {
   const reply = `${"[x](/url (".repeat(20_000)}\` [1] \`\n\n[1]: /one\n`;
   const started = performance.now();
-  assert.equal(markdownRenderScope(reply), "blocks");
+  markdownRenderScope(reply);
   const elapsed = performance.now() - started;
   assert.ok(
     elapsed < 500,
@@ -973,15 +966,9 @@ test("a fenced block larger than the budget keeps retaining", () => {
 test("a `]:` whose window holds no `[` is skipped without changing the answer", () => {
   // `[a[]:` matches from 0 (label `a[`), not from the last `[` (empty label): a skip clamped to
   // the last one reports false.
-  assert.equal(
-    markdownRenderScope(`See [x][a[].\n\n${paragraphs(12)}[a[]: /url\n`),
-    "document",
-  );
+  assert.equal(markdownRenderScope(`See [x][a[].\n\n${paragraphs(12)}[a[]: /url\n`), "document");
   // Nothing to open a definition with, at any distance.
-  assert.equal(
-    markdownRenderScope(`See [x][y].\n\n${"]: ".repeat(2000)}`),
-    "blocks",
-  );
+  assert.equal(markdownRenderScope(`See [x][y].\n\n${"]: ".repeat(2000)}`), "blocks");
 });
 
 test("a reply dense with `]:` and no definition does not pay per occurrence", () => {
@@ -997,10 +984,8 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
     runs.push(performance.now() - t0);
   }
   const median = runs.sort((a, b) => a - b)[2]!;
-  assert.ok(
-    median < 100,
-    `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`,
-  );
+  assert.ok(median < 100,
+    `500k of \`]:\` cost ${median.toFixed(1)}ms; the per-occurrence window scan is back`);
 
   // A `[` in the window is not enough: `[]: ` keeps one in every window while never opening a
   // definition, so unbounded each occurrence still slices ~3000 chars. 338ms against 7ms.
@@ -1013,10 +998,8 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
     invalidRuns.push(performance.now() - t0);
   }
   const invalidMedian = invalidRuns.sort((a, b) => a - b)[2]!;
-  assert.ok(
-    invalidMedian < 100,
-    `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`,
-  );
+  assert.ok(invalidMedian < 100,
+    `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
 });
 
 test("unclosed backtick runs of many widths do not rescan the paragraph", () => {
@@ -1043,23 +1026,14 @@ test("a reference label past the old cap still resolves against its definition",
   for (const length of [200, 201, 400, 999]) {
     const label = "L".repeat(length);
     const reply = `See [guide][${label}].\n\n[${label}]: https://x.test/a\n`;
-    assert.equal(
-      markdownRenderScope(reply),
-      "document",
-      `a ${length}-character label did not reach the document path`,
-    );
-    assert.equal(
-      markdownRenderKey(reply),
-      `document:[${label}]: https://x.test/a`,
-    );
+    assert.equal(markdownRenderScope(reply), "document",
+      `a ${length}-character label did not reach the document path`);
+    assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
   }
   // 999 is CommonMark's, not Marked's, whose `def` label is uncapped but only SPLITS here. The
   // render is remark, CommonMark-strict: 0 links past 999, so the blocks path loses nothing.
   const tooLong = "L".repeat(1000);
-  assert.equal(
-    markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`),
-    "blocks",
-  );
+  assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
 });
 
 test("a run of `[` before a reference does not walk the widened label budget", () => {
@@ -1074,10 +1048,8 @@ test("a run of `[` before a reference does not walk the widened label budget", (
     runs.push(performance.now() - t0);
   }
   const median = runs.sort((a, b) => a - b)[2]!;
-  assert.ok(
-    median < 150,
-    `500k of \`[\` cost ${median.toFixed(1)}ms; the reference probe is walking every start position`,
-  );
+  assert.ok(median < 150,
+    `500k of \`[\` cost ${median.toFixed(1)}ms; the reference probe is walking every start position`);
 });
 
 test("a reply whose every `]` is escaped does not rescan the tail per seam", () => {
@@ -1092,10 +1064,8 @@ test("a reply whose every `]` is escaped does not rescan the tail per seam", () 
     runs.push(performance.now() - t0);
   }
   const median = runs.sort((a, b) => a - b)[2]!;
-  assert.ok(
-    median < 150,
-    `500k of \`\\][\` cost ${median.toFixed(1)}ms; an exhausted lookahead is being re-asked per seam`,
-  );
+  assert.ok(median < 150,
+    `500k of \`\\][\` cost ${median.toFixed(1)}ms; an exhausted lookahead is being re-asked per seam`);
 });
 
 test("a seam whose reference label is past the cap is rejected once, not per `[`", () => {
@@ -1110,16 +1080,11 @@ test("a seam whose reference label is past the cap is rejected once, not per `[`
     runs.push(performance.now() - t0);
   }
   const median = runs.sort((a, b) => a - b)[2]!;
-  assert.ok(
-    median < 150,
-    `500k of packed \`[\` cost ${median.toFixed(1)}ms; the window is re-tested from every \`[\``,
-  );
+  assert.ok(median < 150,
+    `500k of packed \`[\` cost ${median.toFixed(1)}ms; the window is re-tested from every \`[\``);
   // The rejection is a cost bound, not a change of answer: a label inside the cap still resolves.
   const label = "L".repeat(400);
-  assert.equal(
-    markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`),
-    "document",
-  );
+  assert.equal(markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`), "document");
 });
 
 const STREAM_CHUNK = 24;

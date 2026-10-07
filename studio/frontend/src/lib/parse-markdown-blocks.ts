@@ -152,72 +152,47 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
   return mergedBlocks;
 };
 
-const nonLineEndingPattern = /[^\n]/g;
-
-const collectProseBlocks = (
-  tokens: Token[],
-): { proseBlocks: string[]; referenceProseBlocks: string[] } => {
-  const proseBlocks: string[] = [];
-  const referenceProseBlocks: string[] = [];
+// Prose that can still hold a link reference: code and Marked's own definitions removed.
+const collectReferenceProse = (tokens: Token[], out: string[]): string[] => {
   for (const token of tokens) {
-    if (token.type === "code" || token.type === "space") {
+    if (
+      token.type === "code" ||
+      token.type === "space" ||
+      token.type === "def"
+    ) {
       continue;
     }
     if (token.type === "blockquote") {
-      const nested = collectProseBlocks(token.tokens ?? []);
-      proseBlocks.push(...nested.proseBlocks);
-      referenceProseBlocks.push(...nested.referenceProseBlocks);
-      continue;
-    }
-    if (token.type === "list") {
+      collectReferenceProse(token.tokens ?? [], out);
+    } else if (token.type === "list") {
       for (const item of token.items) {
-        const nested = collectProseBlocks(item.tokens);
-        proseBlocks.push(...nested.proseBlocks);
-        referenceProseBlocks.push(...nested.referenceProseBlocks);
+        collectReferenceProse(item.tokens, out);
       }
-      continue;
+    } else {
+      out.push(token.raw);
     }
-    if (token.type === "table") {
-      proseBlocks.push(token.raw);
-      for (const cell of [...token.header, ...token.rows.flat()]) {
-        referenceProseBlocks.push(cell.text);
-      }
-      continue;
-    }
-    proseBlocks.push(token.raw);
-    referenceProseBlocks.push(
-      token.type === "def"
-        ? token.raw.replace(nonLineEndingPattern, " ")
-        : token.raw,
-    );
   }
-  return { proseBlocks, referenceProseBlocks };
+  return out;
 };
 
+// One lex for both the split and the reference prose.
 export function parseMarkdownBlockDetails(markdown: string): {
   blocks: string[];
-  proseBlocks: string[];
-  referenceProseBlocks: string[];
+  referenceProse: string[];
 } {
-  const hasFootnoteReference = footnoteReferencePattern.test(markdown);
-  const hasFootnoteDefinition = footnoteDefinitionPattern.test(markdown);
-
-  if (hasFootnoteReference || hasFootnoteDefinition) {
-    return {
-      blocks: [markdown],
-      proseBlocks: [markdown],
-      referenceProseBlocks: [markdown],
-    };
+  if (
+    footnoteReferencePattern.test(markdown) ||
+    footnoteDefinitionPattern.test(markdown)
+  ) {
+    return { blocks: [markdown], referenceProse: [markdown] };
   }
-
   const input = markdown.includes("\r")
     ? markdown.replace(lineEndingPattern, "\n")
     : markdown;
   const tokens = lexBlocks(input);
-  const prose = collectProseBlocks(tokens);
   return {
     blocks: mergeTokensIntoBlocks(tokens),
-    ...prose,
+    referenceProse: collectReferenceProse(tokens, []),
   };
 }
 
@@ -232,5 +207,6 @@ export function parseMarkdownIntoBlocks(markdown: string): string[] {
   const input = markdown.includes("\r")
     ? markdown.replace(lineEndingPattern, "\n")
     : markdown;
+
   return mergeTokensIntoBlocks(lexBlocks(input));
 }

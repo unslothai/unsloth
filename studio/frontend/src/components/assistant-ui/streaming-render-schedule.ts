@@ -44,16 +44,27 @@ const SINGLE_ASTERISK_CONTEXT = "*x*\n\n";
 const SINGLE_UNDERSCORE_CONTEXT = "_x_\n\n";
 const INLINE_CODE_ASTERISK_CONTEXT = "`a *b* c`\n\n";
 const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
-// unbalanced `\(` survives because remend's math scan crosses newlines and link scanning stops.
+// The one context that is deliberately UNBALANCED, because the fact it carries is an open region
+// rather than a marker behind the boundary. remend has no other way to enter the state: `\(` is the
+// only transition into inline LaTeX. The blank line after it is load bearing twice over: it keeps
+// the opener off the tail's first line, which every line-oriented repair would otherwise read as
+// part of that line, and it puts a newline between the tail and the `(`, which is where remend's
+// backwards scan for a link destination stops. The region survives it, since remend's math scan has
+// no newline rule. There is deliberately no `\[` twin; see `hasUncarriableMath`.
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-// match Marked labels across escaped newlines; CommonMark's 999-character cap bounds scans.
-const LINK_DEFINITION_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
-// allow 999 escaped astral characters plus the opening bracket in UTF-16.
+// Marked's `def` label, `[^\]]+`: a miss is committed away and Marked emits no
+// token for a label it has already seen, so err toward a false positive, which
+// only costs retention. `\n` is in the class because Marked normalises label
+// whitespace, `\\[\s\S]` because `.` rejected a label whose line ends in a
+// backslash, `u` because without it `{1,999}` bounds 499 emoji. 999 is
+// CommonMark's cap; unbounded would make every `[` an O(n) start position.
+const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
+// Widest match in UTF-16 units: 999 times `\` plus an astral code point, plus `[`.
 const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
 
-// an odd backslash run keeps `]` inside the label.
+// Odd backslash run: `[a\]b]:` keeps its escaped `]` in the label, `[a]b]:` does not.
 function isEscaped(text: string, index: number): boolean {
   let slashes = 0;
   for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
@@ -61,17 +72,19 @@ function isEscaped(text: string, index: number): boolean {
   }
   return slashes % 2 === 1;
 }
-// scan rare `]:` terminators with bounded cursors to avoid quadratic rescans.
+// Same predicate as the regex over the whole reply (it has no anchor or lookaround), scanned from
+// the rare `]:` rather than from every `[` (unslothai/unsloth#10529). Two bounds keep each
+// terminator cheap: a match opens with `[`, and its label admits no bare `]`, so the window starts
+// after the last unescaped one. Both cursors only advance and their lookaheads are CACHED --
+// re-asking `indexOf` past -1 rescans the tail while advancing nothing, measured slower than no
+// skip at all (282ms -> 881ms), and `lastIndexOf` is unbounded backwards. Per 500k reply:
+// `]: ` 289ms -> 3.6ms, `[]: ` 338ms -> 7.1ms.
 function hasLinkDefinition(text: string): boolean {
   let bracket = text.indexOf("[");
   let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
   let close = -1;
   let nextClose = text.indexOf("]");
-  for (
-    let end = text.indexOf("]:");
-    end >= 0;
-    end = text.indexOf("]:", end + 1)
-  ) {
+  for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
     while (nextBracket >= 0 && nextBracket <= end) {
       bracket = nextBracket;
       nextBracket = text.indexOf("[", bracket + 1);
@@ -97,8 +110,7 @@ function hasLinkDefinition(text: string): boolean {
 }
 // A label may sit behind any mix of container markers. A list marker needs
 // whitespace after it or no list opens: `-[label]:` is prose, not a bullet.
-const CONTAINER_PREFIX =
-  "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
+const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
 const LINK_DEFINITION_LINE_RE = new RegExp(
   `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
   `m${LINK_DEFINITION_RE.flags}`,
@@ -120,10 +132,12 @@ const LINK_DEFINITION_KEY_RE = new RegExp(
     `(?:[ \\t]+${LINK_DEFINITION_TITLE}|[ \\t]*\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
-// code blocks start with a fence or indentation to column four, including tabs.
-const CODE_BLOCK_RE =
-  /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
-// backtick fence info cannot contain backticks, while tilde fence info can.
+// The two block shapes whose body is literal code: an opening fence, and an indent that
+// reaches column four -- four spaces, or a tab, which advances to the same column.
+const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
+// A backtick opener may not carry a backtick in its info string, or it is not a fence at all
+// and the line is ordinary prose -- which is where a reference can still be waiting. Tilde
+// openers have no such rule, so their info string is left alone.
 const BACKTICK_OPENER_RE = /^ {0,3}`{3,}([^\n]*)/;
 
 function isCodeBlock(block: string): boolean {
@@ -133,676 +147,14 @@ function isCodeBlock(block: string): boolean {
   const backtick = BACKTICK_OPENER_RE.exec(block);
   return backtick === null || !backtick[1].includes("`");
 }
-const LINK_DEFINITION_LABEL_RE = new RegExp(
-  LINK_DEFINITION_LINE_RE.source,
-  `g${LINK_DEFINITION_LINE_RE.flags}`,
-);
-const BACKTICK_RUN_RE = /`+/g;
-const BLANK_LINE_RE = /\n[ \t]*\n/g;
-
-// find closers from the right so unmatched openers do not rescan the paragraph.
-function codeSpanRegions(
-  text: string,
-  inlineLinks: readonly [number, number][] = [],
-): [number, number][] {
-  const breaks = Array.from(
-    text.matchAll(BLANK_LINE_RE),
-    (match) => match.index,
-  );
-  const runs: {
-    start: number;
-    end: number;
-    escaped: boolean;
-    paragraph: number;
-  }[] = [];
-  let paragraph = 0;
-  for (const match of text.matchAll(BACKTICK_RUN_RE)) {
-    while (paragraph < breaks.length && breaks[paragraph] < match.index) {
-      paragraph += 1;
-    }
-    runs.push({
-      start: match.index,
-      end: match.index + match[0].length,
-      escaped: isEscaped(text, match.index),
-      paragraph,
-    });
-  }
-  const closers = new Array<number>(runs.length).fill(-1);
-  const nearest = new Map<number, number>();
-  for (let i = runs.length - 1; i >= 0; i -= 1) {
-    if (i + 1 < runs.length && runs[i + 1].paragraph !== runs[i].paragraph) {
-      nearest.clear();
-    }
-    if (runs[i].escaped) {
-      continue;
-    }
-    const width = runs[i].end - runs[i].start;
-    closers[i] = nearest.get(width) ?? -1;
-    nearest.set(width, i);
-  }
-  const regions: [number, number][] = [];
-  let linkIndex = 0;
-  for (let i = 0; i < runs.length; i += 1) {
-    while (
-      linkIndex < inlineLinks.length &&
-      inlineLinks[linkIndex][1] <= runs[i].start
-    ) {
-      linkIndex += 1;
-    }
-    if (
-      linkIndex < inlineLinks.length &&
-      inlineLinks[linkIndex][0] < runs[i].start
-    ) {
-      const linkEnd = inlineLinks[linkIndex][1];
-      while (i + 1 < runs.length && runs[i + 1].start < linkEnd) {
-        i += 1;
-      }
-      linkIndex += 1;
-      continue;
-    }
-    const closer = closers[i];
-    if (closer < 0 || runs[i].escaped) {
-      continue;
-    }
-    regions.push([runs[i].start, runs[closer].end]);
-    while (
-      linkIndex < inlineLinks.length &&
-      inlineLinks[linkIndex][0] < runs[closer].end
-    ) {
-      linkIndex += 1;
-    }
-    i = closer;
-  }
-  return regions;
-}
-
-const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
-const MAX_LINK_DESTINATION_DEPTH = 32;
-
-function isAsciiControl(char: string): boolean {
-  const code = char.charCodeAt(0);
-  return code <= 0x1f || code === 0x7f;
-}
-
-function isAsciiPunctuation(char: string): boolean {
-  const code = char.charCodeAt(0);
-  return (
-    (code >= 0x21 && code <= 0x2f) ||
-    (code >= 0x3a && code <= 0x40) ||
-    (code >= 0x5b && code <= 0x60) ||
-    (code >= 0x7b && code <= 0x7e)
-  );
-}
-
-type InlineScan = {
-  readonly blankLines: number[];
-  readonly angleOpeners: number[];
-  readonly angleClosers: number[];
-  readonly doubleQuoteClosers: number[];
-  readonly singleQuoteClosers: number[];
-  readonly parenthesisClosers: number[];
-  readonly lineEndings: number[];
-  readonly htmlCommentClosers: number[];
-  readonly htmlProcessingClosers: number[];
-  readonly htmlCdataClosers: number[];
-  readonly htmlTagClosers: number[];
-  readonly whitespaceEnds: Map<number, number>;
-};
-
-function createInlineScan(text: string): InlineScan {
-  const scan: InlineScan = {
-    blankLines: Array.from(
-      text.matchAll(BLANK_LINE_RE),
-      (match) => match.index,
-    ),
-    angleOpeners: [],
-    angleClosers: [],
-    doubleQuoteClosers: [],
-    singleQuoteClosers: [],
-    parenthesisClosers: [],
-    lineEndings: [],
-    htmlCommentClosers: [],
-    htmlProcessingClosers: [],
-    htmlCdataClosers: [],
-    htmlTagClosers: [],
-    whitespaceEnds: new Map(),
-  };
-  for (let at = 0; at < text.length; at += 1) {
-    const char = text[at];
-    if (text.startsWith("-->", at)) scan.htmlCommentClosers.push(at);
-    if (text.startsWith("?>", at)) scan.htmlProcessingClosers.push(at);
-    if (text.startsWith("]]>", at)) scan.htmlCdataClosers.push(at);
-    if (char === ">") scan.htmlTagClosers.push(at);
-    if (char === "\n") {
-      scan.lineEndings.push(at);
-    }
-    if (
-      char === "\\" &&
-      text[at + 1] !== undefined &&
-      isAsciiPunctuation(text[at + 1])
-    ) {
-      at += 1;
-      continue;
-    }
-    if (char === "<") scan.angleOpeners.push(at);
-    else if (char === ">") scan.angleClosers.push(at);
-    else if (char === '"') scan.doubleQuoteClosers.push(at);
-    else if (char === "'") scan.singleQuoteClosers.push(at);
-    else if (char === ")") scan.parenthesisClosers.push(at);
-  }
-  return scan;
-}
-
-function nextOffset(offsets: readonly number[], from: number): number {
-  let low = 0;
-  let high = offsets.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    if (offsets[middle] < from) low = middle + 1;
-    else high = middle;
-  }
-  return offsets[low] ?? Number.POSITIVE_INFINITY;
-}
-
-function skipInlineWhitespace(
-  text: string,
-  from: number,
-  scan: InlineScan,
-): number {
-  const cached = scan.whitespaceEnds.get(from);
-  if (cached !== undefined) return cached;
-  let at = from;
-  while (text[at] === " " || text[at] === "\t") {
-    at += 1;
-  }
-  if (text[at] !== "\n") {
-    scan.whitespaceEnds.set(from, at);
-    return at;
-  }
-  at += 1;
-  while (text[at] === " " || text[at] === "\t") {
-    at += 1;
-  }
-  const end = text[at] === "\n" ? -1 : at;
-  scan.whitespaceEnds.set(from, end);
-  return end;
-}
-
-function angleDestinationEnd(from: number, scan: InlineScan): number {
-  const opener = nextOffset(scan.angleOpeners, from + 1);
-  const closer = nextOffset(scan.angleClosers, from + 1);
-  const lineEnding = nextOffset(scan.lineEndings, from + 1);
-  return closer < opener && closer < lineEnding ? closer + 1 : -1;
-}
-
-function bareDestinationEnd(text: string, from: number): [number, number] {
-  let depth = 0;
-  for (let at = from; at < text.length; at += 1) {
-    const char = text[at];
-    if (
-      char === "\\" &&
-      text[at + 1] !== undefined &&
-      isAsciiPunctuation(text[at + 1])
-    ) {
-      at += 1;
-    } else if (char === "(") {
-      depth += 1;
-      if (depth > MAX_LINK_DESTINATION_DEPTH) {
-        return [-1, -1];
-      }
-    } else if (char === ")") {
-      if (depth === 0) {
-        return [at, at + 1];
-      }
-      depth -= 1;
-    } else if (char === " " || char === "\t" || char === "\n") {
-      return depth === 0 ? [at, -1] : [-1, -1];
-    } else if (isAsciiControl(char)) {
-      return [-1, -1];
-    }
-  }
-  return depth === 0 ? [text.length, -1] : [-1, -1];
-}
-
-function inlineTitleEnd(
-  text: string,
-  from: number,
-  scan: InlineScan,
-): number {
-  const opener = text[from];
-  const closer = opener === "(" ? ")" : opener;
-  if (opener !== '"' && opener !== "'" && opener !== "(") {
-    return -1;
-  }
-  const offsets =
-    closer === '"'
-      ? scan.doubleQuoteClosers
-      : closer === "'"
-        ? scan.singleQuoteClosers
-        : scan.parenthesisClosers;
-  const close = nextOffset(offsets, from + 1);
-  if (!Number.isFinite(close)) return -1;
-  if (nextOffset(scan.blankLines, from) < close) return -1;
-  const end = skipInlineWhitespace(text, close + 1, scan);
-  return end >= 0 && text[end] === ")" ? end + 1 : -1;
-}
-
-function inlineLinkEnd(
-  text: string,
-  from: number,
-  scan: InlineScan,
-): number {
-  if (text[from] !== "(") {
-    return -1;
-  }
-  let at = skipInlineWhitespace(text, from + 1, scan);
-  if (at < 0) {
-    return -1;
-  }
-
-  let linkEnd = -1;
-  if (text[at] === "<") {
-    at = angleDestinationEnd(at, scan);
-  } else {
-    [at, linkEnd] = bareDestinationEnd(text, at);
-  }
-  if (linkEnd >= 0 || at < 0) {
-    return linkEnd;
-  }
-
-  const destinationEnd = at;
-  at = skipInlineWhitespace(text, at, scan);
-  if (at < 0) {
-    return -1;
-  }
-  if (text[at] === ")") {
-    return at + 1;
-  }
-  return at > destinationEnd ? inlineTitleEnd(text, at, scan) : -1;
-}
-
-function inlineLinkRegions(
-  text: string,
-  scan: InlineScan,
-): [number, number][] {
-  const regions: [number, number][] = [];
-  let opener = -1;
-  let blankLine = 0;
-  for (let at = 0; at + 1 < text.length; at += 1) {
-    while (
-      blankLine < scan.blankLines.length &&
-      scan.blankLines[blankLine] < at
-    ) {
-      opener = -1;
-      blankLine += 1;
-    }
-    if (text[at] === "[" && !isEscaped(text, at)) {
-      opener = at;
-    } else if (
-      opener >= 0 &&
-      text[at] === "]" &&
-      text[at + 1] === "(" &&
-      !isEscaped(text, at)
-    ) {
-      const end = inlineLinkEnd(text, at + 1, scan);
-      if (end >= 0) regions.push([at, end]);
-    }
-  }
-  return regions;
-}
-
-const URI_AUTOLINK_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]{1,31}:/u;
-const EMAIL_AUTOLINK_RE =
-  /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u;
-const AUTOLINK_CANDIDATE_RE = /<([^<>\r\n]*)>/gu;
-const LITERAL_AUTOLINK_PREFIX_RE = /(?:https?:\/\/|www\.)/giu;
-
-function isUriAutolink(candidate: string): boolean {
-  const scheme = URI_AUTOLINK_SCHEME_RE.exec(candidate);
-  if (scheme === null) return false;
-  for (let at = scheme[0].length; at < candidate.length; at += 1) {
-    if (candidate[at] === " " || isAsciiControl(candidate[at])) return false;
-  }
-  return true;
-}
-
-function autolinkRegions(text: string): [number, number][] {
-  const regions: [number, number][] = [];
-  for (const match of text.matchAll(AUTOLINK_CANDIDATE_RE)) {
-    if (
-      !isEscaped(text, match.index) &&
-      (isUriAutolink(match[1]) || EMAIL_AUTOLINK_RE.test(match[1]))
-    ) {
-      regions.push([match.index, match.index + match[0].length]);
-    }
-  }
-  return regions;
-}
-
-function literalAutolinkRegions(text: string): [number, number][] {
-  const regions: [number, number][] = [];
-  for (const match of text.matchAll(LITERAL_AUTOLINK_PREFIX_RE)) {
-    const from = match.index;
-    const previous = text[from - 1];
-    const www = match[0].toLowerCase() === "www.";
-    if (
-      www
-        ? previous !== undefined &&
-          !"(*_[]~ \t\n\r".includes(previous)
-        : previous !== undefined && /[A-Za-z]/u.test(previous)
-    ) {
-      continue;
-    }
-
-    const domainStart = from + match[0].length;
-    let domainEnd = domainStart;
-    while (domainEnd < text.length) {
-      const char = text[domainEnd];
-      if (
-        isAsciiControl(char) ||
-        char === " " ||
-        (isAsciiPunctuation(char) && !"-._".includes(char))
-      ) {
-        break;
-      }
-      domainEnd += 1;
-    }
-    if (domainEnd === domainStart) continue;
-    const labels = text.slice(domainStart, domainEnd).split(".");
-    if (
-      labels.at(-1)?.includes("_") ||
-      labels.at(-2)?.includes("_")
-    ) {
-      continue;
-    }
-
-    let end = domainEnd;
-    while (
-      end < text.length &&
-      !isAsciiControl(text[end]) &&
-      text[end] !== " " &&
-      text[end] !== "<"
-    ) {
-      end += 1;
-    }
-    regions.push([from, end]);
-  }
-  return regions;
-}
-
-function isHtmlWhitespace(char: string | undefined): boolean {
-  return (
-    char === " " ||
-    char === "\t" ||
-    char === "\n" ||
-    char === "\r" ||
-    char === "\f"
-  );
-}
-
-function htmlDelimitedEnd(
-  text: string,
-  from: number,
-  opener: string,
-  closers: readonly number[],
-  closerWidth: number,
-): number {
-  if (!text.startsWith(opener, from)) return -1;
-  const end = nextOffset(closers, from + opener.length);
-  return Number.isFinite(end) ? end + closerWidth : -1;
-}
-
-function inlineHtmlEnd(text: string, from: number, scan: InlineScan): number {
-  let end = htmlDelimitedEnd(
-    text,
-    from,
-    "<!--",
-    scan.htmlCommentClosers,
-    3,
-  );
-  if (end >= 0) return end;
-  end = htmlDelimitedEnd(
-    text,
-    from,
-    "<?",
-    scan.htmlProcessingClosers,
-    2,
-  );
-  if (end >= 0) return end;
-  end = htmlDelimitedEnd(
-    text,
-    from,
-    "<![CDATA[",
-    scan.htmlCdataClosers,
-    3,
-  );
-  if (end >= 0) return end;
-
-  let at = from + 1;
-  if (text[at] === "!") {
-    at += 1;
-    if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
-    const close = nextOffset(scan.htmlTagClosers, at + 1);
-    return Number.isFinite(close) ? close + 1 : -1;
-  }
-
-  if (text[at] === "/") {
-    at += 1;
-    if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
-    for (at += 1; /[A-Za-z0-9-]/u.test(text[at] ?? ""); at += 1) {
-      // scan the tag name
-    }
-    while (isHtmlWhitespace(text[at])) at += 1;
-    return text[at] === ">" ? at + 1 : -1;
-  }
-
-  if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
-  for (at += 1; /[A-Za-z0-9-]/u.test(text[at] ?? ""); at += 1) {
-    // scan the tag name
-  }
-  for (;;) {
-    const beforeWhitespace = at;
-    while (isHtmlWhitespace(text[at])) at += 1;
-    if (text[at] === ">") return at + 1;
-    if (text[at] === "/" && text[at + 1] === ">") return at + 2;
-    if (at === beforeWhitespace || !/[A-Za-z_:]/u.test(text[at] ?? "")) {
-      return -1;
-    }
-    for (at += 1; /[A-Za-z0-9_.:-]/u.test(text[at] ?? ""); at += 1) {
-      // scan the attribute name
-    }
-    let valueAt = at;
-    while (isHtmlWhitespace(text[valueAt])) valueAt += 1;
-    if (text[valueAt] !== "=") continue;
-    at = valueAt + 1;
-    while (isHtmlWhitespace(text[at])) at += 1;
-    const quote = text[at];
-    if (quote === '"' || quote === "'") {
-      const close = text.indexOf(quote, at + 1);
-      if (close < 0) return -1;
-      at = close + 1;
-      continue;
-    }
-    const valueStart = at;
-    while (
-      text[at] !== undefined &&
-      !isHtmlWhitespace(text[at]) &&
-      !"\"'=<>`".includes(text[at])
-    ) {
-      at += 1;
-    }
-    if (at === valueStart) return -1;
-  }
-}
-
-function inlineHtmlRegions(text: string, scan: InlineScan): [number, number][] {
-  const regions: [number, number][] = [];
-  for (let at = text.indexOf("<"); at >= 0; at = text.indexOf("<", at + 1)) {
-    if (isEscaped(text, at)) continue;
-    const end = inlineHtmlEnd(text, at, scan);
-    if (end >= 0) {
-      regions.push([at, end]);
-      at = end - 1;
-    }
-  }
-  return regions;
-}
-
-const DOLLAR_RUN_RE = /\$+/g;
-
-function inlineMathRegions(text: string): [number, number][] {
-  const breaks = Array.from(
-    text.matchAll(BLANK_LINE_RE),
-    (match) => match.index,
-  );
-  let paragraph = 0;
-  const runs = Array.from(text.matchAll(DOLLAR_RUN_RE), (match) => {
-    while (paragraph < breaks.length && breaks[paragraph] < match.index) {
-      paragraph += 1;
-    }
-    return {
-      start: match.index,
-      end: match.index + match[0].length,
-      escaped: isEscaped(text, match.index),
-      width: match[0].length,
-      paragraph,
-    };
-  });
-  const closers = new Array<number>(runs.length).fill(-1);
-  const nearest = new Map<number, number>();
-  let currentParagraph = -1;
-  for (let index = runs.length - 1; index >= 0; index -= 1) {
-    if (runs[index].paragraph !== currentParagraph) {
-      nearest.clear();
-      currentParagraph = runs[index].paragraph;
-    }
-    if (runs[index].escaped) continue;
-    closers[index] = nearest.get(runs[index].width) ?? -1;
-    nearest.set(runs[index].width, index);
-  }
-
-  const regions: [number, number][] = [];
-  for (let index = 0; index < runs.length; index += 1) {
-    const closer = closers[index];
-    if (closer < 0 || runs[index].escaped) continue;
-    regions.push([runs[index].start, runs[closer].end]);
-    index = closer;
-  }
-  return regions;
-}
-
-function opaqueInlineRegions(
-  text: string,
-  scan: InlineScan,
-  inlineLinks = inlineLinkRegions(text, scan),
-): [number, number][] {
-  if (!text.includes("`")) return [];
-  const candidates = [
-    ...inlineLinks,
-    ...autolinkRegions(text),
-    ...inlineHtmlRegions(text, scan),
-    ...inlineMathRegions(text),
-  ].sort((left, right) => left[0] - right[0]);
-  const literals: [number, number][] = [];
-  let candidateIndex = 0;
-  for (const literal of literalAutolinkRegions(text)) {
-    while (
-      candidateIndex < candidates.length &&
-      candidates[candidateIndex][1] <= literal[0]
-    ) {
-      candidateIndex += 1;
-    }
-    if (
-      candidateIndex >= candidates.length ||
-      candidates[candidateIndex][0] >= literal[1]
-    ) {
-      literals.push(literal);
-    }
-  }
-  return [...candidates, ...literals].sort((left, right) => left[0] - right[0]);
-}
-
-// micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.
-function normalizeLabel(label: string): string {
-  return label
-    .replace(/[\t\n\r ]+/g, " ")
-    .replace(/^ | $/g, "")
-    .toLowerCase()
-    .toUpperCase();
-}
-
-function hasShortcutReference(
-  definitions: string,
-  references: string,
-  exact = true,
-): boolean {
-  const labels = new Set<string>();
-  for (const [, label] of definitions.matchAll(LINK_DEFINITION_LABEL_RE)) {
-    const normalized = normalizeLabel(label);
-    if (normalized !== "" && label[0] !== "^") {
-      labels.add(normalized);
-    }
-  }
-  if (labels.size === 0) {
-    return false;
-  }
-  const uses = references;
-  const inlineScan = exact ? createInlineScan(uses) : null;
-  const inlineLinks = exact ? inlineLinkRegions(uses, inlineScan!) : null;
-  const code = exact
-    ? codeSpanRegions(
-        uses,
-        opaqueInlineRegions(uses, inlineScan!, inlineLinks!),
-      )
-    : [];
-  let codeIndex = 0;
-  let linkIndex = 0;
-  let inlineEnd = -1;
-  for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
-    if (exact) {
-      if (match.index < inlineEnd) continue;
-      while (codeIndex < code.length && code[codeIndex][1] <= match.index) {
-        codeIndex += 1;
-      }
-      if (codeIndex < code.length && code[codeIndex][0] <= match.index) {
-        continue;
-      }
-      while (
-        linkIndex < inlineLinks!.length &&
-        inlineLinks![linkIndex][1] <= match.index
-      ) {
-        linkIndex += 1;
-      }
-      if (
-        linkIndex < inlineLinks!.length &&
-        inlineLinks![linkIndex][0] <= match.index
-      ) {
-        continue;
-      }
-    }
-    if (
-      match[1][0] !== "^" &&
-      !isEscaped(uses, match.index) &&
-      labels.has(normalizeLabel(match[1]))
-    ) {
-      if (!exact) return true;
-      inlineEnd = inlineLinkEnd(
-        uses,
-        match.index + match[0].length,
-        inlineScan!,
-      );
-      if (inlineEnd >= 0) continue;
-      return true;
-    }
-  }
-  return false;
-}
-// matches `LINK_DEFINITION_RE`; a narrower cap prevents accepted labels from resolving (#9540).
+// Must admit exactly what `LINK_DEFINITION_RE` admits: a label resolves only when BOTH ends
+// carry it, so a narrower cap here made the wider one there unreachable (unslothai/unsloth#9540).
 const LINK_REFERENCE_RE =
   /!?\[(?:\\[\s\S]|[^\]\\]){1,999}\]\[(?:\\[\s\S]|[^\]\\]){0,999}\]/u;
-// allows `[` and optional `!` on the label side; the reference side has no `!`.
+// Label side as above, plus `[` and the optional `!`; the reference side needs no `!`.
 const LINK_REFERENCE_WINDOW = 999 * 3 + 3;
-// the seam `[` resets escape parity, so test only through the first unescaped `]`.
+// The `[` at the seam restarts escape parity, so the reference label is ONE candidate: the text
+// up to the first unescaped `]`. Tested once here instead of from every `[` in the window.
 const LINK_REFERENCE_LABEL_RE = /^(?:\\[\s\S]|[^\]\\]){0,999}$/u;
 
 function unescapedClose(text: string, from: number): number {
@@ -821,11 +173,7 @@ function hasLinkReference(text: string): boolean {
   let close = -1;
   let nextClose = text.indexOf("]");
   let after = -1;
-  for (
-    let mid = text.indexOf("][");
-    mid >= 0;
-    mid = text.indexOf("][", mid + 1)
-  ) {
+  for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
     // No empty label, so the opener is at `mid - 2` or earlier. Forward: `lastIndexOf` is not.
     while (nextBracket >= 0 && nextBracket <= mid - 2) {
       bracket = nextBracket;
@@ -867,6 +215,45 @@ function hasLinkReference(text: string): boolean {
   }
   return false;
 }
+// A shortcut `[label]` or collapsed `[label][]` resolves against a definition too. Code spans,
+// inline links and the like are deliberately not excluded: that only adds false positives.
+const SHORTCUT_REFERENCE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const DEFINITION_LABEL_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+
+// micromark's `normalizeIdentifier`, so `[SS]` finds `[\u1E9E]:` as the renderer does.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(prose: string, references: string): boolean {
+  const labels = new Set<string>();
+  for (const definition of prose.match(LINK_DEFINITION_KEY_RE) ?? []) {
+    const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
+    if (label !== undefined && label[0] !== "^") {
+      labels.add(normalizeLabel(label));
+    }
+  }
+  labels.delete("");
+  if (labels.size === 0) {
+    return false;
+  }
+  // Marked's definitions, not a regex: `[1]: <broken` is prose whose `[1]` is a reference.
+  const uses = normalizeLineEndings(references);
+  for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
+    if (
+      match[1][0] !== "^" &&
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -876,28 +263,21 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 // paying for exactly the one split it already paid for before any of this existed.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
-let splitProseBlocks: readonly string[] = [];
-let splitReferenceProseBlocks: readonly string[] = [];
+let splitReferenceProse = "";
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
     const details = parseMarkdownBlockDetails(markdown);
     splitBlocks = details.blocks;
-    splitProseBlocks = details.proseBlocks;
-    splitReferenceProseBlocks = details.referenceProseBlocks;
+    splitReferenceProse = details.referenceProse.join("\n\n");
   }
   return splitBlocks;
 }
 
-function proseBlocksOf(markdown: string): readonly string[] {
+function referenceProseOf(markdown: string): string {
   blocksOf(markdown);
-  return splitProseBlocks;
-}
-
-function referenceProseBlocksOf(markdown: string): readonly string[] {
-  blocksOf(markdown);
-  return splitReferenceProseBlocks;
+  return splitReferenceProse;
 }
 
 // Which replies have to be lexed in one piece.
@@ -913,26 +293,28 @@ function referenceProseBlocksOf(markdown: string): readonly string[] {
 // is the answer rather than something to re-derive. A fenced or indented block is code; anything
 // else is prose, and a definition line anywhere in the prose counts.
 //
-// false negatives lose links; false positives only disable per-block Copy and Download controls.
-// normalize here, but not in `blocksOf`, to preserve its memoized split for CRLF replies.
-// check definitions first because `][` without `]:` is common and the reference scan costs more.
+// Being wrong is not symmetric, which is why the residual imprecision sits where it does. Saying
+// `blocks` when the reply needed one document splits the pair apart and loses content. Saying
+// `document` when blocks would have done only costs that reply its per-code-block Copy and
+// Download controls -- which is what this path did for EVERY reply containing a `]:` substring
+// before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
+// Normalised because `\r` counts against `{1,999}` and the `\n` it replaces does
+// not, so the scope would otherwise follow the reply's line ending. NOT for
+// `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
+// a normalised copy misses it and costs a CRLF reply two splits per render.
+// A shortcut reference can be any `[label]`, so a definition alone is enough to pay for the split.
 function documentProse(markdown: string): string | null {
-  const normalized = normalizeLineEndings(markdown);
-  if (
-    !hasLinkDefinition(normalized) ||
-    !(
-      hasLinkReference(normalized) ||
-      hasShortcutReference(normalized, normalized, false)
-    )
-  ) {
+  if (!hasLinkDefinition(normalizeLineEndings(markdown))) {
     return null;
   }
-  const prose = normalizeLineEndings(proseBlocksOf(markdown).join("\n\n"));
-  const referenceProse = normalizeLineEndings(
-    referenceProseBlocksOf(markdown).join("\n\n"),
+  const prose = normalizeLineEndings(
+    blocksOf(markdown)
+      .filter((block) => !isCodeBlock(block))
+      .join("\n"),
   );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
-    (hasLinkReference(prose) || hasShortcutReference(prose, referenceProse))
+    (hasLinkReference(prose) ||
+      hasShortcutReference(prose, referenceProseOf(markdown)))
     ? prose
     : null;
 }

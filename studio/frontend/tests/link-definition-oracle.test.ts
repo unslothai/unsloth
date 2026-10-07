@@ -304,27 +304,15 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
     ["Read [1](not a link) first.", "[1]: https://x.test/one"],
     ["Read [1](foo(and(bar)) first.", "[1]: https://x.test/one"],
     ["Read [1](<foo\nbar>) first.", "[1]: https://x.test/one"],
-    ["Read [1](<https://x.test>\"title\") first.", "[1]: https://x.test/one"],
+    ['Read [1](<https://x.test>"title") first.', "[1]: https://x.test/one"],
     [
       "Read [site](https://x.test/`tag) [1] ` first.",
       "[1]: https://x.test/one",
     ],
-    [
-      "Read <https://x.test/`> [1] ` first.",
-      "[1]: https://x.test/one",
-    ],
-    [
-      "Read <foo`bar@example.com> [1] ` first.",
-      "[1]: https://x.test/one",
-    ],
-    [
-      "Read https://x.test/a`b [1] ` first.",
-      "[1]: https://x.test/one",
-    ],
-    [
-      "Read www.x.test/a`b [1] ` first.",
-      "[1]: https://x.test/one",
-    ],
+    ["Read <https://x.test/`> [1] ` first.", "[1]: https://x.test/one"],
+    ["Read <foo`bar@example.com> [1] ` first.", "[1]: https://x.test/one"],
+    ["Read https://x.test/a`b [1] ` first.", "[1]: https://x.test/one"],
+    ["Read www.x.test/a`b [1] ` first.", "[1]: https://x.test/one"],
     [
       "Read [a [b]](https://x.test/`tag) [1] ` first.",
       "[1]: https://x.test/one",
@@ -337,42 +325,21 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       "Read [site `]`](https://x.test/`tag) [1] ` first.",
       "[1]: https://x.test/one",
     ],
-    [
-      "Read [site](foo`bar\\ ) [1] ` first.",
-      "[1]: https://x.test/one",
-    ],
-    [
-      "[site](foo`bar\\ ) [1] `",
-      "[1]: https://x.test/one",
-    ],
-    [
-      '[site](foo`bar "title\\\ncontinued") [1] `',
-      "[1]: https://x.test/one",
-    ],
-    [
-      "`[x](foo`[site](url`tag)) [1] `",
-      "[1]: https://x.test/one",
-    ],
+    ["Read [site](foo`bar\\ ) [1] ` first.", "[1]: https://x.test/one"],
+    ["[site](foo`bar\\ ) [1] `", "[1]: https://x.test/one"],
+    ['[site](foo`bar "title\\\ncontinued") [1] `', "[1]: https://x.test/one"],
+    ["`[x](foo`[site](url`tag)) [1] `", "[1]: https://x.test/one"],
     ["[x]: <broken [1]", "[1]: /one"],
-    [
-      'Read <span title="`"> [1] ` first.',
-      "[1]: https://x.test/one",
-    ],
-    [
-      'Read <span hidden title="`"> [1] ` first.',
-      "[1]: https://x.test/one",
-    ],
-    [
-      'Read <span title=">`"> [1] ` first.',
-      "[1]: https://x.test/one",
-    ],
+    ['Read <span title="`"> [1] ` first.', "[1]: https://x.test/one"],
+    ['Read <span hidden title="`"> [1] ` first.', "[1]: https://x.test/one"],
+    ['Read <span title=">`"> [1] ` first.', "[1]: https://x.test/one"],
     ["Read <!-- ` --> [1] ` first.", "[1]: https://x.test/one"],
     ["Read <!A`> [1] ` first.", "[1]: https://x.test/one"],
     ['Read <a_b title="`"> ` [1] ` first.', "[1]: https://x.test/one"],
     ["> `open\n>\n> [1]\n> `", "[1]: https://x.test/one"],
     ["> `open\n> # heading\n> [1]\n> `", "[1]: https://x.test/one"],
     [
-      "> [1](/inline \"title\n> # heading\n> continuation\")",
+      '> [1](/inline "title\n> # heading\n> continuation")',
       "[1]: https://x.test/one",
     ],
     [
@@ -394,9 +361,7 @@ test("inline math does not lend its backticks to a later code span", () => {
     "document",
   );
   assert.equal(
-    markdownRenderScope(
-      "Cost $\n\nMath $a ` b$ [1] `\n\n[1]: /one\n",
-    ),
+    markdownRenderScope("Cost $\n\nMath $a ` b$ [1] `\n\n[1]: /one\n"),
     "document",
   );
 });
@@ -415,34 +380,14 @@ test("table cells do not share code span delimiters", () => {
   assert.equal(markdownRenderScope(reply), "document");
 });
 
+// Only labels that cannot resolve. Code spans and inline links may still pick the document
+// path: that costs Copy and Download controls, never a link.
 test("a bracketed label that is not a shortcut reference keeps block rendering", () => {
   for (const reply of [
-    "Use `[1]` here.\n\n[1]: https://x.test\n",
-    "Use ``a [1] b`` here.\n\n[1]: https://x.test\n",
-    "Use `[site](https://x.test) [1]` here.\n\n[1]: https://x.test/unused\n",
-    "Use ``<https://x.test/`> [1]`` here.\n\n[1]: https://x.test/unused\n",
-    "Use ``[a [b]](https://x.test/`tag) [1]`` here.\n\n[1]: https://x.test/unused\n",
-    'Use ``<span title="`"> [1]`` here.\n\n[1]: https://x.test/unused\n',
-    "Use ahttps://x.test/a`b [1] ` here.\n\n[1]: https://x.test/unused\n",
-    "Use <span title=`bad> [1] ` here.\n\n[1]: https://x.test/unused\n",
-    "Use ``$a ` b$ [1]`` here.\n\n[1]: https://x.test/unused\n",
-    "Use [1](https://x.test/inline).\n\n[1]: https://x.test/unused\n",
-    "Use [site](https://x.test/[1]).\n\n```ts\nconst x = 1;\n```\n\n[1]: https://x.test/unused\n",
-    "Use [1](https://x.test/a_(b)).\n\n[1]: https://x.test/unused\n",
-    "Use [1](foo(and(bar))).\n\n[1]: https://x.test/unused\n",
-    `Use [1](${"(".repeat(32)}x${")".repeat(32)}).\n\n[1]: https://x.test/unused\n`,
-    "Use [1](\\(foo\\)).\n\n[1]: https://x.test/unused\n",
-    "Use [1](<>).\n\n[1]: https://x.test/unused\n",
-    "Use [1](<https://x.test/a b> \"title\").\n\n[1]: https://x.test/unused\n",
-    "Use [1](/url 'title').\n\n[1]: https://x.test/unused\n",
-    "Use [1](/url (title)).\n\n[1]: https://x.test/unused\n",
-    "Use [1](   /url\n  \"title\"  ).\n\n[1]: https://x.test/unused\n",
-    "Use ![1](https://x.test/image.png).\n\n[1]: https://x.test/unused\n",
     "Not a link \\[1] here.\n\n[1]: https://x.test\n",
     "Note [^1].\n\n[^1]: a footnote\n",
     "Cites [2].\n\n[1]: https://x.test/1\n",
     "No uses.\n\n[1]: https://x.test/a\n[1]: https://x.test/b\n",
-    "No uses.\n\n[1]: https://x.test/a[1]\n",
     "```py\nx = a[1]\n```\n\n[1]: https://x.test\n",
   ]) {
     assert.equal(asOneDocument(reply), asBlocks(reply), JSON.stringify(reply));
