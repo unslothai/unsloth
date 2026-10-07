@@ -398,15 +398,23 @@ if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
 fi
 
-# a command whose first path is in the mounted $PWD (not an option value like --out /workspace/host/x),
-# and unsloth-run URLs, start there so relative saves survive --rm
+# a command whose first path is in the mounted $PWD, and unsloth-run URLs, start there so relative
+# saves survive --rm; a host path after a --option only counts if no other path follows it
 WORKDIR_FLAG=()
 RUN_USER_ENV=()
+_prev=""
 for _arg in "$@"; do
     case "$_arg" in
-        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host); break ;;
-        */*) break ;;
+        /workspace/host | /workspace/host/*)
+            WORKDIR_FLAG=(-w /workspace/host)
+            [[ "$_prev" == --* ]] || break
+            ;;
+        */*)
+            WORKDIR_FLAG=()
+            break
+            ;;
     esac
+    _prev="$_arg"
 done
 if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
     for _arg in "${@:2}"; do

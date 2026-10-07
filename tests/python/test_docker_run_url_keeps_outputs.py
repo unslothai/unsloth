@@ -372,6 +372,14 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
             "--output-dir",
             "/workspace/host",
         ),
+        (
+            "jupyter",
+            "nbconvert",
+            "--output-dir",
+            "/workspace/host",
+            "--execute",
+            "unsloth-notebooks/nb/Llama.ipynb",
+        ),
     ],
 )
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
