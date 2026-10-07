@@ -603,6 +603,5 @@ def test_the_image_gguf_prefetch_opts_in(monkeypatch):
 )
 def test_media_gate_follows_the_catalog_task(tmp_path, monkeypatch, task, expected):
     from hub.services.models import catalog_classification
-
     monkeypatch.setattr(catalog_classification, "_gguf_file_task", lambda path, hints: task)
     assert delta._is_media_gguf(tmp_path / "x.gguf", "u/m", "x.gguf") is expected
