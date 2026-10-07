@@ -25,6 +25,8 @@ class Checkpoint:
     layout: str = "laya"
     # "pytorch", or "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target).
     backend: str = "pytorch"
+    # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
+    revision: str | None = None
 
     @property
     def is_local(self) -> bool:

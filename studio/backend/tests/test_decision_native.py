@@ -827,6 +827,25 @@ def test_a_cpu_server_keeps_serving_during_training(home, client, stub):
     _put(client, enabled = True, model = "clef-flash", device = "cpu")
     home.training = True
     assert _post(client).status_code == 200
+    # A request only PyTorch can answer waits for the GPU, without ending the CPU server.
+    gap = {"one": {"type": "score", "instructions": "x", "criteria": ["only"]}}
+    assert _post(client, questions = gap).status_code == 503
+    assert laya_runtime._agent is not None
+    assert _post(client).status_code == 200
+    assert len(stub.records("start")) == 1
+
+
+def test_a_re_export_replaces_the_resident_server(home, client, stub):
+    folder = _clef_folder(home.outputs, "clef_reexported")
+    _export(folder)
+    _put(client, enabled = True, model = catalog.CLEF_FINE_TUNE_PREFIX + folder.name)
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+    time.sleep(0.01)
+    replacement = folder / contract.EXPORT_DIR / "model-Q8_0.gguf.tmp"
+    replacement.write_bytes(b"GGUF re-exported")
+    os.replace(replacement, folder / contract.EXPORT_DIR / "model-Q8_0.gguf")
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert len(stub.records("start")) == 2
 
 
 def test_a_fine_tune_serves_its_current_export_and_ignores_a_stale_one(home, client, stub):

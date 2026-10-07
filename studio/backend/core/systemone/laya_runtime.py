@@ -130,9 +130,13 @@ def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
         return None
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
-        if served_files(Path(checkpoint.source).expanduser(), "clef") is None:
+
+        files = served_files(Path(checkpoint.source).expanduser(), "clef")
+        if files is None:
             return None
-        return dataclasses.replace(checkpoint, backend = LLAMA_CPP)
+        return dataclasses.replace(
+            checkpoint, backend = LLAMA_CPP, revision = _files_revision(files[1:])
+        )
     companion = GGUF_COMPANIONS.get(checkpoint.name)
     if companion is None or CHECKPOINTS.get(checkpoint.name) != checkpoint:
         return None
@@ -142,6 +146,19 @@ def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
         download_bytes = companion.download_bytes,
         backend = LLAMA_CPP,
     )
+
+
+def _files_revision(paths) -> str:
+    parts = []
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            st = path.stat()
+        except OSError:
+            st = None
+        parts.append(f"{path}:{st.st_ino}:{st.st_mtime_ns}:{st.st_size}" if st else str(path))
+    return "|".join(parts)
 
 
 def _native_files(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path | None]:
@@ -1007,7 +1024,8 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     if (native and not _native_gpu()) or not _training_active():
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
-    if _loaded is not None and _loaded.layout == "clef":
+    # Only a resident on the GPU: a llama.cpp server on CPU keeps serving during the run.
+    if _loaded is not None and _loaded.layout == "clef" and _device_name not in (None, "cpu"):
         _evict(external = True)
     raise Unavailable(
         503,
