@@ -43,17 +43,19 @@ def test_cancelled_read_exception_is_retrieved():
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.05)
             raise RuntimeError("transport close failed")
 
     async def main():
         loop = asyncio.get_running_loop()
         loop.set_exception_handler(lambda _loop, context: contexts.append(context))
-        cancel_event = threading.Event()
-        async for _line in _stop_on_cancel(upstream(), cancel_event):
-            cancel_event.set()
+        existing_tasks = asyncio.all_tasks()
+        with anyio.CancelScope() as scope:
+            async for _line in _stop_on_cancel(upstream(), threading.Event()):
+                scope.cancel()
         gc.collect()
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.1)
+        assert not (asyncio.all_tasks() - existing_tasks)
 
     asyncio.run(main())
     assert contexts == []

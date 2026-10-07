@@ -27716,6 +27716,12 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
     leaves a cancelled generation holding the model through a swap's teardown.
     """
 
+    def _retrieve_exception(task: asyncio.Task) -> None:
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
     async def _cancelled() -> None:
         while not cancel_event.is_set():
             await asyncio.sleep(0.1)
@@ -27734,15 +27740,13 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
                 return
             yield line
     finally:
-        for task in (step, waiter):
-            if task is not None and not task.done():
-                # asyncio.wait lets cancellation cleanup finish even when the relay is cancelled.
-                task.cancel()
-                await asyncio.wait({task})
-                try:
-                    task.exception()
-                except asyncio.CancelledError:
-                    pass
+        pending = [task for task in (step, waiter) if task is not None and not task.done()]
+        for task in pending:
+            task.add_done_callback(_retrieve_exception)
+            task.cancel()
+        if pending:
+            # asyncio.wait leaves cancellation cleanup running when the relay is cancelled.
+            await asyncio.wait(pending)
         try:
             await agen.aclose()
         except RuntimeError:
