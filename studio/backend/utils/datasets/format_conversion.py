@@ -478,7 +478,9 @@ def convert_to_vlm_format(
         return {"messages": messages}
 
     total = len(dataset)
-    first_image = next(iter(dataset))[image_column]
+    first_image = next(
+        (row[image_column] for row in dataset if row[image_column] is not None), None
+    )
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
     if has_urls:
