@@ -646,8 +646,9 @@ def test_mixed_main_and_aux_mean_is_undecided(ns, mods):
     assert ns["_forward_consumes_num_items_in_batch"](mods.MixedAuxForCausalLM()) is None
 
 
-def test_a_mean_fallback_branch_is_undecided(ns, mods):
+def test_a_mean_fallback_branch_is_undecided(ns, mods, monkeypatch):
     head = mods.ReturnLogitsFallbackForConditionalGeneration()
+    monkeypatch.setitem(ns, "_zoo_counts_fallback_branches", lambda: True)
     assert ns["_forward_consumes_num_items_in_batch"](head) is None
     peft = mods.PeftModelForCausalLM(head)
     ns["apply_accepts_loss_kwargs_fix"](peft)
@@ -657,13 +658,13 @@ def test_a_mean_fallback_branch_is_undecided(ns, mods):
 def test_an_older_zoo_keeps_the_fused_branch_answer(ns, mods, monkeypatch):
     # An older unsloth_zoo never gives these fallbacks the count; only the fused branch trains.
     head = mods.ReturnLogitsFallbackForConditionalGeneration()
-    ns["_zoo_counts_fallback_branches"] = lambda: False
+    monkeypatch.setitem(ns, "_zoo_counts_fallback_branches", lambda: False)
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
     assert ns["_forward_consumes_num_items_in_batch"](head) is True
     monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
     assert ns["_forward_consumes_num_items_in_batch"](head) is None
     monkeypatch.delenv("UNSLOTH_RETURN_LOGITS")
-    ns["_zoo_counts_fallback_branches"] = lambda: True
+    monkeypatch.setitem(ns, "_zoo_counts_fallback_branches", lambda: True)
     assert ns["_forward_consumes_num_items_in_batch"](head) is None
 
 
