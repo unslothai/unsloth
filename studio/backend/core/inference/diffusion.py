@@ -346,6 +346,20 @@ from utils.paths.path_utils import (
 
 logger = get_logger(__name__)
 
+_ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES = frozenset(("z-image", KREA2_FAMILY_NAME))
+
+
+def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
+    if not family.uses_negative_prompt:
+        return False
+    if family.cfg_kwarg == "true_cfg_scale":
+        return float(guidance) > 1.0
+    if family.cfg_kwarg == "guidance_scale":
+        threshold = 0.0 if family.name in _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES else 1.0
+        return float(guidance) > threshold
+    return True
+
+
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
 install_xformers_windows_rocm_stub()
@@ -9948,13 +9962,9 @@ class DiffusionBackend:
                         kwargs["width"] = iw
                     if "height" in call_params:
                         kwargs["height"] = ih
-                true_cfg_off = state.family.cfg_kwarg == "true_cfg_scale" and not (
-                    true_cfg_needs_empty_negative(state.family.cfg_kwarg, guidance)
-                )
                 if (
                     negative_prompt
-                    and state.family.uses_negative_prompt
-                    and not true_cfg_off
+                    and _negative_prompt_engaged(state.family, guidance)
                     and "negative_prompt" in call_params
                 ):
                     kwargs["negative_prompt"] = negative_prompt

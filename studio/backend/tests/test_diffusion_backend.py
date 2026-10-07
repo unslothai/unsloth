@@ -8174,7 +8174,12 @@ def test_generate_reclaims_model_offload_memory_once_after_success(
 def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_runtime, tmp_path):
     # A prompt list needs a matching negative list: encode_prompt asserts equal lengths, and pipes that encode the negative separately would build batch-1 embeds against batch-N latents.
     backend = _load_zimage_backend(tmp_path)
-    backend.generate(prompt = "fallback", prompts = ["a", "b", "c"], negative_prompt = "blurry")
+    backend.generate(
+        prompt = "fallback",
+        prompts = ["a", "b", "c"],
+        negative_prompt = "blurry",
+        guidance = 0.5,
+    )
     call = backend._state.pipe.last_kwargs
     assert call["prompt"] == ["a", "b", "c"]
     assert call["negative_prompt"] == ["blurry", "blurry", "blurry"]
@@ -8186,10 +8191,10 @@ def test_generate_broadcasts_negative_prompt_across_a_mixed_prompt_batch(fake_ru
 def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime, tmp_path):
     # Uniform-prompt and single-image forwards pass a SCALAR prompt, so the negative prompt must stay scalar too.
     backend = _load_zimage_backend(tmp_path)
-    backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry")
+    backend.generate(prompt = "a sloth", seeds = [1, 2, 3], negative_prompt = "blurry", guidance = 0.5)
     assert backend._state.pipe.last_kwargs["prompt"] == "a sloth"
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
-    backend.generate(prompt = "a sloth", seed = 1, negative_prompt = "blurry")
+    backend.generate(prompt = "a sloth", seed = 1, negative_prompt = "blurry", guidance = 0.5)
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
 
 
@@ -14656,10 +14661,28 @@ def test_qwen_reports_no_negative_when_true_cfg_is_off(fake_runtime, tmp_path, m
     assert out["negative_prompt"] == "blurry"
 
 
+def test_sdxl_reports_no_negative_when_cfg_is_off(fake_runtime, tmp_path):
+    backend = _loaded_backend(
+        tmp_path,
+        gguf_filename = "sdxl.safetensors",
+        base_repo = None,
+        family_override = "sdxl",
+    )
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 1.5)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    assert out["negative_prompt"] == "blurry"
+
+
 def test_cfg_family_reports_the_negative_prompt_it_applied(fake_runtime, tmp_path):
     backend = _loaded_backend(tmp_path)
     assert backend.status()["supports_negative_prompt"] is True
-    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 0.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+    out = backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 0.5)
     assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
     assert out["negative_prompt"] == "blurry"
 
