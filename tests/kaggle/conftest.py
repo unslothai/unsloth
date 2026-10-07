@@ -25,15 +25,13 @@ import pytest
 CI_DIR = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "kaggle_t4_ci"
 sys.path.insert(0, str(CI_DIR))
 
-# Read from the gate rather than restated, so an account added there is covered
-# here without anyone remembering to.
+# Read from the gate so newly added accounts are covered.
 try:
     from gate import DEFAULT_ACCOUNT_ENVS
 except Exception:  # noqa: BLE001 - the suite has its own import guards
     DEFAULT_ACCOUNT_ENVS = ("KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2")
 
-# The client reads these too, and a stray one authenticates just as well as the
-# token does.
+# The client reads these too, and a stray one authenticates like the token.
 _OTHER_CREDENTIAL_ENVS = ("KAGGLE_KEY", "KAGGLE_USERNAME", "KAGGLE_ACCESS_TOKEN_GH")
 
 

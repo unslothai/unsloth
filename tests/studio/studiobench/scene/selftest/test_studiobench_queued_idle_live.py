@@ -58,8 +58,6 @@ _THREAD_TSX = (
     / "thread.tsx"
 )
 
-#: The running branch: `AuiIf thread.isRunning` renders Queue instead of Stop once the composer
-#: holds a queueable prompt, wrapped in a positioning div.
 _QUEUE_BUTTON_RUNNING = """
 <div class="ml-1.5 flex items-center">
   <button class="aui-composer-send size-9 rounded-full" aria-label="Queue message">
@@ -68,7 +66,6 @@ _QUEUE_BUTTON_RUNNING = """
 </div>
 """
 
-#:The queued branch: `isQueueRunning && !thread.isRunning`, with the active item undispatched.
 _QUEUE_BUTTON_IDLE = """
 <button class="aui-composer-send ml-1.5 size-9 rounded-full" aria-label="Queue message">
   <span class="aui-sr-only">Queue message</span>
@@ -81,20 +78,14 @@ _STOP_BUTTON = """
 </button>
 """
 
-#: The DISPATCHED queued branch: `isQueueRunning && !thread.isRunning` with `queueEntry.dispatched`,
-#: rendering a stop control the thread does not report itself running behind. Neither
-#: `stopButton()` nor `queueButton()` matches it, so on its own it reads like a settled composer,
-#: and `getPromptQueueUIItemsForRun` drops dispatched items so the queue surface can be gone too,
-#: which is why this state must be recognised from its own control.
+#: Dispatched queued branch: neither stopButton() nor queueButton() matches it, and the queue
+#: surface may be gone, so it must be recognised from its own control.
 _STOP_QUEUED_BUTTON = """
 <button class="aui-composer-cancel ml-1.5 size-9 rounded-full" aria-label="Stop queued message">
   <span class="aui-sr-only">Stop queued message</span>
 </button>
 """
 
-#: `PromptQueueStack`, which renders inside the composer root whenever the run has an item left to
-#: show. An undispatched active item is always one, so this surface is up in every state that
-#: renders the queued-idle Queue button.
 _QUEUE_STACK = """
 <div aria-label="Prompt queue, 1 of 2">
   <div>a prompt that has not been dispatched</div>
@@ -156,9 +147,7 @@ BLIND = dict(
     queue_stack = False,
     statuses = [None, None, None, None],
 )
-#: The cost of reading the queue surface, pinned rather than left for a later reader: a queue run
-#: with a prompt still waiting, a reply genuinely streaming, and text in the composer. The surface
-#: is up and the Queue button is the only control, so the control is not armed.
+#: Pinned cost: a waiting queue, a streaming reply and composer text read as not armed.
 QUEUED_AND_STREAMING_BLIND = dict(
     control = _QUEUE_BUTTON_RUNNING,
     queue_stack = True,
@@ -202,8 +191,7 @@ def _capture(
     tail: str = "settled",
 ) -> dict:
     page.set_content(_page(tail = tail, **state))
-    # After the content, not before it: `set_content` does not reliably run init scripts, and the
-    # symptom is `window.__sb` simply not existing.
+    # After the content: `set_content` does not reliably run init scripts.
     page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
     page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
     got = page.evaluate("() => window.__sb.parity.capture()")
@@ -215,17 +203,13 @@ def _reading(cap: dict) -> dict:
     return {k: cap.get(k) for k in ("streaming", "in_flight", "in_flight_unplaced", "queued_idle")}
 
 
-# ── the two states the instrument has to tell apart ──────────────────
-
-
 def test_a_waiting_queue_is_not_read_as_a_blind_probe(page):
     """THE REGRESSION. Same button, same empty in-flight list, opposite meanings."""
     idle = _capture(page, QUEUED_IDLE)
     blind = _capture(page, BLIND)
-    # Both refuse a fresh send, which is what `isRunning()` is asked and why it cannot decide this.
+    # Both refuse a fresh send, so `isRunning()` cannot tell them apart.
     assert idle["streaming"] is True and blind["streaming"] is True
     assert idle["in_flight"] == [] and blind["in_flight"] == []
-    # And they are still two different readings.
     assert _reading(idle) != _reading(blind)
     assert idle["in_flight_unplaced"] is False, idle
     assert idle["queued_idle"] is True, idle
@@ -246,7 +230,6 @@ def test_a_settled_queued_idle_pair_is_scored_rather_than_refused(page):
     got = P.compare(base, treat)
     assert got["verdict"] == P.DIFFER, got
     assert any(m.startswith("msg3(") for m in got["moved"]), got["moved"]
-    # The pair the control IS for still refuses, so this is a narrowing and not a removal.
     refused = P.compare(base, _capture(page, BLIND))
     assert refused["verdict"] == P.NOT_COMPARABLE
     assert "could not be identified" in refused["reason"]
@@ -274,11 +257,7 @@ def test_what_reading_the_queue_surface_gives_up(page):
     assert cap["queued_idle"] is True, cap
 
 
-# ── the fixtures are the app's markup, not the test's ────────────────
-
-
-#: The shipped English catalog. The probes below read the DOM in English, so this file is where
-#: "what the button says" actually lives now that #11117 routed the queue surface through `useT`.
+#: The probes read the DOM in English, so the button labels live in this catalog.
 _EN_LOCALE = _THREAD_TSX.parents[2] / "i18n" / "locales" / "en.ts"
 
 
@@ -322,8 +301,6 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
         "ComposerRightControls no longer renders the Queue button in exactly two places; "
         "re-read which of them can appear on an idle thread"
     )
-    # The branch itself: one behaviour, two labels. A composer that stopped distinguishing them
-    # would render the same name for queue and steer and the fixtures would stop meaning anything.
     assert re.search(
         r'followUpBehavior === "queue"\s*\?\s*"promptQueue\.queueButton"\s*:\s*"promptQueue\.steerButton"',
         src,
@@ -336,7 +313,6 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
         f"the en catalog gives queue and steer the same label {queue_label!r}, so the two "
         "composer states are indistinguishable to every probe that reads the accessible name"
     )
-    # The English the fixtures and the scene probes are written in.
     assert queue_label == "Queue message", queue_label
     assert steer_label == "Steer response", steer_label
 
@@ -345,9 +321,7 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
         "PromptQueueStack no longer names itself, so dom.promptQueue() matches nothing and the "
         "queued-idle interval is indistinguishable again"
     )
-    # dom.js matches that name by a HARD-CODED English prefix, so the catalog and the selector
-    # have to agree or the probe goes quiet without anything failing. This is the coupling the
-    # localization pass could have broken silently; it did not, and now it cannot.
+    # dom.js matches this name by a hard-coded English prefix, so catalog and selector must agree.
     region_label = _en_string("regionLabel")
     prefix = re.search(r'\[aria-label\^="([^"]*)"\]', _DOM_JS.read_text(encoding = "utf-8"))
     assert prefix, "dom.js no longer selects the queue surface by an aria-label prefix"
@@ -359,14 +333,9 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     assert 'aria-label="Stop queued message"' in src
 
 
-# ── what the blind-probe refusal may NOT take out with it ────────────
-
-#: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`, so its digest carries neither
-#: the streamed message nor the composer, which makes it readable on a pair whose stream could not
-#: be placed.
+#: Overlays are walked from `document`, outside `.aui-thread-root`, so they skip the stream.
 _MENU = '<div role="menu"><div class="item">Rename</div></div>'
 _MENU_CHANGED = '<div role="menu"><div class="item">Rename thread</div></div>'
-#: The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.
 _SEND_BUTTON = (
     '<button class="aui-composer-send" aria-label="Send message">'
     '<span class="aui-sr-only">Send message</span></button>'
@@ -457,12 +426,8 @@ def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
     )
 
 
-# The composer is not a rendering difference. The pair this change is about: one arm has finished
-# its reply, the other is still writing it. Its messages are withheld correctly; its COMPOSER was
-# not, because the dock is inside `.aui-thread-root` and the scaffold therefore carries Stop on
-# one arm and Send on the other.
+# The composer dock is inside `.aui-thread-root`, so a finished arm shows Send and a writing one Stop.
 
-# ── the composer is not a rendering difference ───────────────────────
 _SETTLED_STATUSES = ["complete", "complete", "complete", "complete"]
 _STREAMING_STATUSES = ["complete", "complete", "complete", "running"]
 
@@ -520,7 +485,6 @@ def test_a_real_message_difference_is_still_reported_across_a_generation_disagre
             overlay = "",
         ),
     )
-    # Change a SETTLED message on the treatment arm as well.
     treat2 = _capture_html(
         page,
         _page(
@@ -578,10 +542,7 @@ def test_the_blind_branch_reads_the_scaffold_when_the_arms_agree_about_generatio
     assert any("thread scaffolding" in m for m in got["moved"]), got["moved"]
 
 
-#: The composer regression this branch has to report rather than excuse: the run-state slot is
-#: empty because the treatment dropped its Send button. `runStateControl` finds none of the six
-#: controls and returns "", so `composer_control` differs while the thread's own run state does
-#: not.
+#: Treatment dropped its Send button: `runStateControl` returns "" and only the composer differs.
 _NO_CONTROL = '<div class="ml-1.5 flex items-center"></div>'
 
 
@@ -600,7 +561,6 @@ def test_a_composer_regression_between_two_settled_arms_is_reported(page):
         page,
         _page(tail = "same", **dict(_finished(), control = _NO_CONTROL)),
     )
-    # The run state agrees on both independent readings; only the composer moved.
     assert base["streaming"] is False and treat["streaming"] is False
     assert bool(base["queued_idle"]) is False and bool(treat["queued_idle"]) is False
     assert base["composer_control"] == "Send message" and treat["composer_control"] == ""
@@ -646,9 +606,7 @@ def test_a_dispatched_queue_wait_is_a_run_state_not_a_rendering_difference(page)
         page,
         _page(tail = "same", **dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)),
     )
-    # The composer really does differ, which is what makes this the interesting pair.
     assert dispatched["composer_control"] != settled["composer_control"]
-    # ...and the run state now says why, off the run state rather than off the composer token.
     assert bool(dispatched["queued_idle"]) is True, dispatched
     assert bool(settled["queued_idle"]) is False, settled
     assert P._run_state_disagrees(dispatched, settled) is True
@@ -674,14 +632,9 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
     assert P.compare(base, treat)["verdict"] == P.NOT_COMPARABLE
 
 
-# The style probe walks the run-state control too. `report` now collects the style verdict BEFORE
-# it buckets a structural refusal, because the computed-style probe is an independent reading,
-# and that makes its own reading of the composer swap visible for the first time: it walks the
-# Send and Stop buttons as SEPARATE selectors whose names go into its signature, so the pairs the
-# refusals exist to withhold arrived at the advisory line instead.
+# The style probe walks Send and Stop as separate selectors, so it also sees the composer swap.
 
 
-# ── the style probe walks the run-state control too ──────────────────
 def _capture_html_raw(page, html: str) -> dict:
     """`_capture_html`, keeping `styles.sig` so a test can say WHY the digest moved."""
     page.set_content(html)
@@ -708,14 +661,12 @@ def test_the_style_probe_does_not_report_a_control_swap_as_a_css_regression(page
     """
     settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
     writing = _capture_html_raw(page, _page(tail = "same", **_writing()))
-    # Same number of elements, same three properties on all of them, different digest.
     assert settled["styles"]["elements"] == writing["styles"]["elements"]
     assert _style_values(settled) == _style_values(writing), (
         _style_values(settled),
         _style_values(writing),
     )
     assert settled["styles"]["digest"] != writing["styles"]["digest"]
-    # ...and the run state says why, off the run state rather than off the composer.
     assert settled["streaming"] is False and writing["streaming"] is True
     verdict, reason = P.compare_styles(settled, writing)
     assert verdict == P.NOT_COMPARABLE, (verdict, reason)

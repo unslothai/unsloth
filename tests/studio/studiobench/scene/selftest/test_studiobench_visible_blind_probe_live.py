@@ -70,34 +70,24 @@ def _page(
     rows = []
     for i in range(1, 5):
         if drop_tail and i == 4:
-            # The windowed case: the arm still DECLARES four messages through `aria-setsize` and has unmounted
-            # the one it is writing into. That is a thread the instrument can see three quarters of, not an
-            # instrument that has stopped working.
+            # Windowed: the arm declares four messages via `aria-setsize` but unmounted the live one.
             continue
         role = "user" if i % 2 else "assistant"
         last = i == 4
         if last:
-            # `live_role` is what the arm CALLS the row it is writing into. The shipped build says assistant; a
-            # build that says otherwise is the regression ordinal-role parity exists to catch, and it is asked
-            # here rather than assumed.
             role = live_role
         body = tail if last else f"message {i}"
         if i == 3:
             body = user_body
         if last and not tail_has_parts:
-            # The gap between the send being accepted and the reply's first part arriving. The assistant
-            # message is mounted and publishes nothing, because thread.tsx renders "Generating..." in place of
-            # any part.
+            # Before the first part, thread.tsx renders "Generating...", so nothing is published.
             rows.append(
                 f'<div class="row" aria-posinset="{i}" aria-setsize="4">'
                 f'<div data-role="{role}"><span>Generating...</span></div></div>'
             )
             continue
         status = running_value if (last and tail_running) else "complete"
-        # THE HOOK IS RENAMED ON EVERY MESSAGE, not only the streamed one: `data-status` is a single line
-        # in markdown-text.tsx rendered for `complete` parts as well as `running` ones. A fixture that
-        # renamed it on one message would describe a build that does not exist, and would then be the only
-        # evidence that the control fires.
+        # `data-status` is rendered for complete parts too, so a rename applies to every message.
         attr = f'{hook}="{status}"'
         rows.append(
             f'<div class="row" aria-posinset="{i}" aria-setsize="4">'
@@ -157,7 +147,6 @@ def _capture(browser, **kw) -> dict:
         page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
         got = page.evaluate("() => window.__sb.parityVisible.watch()")
         assert got.get("visible_attempted") is True, got
-        # IntersectionObserver's first delivery is asynchronous.
         page.wait_for_timeout(150)
         cap = page.evaluate("async () => await window.__sb.parityVisible.capture()")
         assert cap.get("visible_attempted") is True, cap
@@ -166,22 +155,15 @@ def _capture(browser, **kw) -> dict:
         page.close()
 
 
-#:The base arm: an ordinary settled thread on the shipped build.
 _SETTLED = dict(tail = "the whole reply, arrived", tail_running = False, generating = False)
-#: THE TREATMENT THAT WENT BLIND, and the shape matters. A build that renames the ATTRIBUTE renames
-#: it on every message, so every settled row differs too, which is a rendering difference in its
-#: own right. The interesting blindness is a build that changed the status VOCABULARY: `complete`
-#: still reads `complete`, so every settled row is byte-identical and the only thing lost is the
-#: ability to see that a reply is being written.
+#: Blind via a changed status vocabulary: settled rows stay identical, only in-flight is lost.
 _BLIND = dict(
     tail = "the whole reply, arr", running_value = "streaming", tail_running = True, generating = True
 )
-#: The cruder form: the attribute itself is gone. Kept because it is the one blindness a WINDOWED
-#: arm can still be caught at, where a missing row is otherwise an ordinary state.
+#: Attribute removed: the one blindness still detectable on a windowed arm.
 _BLIND_ATTR = dict(
     tail = "the whole reply, arr", hook = "data-state", tail_running = True, generating = True
 )
-#:The same mid-stream moment on a build whose hook IS known. Already handled, as residue.
 _MIDSTREAM = dict(tail = "the whole reply, arr", tail_running = True, generating = True)
 
 
@@ -189,9 +171,7 @@ def test_a_blinded_treatment_is_refused_not_scored_as_a_rendering_difference(bro
     """THE REGRESSION, end to end: two points in one stream, scored as a difference."""
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **_BLIND)
-    # Same messages on screen, so nothing above the digest comparison can refuse this pair.
     assert base["ever_visible"] == treat["ever_visible"] == [1, 2, 3, 4]
-    # And every row on both arms claims to be settled, which is the false statement.
     assert not any(r["in_flight"] for r in base["messages"].values())
     assert not any(r["in_flight"] for r in treat["messages"].values())
     assert base["messages"]["4"]["digest"] != treat["messages"]["4"]["digest"]
@@ -252,21 +232,14 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
-# ── what the refusal may NOT take out with it ────────────────────────
-#
-# The blind-probe refusal is about rows whose meaning depends on where the stream had got to. Two
-# kinds of row provably do not: a row both arms call the user's, because a reply is written into an
-# assistant message; and a row whose ROLE changed, because a role is captured beside the digest and
-# how far a reply has arrived says nothing about whose it is. Both used to leave here as NOT
-# COMPARABLE with an empty `moved`, and `visible_report` buckets a refusal as blind and never
-# consults it for the exit code, so the run went green on them.
+# User rows and rows whose role changed do not depend on stream progress, so they must still
+# be reported instead of being swallowed by the blind-probe refusal.
 
 
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_BLIND, user_body = "the user message, rewritten"))
     assert treat["in_flight_unplaced"] is True, treat
-    # Row 3 is the user's on both arms and differs; row 4 is the one that cannot be read.
     assert base["messages"]["3"]["role"] == treat["messages"]["3"]["role"] == "user"
     assert base["messages"]["3"]["digest"] != treat["messages"]["3"]["digest"]
     got = P.compare_visible(base, treat)
@@ -312,9 +285,6 @@ def test_the_same_row_with_the_same_role_is_still_residue(browser):
     got = P.compare_visible(base, treat)
     assert got["verdict"] == P.NOT_COMPARABLE
     assert got["not_digested"] == [4], got
-
-
-# ── a row that is not there is not an instrument that stopped working ─
 
 
 def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser):

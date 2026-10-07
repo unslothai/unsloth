@@ -212,8 +212,7 @@ def test_the_saved_adapter_still_loads_back(tmp_path):
     base = transformers.AutoModelForCausalLM.from_pretrained(
         "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
     )
-    # Say the device: peft.utils.other.infer_device() answers "cuda" off
-    # torch.cuda.is_available(), which tests/_zoo_aggressive_cuda_spoof.py spoofs True.
+    # Pass the device: peft's infer_device() says cuda because the CUDA spoof fakes it.
     reloaded = peft.PeftModel.from_pretrained(
         base,
         str(directory),

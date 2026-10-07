@@ -143,14 +143,12 @@ def _rope_embedding(
     )
 
     if BACKWARD_PASS:
-        # See the Unsloth blog post for more info.
         sin1 = -sin1
 
     # [TODO] Autotune ROPE_GROUP_SIZE to be 1, 2, 4, 8
     head_start = group_head_position * ROPE_GROUP_SIZE
     head_end = min((head_start + ROPE_GROUP_SIZE), n_heads)
 
-    # 10% faster kernel from HuyNguyen-hust, unslothai/unsloth#238.
     for k in range(head_start, head_end):
         offs_q1 = row_position * Q_row_stride + k * head_dim + col_offsets
         offs_q2 = row_position * Q_row_stride + k * head_dim + col_offsets + half_head_dim
@@ -174,9 +172,7 @@ _rope_embedding = triton.heuristics(
 def _rope_rows(Q, cos, sin, seq_len, n_heads, head_dim, backward, wrap):
     # Rotates Q [batch * seq_len, n_heads * head_dim] in place; BLOCK_SIZE = head_dim//2 was racy.
     BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)
-    n_groups = (
-        n_heads + ROPE_GROUP_SIZE - 1
-    ) // ROPE_GROUP_SIZE  # also a SymInt under dynamic=True
+    n_groups = (n_heads + ROPE_GROUP_SIZE - 1) // ROPE_GROUP_SIZE
     wrap(_rope_embedding)[
         (
             Q.shape[0],
@@ -237,7 +233,6 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
 
 
 def _rope_qk(Q, K, cos, sin, rope_ptr, has_indices, backward, wrap):
-    # Rotates Q [batch, n_heads_Q, seq_len, head_dim] and K in place, at any strides.
     batch, n_heads_Q, seq_len, head_dim = Q.shape
     n_heads_K = K.shape[1]
     BLOCK_SIZE, num_warps = calculate_settings(head_dim)
@@ -271,7 +266,6 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         has_indices = rope_indices is not None
         cos, sin = cos.squeeze(), sin.squeeze()
 
-        # Inplace rotary embedding is generally fine.
         Q_out = Q.clone() if not Q.is_contiguous() else Q
         K_out = K.clone() if not K.is_contiguous() else K
 
@@ -317,7 +311,6 @@ if _TRACEABLE:
     def _rope_embedding_op(
         Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, backward: bool
     ) -> torch.Tensor:
-        # Q: [batch, seq_len, n_heads, head_dim] at any strides.
         batch, seq_len, n_heads, head_dim = Q.shape
         out = Q.clone(memory_format = torch.contiguous_format)
         rows = out.view(batch * seq_len, n_heads * head_dim)
@@ -404,13 +397,11 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, cos, sin, position_ids):
         if position_ids is not None:
-            # The first two dimensions of cos and sin are always 1, so squeeze them.
             cos = cos.squeeze(1).squeeze(0)
             sin = sin.squeeze(1).squeeze(0)
             cos = cos[position_ids].unsqueeze(2)
             sin = sin[position_ids].unsqueeze(2)
 
-        # Q * cos + rotate_half(Q) * sin, with the transposed rotate_half in the backward.
         half = Q.shape[-1] // 2
         RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim = -1)
         Q *= cos
@@ -421,7 +412,6 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dY):
         cos, sin = ctx.saved_tensors
-        # Q * cos + rotate_half.T(Q) * sin
         half = dY.shape[-1] // 2
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
         dY = dY.clone()

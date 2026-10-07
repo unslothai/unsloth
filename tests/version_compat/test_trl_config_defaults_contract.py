@@ -19,7 +19,6 @@ import pytest
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
-# Fields Unsloth changes on purpose (rl.py replacements, extra_args, or TRL deriving them from those).
 INTENDED = {
     "auto_find_batch_size",
     "beta",
@@ -74,13 +73,11 @@ def _pristine(cls):
     return cls
 
 
-# Unsloth refuses GRPO below this TRL (unsloth/models/rl.py): it crashes on the first step there.
 GRPO_TRL_FLOOR = "0.20.0"
 
 
 def _skip_if_trl_is_the_mlx_shim(trl):
-    # On Apple Silicon unsloth swaps trl.SFTConfig for an MLX alias (and stubs trl itself when it is
-    # absent), so there are no TRL config defaults to compare against.
+    # On Apple Silicon unsloth swaps trl.SFTConfig for an MLX alias, so there are no TRL defaults.
     if getattr(getattr(trl, "SFTConfig", None), "__name__", "") == "_MLXSFTConfig":
         pytest.skip("trl is unsloth's MLX shim on this platform")
 

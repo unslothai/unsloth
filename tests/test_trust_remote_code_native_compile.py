@@ -46,7 +46,7 @@ def test_sub_config_auto_map_counts():
 def test_transformers_modules_config_class_counts():
     f = _helper()
 
-    class RemoteConfig:  # what a dynamically loaded config looks like
+    class RemoteConfig:
         auto_map = None
 
     RemoteConfig.__module__ = "transformers_modules.some_repo.configuration_x"
@@ -106,8 +106,7 @@ def test_dict_shaped_configs_are_handled():
 
 
 def _cuda_is_available():
-    # Importing torch in the decorator itself turns this skip into a collection error on
-    # a runner that does not ship torch, taking the whole module with it.
+    # Importing torch in the decorator makes this a collection error on torch-less runners.
     try:
         import torch
     except ImportError:

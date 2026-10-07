@@ -118,9 +118,7 @@ def test_the_no_tunnel_excuse_is_narrow():
     ]
     assert excuses, "the excuse branch is gone or is no longer gated on the URL"
     for node in excuses:
-        # node.body only. Walking the whole If would sweep in the `else`
-        # branch, which is where every real failure lives, and the guard would
-        # then fail on correct code -- it did, the first time this was written.
+        # node.body only: the else branch holds the real failures.
         appended = [
             n
             for stmt in node.body

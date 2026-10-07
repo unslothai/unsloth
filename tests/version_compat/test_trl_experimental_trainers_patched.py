@@ -23,7 +23,6 @@ if importlib.util.find_spec("torch") is None or importlib.util.find_spec("trl") 
 
 _TESTS_DIR = Path(__file__).resolve().parents[1]
 
-# (trl.experimental subpackage, class prefix) for every trainer that used to live in trl.trainer.
 _MOVED = [
     ("bco", "BCO"),
     ("cpo", "CPO"),

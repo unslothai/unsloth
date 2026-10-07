@@ -45,8 +45,6 @@ from _grpo_dispatch_source import load_dispatch_helpers  # noqa: E402
 _DISPATCH_HELPERS = load_dispatch_helpers()
 
 
-# ── The block under test, lifted structurally out of the live source ─────────
-
 _SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_replacements.py"
 _TARGET_FUNCTION = "_get_per_token_logps_and_entropies"
 _LOOP_ITERABLE = "zipped_inputs"
@@ -114,9 +112,6 @@ _BLOCK_CODE = compile(_BLOCK_SOURCE, "<rl_replacements padded loop>", "exec")
 
 
 # The real unsloth_zoo helpers when available, eager mirrors when not.
-
-
-# ── Helpers: the real unsloth_zoo ones when available, eager mirrors when not ─
 
 
 def _eager_chunked_hidden_states_selective_log_softmax(
@@ -197,8 +192,6 @@ def _load_helpers():
         )
     return real_hidden, real_raw, "unsloth_zoo"
 
-
-# ── Stub model and reference ─────────────────────────────────────────────────
 
 _VOCAB = 17
 _HIDDEN = 8
@@ -346,9 +339,6 @@ def _run_padded_loop(
     )
 
 
-# ── Tests ────────────────────────────────────────────────────────────────────
-
-
 def test_extracted_block_is_the_padded_loop():
     """The lifted segment is the padded loop, located by shape and not by text search."""
     tree = ast.parse(_BLOCK_SOURCE)
@@ -359,8 +349,7 @@ def test_extracted_block_is_the_padded_loop():
     assert len(loops) == 1
     assert isinstance(loops[0].iter, ast.Name) and loops[0].iter.id == _LOOP_ITERABLE
 
-    # Both arms of the branch inside the loop must dispatch through the shared helper, which is what compares the width
-    # and consults the explicit UNSLOTH_RETURN_HIDDEN_STATES signal.
+    # Both arms must dispatch through the shared helper that consults UNSLOTH_RETURN_HIDDEN_STATES.
     dispatch_tests = [
         node
         for node in ast.walk(loops[0])

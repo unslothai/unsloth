@@ -42,31 +42,24 @@ HELPER = ".github/scripts/retry-with-apt-lock.sh"
 # PyYAML reads the `on:` key as the boolean True.
 ON = True
 
-# apt reached directly, or via playwright, which shells out to it.
-# `--with-deps` is qualified by `playwright install` on purpose: scan_packages.py takes a flag of the same name that has
-# nothing to do with apt.
+# apt directly, or via `playwright install --with-deps` (scan_packages.py has an unrelated
+# flag of the same name).
 _APT = re.compile(r"\bapt-get\s+(?:update|install)\b|playwright\s+install\b[^\n]*--with-deps\b")
 
-# `release_dpkg_lock()` waits up to 24 * 5s for the orphaned holder, then kills it and sleeps 5.
+# `release_dpkg_lock()` waits up to 24 * 5s, then kills the holder and sleeps 5.
 LOCK_WAIT_SECONDS = 125
 
-# Workflows whose apt calls do not run on a hosted runner and cannot use the helper. Each is here for a reason that
-# would survive a rewrite, not because it was inconvenient to convert.
+# Workflows whose apt calls cannot use the helper, each for a durable reason.
 EXEMPT_WORKFLOWS = {
-    # Runs apt inside bare distro containers and inside WSL, as root, with no checkout (the whole point is a machine
-    # with no git). There is no repo on disk to read the helper from, and `sudo`/`fuser` are deliberately absent -- one
-    # leg asserts that `sudo` does not exist on the image at all.
+    # Runs apt in bare containers and WSL with no checkout, and deliberately without `sudo`.
     "clean-machine-install-ci.yml",
 }
 
-# Individual steps that reach apt as the thing under test rather than as setup.
+# Steps that run apt as the thing under test.
 EXEMPT_STEPS = {
-    # Removes curl to construct the no-transport case.
     ("clean-machine-install-ci.yml", "Take the transport away again"),
-    # Installs the built .deb to find out whether the package declares its own runtime dependencies.
     ("desktop-app-clean-machine-ci.yml", "Install with NO dev tooling, only runtime libs"),
-    # Greps the documentation for the apt line it tells users to run. It reads an
-    # apt command as data; it never executes one.
+    # Reads an apt command as data; never executes one.
     ("release-desktop.yml", "Verify desktop updater and Linux package config"),
 }
 
@@ -109,8 +102,7 @@ def _worst_case_seconds(step: dict, run: str) -> int:
     attempts = env.get("RETRY_ATTEMPTS")
     per_attempt = env.get("RETRY_ATTEMPT_TIMEOUT")
 
-    # A step may also set them inline, as `RETRY_ATTEMPTS=3 bash ...helper`, which is how the two steps that embed the
-    # call in a larger script pass them.
+    # Also accepts inline `RETRY_ATTEMPTS=3 bash ...helper`.
     if attempts is None:
         inline = re.search(r"RETRY_ATTEMPTS=(\d+)", run)
         attempts = inline.group(1) if inline else None
@@ -118,7 +110,7 @@ def _worst_case_seconds(step: dict, run: str) -> int:
         inline = re.search(r"RETRY_ATTEMPT_TIMEOUT=(\d+)", run)
         per_attempt = inline.group(1) if inline else None
 
-    # The helper's own defaults, kept in sync by test_helper_defaults_are_what_the_budgets_assume.
+    # The helper's defaults, kept in sync by test_helper_defaults_are_what_the_budgets_assume.
     attempts = int(attempts) if attempts is not None else 3
     per_attempt = int(per_attempt) if per_attempt is not None else 480
 
@@ -227,7 +219,6 @@ def test_helper_defaults_are_what_the_budgets_assume() -> None:
     source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
     assert 'ATTEMPTS="${RETRY_ATTEMPTS:-3}"' in source
     assert 'ATTEMPT_TIMEOUT="${RETRY_ATTEMPT_TIMEOUT:-480}"' in source
-    # 24 sleeps of 5s, then a kill and a final 5s.
     assert "seq 1 24" in source
     assert LOCK_WAIT_SECONDS == 24 * 5 + 5
 
@@ -245,7 +236,6 @@ def test_the_helper_makes_apt_fail_fast() -> None:
     """
     source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
 
-    # The generated config only, not the whole file.
     written = re.search(r'conf="(.*?)"\n', source, re.DOTALL)
     assert written, f"{HELPER} no longer builds an apt config to write"
     conf = written.group(1)
@@ -258,7 +248,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
     ):
         assert option in conf, f"{HELPER} no longer sets {option}; it writes: {conf!r}"
 
-    # Well under apt's 120s default, or it buys nothing.
+    # Well under apt's 120s default.
     match = re.search(r'APT_TIMEOUT="\$\{APT_ACQUIRE_TIMEOUT:-(\d+)\}"', source)
     assert match, f"{HELPER} does not define a default transfer timeout"
     assert int(match.group(1)) <= 30, (
@@ -266,8 +256,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
         f"default that a stalled mirror still eats the step budget"
     )
 
-    # Ordering is the whole value: configured inside or after the retry loop, the first attempt,
-    # the one that actually stalls, runs unconfigured.
+    # Must be configured before the retry loop, or the first (stalling) attempt runs unconfigured.
     configure = source.index("configure_apt_fail_fast\n\nfor attempt")
     loop = source.index('for attempt in $(seq 1 "$ATTEMPTS")')
     assert configure < loop, (

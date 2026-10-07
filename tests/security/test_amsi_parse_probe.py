@@ -28,9 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-# The shared runner, not a direct subprocess call: a direct one shares a single
-# $XDG_CACHE_HOME/powershell startup cache with every other xdist worker, and an interpreter that
-# dies at startup then renders as this test failing rather than as the crash it was.
+# Use the shared runner: direct pwsh calls share one startup cache across xdist workers.
 # tests/studio/test_pwsh_calls_use_the_shared_runner.py enforces this.
 from unsloth_pwsh_runner import run_pwsh
 
@@ -138,11 +136,6 @@ def test_the_probe_never_exits_non_zero_on_a_detection() -> None:
         "the probe decides a verdict. It must report and let the workflow decide, because the "
         "workflow is the only place that knows whether the control fired."
     )
-
-
-# ---------------------------------------------------------------------------
-# The workflow around it
-# ---------------------------------------------------------------------------
 
 
 def test_the_workflow_exists_and_is_valid_yaml() -> None:
@@ -272,8 +265,7 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
     }
     for argv in (
         ["git", "init", "-q"],
-        # -text so the checkout cannot be what normalises the line endings: the question here is
-        # only what the extraction does with the blob.
+        # autocrlf off so checkout cannot normalise line endings; only the extraction is tested.
         ["git", "config", "core.autocrlf", "false"],
         ["git", "add", "install.ps1"],
         ["git", "commit", "-qm", "b"],
@@ -302,11 +294,7 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
         "never serves"
     )
 
-    # The COMMITTED blob, not the working tree. A Windows checkout with the default
-    # core.autocrlf=true rewrites install.ps1 to CRLF on disk -- .gitattributes carries no *.ps1
-    # rule -- so reading the file here failed on Windows runners while the bytes this project
-    # actually serves were unchanged. The lane copies blobs out of git for exactly this reason, so
-    # the assertion has to look where the lane looks.
+    # Read the COMMITTED blob: Windows autocrlf rewrites install.ps1 to CRLF on disk.
     shipped = subprocess.run(
         ["git", "show", "HEAD:install.ps1"],
         cwd = REPO,
@@ -336,11 +324,7 @@ def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
         "the mark-of-the-web stamp no longer uses -Stream, which is the only documented way to "
         "address an alternate data stream"
     )
-    # Comment lines stripped before the ban is applied. The comment right above the fixed code
-    # explains what the broken form looked like, and naming it is the point of that comment -- a
-    # substring search over the raw file matches the explanation and fails. That has now happened
-    # three times while writing these guards, which is a good argument for never grepping a file
-    # for a string its own prose is obliged to contain.
+    # Strip comment lines first: the comment above the fix names the banned form.
     code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
     assert (
         ':Zone.Identifier"' not in code
@@ -644,7 +628,6 @@ def test_cloud_readiness_is_decided_by_maps_and_reports_bafs_separately() -> Non
         "block-at-first-sight is gating readiness again, which mislabels a MAPS-reachable runner as "
         "local signatures only"
     )
-    # And it must still be printed, not merely computed.
     assert "$bafsNote" in gate and "$cloudNote = " in gate
 
 
@@ -743,7 +726,6 @@ def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
         "quarantine one before it is ever measured"
     )
     assert exclude_at < amsi_at, "the exclusion is added after the copies are opened"
-    # A non-terminating Add-MpPreference that was refused looks identical to one that worked.
     assert (
         "Get-MpPreference" in runs[exclude_at]
     ), "the exclusion is never read back, so a refusal is silent"
@@ -763,11 +745,9 @@ def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
     assert (
         body.count("Get-UnslothExpected") >= 3
     ), "not every measurement loop reads the expected set"
-    # The bare enumeration must be gone from the measurement loops.
     assert (
         "foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side)" not in body
     ), "a measurement loop still enumerates whatever survived on disk"
-    # And a vanished file has to reach both verdicts, not just be printed.
     assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
     assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
     assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
@@ -788,8 +768,6 @@ def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
     ), "the probe still reads the candidate with Get-Content's default encoding"
     assert "UTF8Encoding" in body, "the probe does not decode the candidate as UTF-8"
 
-    # And the decode really is lossless for the bytes we ship: driven through pwsh rather than
-    # asserted about, so a future rewrite is judged on what it produces.
     pwsh = shutil.which("pwsh")
     if pwsh is None:
         pytest.skip("pwsh is unavailable")
@@ -922,8 +900,7 @@ def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
     defender = body[body.index("Ask Defender's file scanner") :]
     defender = defender[: defender.index("Upload the measurements")]
     control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
-    # Every place the control is declared live has to be immediately preceded by an observation,
-    # which here means a Test-Path on the control file rather than the fact that something threw.
+    # Every live-declaration must be preceded by a Test-Path on the control file.
     lines = control.splitlines()
     for i, line in enumerate(lines):
         if "$fired = $true" not in line:
@@ -962,7 +939,7 @@ def test_the_defender_control_writes_a_benign_canary_first() -> None:
     assert (
         "no positive control" in control
     ), "an unwritable control directory no longer reports that there is no positive control"
-    # Both writes must be terminating, or Continue carries a failure straight past the check.
+    # Both writes must be terminating, or Continue carries a failure past the check.
     writes = [line for line in control.splitlines() if "Set-Content -LiteralPath $c" in line]
     assert len(writes) == 2, writes
     for line in writes:
@@ -987,7 +964,6 @@ def test_the_control_fires_only_through_the_command_the_candidates_are_read_with
         "the control is not inside the on-access exclusion, so real-time protection can take it "
         "away before the on-demand scan reads it"
     )
-    # Exactly one place may set the control live, and it is the branch that read the scan output.
     lines = control.splitlines()
     fired = [
         i for i, line in enumerate(lines) if "$fired = [bool]" in line or "$fired = $true" in line

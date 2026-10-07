@@ -43,8 +43,7 @@ class _BakedImage:
         self._mod = mod
 
     def __contains__(self, name):
-        # transformers is baked too; it is out of _KEEP only because the sidecar
-        # replaces its VERSION rather than the distribution
+        # transformers is out of _KEEP only because the sidecar replaces its version.
         if name == "transformers":
             return True
         return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
@@ -63,9 +62,7 @@ def shim(tmp_path, monkeypatch):
         raise _Exec(path, argv)
 
     monkeypatch.setattr(mod.os, "execv", _fake_execv)
-    # the shim now skips a protected package only when it is really installed, so pin
-    # the fully baked image here: otherwise these assertions read the CI venv, which
-    # has no torchcodec, and pass or fail on the runner rather than on the shim
+    # Pin the baked image so results do not depend on the CI venv's packages.
     monkeypatch.setattr(mod, "_installed_names", lambda: _BakedImage(mod))
     return mod
 
@@ -166,12 +163,11 @@ def test_a_mixed_cell_keeps_only_the_unbaked_package(shim):
 
 
 def test_cuda_matched_wheels_are_not_replaced_by_pypi_builds(shim):
-    # these come from the cu128 index; a PyPI pin swaps in a generic (or cu13) build
+    # These come from the cu128 index; a PyPI pin swaps in a generic build.
     assert _run(shim, ["torchao==0.15.0", "torchcodec==0.5"]) is None
 
 
 def test_transformers_companions_cannot_desynchronise_the_sidecars(shim):
-    # each sidecar ships its own matched copies, so a base-venv swap breaks them all
     assert (
         _run(shim, ["huggingface_hub==0.30.0", "tokenizers==0.20.0", "safetensors==0.4.0"]) is None
     )
@@ -202,9 +198,7 @@ def test_protection_survives_an_editable_vcs_install(shim):
     assert _run(shim, ["-e", "git+https://github.com/huggingface/trl.git", UNBAKED]) == [UNBAKED]
 
 
-# A protected package that the image never managed to bake is nothing to protect, and
-# dropping it turned the recovery install into a silent success. MISSING is a _KEEP
-# member the Dockerfile is allowed to leave out (see the fail-soft premise test below).
+# An unbaked protected package must install, not be silently dropped.
 MISSING = "vllm"
 
 
@@ -235,8 +229,7 @@ def test_the_baked_premise_holds_before_the_absence_tests_mean_anything(shim):
 
 
 def test_a_protected_package_the_image_never_baked_still_installs(shim_without_vllm):
-    # the arm64 vLLM bake is fail-soft, so `!pip install vllm` was the documented
-    # recovery; skipping it printed "kept baked versions" over an image with no vLLM
+    # The arm64 vLLM bake is fail-soft, so `!pip install vllm` is the recovery.
     assert _run(shim_without_vllm, [MISSING]) == [MISSING]
     assert _run(shim_without_vllm, [f"{MISSING}==0.20.0"]) == [f"{MISSING}==0.20.0"]
     assert _run(shim_without_vllm, [MISSING], tool = "uv") == [MISSING]
@@ -253,7 +246,6 @@ def test_the_absence_check_reaches_the_requirements_file_path(shim_without_vllm,
 
 
 def test_the_absence_check_reaches_the_flag_target_path(shim_without_vllm):
-    # -e and -P classify their value through a separate helper; it drifted before
     assert _run(shim_without_vllm, ["-P", MISSING, UNBAKED]) == ["-P", MISSING, UNBAKED]
     assert _run(shim_without_vllm, ["-P", "trl", UNBAKED]) == [UNBAKED]
 
@@ -285,8 +277,6 @@ def test_every_drop_decision_goes_through_the_one_predicate(shim):
         for line in source.splitlines()
         if "_KEEP_PREFIX)" in line and "_KEEP_PREFIX = " not in line
     ]
-    # only the predicate itself and the constraints builder may spell the rule out;
-    # the constraints builder is already scoped to installed distributions
     assert len(raw) == 2, raw
 
 
@@ -300,8 +290,7 @@ def test_the_dockerfile_still_lets_a_protected_bake_fail(shim):
 
 
 def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):
-    # argument filtering does not stop a DEPENDENCY of the kept target from dragging
-    # peft/datasets down, which happened with no notebook ever naming peft
+    # Argument filtering alone does not stop a dependency from downgrading peft/datasets.
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", ["pip", "install", UNBAKED])
         with pytest.raises(_Exec) as exc:
@@ -314,9 +303,6 @@ def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):
     assert all(
         n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
     ), sorted(names)
-
-
-# --- uninstall: the other direction the notebooks take ------------------------------
 
 
 def test_the_shipped_falcon_cell_cannot_remove_unsloth(shim, capsys):

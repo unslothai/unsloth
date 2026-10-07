@@ -42,12 +42,9 @@ from studiobench.runtime.lifecycle import (  # noqa: E402
 )
 from studiobench.runtime.seeder import Seeder  # noqa: E402
 
-#: How long the fake Unsloth's access tokens live. An hour compressed into something a test can sit
-#: through, and long enough that a loaded machine cannot expire one mid-request.
+# Compressed token lifetime, long enough that a loaded machine cannot expire one mid-request.
 TOKEN_TTL_S = 6.0
-#: The margin the tests below drive `token()` with. The REAL ratio matters: a margin far shorter than
-#: the token's life is what the harness runs with (15 minutes against 60), and a margin longer than
-#: the whole life would make every call rotate and prove nothing.
+# Keep the real margin-to-TTL ratio; a margin longer than the TTL would rotate every call.
 TEST_MARGIN_S = 1.0
 PASSWORD = "studiobench-bench-password"
 
@@ -62,8 +59,6 @@ class _State:
         self.logins = 0
         self.login_attempts = 0
         self.rejections = 0
-        #: Set to reject EVERY token once, whatever its `exp` says: an Unsloth restarted underneath the run,
-        #: or a clock this process cannot see.
         self.reject_next = 0
         self.lock = threading.Lock()
 
@@ -194,12 +189,9 @@ def test_the_seeder_keeps_working_after_its_token_expires(studio, monkeypatch):
     logins_after_setup = state.logins
 
     time.sleep(TOKEN_TTL_S + 0.5)
-    # The token the run was handed is dead by now (the control above proves the server refuses it) and
-    # this still has to work.
     assert seeder.create_thread()
     assert auth.rotations == 1
     assert state.logins == logins_after_setup + 1
-    # And it never had to be told: the server was not asked to refuse anything.
     assert state.rejections == 0
     assert (auth.expires_at or 0) > time.time()
 
@@ -215,7 +207,6 @@ def test_the_token_is_replaced_before_it_expires_not_after_it_fails(studio, monk
     monkeypatch.setattr(lifecycle, "TOKEN_REFRESH_MARGIN_S", TEST_MARGIN_S)
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
-    # Inside the margin and NOT yet expired: the server would still accept the old token, and it is replaced anyway.
     time.sleep(TOKEN_TTL_S - TEST_MARGIN_S / 2)
 
     assert auth_request_json(auth, f"{base_url}/api/chat/threads", method = "POST", body = {})
@@ -229,7 +220,6 @@ def test_a_401_that_arrives_anyway_is_recovered(studio):
     refusal is real and is raised."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
-    # Fresh by this process's reckoning, and refused by the server regardless.
     auth.expires_at = time.time() + 10_000
     state.reject_next = 1
 
@@ -287,7 +277,6 @@ def test_a_clock_that_makes_every_token_look_stale_stops_the_proactive_half(stud
     assert auth.rotations == 1
     assert auth.proactive is False
 
-    # And it does not keep doing it. The token is valid, so the request goes out on it untouched.
     logins = state.logins
     assert auth_request_json(auth, f"{base_url}/api/chat/threads", method = "POST", body = {})
     assert state.logins == logins

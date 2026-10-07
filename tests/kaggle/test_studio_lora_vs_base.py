@@ -160,14 +160,12 @@ def test_the_exported_gguf_picked_is_a_model_and_not_an_mmproj_sidecar():
         model = root / "Qwen3.5-2B.Q8_0.gguf"
         model.write_bytes(b"GGUF")
         _time.sleep(0.01)
-        # Written LAST, so "newest" alone would pick it.
+        # Written last, so picking the newest file would choose the sidecar.
         sidecar = root / "Qwen3.5-2B.F16-mmproj.gguf"
         sidecar.write_bytes(b"GGUF")
 
         assert newest_gguf(root) == model
 
-        # And with only a sidecar present, the answer is None rather than the
-        # sidecar: no model was exported, and saying so is the point.
         sidecar_only = root / "sub"
         sidecar_only.mkdir()
         (sidecar_only / "x.F16-mmproj.gguf").write_bytes(b"GGUF")

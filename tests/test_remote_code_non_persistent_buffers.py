@@ -40,8 +40,7 @@ def _remote_module():
     if name in sys.modules:
         return sys.modules[name]
     module = types.ModuleType(name)
-    # The real package, never a bare stand-in: one without __path__ breaks the relative imports of
-    # every remote module transformers loads later in this process.
+    # Use the real package: a stand-in without __path__ breaks later remote relative imports.
     from transformers.dynamic_module_utils import create_dynamic_module
 
     create_dynamic_module("transformers_modules")
@@ -98,7 +97,6 @@ def _remote_module():
         base_model_prefix = "model"
 
         def _init_weights(self, module):
-            # What 4.x remote code ships: weights only, buffers assumed built in __init__.
             if isinstance(module, nn.Linear):
                 module.weight.data.normal_(mean = 0.0, std = 0.02)
 
@@ -149,13 +147,11 @@ def test_restores_buffers_after_a_transformers_load(tmp_path):
         slope, inv_freq = _expected(i, config)
         torch.testing.assert_close(layer.slope, slope)
         torch.testing.assert_close(layer.rotary_emb.inv_freq, inv_freq)
-        # The alias 4.x code keeps next to the buffer points at the live buffer again.
         assert layer.rotary_emb.original_inv_freq is layer.rotary_emb.inv_freq
 
 
 def test_meta_built_buffers_with_empty_storage_are_recomputed():
-    # The transformers 5 sequence without a checkpoint: construct on meta, give the
-    # non-persistent buffers empty storage, leave them for `_init_weights`.
+    # The transformers 5 sequence: build on meta, empty non-persistent buffers, defer to init.
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():
         pytest.skip("transformers 4.x builds real buffers; the restore is a no-op there")
@@ -196,7 +192,6 @@ def test_native_modules_and_unrecoverable_constructors_are_left_alone():
     NeedsTensor.__module__ = "transformers_modules.unsloth_test_remote_buffers"
     module = NeedsTensor(torch.ones(2))
     module.b.zero_()
-    # `table` is not recoverable from the instance, so the module is skipped, not guessed.
     assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
 
@@ -213,7 +208,6 @@ def test_native_modules_and_unrecoverable_constructors_are_left_alone():
     KeepsOnlyStride.__module__ = "transformers_modules.unsloth_test_remote_buffers"
     module = KeepsOnlyStride(ratio = 4)
     module.b.zero_()
-    # A non-default `ratio` cannot be told from the default, so nothing is rebuilt.
     assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
     assert module.b.eq(0).all()
@@ -234,7 +228,6 @@ def test_stored_tensor_arguments_skip_the_module():
     OptionalTable.__module__ = "transformers_modules.unsloth_test_remote_buffers"
     module = OptionalTable(torch.full((2,), 5.0))
     module.b.zero_()
-    # Rebuilding with table=None would write 2.0 instead of 10.0, so the module is skipped.
     assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
     assert module.b.eq(0).all()
@@ -277,7 +270,6 @@ def test_variadic_constructors_are_skipped():
     TakesKwargs.__module__ = "transformers_modules.unsloth_test_remote_buffers"
     module = TakesKwargs(base = 6.0)
     module.b.zero_()
-    # Rebuilding without `base` would write 1.0 instead of 6.0, so the module is skipped.
     assert helper._constructor_kwargs(module) is None
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
     assert module.b.eq(0).all()
@@ -336,8 +328,7 @@ def test_equal_but_differently_typed_arguments_do_not_share_a_rebuild():
 
 
 def test_buffers_the_remote_init_weights_fills_are_left_alone():
-    # A remote model whose own _init_weights fills a placeholder buffer already has the right
-    # value; the constructor would only give the placeholder back.
+    # A remote _init_weights already filled the buffer; the constructor gives back the placeholder.
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():
         pytest.skip("no-op on transformers 4.x")
@@ -365,8 +356,7 @@ def test_buffers_the_remote_init_weights_fills_are_left_alone():
 
 
 def test_a_module_that_did_not_keep_its_config_is_skipped():
-    # In a composite model a child may have been built with text_config or vision_config;
-    # rebuilding it from the root config could give different same-shaped buffers.
+    # A composite child may be built from a sub-config, so rebuilding from root config could differ.
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():
         pytest.skip("no-op on transformers 4.x")
@@ -440,7 +430,6 @@ def test_prose_in_remote_init_weights_does_not_count_as_initialisation():
 
         def _init_weights(self, module):
             """Rotary.inv_freq is built in the constructor, nothing to do here."""
-            # Rotary keeps inv_freq from __init__.
             if isinstance(module, nn.Linear):
                 module.weight.data.normal_()
 
@@ -453,8 +442,7 @@ def test_prose_in_remote_init_weights_does_not_count_as_initialisation():
 
 
 def test_a_buffer_name_written_for_another_class_does_not_skip_this_one():
-    # _init_weights fills `inv_freq` only in another class's branch; this class's `inv_freq`
-    # still comes from its constructor.
+    # _init_weights fills `inv_freq` only for another class; this one still comes from its ctor.
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():
         pytest.skip("no-op on transformers 4.x")
@@ -611,8 +599,7 @@ def test_loaders_restore_right_after_from_pretrained():
 
 
 def test_each_sub_model_is_probed_with_its_own_init_weights():
-    # transformers 5 runs the nearest PreTrainedModel's _init_weights on a module, so the
-    # outer model's init filling a rotary does not mean the inner model's rotary was filled.
+    # transformers 5 runs the nearest PreTrainedModel's _init_weights, so outer init != inner init.
     helper = _load_helper()
     if not helper._transformers_builds_on_meta():
         pytest.skip("no-op on transformers 4.x")

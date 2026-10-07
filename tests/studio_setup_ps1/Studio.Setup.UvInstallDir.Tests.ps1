@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 <#
-    setup.ps1 writes uv to $USERPROFILE\.local\bin and used to probe for it with
-    Get-Command alone, which reads PATH. Only astral's own installer edits the registry
-    PATH, so a fresh update process never saw the uv already on disk and downloaded it
-    again, every run. Get-UvInstallDir is the shared answer to "where does uv go", used by
-    both the installer and the probe so the two cannot drift.
-
-    These drive the real function out of setup.ps1 against the inline logic it replaced.
-    The nonexistent-drive case is the one that matters: Join-Path returns null there under
-    ErrorActionPreference Continue, and the original fell through to the home fallback.
+    Get-UvInstallDir is shared by the uv installer and the probe so they cannot drift; PATH alone
+    misses a uv already on disk. Join-Path returns null for a nonexistent drive under Continue.
 #>
 
 BeforeAll {
@@ -49,7 +42,6 @@ Describe "Get-UvInstallDir matches the inline logic it replaced" {
     It "agrees on every combination of the five variables it reads" {
         $ErrorActionPreference = 'Continue'
         $differing = @()
-        # The third XDG_DATA_HOME value is a drive that does not exist: Join-Path answers null.
         foreach ($a in @($null, "/tmp/a")) {
         foreach ($b in @($null, "/tmp/b")) {
         foreach ($c in @($null, "/tmp/c")) {

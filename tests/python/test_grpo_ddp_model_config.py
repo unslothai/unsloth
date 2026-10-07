@@ -19,7 +19,6 @@ def test_grpo_logit_scaling_uses_model_config_helper():
     assert 'getattr(model.module, "config", None)' in src
     assert "logit_softcapping = _unsloth_get_final_logit_softcapping(model)" in src
     assert "if config is None:" in src.split("def _unsloth_get_final_logit_softcapping")[1]
-    # Logit scale/divide read through the unwrapped config, not bare model.config.
     # Whitespace-insensitive: the formatter wraps one of the two calls and not the other.
     flat = "".join(src.split())
     assert (
@@ -27,10 +26,8 @@ def test_grpo_logit_scaling_uses_model_config_helper():
     ), "every fallback arm (two GRPO, one GKD) must resolve the scales from the unwrapped config"
     assert "_unsloth_resolve_logit_scales(model)" not in flat
     assert src.count("model_config = _unsloth_get_model_config(model)") >= 2
-    # Helper source is injected into the compiled GRPO trainer.
     assert "inspect.getsource(_unsloth_get_model_config)" in src
     assert "inspect.getsource(_unsloth_resolve_logit_scales)" in src
-    # No direct model.config access remains in the RL logit path.
     assert "model.config" not in src
 
 
@@ -60,7 +57,7 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
     planner = __import__("importlib").import_module("unsloth_zoo.device_map_planner")
     detect = getattr(planner, "detect_logit_transforms", None)
     if detect is None:
-        return  # older unsloth_zoo: the fallback branch is in use
+        return
 
     class _Inner(torch.nn.Module):
         def __init__(self):
@@ -76,7 +73,6 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
 
     inner = _Inner()
     wrapped = _Wrapper(inner)
-    # No .config on the wrapper, which is why call sites resolve it first.
     assert not hasattr(wrapped, "config")
     config = _unsloth_get_model_config_reference(wrapped)
     assert config is inner.config

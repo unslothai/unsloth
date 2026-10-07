@@ -36,8 +36,7 @@ import pytest
 
 GB = 1024**3
 
-# A weight shard of the merge, as opposed to anything else that ends in `.safetensors` (an adapter) or `.bin`
-# (`training_args.bin`).
+# A merge weight shard, not an adapter `.safetensors` or `training_args.bin`.
 _MERGE_SHARD = re.compile(r"^(model|pytorch_model|consolidated)\.|-\d+-of-\d+\.")
 
 
@@ -56,10 +55,7 @@ def _layout(tmp_path, merge_gb, base_gb):
     gguf = tmp_path / "model_gguf"
     merge.mkdir()
     gguf.mkdir()
-    # Sparse files: only the sizes are read, and writing 60GB of zeroes to prove a point about disk space would be its
-    # own joke.
-    # The names are the `-NNNNN-of-NNNNN` set `save_pretrained` really writes, which is what the reclamation matches on;
-    # `model-00001.safetensors` is not a shape it produces.
+    # Sparse files: only sizes are read. Names follow the `-NNNNN-of-NNNNN` set save_pretrained writes.
     merge_shards = list(_split(merge_gb))
     for i, gb in enumerate(merge_shards):
         name = f"model-{i + 1:05d}-of-{len(merge_shards):05d}.safetensors"
@@ -205,9 +201,6 @@ def test_the_helper_is_called_before_quantizing(save_mod):
     assert source.index("_free_merge_if_disk_is_tight(") < source.index("def _quantize_one")
 
 
-# ---- what reclamation must never do ---------------------------------------
-
-
 def test_a_complete_stale_shard_set_is_not_inherited(tmp_path, monkeypatch, save_mod):
     """A finished earlier save in the same directory, index and every shard.
 
@@ -287,11 +280,8 @@ def test_a_small_output_with_modest_free_space_is_not_called_a_full_disk(save_mo
     save_mod.shutil.disk_usage = lambda *_a, **_k: free
     try:
         failure = RuntimeError("unknown model architecture")
-        # 400MB of output: 1.5GB free is ample, so this is not a disk problem.
         assert not save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = int(0.4 * GB))
-        # 4GB of output into 1.5GB free is.
         assert save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = 4 * GB)
-        # A caller that cannot say what it needed still gets the fixed floor.
         assert save_mod._gguf_failure_looks_like_disk(failure, ".")
     finally:
         save_mod.shutil.disk_usage = original
@@ -337,7 +327,7 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             partial_output = str(output),
         )
 
-        # A disk that really is short is still short: 1GB left plus the 5GB written is 6GB, and the output wanted 10GB.
+        # 1GB left plus the 5GB written is 6GB, and the output wanted 10GB.
         save_mod.shutil.disk_usage = lambda *_a, **_k: _types.SimpleNamespace(
             total = 0, used = 0, free = 1 * GB
         )
@@ -348,7 +338,6 @@ def test_the_bytes_already_written_are_not_charged_twice(tmp_path, save_mod):
             partial_output = str(output),
         )
 
-        # A pass that wrote nothing at all is unchanged, and so is a caller that names an output which is not there.
         assert save_mod._gguf_failure_looks_like_disk(
             failure,
             str(tmp_path),
@@ -465,8 +454,7 @@ def test_a_caller_can_keep_a_directory_it_owns(tmp_path, monkeypatch, save_mod):
         generic.update(kw)
 
     monkeypatch.setattr(save_mod, "unsloth_generic_save", _generic_save)
-    # isinstance() against a stand-in class is what puts the export on its PEFT branch, which is the one that calls
-    # unsloth_generic_save.
+    # isinstance() against the stand-in puts the export on its PEFT branch, which calls unsloth_generic_save.
     monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _FakeModel)
     model = _FakeModel("some-org/some-model")
     seen = _run_export(
@@ -577,7 +565,6 @@ def test_a_roomy_output_disk_is_not_called_full_by_a_tight_cwd(monkeypatch, save
     )
     exc = RuntimeError("llama-quantize: unknown model architecture")
     assert save_mod._gguf_failure_looks_like_disk(exc, "/output") is False
-    # No output directory to consult, so the working directory still answers.
     assert save_mod._gguf_failure_looks_like_disk(exc, None) is True
 
 
@@ -591,7 +578,6 @@ def test_unrelated_training_artifacts_are_never_deleted(tmp_path, monkeypatch, s
         "optimizer.pt": b"opt",
         "rng_state.pth": b"rng",
         "scheduler.pt": b"sched",
-        # An adapter beside the merge is the user's, and it is tiny anyway.
         "adapter_model.safetensors": b"adapter",
     }
     for name, blob in keep.items():
@@ -747,7 +733,6 @@ def test_each_quant_is_priced_by_its_own_width(save_mod):
     # The published llama.cpp 7B sizes: Q4_K_M near 4.5 bits a weight, Q8_0 8.5.
     assert 4.5 / 16 < ratio("q4_k_m") < 8.0 / 16
     assert 8.5 / 16 < ratio("q8_0") < 1.0
-    # i-quants carry their width the same way.
     assert ratio("iq2_xxs") < ratio("iq4_xs") < ratio("q8_0")
     # An unrecognised method is still charged a whole copy of the base.
     assert ratio("something_new") == 1.0
@@ -761,9 +746,7 @@ def test_a_q8_0_base_is_not_priced_as_sixteen_bit(save_mod):
     off_16 = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
     off_8 = save_mod._gguf_output_size_ratio("q4_k_m", "q8_0")
     assert off_8 > off_16, "a quant off an 8-bit base is a bigger share of it"
-    # Still an upper bound: Q4_K_M is about 4.5 bits against Q8_0's real 8.5.
     assert off_8 > 4.5 / 8.5
-    # And an f32 output off that base is four bytes a weight against one.
     assert save_mod._gguf_output_size_ratio("f32", "q8_0") >= 32.0 / 8.5
 
 
@@ -794,10 +777,9 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
     """
     upper = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
     lower = save_mod._gguf_output_size_ratio("q4_k_m", "bf16", upper_bound = False)
-    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the two bounds have to sit either side of it.
+    # llama.cpp's own 7B table puts Q4_K_M near 4.8 bits a weight; the bounds must straddle it.
     assert lower < 4.5 / 16 < upper
 
-    # Codex's case, run through the helper the way the call site does.
     base_bytes = 60 * GB
     failure = RuntimeError("unknown model architecture")
     free = types.SimpleNamespace(total = 0, used = 0, free = int(19 * GB))
@@ -807,7 +789,6 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
         assert not save_mod._gguf_failure_looks_like_disk(
             failure, ".", needed_bytes = int(base_bytes * lower)
         ), "19GB free for a ~17GB output is not a full disk"
-        # A disk that genuinely cannot hold even the nominal output still is one.
         short = types.SimpleNamespace(total = 0, used = 0, free = int(8 * GB))
         save_mod.shutil.disk_usage = lambda *_a, **_k: short
         assert save_mod._gguf_failure_looks_like_disk(
@@ -821,12 +802,9 @@ def test_the_diagnosis_is_not_priced_off_the_reclamation_bound(save_mod):
         assert save_mod._gguf_output_size_ratio(dtype, "bf16") == (
             save_mod._gguf_output_size_ratio(dtype, "bf16", upper_bound = False)
         )
-    # A width the diagnosis cannot measure is not guessed at: None puts the caller back on the fixed floor rather than
-    # charging a whole base copy.
     assert save_mod._gguf_output_size_ratio("something_new", "bf16") == 1.0
     assert save_mod._gguf_output_size_ratio("something_new", "bf16", upper_bound = False) is None
 
-    # And the call site actually asks for the lower bound.
     assert "upper_bound = False" in _save_to_gguf_source(save_mod)
 
 
@@ -857,7 +835,6 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         with open(os.path.join(merge, "model.safetensors.index.json"), "w", encoding = "utf-8") as fh:
             json.dump(index, fh)
 
-    # First export: the directory is this export's own, so everything goes.
     _write_merge()
     _with_free(monkeypatch, save_mod, 20)
     assert _reclaim(save_mod, merge, gguf, bases) > 0
@@ -867,8 +844,7 @@ def test_the_index_is_reclaimed_with_the_shards_it_named(tmp_path, monkeypatch, 
         os.path.join(merge, "model.safetensors.index.json")
     ), "the index named the shards that were just deleted and cannot outlive them"
 
-    # Second export into the same directory, provenance snapshotted the way `unsloth_save_pretrained_gguf` does, before
-    # the merge writes.
+    # Provenance snapshotted before the merge writes, as `unsloth_save_pretrained_gguf` does.
     preexisting = frozenset(os.listdir(merge))
     _write_merge()
     freed = _reclaim(save_mod, merge, gguf, bases, preexisting_weights = preexisting)

@@ -35,12 +35,6 @@ from studiobench.instruments.selfcheck import (  # noqa: E402
 from studiobench.scoring.schema import EXCLUSION_REASONS, check_exclusion_reasons  # noqa: E402
 
 
-# the injected stall
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_120ms_stall_seen_within_tolerance_passes():
     assert evaluate_stall_gate(121.0).passed is True
     assert evaluate_stall_gate(139.0).passed is True
@@ -59,12 +53,6 @@ def test_no_stall_reading_at_all_is_a_failure_not_a_pass():
     assert gate.measured.has_reading is False
 
 
-# the injected input delay
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_400ms_input_delay_must_move_p95_by_350ms():
     assert evaluate_input_delay_gate(20.0, 415.0).passed is True
 
@@ -73,12 +61,6 @@ def test_an_input_path_that_does_not_move_is_not_measuring_input():
     gate = evaluate_input_delay_gate(20.0, 24.0)
     assert gate.passed is False
     assert "will not move when the app gets slower" in gate.detail
-
-
-# scene contrast: the blindness check
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_heavy_and_a_trivial_scene_must_differ():
@@ -91,18 +73,11 @@ def test_an_instrument_that_cannot_tell_heavy_from_trivial_is_blind():
     assert "BLIND" in gate.detail
 
 
-# longtask support
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_longtask_support_is_read_from_supported_entry_types():
     supported = evaluate_longtask_support(["mark", "measure", "longtask"])
     assert "available on this engine" in supported.detail
     unsupported = evaluate_longtask_support(["mark", "measure"])
     assert "NOT ATTEMPTED rather than as zero" in unsupported.detail
-    # not supporting longtask is a fact about the engine, not a reason to abort
     assert unsupported.fatal is False
     assert unsupported.passed is True
 
@@ -113,12 +88,6 @@ def test_an_unreadable_support_list_is_recorded_and_not_guessed():
     assert gate.fatal is False
 
 
-# the clock-pair control ratio
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_flat_control_ratio_passes():
     assert evaluate_clock_pair(10_000.0, 10_020.0).passed is True
 
@@ -127,12 +96,6 @@ def test_a_moving_control_ratio_means_the_measurement_moved():
     gate = evaluate_clock_pair(10_000.0, 8_000.0)
     assert gate.passed is False
     assert "the MEASUREMENT moved, not the page" in gate.detail
-
-
-# three-clock agreement
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_three_agreeing_clocks_keep_the_window():
@@ -194,12 +157,6 @@ def test_clock_disagreement_is_a_declared_exclusion_reason():
     assert "clock_disagreement" in EXCLUSION_REASONS
 
 
-# the whole gate set
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def _healthy(**overrides):
     args = {
         "stall_observed_ms": 122.0,
@@ -219,7 +176,7 @@ def test_a_healthy_instrument_passes_every_gate():
     report = run_gates(**_healthy())
     assert report.ok is True
     assert "all gates held" in report.render()
-    guard(report)  # does not raise
+    guard(report)
 
 
 def test_one_failed_gate_aborts_the_run_before_any_numbers():
@@ -239,9 +196,6 @@ def test_the_abort_message_says_why_reporting_nothing_is_better():
     assert "the numbers get quoted and the blindness does not" in str(caught.value)
 
 
-# ── the streaming-cost recovery gate ─────────────────────────────────────────────────────────
-
-
 def _recovery(
     base,
     injected,
@@ -253,7 +207,7 @@ def _recovery(
 
 
 def test_full_recovery_of_an_injected_streaming_cost_passes():
-    # 600 ms injected over 6,000 characters is 100 ms per thousand on top of the base rate.
+    # 600 ms injected over 6,000 chars adds 100 ms per thousand to the base rate.
     gate = _recovery(110.0, 210.0)
     assert gate.passed
     assert gate.measured.value == pytest.approx(1.0)
@@ -298,7 +252,6 @@ def test_the_injection_script_burns_only_on_sse_chunks():
 
     js = stream_cost_injection_init_script(3.0)
     assert 'indexOf("data:")' in js
-    # Queued, not inline: the burn has to land inside the measured chain whichever TextDecoder wrapper
-    # ended up outermost.
+    # Queued, not inline, so the burn lands in the measured chain whichever TextDecoder wraps last.
     assert "queueMicrotask" in js
     assert "3.0" in js

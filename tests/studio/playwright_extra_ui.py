@@ -14,7 +14,6 @@ import urllib.request
 from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
-# Run as a plain script (not via pytest), so prepend the dir to sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
@@ -41,51 +40,28 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_extra")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
-# The Voice-picker media-access crash is specific to headless Chromium on macos-14; only there is a renderer crash
-# downgraded to a warning. Linux/Windows keep hard crash coverage.
+# The Voice-picker media-access crash is specific to headless Chromium on macOS.
 MACOS_RUNNER = os.environ.get("RUNNER_OS", "").lower() == "macos" or sys.platform == "darwin"
-# Longer turn timeout: gemma-3-270m CPU inference is 3-5x slower on macos-14 runners.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
-# Declares a runner with no route to the Hub, for the voice-picker wheel step. Egress that is blackholed rather than
-# refused can leave the search hanging with no transport failure to observe, so the fallback needs a way to be asserted
-# as well as detected.
+# Blackholed egress can hang the search with no transport failure, so allow declaring offline.
 HF_OFFLINE = os.environ.get("STUDIO_UI_HF_OFFLINE", "0") == "1"
-# Voice-picker wheel budget, both halves set by the frontend rather than picked round.
-# The searched rows are up to 15.3s away on a healthy runner: the query is debounced 300ms and the Hugging Face search
-# is then given 15s (HF_SEARCH_TIMEOUT_MS, studio/frontend/src/features/hub/hooks/use-hub-model-search.ts). Waiting
-# 15.5s for them clears that, so a slow-but-working Hub is not red, and it also outlives the abort at 15.3s that a
-# blackholed runner's search ends in, so the transport failure that permits the fallback is observed before the wait
-# gives up.
-# Those 200ms of headroom only hold while the debounce fires on time, so when the wait runs out with the search still
-# open the budget is re-based onto the request itself (search_abort_extension) rather than spent.
-# The 30s ceiling is that wait plus the re-basing a starved runner needs, plus what is left to do after it: a list swap
-# landing mid-wheel costs one 2s wheel round, and an unreachable-Hub run has already spent its first 15.5s searching
-# when it clears the query and wheels the built-in list. Only a failing run pays either; a passing run leaves on the
-# first wheel, 1.5s end to end in CI.
+# Searched rows arrive up to 15.3s later (300ms debounce + 15s HF_SEARCH_TIMEOUT_MS in
+# use-hub-model-search.ts); 15.5s outlives that abort. A still-open search re-bases the wait.
 WHEEL_ROWS_TIMEOUT_MS = 15_500
 WHEEL_DEADLINE_S = 30.0
-# The ceiling the deadline may be pushed to when the wait is re-based onto a request that is still open.
-# WHEEL_DEADLINE_S covers one search, and the picker runs two in sequence, so re-basing onto the second has to be
-# allowed to outlast it. Measured from the step's start so a page that keeps opening requests cannot hold the step open
-# indefinitely.
+# The picker runs two searches in sequence, so re-basing onto the second must be allowed.
 WHEEL_DEADLINE_MAX_S = 75.0
 
-# Per-step ceilings. A step that overruns its own stops the run there, named, instead of the
-# steps after it each waiting out their own timeouts until the 720s wall. The largest step
-# (Compare: two 60s bubble waits plus a 60s composer mount; Settings: up to 75s of wheel
-# wait) fits in a quarter of this. Setup retries itself and has no ceiling of its own; the
-# whole-run wall still bounds it. Both stretch with STUDIO_UI_TURN_TIMEOUT_MS, the knob the
-# slow lanes already raise, and with STUDIO_PW_STEP_BUDGET_SCALE.
 _SLOW_LANE = max(1.0, TURN_TIMEOUT_MS / 180_000)
 STEP_BUDGET_S = step_budget_s(240 * _SLOW_LANE)
 NO_STEP_CEILING = 0
 
 _n = [0]
 _failed: list[str] = []
-_watchdog = None  # armed below
+_watchdog = None
 
 
 def step(s: str, budget_s: float | None = None) -> None:
@@ -129,8 +105,7 @@ def page_crashed(pg, exc: Exception) -> bool:
 
 
 with sync_playwright() as p:
-    # The wall stays a whole-run cap (this script never kicked it): begin_step() restarts the
-    # inactivity budget, so the same number is also passed as the total no step can move.
+    # begin_step() restarts the inactivity budget, so the same number is also the whole-run total.
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
         label = "ui-extra",
@@ -138,9 +113,8 @@ with sync_playwright() as p:
         total_deadline_s = WALL_TIMEOUT_S,
     )
     report_failing_step(_watchdog, label = "ui-extra")
-    # Health pre-flight: bash-side health wait can pass before the auth DB migrates on macos-14.
+    # The shell health wait can pass before the auth DB migrates on macOS.
     wait_for_health(BASE, timeout = 30.0, info = info)
-    # Chromium launch args: see tests/studio/_playwright_robust.py.
     browser = p.chromium.launch(
         headless = True,
         args = chromium_launch_args(),
@@ -151,14 +125,10 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
 
-    # Evidence that this runner cannot reach the Hub, collected for the whole session because the frontend backs off for
-    # 30s after a failed Hub request (REMOTE_OFFLINE_TTL_MS in studio/frontend/src/features/hub/lib/network.ts) and may
-    # not retry inside a later step. Bound to the context, not the page, so a replacement page is covered too.
+    # Collected for the whole session: the frontend backs off 30s after a failed Hub request
+    # (REMOTE_OFFLINE_TTL_MS). Bound to the context so a replacement page is covered.
     hf_unreachable: list[str] = []
-    # Set while the wheel step owns the picker, so an aborted Hub request can be attributed.
     wheel_step_active = [False]
-    # Hub requests still in flight, by start time, so a wait that runs out while the frontend's own search timeout is
-    # still running can wait for its abort instead of guessing.
     hf_inflight: dict[object, float] = {}
 
     def _is_hub_url(url: str) -> bool:
@@ -193,10 +163,7 @@ with sync_playwright() as p:
             if not _is_hub_url(req.url):
                 return
             failure = req.failure or ""
-            # net::ERR_ABORTED is how a blackholed request ends, at the frontend's own 15s search timeout, and equally
-            # how a superseded query or an unmounting picker ends. It only says "unreachable" while the wheel step holds
-            # the picker open on a single query, where nothing else can be cancelling anything. Every other failure is a
-            # transport error and counts wherever it happens.
+            # ERR_ABORTED also ends a superseded query, so it only means unreachable during the wheel step.
             if "ERR_ABORTED" in failure and not wheel_step_active[0]:
                 return
             _note_hf_unreachable(f"request failed: {failure}")
@@ -210,18 +177,14 @@ with sync_playwright() as p:
             pass
 
     def _on_response(resp) -> None:
-        # 429 and 5xx are the Hub refusing to serve this runner. Every other 4xx is a request the app itself built
-        # wrong, which is a real defect and must not excuse anything.
+        # 429/5xx is the Hub refusing; any other 4xx is a request the app built wrong.
         try:
             if not _is_hub_url(resp.url):
                 return
             if resp.status == 429 or resp.status >= 500:
                 _note_hf_unreachable(f"HTTP {resp.status}")
             elif hf_unreachable:
-                # A served response proves this runner has a route to the Hub, so the earlier failures are stale and
-                # must stop excusing anything: the frontend drops its own offline state on exactly this signal
-                # (markRemoteNetworkOnline, studio/frontend/src/features/hub/lib/network.ts). Keeping them would let one
-                # transient failure hand a later search-rendering regression the built-in list.
+                # A served response proves a route to the Hub, so drop stale failures, as markRemoteNetworkOnline does.
                 info(
                     f"Hugging Face reachable again (HTTP {resp.status}); dropping "
                     f"{len(hf_unreachable)} earlier failure(s)"
@@ -235,11 +198,9 @@ with sync_playwright() as p:
     ctx.on("requestfinished", _on_requestfinished)
     ctx.on("response", _on_response)
     page = ctx.new_page()
-    # 60s default for the slow macos-14 runner (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
     page_errors = []
 
-    # Filter known-benign React errors (slow-CI timing artefacts); base list in _playwright_robust.
     def _on_pageerror(e):
         msg = str(e)
         if is_benign_page_error(msg):
@@ -250,7 +211,6 @@ with sync_playwright() as p:
     page.on("pageerror", _on_pageerror)
 
     def shoot(name: str) -> None:
-        # Screenshots are diagnostic; never fail the test on a font-load timeout.
         _n[0] += 1
         try:
             page.screenshot(
@@ -262,9 +222,8 @@ with sync_playwright() as p:
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
-    # Setup: change-password through the UI + model load.
     step("setup: change-password + model load", NO_STEP_CEILING)
-    # 3-attempt retry: form re-renders mid-fill on macos-14 can detach the password fields.
+    # Form re-renders on macOS can detach the password fields mid-fill.
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
@@ -277,7 +236,6 @@ with sync_playwright() as p:
             pw_field.wait_for(state = "visible", timeout = 60_000)
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
-            # Click submit AND wait for the POST response together so a server-side reject surfaces now.
             status, _ = click_and_wait_for_response(
                 page,
                 url_substr = "/api/auth/change-password",
@@ -305,7 +263,7 @@ with sync_playwright() as p:
                 flush = True,
             )
             if _form_attempt < 2:
-                # ERR_NO_BUFFER_SPACE needs the OS to recover socket buffers; back off 5s then 15s.
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket buffers.
                 if "ERR_NO_BUFFER_SPACE" in str(e):
                     backoff_s = 5 if _form_attempt == 0 else 15
                     print(
@@ -322,7 +280,7 @@ with sync_playwright() as p:
                 )
     if form_err is not None:
         raise form_err
-    # Settle network, then wait_for with one recovery cycle: the post-submit re-render can crash macos-14.
+    # The post-submit re-render can crash the renderer on macOS.
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
     except Exception:
@@ -395,8 +353,6 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
-    # Detect chat-only mode (/api/health.chat_only): /studio redirects to /chat while /export stays reachable and
-    # self-gated.
     health_resp = evaluate_fetch(
         page,
         f"{BASE}/api/health",
@@ -411,26 +367,19 @@ with sync_playwright() as p:
 
     # 1. Compare tab.
     step("Compare tab: send to two panes")
-    # Compare lives in the composer "Tools and attachments" menu.
     compare_opened = False
-    # Waited for, not counted. This is the first step after load, so it is the one
-    # that pays for anything slowing first paint: #9251's reload snapshot overlay
-    # opened a window where the composer is on screen but not yet in the
-    # accessibility tree, and `count()` answered 0 six milliseconds in and called
-    # it "Compare nav not found". See wait_for_first().
+    # Waited for, not counted: the composer can be on screen before it is in the accessibility tree.
     plus_btn = wait_for_first(
         page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I))
     )
     if plus_btn is not None:
         click_forced(plus_btn)
-        # The menu items get a short wait rather than the full one: a miss here is a real branch (the item lives under
-        # "More"), not a slow render, and the fallbacks below must stay quick.
+        # A miss here is a real branch (the item lives under "More"), so keep the wait short.
         compare_item = wait_for_first(
             page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)),
             timeout_ms = 2000,
         )
         if compare_item is None:
-            # Fallback: Compare chat may be under the "More" submenu.
             more_trigger = wait_for_first(
                 page.get_by_role("menuitem", name = re.compile(r"^More$", re.I)),
                 timeout_ms = 2000,
@@ -451,8 +400,6 @@ with sync_playwright() as p:
             click_forced(compare_item)
             compare_opened = True
     if not compare_opened:
-        # Which of the two was missing, because "Compare nav not found" sent the
-        # last reader looking for a removed menu item that was never removed.
         missing = (
             "the composer's Tools and attachments button"
             if plus_btn is None
@@ -460,7 +407,6 @@ with sync_playwright() as p:
         )
         soft_fail(f"Compare nav not found: {missing} never appeared")
     else:
-        # The compare view and its composer, instead of a fixed 1.5 s after the click.
         view = wait_for_first(page.locator('[data-tour="chat-compare-view"]'), timeout_ms = 15_000)
         if view is not None:
             wait_for_first(
@@ -474,22 +420,18 @@ with sync_playwright() as p:
             soft_fail("[data-tour='chat-compare-view'] not found after Compare click")
         else:
             ok_count_before = len(page.locator('[data-role="assistant"]').all())
-            # Composer placeholder in compare-mode is "Send to both models...".
             cmp_composer = page.get_by_placeholder(
                 re.compile(r"Send to both models", re.I),
             ).first
             if cmp_composer.count() == 0:
-                # Fall back to any textarea inside the compare view.
                 cmp_composer = view.locator("textarea").first
             if cmp_composer.count() == 0:
                 soft_fail("compare composer textarea not found")
             else:
                 cmp_composer.click()
                 cmp_composer.fill("Reply with: A")
-                # Prefer Enter: onKeyDown maps plain Enter to send(); the Send button's aria-label came late.
                 cmp_composer.press("Enter")
-                # Expect 2 new assistant bubbles (one per pane). Panes have no explicit model in this CI flow so the
-                # backend may reject; downgrade to runtime_warn but keep the structural assertions.
+                # Panes have no explicit model in CI, so the backend may reject; downgrade to runtime_warn.
                 first_pair_arrived = False
                 try:
                     page.wait_for_function(
@@ -510,8 +452,6 @@ with sync_playwright() as p:
                     )
                 shoot("03-compare-after-A")
 
-                # Second prompt -> 4 total new bubbles (same runtime-flaky caveat). Only worth waiting for when the
-                # first pair came: panes that answered nothing in 60 s will not answer twice as much in the next 60.
                 if not first_pair_arrived:
                     runtime_warn(
                         "Compare: skipped the second prompt's 60s wait; the first prompt's bubbles never appeared"
@@ -537,7 +477,6 @@ with sync_playwright() as p:
                         )
                     shoot("04-compare-after-B")
 
-    # Back to single chat for subsequent steps.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
@@ -545,10 +484,8 @@ with sync_playwright() as p:
     # 2. Recipes editor.
     step("Recipes editor: click first template + Preview dialog")
     page.goto(f"{BASE}/data-recipes")
-    # The route is rendered once its template list is, not after a fixed 1.5 s.
     wait_for_first(page.locator('[data-tour="recipes-templates"] button'), timeout_ms = 15_000)
     shoot("05-recipes-list")
-    # Template cards render as <button> elements.
     templates = page.locator("main button").filter(has_not_text = re.compile(r"^(\+|Create)"))
     n_templates = templates.count()
     info(f"recipe templates visible: {n_templates}")
@@ -558,8 +495,7 @@ with sync_playwright() as p:
         try:
             templates.first.scroll_into_view_if_needed()
             templates.first.click()
-            # What the click opens: the React-Flow editor, a dialog, or (for the first `main button`, which is the
-            # "New Recipe" trigger) its menu. Wait for whichever arrives, not a fixed 2 s.
+            # The first `main button` is the "New Recipe" trigger, which opens a menu.
             wait_for_first(
                 page.locator(
                     ".react-flow__renderer, .react-flow, [data-testid*='react-flow'], "
@@ -568,12 +504,10 @@ with sync_playwright() as p:
                 timeout_ms = 15_000,
             )
             shoot("06-recipe-opened")
-            # The recipe-studio canvas uses React-Flow; look for the renderer.
             canvas = page.locator(
                 ".react-flow__renderer, .react-flow, [data-testid*='react-flow']"
             ).first
             if canvas.count() == 0:
-                # Some templates open as dialogs instead of a route.
                 info("(no React-Flow canvas; template may have opened a dialog)")
             else:
                 info("OK React-Flow canvas mounted")
@@ -583,7 +517,6 @@ with sync_playwright() as p:
     # 3. Export route.
     step(f"Export route ({'chat-only self-gated' if chat_only else 'form fields'})")
     page.goto(f"{BASE}/export")
-    # Either the export form's CTA or the chat-only gate, instead of a fixed 1.5 s.
     wait_for_first(
         page.locator('[data-tour="export-cta"]').or_(
             page.get_by_text(re.compile(r"Export unavailable", re.I))
@@ -596,24 +529,18 @@ with sync_playwright() as p:
             soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
             unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
-            # Wait for the gate itself: it renders only once the hardware query has answered
-            # (hardware.loaded && exportSupported === false), while the form and its CTA, which
-            # satisfy the wait above, render before that. A count() taken at that instant missed
-            # the gate on a slow Windows runner although it was on its way.
+            # The gate renders only after the hardware query answers, later than the form satisfying the wait above.
             try:
                 unavailable.wait_for(state = "visible", timeout = 15_000)
                 info("OK chat-only /export rendered the unavailable gate")
             except Exception:
                 soft_fail("chat-only /export did not show the export unavailable gate within 15s")
     else:
-        # Non-chat-only: verify the export-cta button + HF token field.
         cta = page.locator('[data-tour="export-cta"]').first
         if cta.count() == 0:
             soft_fail("[data-tour='export-cta'] not found in /export")
         else:
             info("OK [data-tour='export-cta'] visible")
-        # HF-token field is lazy-loaded behind a disclosure; wait up to the same ~8s for any of its locators and log
-        # at info (non-blocking). Ends as soon as one is there instead of polling once a second.
         hf_token = wait_for_first(
             page.get_by_placeholder(re.compile(r"hf[_\\.\\-]", re.I))
             .or_(page.locator('input[placeholder*="token" i], input[placeholder*="huggingface" i]'))
@@ -632,12 +559,11 @@ with sync_playwright() as p:
     # 4. Unsloth training route.
     step(f"Unsloth route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
-    # The redirect (chat-only) or the training page's own anchors, instead of a fixed 1.5 s.
     if chat_only:
         try:
             page.wait_for_url(lambda u: "/studio" not in u, timeout = 15_000)
         except Exception:
-            pass  # the check below reports it
+            pass
     else:
         wait_for_first(page.locator('[data-tour="studio-params"]'), timeout_ms = 15_000)
         wait_for_first(page.get_by_role("tab"), timeout_ms = 5_000)
@@ -674,17 +600,14 @@ with sync_playwright() as p:
         info("OK Chat Dictate control is type=button")
 
     page.keyboard.press("Control+,")
-    # The dialog itself, not 800 ms; five seconds per shortcut is still far past any render.
     settings = wait_for_first(page.get_by_role("dialog"), timeout_ms = 5_000)
     if settings is None:
-        # macOS shortcut is Cmd-,.
         page.keyboard.press("Meta+,")
         settings = wait_for_first(page.get_by_role("dialog"), timeout_ms = 5_000)
     if settings is None:
         soft_fail("Settings dialog didn't open with Cmd/Ctrl-,")
     else:
         shoot("09-settings-open")
-        # Each tab is a button named by its visible text; availability depends on chat_only mode.
         candidate_tabs = (
             "General",
             "Profile",
@@ -704,9 +627,6 @@ with sync_playwright() as p:
                 continue
             try:
                 btn.click()
-                # The active tab carries the animated pill; its content renders in the same commit. Then give the body
-                # up to 5 s to fill, instead of reading it 400 ms after the click. Both are best-effort: the length
-                # check below still decides.
                 try:
                     btn.locator("span.bg-accent").first.wait_for(state = "attached", timeout = 5_000)
                     page.wait_for_function(
@@ -718,7 +638,6 @@ with sync_playwright() as p:
                     )
                 except Exception:
                     pass
-                # Tab body must be non-empty.
                 body_text = page.evaluate(
                     """() => {
                         const dialog = document.querySelector('[role="dialog"]');
@@ -738,30 +657,16 @@ with sync_playwright() as p:
         if voice_tab.count() == 0:
             fail("Voice settings tab not found")
         else:
-            # The dictation-engine dropdown touches a media-access path that can crash headless Chromium on macos-14
-            # (CheckMediaAccessPermission), so there a crash is a runtime warning + page recovery; on Linux/Windows a
-            # crash and any live-page failure stay a hard fail.
+            # The dictation dropdown can crash headless Chromium on macOS; there a crash is only a warning.
             try:
                 voice_tab.click()
-                # By test id: these were bound to translated copy, which caused #7835.
                 page.get_by_test_id("dictation-engine-trigger").click()
                 page.get_by_test_id("dictation-engine-model").click()
                 page.get_by_test_id("stt-model-trigger").click()
                 wheel_step_active[0] = True
                 results = page.get_by_test_id("stt-model-results")
-                # Wheel at the searched rows, not at whatever overflows first. The query is debounced 300ms and the
-                # list is then replaced by a one-line spinner for as long as the Hugging Face search takes, so the
-                # first paint that overflows is the pre-search built-in list: on macos-15 the hover + wheel lands after
-                # the swap, on a container that is one spinner row tall and has nothing to scroll. Requiring rendered
-                # model rows (the loading and empty states are plain divs, every row is a button) pins the assertion to
-                # the state a user scrolls, and re-wheeling until the deadline absorbs a swap that lands mid-wheel.
-                #
-                # Rows alone are not enough, though: the built-in list is rows, and it overflows from the moment the
-                # popover opens, so a fast runner can satisfy that inside the 300ms debounce and never wheel a searched
-                # row at all. Snapshot the built-in rows first and require the list to have become something else, so
-                # the search is what is being scrolled.
-                # The built-in list is accepted only on proof that the Hub is unreachable (see below), which is also the
-                # only branch that clears the query and so the only one that waits on `rows_overflow`.
+                # Wheel the searched rows: the pre-search built-in list overflows first, and during the search the list
+                # is one spinner row. Snapshot built-in rows and require a different list.
                 builtin_rows_js = """() => {
                     const node = document.querySelector('[data-testid="stt-model-results"]');
                     if (!node) return "";
@@ -843,8 +748,6 @@ with sync_playwright() as p:
                                 timeout = rows_ms,
                             )
                     except Exception as row_err:
-                        # A dead renderer must reach the crash handler below, exactly as in the wheel wait; swallowed
-                        # here it becomes a hard "did not wheel-scroll".
                         if page_crashed(page, row_err):
                             raise
                         if not (cleared_search or hf_unreachable or HF_OFFLINE):
@@ -856,10 +759,7 @@ with sync_playwright() as p:
                             ):
                                 extended_for.add(open_req)
                                 next_rows_ms = extra_ms
-                                # The extension is worth nothing if the step deadline still ends inside it: rows_ms is
-                                # min()ed against what is left, so the second search would be cut off mid-flight and
-                                # reported as a scroll failure. Push the deadline past the request just re-based onto,
-                                # up to the ceiling.
+                                # Push the step deadline past the re-based request, or the second search is cut off mid-flight.
                                 wheel_deadline = min(
                                     wheel_started_at + WHEEL_DEADLINE_MAX_S,
                                     max(wheel_deadline, time.monotonic() + extra_ms / 1000),
@@ -870,14 +770,10 @@ with sync_playwright() as p:
                                     "answer or abort"
                                 )
                                 continue
-                        # Falling back to the built-in list means asserting the wheel against the pre-search list this
-                        # step was rewritten to stop accepting, so it takes proof that the Hub is what is missing: a
-                        # failed huggingface.co request (or 429/5xx), or a runner that declares itself offline. Search
-                        # rendering that breaks with the Hub answering normally has no such proof and fails here with
-                        # the geometry, instead of passing on the built-in list.
+                        # The built-in list is only accepted on proof the Hub is unreachable or a declared offline runner.
                         offline = bool(hf_unreachable) or HF_OFFLINE
                         if cleared_search or not offline:
-                            break  # never overflowed with rows; geometry is reported below
+                            break
                         why = hf_unreachable[0] if hf_unreachable else "STUDIO_UI_HF_OFFLINE=1"
                         info(
                             f"WARN no 'whisper' search rows and the Hub is unreachable ({why}); "
@@ -891,8 +787,6 @@ with sync_playwright() as p:
                     try:
                         page.wait_for_function(scrolled_js, timeout = 2_000)
                     except Exception as wheel_err:
-                        # A dead renderer must still reach the crash handler below, not be retried until the deadline
-                        # and reported as a scroll failure.
                         if page_crashed(page, wheel_err):
                             raise
                         continue
@@ -900,8 +794,6 @@ with sync_playwright() as p:
                 if wheel_scrolled:
                     info("OK Voice model picker mouse wheel changed scrollTop")
                 else:
-                    # Geometry in the message: the next failure says whether the list was short, empty or
-                    # scrollable-but-unscrolled without a second CI run.
                     try:
                         geom = robust_evaluate(
                             page,
@@ -936,12 +828,10 @@ with sync_playwright() as p:
                     fail(f"Voice model picker did not wheel-scroll: {exc!r}")
             finally:
                 wheel_step_active[0] = False
-        # When the crash closed the context/browser, recover_or_replace_page hands back the closed page; skip the
-        # cosmetic teardown rather than re-raise TargetClosedError on it.
+        # After a crash closed the context, the returned page is closed; skip teardown.
         if not page.is_closed():
             shoot("10-settings-tabs-visited")
-            # Cosmetic teardown, best-effort as the fixed pause was. The first Escape may only close the voice
-            # picker's popover, so a dialog still up after it gets a second one.
+            # The first Escape may only close the voice picker's popover.
             dialogs = page.get_by_role("dialog")
             for _escape in range(2):
                 page.keyboard.press("Escape")
@@ -954,7 +844,6 @@ with sync_playwright() as p:
         if not seen_tabs:
             soft_fail("no Settings tabs were visitable")
 
-    # Done.
     if page_errors:
         info(f"WARN {len(page_errors)} pageerror events; first: {page_errors[0]!r}")
         fail(f"{len(page_errors)} pageerror events")
@@ -969,4 +858,4 @@ with sync_playwright() as p:
     try:
         browser.close()
     except Exception:
-        pass  # a crashed browser may already be gone; never fail teardown after PASS
+        pass

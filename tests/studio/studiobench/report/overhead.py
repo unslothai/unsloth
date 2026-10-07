@@ -26,13 +26,9 @@ from typing import Any, Mapping
 
 from ..scoring.schema import Measure
 
-#: Overhead may vary this much across the ladder before the level is disqualified. Generous: some
-#: growth is unavoidable (more DOM means a longer snapshot), and a tight bound would disqualify
-#: every level on every machine.
+# Allowed overhead growth across the ladder; some growth is unavoidable as the DOM grows.
 MAX_OVERHEAD_GROWTH_RATIO = 1.5
 
-#: Growth below this many milliseconds is not worth acting on however large the ratio looks: a level
-#: whose overhead goes from 0.01 ms to 0.05 ms has a ratio of 5 and does not matter.
 MIN_ABSOLUTE_GROWTH_MS = 1.0
 
 

@@ -20,12 +20,10 @@ import urllib.request
 import pytest
 
 
-# Derived from PyPI: a hand-kept list stops covering new minors silently, which
-# is how 0.28 moving bitsandbytes out of tree went unnoticed.
+# Derived from PyPI: a hand-kept list silently stops covering new minors.
 _VLLM_MIN_VERSION = (0, 9, 0)
 
-# Only for an unreachable PyPI, and it must reach the frontier: stopping early
-# skips the releases a new guard exists for and still reports green.
+# Fallback must reach the frontier, or new guards are skipped while reporting green.
 _VLLM_TAGS_FALLBACK = [
     "v0.9.0",
     "v0.9.1",
@@ -95,7 +93,6 @@ def _stable_release_tags() -> list[str]:
     return ["v" + ".".join(str(p) for p in parts) for parts in sorted(versions)]
 
 
-# `main` catches drift before it ships to PyPI.
 VLLM_TAGS = _stable_release_tags() + ["main"]
 
 
@@ -119,15 +116,13 @@ def _tag_exists(tag: str) -> bool:
     return _ref_resolves("vllm-project/vllm", tag)
 
 
-# vLLM 0.28 (PR #43529) moved bitsandbytes out of tree to vllm-bnb-plugin. The
-# plugin re-exports the same names, so unsloth_zoo resolves whichever is
-# installed; the symbols must keep existing in one home or the other.
+# vLLM 0.28 moved bitsandbytes to vllm-bnb-plugin, which re-exports the same names.
 VLLM_BNB_IN_TREE = "vllm/model_executor/layers/quantization/bitsandbytes.py"
 VLLM_BNB_PLUGIN_REPO = "vllm-project/vllm-bnb-plugin"
 VLLM_BNB_PLUGIN_PATH = "vllm_bnb_plugin/bitsandbytes.py"
 
 
-# Used when PyPI cannot be reached. A released tag, never `main`: see _plugin_ref.
+# A released tag, never `main`: see _plugin_ref.
 VLLM_BNB_PLUGIN_FALLBACK_REF = "v0.0.3"
 
 
@@ -152,11 +147,7 @@ def _plugin_ref() -> str | None:
     return None
 
 
-# Only these two are REQUIRED. unsloth_zoo subclasses BitsAndBytesConfig and
-# replaces BitsAndBytesLinearMethod._apply_4bit_weight, so both must exist.
-# `apply_bnb_4bit` is hasattr-checked (the in-tree module has never defined it
-# directly, and unsloth_zoo carries a branch for each case), and
-# `is_layer_skipped_bnb` is assigned onto the module rather than read from it.
+# Only these two are required: unsloth_zoo subclasses / patches them; others are hasattr-checked.
 VLLM_BNB_SYMBOLS = (
     "BitsAndBytesConfig",
     "BitsAndBytesLinearMethod",
@@ -234,7 +225,6 @@ def _has_def(
     return False
 
 
-# HARD-import symbols: must be present in every tested version.
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_lora_request_hard_imports(tag: str):
     """LoRARequest, get_adapter_absolute_path, PEFTHelper -- hard-imported by unsloth-zoo's vllm_lora_worker_manager."""
@@ -276,9 +266,6 @@ def test_vllm_config_lora_config(tag: str):
     assert found, f"vllm.config.LoRAConfig missing in {tag} (checked {candidates})"
 
 
-# SOFT-import symbols: either old path or new post-#30253 path is fine.
-
-
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_lora_models_either_path(tag: str):
     """The LoRA model/manager symbols must resolve via EITHER vllm.lora.models OR the post-#30253 split path."""
@@ -288,7 +275,6 @@ def test_vllm_lora_models_either_path(tag: str):
         "LRUCacheLoRAModelManager": ("class", None),
         "create_lora_manager": ("func", None),
     }
-    # Old path: single vllm/lora/models.py (or models/__init__.py).
     old_candidates = ["vllm/lora/models.py", "vllm/lora/models/__init__.py"]
     old_src = next(
         (s for s in (_fetch_text("vllm-project/vllm", tag, p) for p in old_candidates) if s),
@@ -298,7 +284,6 @@ def test_vllm_lora_models_either_path(tag: str):
         if all(_has_def(old_src, n, k) for n, (k, _) in needed.items()):
             return
 
-    # New path (post vLLM PR #30253):
     lora_model_src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/lora_model.py")
     model_mgr_src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/model_manager.py")
 
@@ -319,13 +304,11 @@ def test_vllm_lora_models_either_path(tag: str):
         )
 
 
-# Optional / version-gated symbols: assert presence only on minors claiming support.
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_vllm_worker_lora_manager_class(tag: str):
     """vllm.lora.worker_manager.WorkerLoRAManager -- unsloth-zoo subclasses it; signature drives old_init vs new_init."""
     src = _fetch_text("vllm-project/vllm", tag, "vllm/lora/worker_manager.py")
     if src is None:
-        # Some vLLM versions split this; check fallback locations.
         alt = _fetch_text("vllm-project/vllm", tag, "vllm/v1/worker/lora_model_runner_mixin.py")
         if alt and ("WorkerLoRAManager" in alt or "LoRAModelRunnerMixin" in alt):
             return
@@ -348,8 +331,7 @@ def test_lora_request_no_removed_kwargs(tag: str):
     assert has_dir or has_path, f"{tag}: vllm.lora.request has neither lora_dir nor lora_path"
 
 
-# UNSLOTH_VLLM_STANDBY hard-error windows: unsloth-zoo refuses standby on 0.10.0 <= vllm < 0.11.0 (std::bad_alloc) and
-# 0.14.0 <= vllm < 0.15.0 (cudaErrorIllegalAddress).
+# unsloth-zoo refuses standby on vllm 0.10.x (bad_alloc) and 0.14.x (illegal address).
 def _vllm_zoo_local_path() -> str | None:
     """Return the on-runner path to unsloth_zoo.vllm_utils source, or None."""
     try:
@@ -393,8 +375,7 @@ def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
         assert not missing, f"{tag}: in-tree bitsandbytes is missing {missing}"
         return
 
-    # Out of tree from 0.28. The plugin versions separately, so there is no tag
-    # to map onto; the published release is what a user ends up with.
+    # Out of tree from 0.28 and versioned separately, so use the published release.
     plugin_ref = _plugin_ref()
     if plugin_ref is None:
         pytest.skip(
@@ -452,8 +433,7 @@ def test_out_of_tree_quant_registry_is_still_a_dict(tag: str):
     src = _fetch_text("vllm-project/vllm", tag, VLLM_QUANT_REGISTRY_PATH)
     if src is None:
         pytest.skip(f"{tag}: {VLLM_QUANT_REGISTRY_PATH} not present")
-    # The name alone is not the contract: a read-only mapping or a registry
-    # object of its own would keep this green while item assignment breaks.
+    # A read-only mapping would keep the name check green while item assignment breaks.
     assert re.search(
         r"^_CUSTOMIZED_METHOD_TO_QUANT_CONFIG\s*(?::[^=\n]+)?=\s*(?:\{|dict\()",
         src,

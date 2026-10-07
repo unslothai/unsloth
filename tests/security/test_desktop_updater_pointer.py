@@ -30,11 +30,8 @@ GATE_NAME = "Check for desktop bundles"
 SUFFIXES = ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe")
 STABLE_ASSETS = tuple(f"Unsloth-Desktop-{suffix}" for suffix in SUFFIXES)
 
-# A `gh` that keeps state, so a PATCH is observable in the next read and an unmodelled call is a loud failure rather
-# than a silent success.
-# The body is Python because the state it keeps is JSON;
-# it is reached through a /bin/sh shim like every other fake in this directory, because a `python3` shebang does not
-# resolve on a Windows runner, where the interpreter is `python.exe`.
+# A stateful fake `gh`: PATCHes are observable and unmodelled calls fail loudly.
+# Reached via a /bin/sh shim because a python3 shebang does not resolve on Windows.
 FAKE_GH_BODY = r"""
 import json, os, pathlib, sys
 
@@ -270,7 +267,6 @@ def _run(
     if manifests is None:
         manifests = {}
         if manifest is not None:
-            # The manifest fixture belongs to whichever release would be chosen.
             for release in releases:
                 if release["tag_name"] != release_tag:
                     manifests[release["tag_name"]] = manifest
@@ -289,9 +285,6 @@ def _run(
 
 def _latest_of(tmp_path):
     return json.loads((tmp_path / "github.json").read_text(encoding = "utf-8"))["latest"]
-
-
-# ------------------------------------------------------------------ the gate
 
 
 def _run_gate(tmp_path, *, release_tag, assets, repair_pointer):
@@ -364,9 +357,6 @@ def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
     assert outputs == {}
 
 
-# ---------------------------------------------------------------- the repair
-
-
 def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):
     result, commands = _run(
         tmp_path,
@@ -418,8 +408,6 @@ def test_legacy_downloads_are_restored_during_migration(tmp_path):
     assert "gh release download v0.1.801-beta --pattern latest.json" in "\n".join(commands)
     assert any("releases/801 -f make_latest=true" in line for line in commands)
     assert _latest_of(tmp_path) == "v0.1.801-beta"
-    # A pre-rename release cannot serve the stable links, and the summary says so rather than reporting the downloads as
-    # repaired.
     summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
     assert "predates the stable asset names" in summary
 
@@ -452,8 +440,7 @@ def test_incomplete_draft_and_prerelease_releases_are_never_restored(tmp_path):
         ],
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
-    # An explicit repair request that cannot be honoured leaves production broken, so it must go red rather than finish
-    # green with nothing done.
+    # An unhonourable explicit repair request must go red, not finish green doing nothing.
     assert result.returncode == 1
     assert "nothing to restore" in result.stderr
     assert not [line for line in commands if "--method PATCH" in line]
@@ -632,9 +619,8 @@ def test_a_draft_or_prerelease_target_is_refused(tmp_path):
 
 
 def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
-    # The listing is the only view of the target's draft state: /releases/tags/{tag} answers 404 for a draft, which has
-    # no git tag until it is published. A target absent from that single page has an unverifiable state, so the
-    # draft/prerelease refusal above would degrade into no check. Fail closed instead.
+    # /releases/tags/{tag} 404s for drafts, so the listing is the only view of draft state.
+    # A target missing from it is unverifiable: fail closed.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",

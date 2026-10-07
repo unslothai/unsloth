@@ -56,7 +56,7 @@ def _payload(tmp_path: Path) -> Path:
                         "completed": True,
                     }
                 )
-                # A control that is measured at BOTH rungs, so the refusal cannot pass by rejecting everything.
+                # Measured at both rungs, so the refusal cannot pass by rejecting everything.
                 rows.append(
                     {
                         "row_type": "action",
@@ -69,7 +69,7 @@ def _payload(tmp_path: Path) -> Path:
                     }
                 )
                 if open_ms is None:
-                    # Censored: the timing is ABSENT from `timings`, announced in `expect`.
+                    # Censored: absent from `timings`, announced in `expect`.
                     rows.append(
                         {
                             "row_type": "action",
@@ -120,7 +120,6 @@ def test_the_partial_metric_is_marked_unpoolable_and_denied_a_verdict(tmp_path):
     stats = floor_table.summarise([path])
     assert stats["reasoning_toggle.open_ms"]["poolable"] is False
     assert "censored" in stats["reasoning_toggle.open_ms"]["censoring"]
-    # The control keeps its verdict: a refusal that swallowed everything would be no refusal.
     assert stats["keystroke.p50_ms"].get("poolable") is not False
     assert stats["reasoning_toggle.close_ms"].get("poolable") is not False
 
@@ -139,7 +138,6 @@ def test_the_rendered_table_says_so_where_the_number_is_printed(tmp_path, capsys
     )
     assert "NOT A LADDER NUMBER" in printed
     assert CENSORED_RUNG in printed
-    # The fully measured control is NOT marked.
     keystroke_line = next(
         line for line in printed.splitlines() if line.strip().startswith("keystroke.p50_ms")
     )

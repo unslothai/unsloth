@@ -1,7 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Test setup.sh's handling of the missing-torch probe's exit status.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +9,6 @@ SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# Exercise the helper shared by online and offline updates.
 awk '/^_fast_path_escapes\(\) \{/ {on=1} on {print} on && /^}/ {exit}' "$SETUP_SH" > "$WORK/escapes.sh"
 grep -q -- "--missing-torch-needs-dependency-pass" "$WORK/escapes.sh" || {
     echo "FATAL: the missing-torch escape is not in _fast_path_escapes in $SETUP_SH" >&2; exit 1; }
@@ -19,7 +17,6 @@ VENV_DIR="$WORK/venv"
 mkdir -p "$VENV_DIR/bin"
 : > "$WORK/install_python_stack.py"
 
-# Record the probe and return $PROBE_RC; other checks report no repair needed.
 cat > "$VENV_DIR/bin/python" <<'STUB'
 #!/bin/sh
 case "$*" in
@@ -44,7 +41,7 @@ run_escapes() {
             UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
         SUBSTEPS=""
         substep() { SUBSTEPS="$SUBSTEPS|$1"; }
-        # Stubbed like substep: awk lifts _fast_path_escapes alone out of setup.sh.
+        # awk lifts _fast_path_escapes alone, so its dependencies are stubbed.
         _uv_offline_requested() { [ "$_UV_OFFLINE" = true ]; }
         # shellcheck disable=SC1090
         . "$WORK/escapes.sh"

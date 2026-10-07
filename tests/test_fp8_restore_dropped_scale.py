@@ -29,7 +29,6 @@ import torch
 from torch import nn
 from safetensors.torch import save_file
 
-# Import unsloth first to set UNSLOTH_IS_PRESENT env var.
 import unsloth
 from unsloth.models.loader_utils import _restore_dropped_fp8_scales, _FP8_DTYPES
 
@@ -140,7 +139,6 @@ def test_skips_offloaded_meta_weight():
     model.config = _fp8_config((2, 2))
     model.anchor = _fp8_anchor()
     model.layer = nn.Linear(4, 4, bias = False)
-    # Simulate an offloaded weight living on the meta device.
     model.layer.weight = nn.Parameter(
         torch.empty(4, 4, dtype = torch.bfloat16, device = "meta"), requires_grad = False
     )
@@ -186,7 +184,7 @@ def test_non_block_divisible_shape():
     model = nn.Module()
     model.config = _fp8_config((2, 2))
     model.anchor = _fp8_anchor()
-    model.layer = _bf16_linear(3, 4, raw)  # weight shape [3, 4]
+    model.layer = _bf16_linear(3, 4, raw)
 
     with tempfile.TemporaryDirectory() as d:
         _write_checkpoint(d, {"layer.weight_scale_inv": scale})
@@ -396,7 +394,6 @@ def test_text_only_orphaned_fp8_weight_is_dequantized():
     expected = (raw_fp8.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(torch.bfloat16)
     assert torch.equal(got.data, expected)
     assert torch.equal(got.data, full.model.language_model.gate_proj.weight.data)
-    # Used to raise `BFloat16 != Float8_e4m3fn`.
     x = torch.randn(3, 4, dtype = torch.bfloat16)
     assert text_only.model.gate_proj(x).dtype == torch.bfloat16
 

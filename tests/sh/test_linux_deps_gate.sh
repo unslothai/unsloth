@@ -1,15 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Guards the Linux/WSL system-dependency gate in install.sh.
-#
-# History: the gate hard-required cmake, git, gcc and libcurl4-openssl-dev, installing
-# them on apt distros and `exit 1`-ing everywhere else. Nothing on the consumer path
-# builds anything, so it stranded every non-apt distro over unused tooling.
-#
-# The contract now: only a download transport (curl or wget) is fatal, build tooling
-# is a warning, and git is required for --local only (unsloth-zoo git+https URL).
+# Only a download transport (curl or wget) is fatal; build tooling is a warning, and git is
+# required only for --local (unsloth-zoo git+https URL).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -40,7 +33,6 @@ assert_not_contains() {
     fi
 }
 
-# ── Extract the functions under test ──
 _FN_FILE=$(mktemp)
 sed -n '/^_has_working_git()/,/^}/p'   "$INSTALL_SH" >  "$_FN_FILE"
 sed -n '/^_check_linux_deps()/,/^}/p'  "$INSTALL_SH" >> "$_FN_FILE"
@@ -64,8 +56,7 @@ HARNESS
 _BIN=$(mktemp -d)
 _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 
-# PATH is the sandbox and ONLY the sandbox, so unstocked tools are genuinely absent and
-# the host's /usr/bin/cmake cannot leak in. bash must therefore be invoked absolutely.
+# PATH is ONLY the sandbox so host tools cannot leak in; bash must be invoked absolutely.
 _SH="${BASH:-/bin/bash}"
 
 _run_gate() {
@@ -75,7 +66,6 @@ _run_gate() {
 }
 
 echo "=== Fedora/Arch/openSUSE shape: curl present, no build tooling, no apt ==="
-# Used to exit 1 with "supported on apt-based Linux distributions only".
 rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _out="$(_run_gate false)"
@@ -122,8 +112,7 @@ assert_contains "reports everything found"               "$_out" "all system dep
 assert_not_contains "no prebuilt fallback warning"       "$_out" "using prebuilt llama.cpp"
 
 echo "=== apt present: git is auto-installed, because triton_kernels needs it ==="
-# Regression: making git optional without this failed at "6/14 triton kernels", whose
-# requirement is a git+https URL.
+# Optional git without this broke "6/14 triton kernels", a git+https requirement.
 rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _mk apt-get 'exit 0'
@@ -149,7 +138,7 @@ assert_contains "explains why git is needed"             "$_out" "unsloth-zoo"
 assert_contains "says a normal install needs none"       "$_out" "non---local"
 
 echo "=== --local with a git that exists but does not work ==="
-# Mirrors the macOS CLT-stub shape: `command -v git` succeeds, running it fails.
+# macOS CLT-stub shape: `command -v git` succeeds, running it fails.
 rm -f "$_BIN"/*
 _mk curl 'exit 0'
 _mk git 'echo "broken" >&2; exit 1'
@@ -164,9 +153,7 @@ _out="$(_run_gate true)"
 assert_contains "install proceeds"                       "$_out" "RC=0"
 
 echo "=== optional apt packages never ask for elevation, in any mode ==="
-# Regression: the optional bypass sat inside the TAURI_MODE branch, so a plain
-# `curl | sh` on a non-root Debian box still hit the sudo prompt (default yes) and
-# installed cmake, GCC and dev headers that nothing on the consumer path uses.
+# The optional bypass must apply outside TAURI_MODE too, or a piped install still prompts to escalate.
 _APT_FN=$(mktemp)
 {
     sed -n '/^_is_pkg_installed()/,/^}$/p'       "$INSTALL_SH"
@@ -176,12 +163,11 @@ _APT_FN=$(mktemp)
 } > "$_APT_FN"
 
 _run_apt() {
-    # $1 = TAURI_MODE, $2 = _SMART_APT_OPTIONAL. apt-get always fails, as it does
-    # for a non-root user, so the function reaches its escalation decision.
+    # $1 = TAURI_MODE, $2 = _SMART_APT_OPTIONAL. apt-get always fails, as for a non-root user.
     rm -f "$_BIN"/*
     _mk apt-get 'exit 100'
     _mk sudo 'echo "ELEVATION_ATTEMPTED: $*"; exit 1'
-    ln -sf "$(command -v sed)" "$_BIN/sed"   # the function trims its list with sed
+    ln -sf "$(command -v sed)" "$_BIN/sed"
     # _APT_FN after _HARNESS so the real function replaces the recording stub.
     ( PATH="$_BIN"; export PATH
       "$_SH" -c ". '$_HARNESS'; . '$_APT_FN'; TAURI_MODE=$1; _SMART_APT_OPTIONAL=$2

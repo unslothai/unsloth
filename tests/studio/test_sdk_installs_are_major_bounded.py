@@ -38,32 +38,24 @@ ANTHROPIC_PROBES = (
     WORKFLOWS / "studio-windows-inference-smoke.yml",
 )
 
-# Packages our probe code calls directly by keyword, each with the first major it must NOT reach.
-# Asserting the boundary rather than "some upper bound exists" is what makes this mean anything: `openai>=1.50,<999`
-# contains a `<` and admits every major it is meant to keep out.
+# Each with the first major it must NOT reach: `<999` contains a `<` and admits everything.
 GUARDED = {
     # v1 probes pass sampling parameters through extra_body.
     "anthropic": (2,),
-    # 3.3.1 resolves today and the probes pass, so the bound sits above it, not at <2.
+    # 3.3.1 resolves today and the probes pass, so the bound sits above it.
     "openai": (4,),
     "playwright": (2,),
 }
 
-# One `pip install` argument: name, optional [extras], optional specifier. Optional on purpose: a bare
-# `pip install openai` resolves whatever major is current, and a pattern that required a specifier could not see it
-# at all.
+# The specifier is optional: a bare `pip install openai` must be seen too.
 _REQUIREMENT = re.compile(r"""^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?P<spec>.*)$""")
 
-# pip, pip3, pip3.12, pip.exe, and any of those behind a path with either separator, quoted or not. mlx-ci.yml:439 uses
-# "$STUDIO_VENV/bin/pip", and the Windows workflows can use pip.exe; matching the literal text `pip install` saw
-# neither.
+# Any pip spelling, behind any path, quoted or not (e.g. "$STUDIO_VENV/bin/pip").
 _PIP_INSTALL = re.compile(
     r"""(?:^|[\s"'/\\])pip[0-9]*(?:\.[0-9]+)*(?:\.exe)?["']?\s+install(?:\s|$)"""
 )
 
-# The whole version token, suffix included.
-# Capturing only the numeric prefix turned `<4.post1` into `<4`, and such a bound is LOOSER than its digits: `<4.post1`
-# admits 4.0.
+# The whole version token: `<4.post1` admits 4.0.
 _UPPER = re.compile(r"(?P<op><=|<)(?P<version>[^,\s'\"]+)")
 _NUMERIC = re.compile(r"^[0-9][0-9.]*$")
 _EXACT = re.compile(r"===?(?P<version>[0-9][0-9.]*)")
@@ -301,10 +293,8 @@ def test_a_bound_above_the_next_major_is_not_accepted() -> None:
     assert not _excludes(">=1.50,<999", GUARDED["openai"])
     assert not _excludes(">=1.50,<5", GUARDED["openai"])
     assert not _excludes(">=1.50", GUARDED["openai"])
-    # <=4 admits 4.0 itself, so it does not exclude the 4 series.
     assert not _excludes(">=1.50,<=4", GUARDED["openai"])
     assert _excludes(">=1.50,<4", GUARDED["openai"])
-    # A narrower window than the boundary is stricter, and still fine.
     assert _excludes(">=1.55,<1.58", GUARDED["playwright"])
     assert _excludes(">=1.45,<2", GUARDED["playwright"])
 
@@ -318,9 +308,7 @@ def test_a_pin_that_cannot_drift_is_accepted() -> None:
     assert _excludes("==3.0.0", GUARDED["openai"])
     assert _excludes("===3.0.0", GUARDED["openai"])
     assert not _excludes("==4.1.0", GUARDED["openai"])
-    # ~=1.4 is >=1.4,<2, so it keeps 2.x out.
     assert _excludes("~=1.4", GUARDED["playwright"])
-    # ~=1.4.5 is >=1.4.5,<1.5, narrower still.
     assert _excludes("~=1.4.5", GUARDED["playwright"])
 
 
@@ -333,7 +321,6 @@ def test_a_bare_or_extras_install_is_not_invisible() -> None:
     assert _requirements_in("pip install openai", "openai") == [""]
     assert _requirements_in("pip install 'openai[datalib]>=1.50'", "openai") == [">=1.50"]
     assert not _excludes("", GUARDED["openai"]), "a bare install constrains nothing"
-    # A name inside a URL or a requirements path is not an install of that package.
     assert _requirements_in("pip install -r reqs/openai.txt", "openai") == []
     assert (
         _requirements_in(
@@ -409,7 +396,6 @@ def test_equivalent_bounds_compare_equal() -> None:
     assert _version("1.58") == (1, 58)
     assert _excludes(">=1.50,<4.0", GUARDED["openai"])
     assert _excludes(">=1.50,<4.0.0", GUARDED["openai"])
-    # <4.0.1 still admits 4.0, so it does not exclude the 4 series.
     assert not _excludes(">=1.50,<4.0.1", GUARDED["openai"])
 
 

@@ -51,23 +51,15 @@ GITHUB = REPO / ".github"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
-# A pinned-by-SHA reference whose upstream repository is gone or renamed cannot be
-# reviewed, but it also cannot change, so it is not this module's problem.
+# A SHA-pinned reference to a gone or renamed repo cannot change, so it is out of scope.
 DELIBERATELY_UNPINNED = {
-    # Each entry needs the reason written here. Empty is the goal, and it growing needs
-    # an argument rather than a deadline: there is no version of "we will pin it later"
-    # that is safer than pinning it now, because the pin is a one-line change.
+    # Each entry needs its reason here; the goal is empty.
 }
 
 
-# Actions deliberately held at two different commits, keyed on `owner/repo`, with the
-# reason. The failure below used to tell people to "say so in a comment at each site",
-# which nothing read, so the documented remedy could not make CI pass and the only way
-# out was editing this file. This is the mechanism that advice implied.
+# Actions deliberately held at two commits, keyed on `owner/repo`, with the reason.
 DELIBERATELY_SPLIT: dict[str, str] = {
-    # Empty, and a split is nearly always a half-finished upgrade rather than a decision.
-    # An entry here needs the reason a single commit will not do, not a note that two
-    # exist.
+    # A split is nearly always a half-finished upgrade; an entry needs a real reason.
 }
 
 
@@ -91,12 +83,7 @@ def _sources():
         yield path, path.read_text(encoding = "utf-8", errors = "ignore")
 
 
-# Split on the LAST `@` rather than enumerating what a ref may contain. Git ref names
-# accept characters the first version left out -- `+` among them, and
-# `git check-ref-format refs/tags/v1+build` agrees -- so `owner/action@v1+build` produced
-# no match and was omitted from every pinning check while still being a mutable tag. A
-# guard that silently skips what it cannot parse is worse than one that over-collects,
-# because the `_SHA` test below decides the verdict anyway.
+# Split on the last `@`: git refs may contain `+` and other characters, and the SHA test decides.
 _REPO_PART = re.compile(r"""^[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?$""")
 
 
@@ -152,17 +139,13 @@ def _references():
         except yaml.YAMLError:
             continue
         for ref in _uses_values(doc):
-            # `uses: ./.github/actions/x` resolves inside this checkout, and
-            # `docker://` is an image rather than an action; neither is a mutable
-            # third-party pointer.
+            # Local `./` actions and `docker://` images are not mutable third-party pointers.
             if ref.startswith(".") or ref.startswith("docker://"):
                 continue
             parts = _split_ref(ref)
             if parts is None:
                 continue
-            # The parser discards positions, so recover the line from the source for the
-            # failure message. Only ever cosmetic: a reference that cannot be located is
-            # still reported, at line 0.
+            # Line lookup is cosmetic; an unlocatable reference is still reported, at line 0.
             index = text.find(ref)
             lineno = text.count("\n", 0, index) + 1 if index >= 0 else 0
             yield path, lineno, ref, parts[0], parts[1]
@@ -216,15 +199,12 @@ def test_the_scan_reads_every_spelling_of_a_step_mapping():
         "steps:\n  - {uses: actions/checkout@v4}\n",
         "steps: [{uses: actions/checkout@v4}]\n",
         'steps:\n  - uses: "actions/checkout@v4"\n',
-        # Nested inside a composite action, which is the other place `uses` appears.
         "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
     ]
     for source in spellings:
         found = list(_uses_values(yaml.safe_load(source)))
         assert found == ["actions/checkout@v4"], f"{source!r} produced {found!r}"
 
-    # A `uses` value that is not a reference, and a key that merely contains the word,
-    # must not be picked up as third-party references.
     assert list(_uses_values(yaml.safe_load("steps:\n  - uses: ./.github/actions/x\n"))) == [
         "./.github/actions/x"
     ]
@@ -239,8 +219,8 @@ def test_the_reference_predicate_reads_owner_repo_at_ref():
         ("owner/repo@0123456789abcdef0123456789abcdef01234567", True),
         ("./.github/actions/x", False),
         ("docker://alpine:3", False),
-        ("actions/checkout", False),  # no ref at all
-        ("notapath@v4", False),  # no owner
+        ("actions/checkout", False),
+        ("notapath@v4", False),
         ("", False),
     ]
     for ref, expected in cases:
@@ -334,9 +314,7 @@ def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
     produced no match and was omitted from every pinning check while still being a
     mutable tag.
     """
-    # `v@1` included: `git check-ref-format refs/tags/v@1` succeeds, so it is a valid
-    # mutable tag, and a revision pattern spelled `[^@\s]+` forbade the very character
-    # the split is named for -- dropping it from every pinning check.
+    # `v@1` is a valid tag (`git check-ref-format` accepts it), so `@` must be allowed in the ref.
     for ref in (
         "owner/action@v1+build",
         "owner/action@release~1",
@@ -348,7 +326,6 @@ def test_the_reference_predicate_accepts_valid_git_ref_punctuation():
         assert parts[0] == "owner/action", ref
         assert not _SHA.match(parts[1]), f"{ref} is not a pin"
 
-    # Still not references, so over-collecting does not turn into over-reporting.
     for ref in ("./.github/actions/x", "docker://alpine:3", "actions/checkout", ""):
         assert _split_ref(ref) is None, ref
 
@@ -367,8 +344,7 @@ def test_a_sub_action_is_pinned_with_its_repository():
     assert _owner_repo("actions/cache/restore") == "actions/cache"
     assert _owner_repo("actions/cache") == "actions/cache"
     assert _owner_repo("actions/checkout") == "actions/checkout"
-    # A deep path still resolves to the repository that holds it.
     assert _owner_repo("owner/repo/a/b/c") == "owner/repo"
-    # The grouping has to be what the rule is parametrized over, or it changes nothing.
+    # The rule must be parametrized over this grouping.
     groups = {_owner_repo(r) for _, _, _, r, _ in _references()}
     assert "actions/cache/save" not in groups

@@ -67,7 +67,7 @@ def test_run_timed_does_not_speak_for_its_callers() -> None:
         "run_timed still promises the caller will judge on assertions; three "
         "callers treat a timeout as fatal instead, and the reader sees both"
     )
-    # It must still say the cap was hit -- silence here is how a stall reads as an ordinary non-zero exit.
+    # It must still say the cap was hit, or a stall reads as an ordinary non-zero exit.
     assert "did not exit within" in body
 
 
@@ -92,18 +92,12 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
         "the documented flow drifted -- the one thing a cap does not show"
     )
     assert "not implicated" in branch, "the message does not clear the recipe it used to blame"
-    # Still fatal. Waiving a cap here would report "connection OK" for a recipe that printed a banner and then blocked
-    # on a headless prompt, which is the failure this job exists to catch.
+    # Still fatal: a recipe that printed a banner then blocked on a prompt must not pass.
     assert "exit 1" in branch, (
         "a timed-out connection must stay fatal; assert_reply cannot tell a "
         "finished reply from a startup banner"
     )
-    # The one thing that may narrow it. assert_reply still cannot tell a reply
-    # from a banner, so the cap is not waived; what excuses it is a line the
-    # agent prints only when a run ends, which a banner cannot produce. Openclaw
-    # answered `pong` and logged `ended with stopReason=stop`, then held its
-    # session write lock for the remaining 1200s, and this branch called that a
-    # turn that never came back.
+    # The only allowed narrowing is the agent's end-of-run marker, which a banner cannot print.
     assert condition.strip() in ("", '&& [ "${TURN_DONE:-0}" != 1 ]'), (
         "the connection cap may only be narrowed by TURN_DONE, which run_timed "
         f"sets solely on an end-of-run marker; found {condition.strip()!r}"

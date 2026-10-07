@@ -65,12 +65,9 @@ from .manifest import Arm, DeclaredDiff, Invariance, PotencyCounter
 
 KNOBS_JS_PATH = Path(__file__).with_name("knobs.js")
 
-#: Knobs that must be installed BEFORE the app boots, because they patch a prototype the app is
-#: about to use. Installing one of these after boot measures nothing: React has already captured
-#: its scheduler port and the autoscroll hook has already called observe().
+# Must be installed before boot: React captures its scheduler port and autoscroll calls observe() early.
 PREBOOT_ARM_IDS: frozenset[str] = frozenset({"D", "E", "F"})
 
-#: Knobs applied at the start of a measured window, over the messages that exist then.
 RUNTIME_ARM_IDS: frozenset[str] = frozenset({"A", "B", "C", "G"})
 
 

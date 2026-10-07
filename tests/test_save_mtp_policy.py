@@ -50,7 +50,6 @@ def test_unsloth_save_model_strips_the_declaration(tree):
 
 @pytest.fixture(scope = "module")
 def save_module():
-    # Skip rather than fail on an older zoo; the AST tests above pin this repo's wiring.
     pytest.importorskip(
         "unsloth_zoo.saving_utils",
         reason = "unsloth_zoo.saving_utils is unavailable",
@@ -240,7 +239,6 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
 
         def state_dict(self):
             collected.append("state_dict")
-            # A real tensor, so the 16bit branch below can cast it as it always does.
             return {"model.embed_tokens.weight": torch.zeros(1)}
 
         def save_pretrained(self, directory, **kwargs):
@@ -260,7 +258,7 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
         )
         assert collected == [], (method, collected)
 
-    # A 16bit save still builds one, because that state dict is what gets WRITTEN.
+    # A 16bit save still builds one, because that state dict is what gets written.
     collected.clear()
     save_module_any.unsloth_generic_save(
         _Model(),
@@ -296,8 +294,7 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
 
         def save_pretrained(self, directory, **kwargs):
             os.makedirs(directory, exist_ok = True)
-            # What transformers 5 does: "remove it from state_dict to avoid keeping the ref",
-            # one pop per tensor as its shard is written, leaving the caller's dict empty.
+            # transformers 5 pops each tensor as its shard is written, emptying the caller's dict.
             for name in list(kwargs.get("state_dict") or ()):
                 kwargs["state_dict"].pop(name)
 
@@ -318,8 +315,6 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
     )
     assert seen == [["model.embed_tokens.weight"]], seen
 
-    # No state dict of its own means the names really are unknown here, and unknown must stay
-    # unknown rather than licence a guess.
     seen.clear()
     save_module_any.unsloth_generic_save(
         _Model(),

@@ -47,18 +47,15 @@ _XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool
     OrderedDict()
 )
 
-# Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
+# Per-device caches avoid a repeated D2H sync across layers.
 _PACKED_INFO_CACHE: dict = {}
 
-# Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
 _SEGMENT_LENGTHS_CACHE: dict = {}
 
-# Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
-# Cache per device for cover_padded_cu_seqlens to avoid repeated D2H sync across layers
 _PADDED_CU_SEQLENS_CACHE: dict = {}
 
 
@@ -86,9 +83,8 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         ):
             return attn_bias
 
-        # Move the device-bearing metadata instead of the top-level mask: older xFormers versions demote
-        # causal masks in their inherited `to` method, and copies also keep later model shards from
-        # rewriting masks retained for backward.
+        # Move the metadata, not the mask: older xFormers demote causal masks in `to`, and copies keep
+        # later shards from rewriting masks retained for backward.
         moved_bias = copy.copy(attn_bias)
         moved_seqinfos = {}
         for name, seqinfo in seqinfos:
@@ -104,7 +100,6 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
             setattr(moved_bias, name, moved_seqinfos[source_id])
         return moved_bias
 
-    # Biases without sequence metadata can safely use their own move protocol.
     moved_bias = copy.copy(attn_bias)
     move = getattr(moved_bias, "to", None)
     if callable(move):
@@ -229,19 +224,14 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
-            # Fallback: infer lengths from tokenized inputs when metadata is absent.
             if not seq_lengths:
                 for example in examples:
                     ids = example.get("input_ids")
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                # Boundary labels are NOT masked here: unsloth_zoo's _unsloth_get_batch_samples counts
-                # num_items_in_batch off this batch and discounts the N-1 boundary targets itself, idempotently,
-                # zeroing those slots rather than subtracting a constant, so the count is unaffected by upstream
-                # masking (TRL >= 0.24's labels[position_ids == 0] = -100, completion-only masking,
-                # assistant_masks). Labels are left alone because the guard that needs these positions runs in the
-                # forward, off packed_seq_lengths.
+                # Boundary labels are NOT masked here: the zoo's _unsloth_get_batch_samples discounts the N-1
+                # boundary targets idempotently, and the forward guard masks off packed_seq_lengths.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -280,7 +270,7 @@ def enable_padding_free_metadata(model, trainer):
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
+                    # TRL's collator keys seq_lengths off examples[0]: pass a copy, not the caller's row.
                     if collated is examples:
                         collated = list(examples)
                     collated[index] = {**example, "seq_lengths": lengths}
@@ -288,8 +278,7 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(collated)
         if seq_lengths:
-            # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
-            # this batch and the zoo's discount of the boundary targets is idempotent.
+            # Labels left alone, as in enable_sample_packing.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
@@ -300,12 +289,9 @@ def enable_padding_free_metadata(model, trainer):
     collator._unsloth_padding_free_lengths_wrapped = True
 
 
-# Experimental correct packing / padding-free for hybrid linear-attention: Qwen3.5 / Qwen3-Next
-# mix a gated-delta recurrence with a causal conv1d, and packing flattens the batch so both leak
-# state across sequence boundaries unless seq_idx (conv) and cu_seqlens (scan) are passed. Only
-# the accelerated kernels accept these, so it fails closed on the pure-torch fallbacks, behind an
-# env flag, and overrides only the per-module prefill kernels (causal_conv1d_fn /
-# chunk_gated_delta_rule), leaving decode untouched.
+# Experimental: Qwen3.5 / Qwen3-Next leak gated-delta and conv1d state across packed sequences
+# unless seq_idx / cu_seqlens are passed. Accelerated kernels only, fails closed, env-gated,
+# prefill only.
 _HYBRID_PACKING_ENV_VAR = "UNSLOTH_EXPERIMENTAL_HYBRID_PACKING"
 _HYBRID_LOGGER = logging.getLogger("unsloth.hybrid_packing")
 _HYBRID_WARNED: set = set()
@@ -322,7 +308,6 @@ def _hybrid_packing_enabled() -> bool:
 
 
 def _hybrid_reject(reason: str) -> bool:
-    # One deduped diagnostic explaining why hybrid packing stayed on the padded path.
     if reason not in _HYBRID_WARNED:
         _HYBRID_WARNED.add(reason)
         _HYBRID_LOGGER.warning(
@@ -478,7 +463,6 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         return False
     gated_delta_modules = _iter_gated_delta_modules(model)
 
-    # Idempotency: an already fully-patched model stays active without re-validation.
     if (
         getattr(model, "_unsloth_varlen_forward_wrapped", False)
         and gated_delta_modules
@@ -490,7 +474,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     if reason is not None:
         return _hybrid_reject(reason)
 
-    # Transactional: every module validated above, now wrap each and stash originals.
+    # Transactional: everything validated above before any wrap.
     for module in gated_delta_modules:
         if getattr(module, "_unsloth_varlen_wrapped", False):
             continue
@@ -531,8 +515,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
-    # recompute so it stays valid for recomputed inner forwards.
+    # Refresh the boundary stash on the outermost forward, outside checkpoint recompute.
     if not getattr(model, "_unsloth_varlen_forward_wrapped", False):
         forward_orig = model.forward
         try:
@@ -560,8 +543,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_conv_hit = False
                     module._unsloth_varlen_scan_hit = False
             out = forward_orig(*args, **kwargs)
-            # Runtime dispatch handshake: on the first packed forward, confirm BOTH boundary kernels ran for
-            # EVERY module.
+            # On the first packed forward, confirm BOTH boundary kernels ran for EVERY module.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
                 missing = [
@@ -613,8 +595,7 @@ def get_packed_info_from_kwargs(
 
 
 def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
-    # TRL pads the flattened padding-free row to pad_to_multiple_of after the lengths are
-    # taken; the tail gets its own block, since a row outside every block softmaxes to NaN.
+    # TRL pads the flattened row after the lengths are taken; the tail gets its own block, else NaN.
     if total_tokens is None:
         return lengths
     padding = total_tokens - sum(lengths)
@@ -659,7 +640,6 @@ def build_xformers_block_causal_mask(
         return None
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
-        # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
         params = (sliding_window, total_tokens, is_causal)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)

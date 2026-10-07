@@ -41,12 +41,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
-#: SIZED BY MEASUREMENT. Under `spawn` the per-trial collision rate on the broken guard is well below
-#: the 50% a barrier reaches under `fork`, because each contender pays its own interpreter startup
-#: first. At 10 trials the two headline tests missed the defect in one run out of four; at 40 they
-#: caught it in six runs out of six, and the file still costs about ten seconds.
-#: `spawn` rather than `fork` because pytest has already started threads by the time this runs, and
-#: forking a multi-threaded process is deprecated because the child can deadlock.
+# Sized by measurement: spawn collides less than fork, and 40 trials reliably catch the defect.
+# spawn, not fork: pytest has threads running and forking them can deadlock.
 TRIALS = 40
 
 
@@ -65,8 +61,7 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
     except Exception as exc:  # noqa: BLE001 - reported rather than lost
         q.put((False, f"UNEXPECTED {type(exc).__name__}: {exc}"))
     finally:
-        # Nobody releases the marker until everyone has attempted, so an admission is genuine overlap rather
-        # than sequential reuse of a directory the first run already let go.
+        # Nobody releases until all have attempted, so an admission is genuine overlap.
         try:
             hold.wait(timeout = 60)
         except Exception:  # noqa: BLE001
@@ -89,7 +84,6 @@ def _trial(
     out = tmp_path / f"out{trial}"
     out.mkdir()
     if stale:
-        # What a crashed run leaves behind: a marker naming a pid that is gone.
         (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
     ctx = mp.get_context("spawn")
     start, hold, q = ctx.Barrier(n), ctx.Barrier(n), ctx.Queue()
@@ -194,12 +188,9 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
     rec.close()
 
 
-# A retained record is not a holder. The marker is deliberately never unlinked, so a directory used
-# before already contains the PREVIOUS run's `pid session` line. These two are deterministic on
-# purpose: they stand in the window rather than racing for it.
+# The marker is never unlinked, so a reused directory holds the previous run's line; not a holder.
 
 
-# ── a retained record is not a holder ────────────────────────────────
 def _stalled_holder(
     marker: Path,
     write_after_s: float,
@@ -266,7 +257,6 @@ def test_a_retained_record_is_not_named_as_the_current_holder(tmp_path):
     out = tmp_path / "out0"
     out.mkdir()
     marker = out / ".running.lock"
-    # A pid that is definitely not running: spawn and reap.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     marker.write_text(f"{dead.pid} sessionGONE\n")

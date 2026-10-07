@@ -31,7 +31,7 @@ from studiobench.instruments.streamcost import StreamCostInstrument  # noqa: E40
 
 STREAMCOST_JS = Path(__file__).resolve().parents[1] / "streamcost.js"
 
-#:`IDLE_GAP_MS` in the instrument. A stall longer than this is the case that used to vanish.
+# Mirrors IDLE_GAP_MS in streamcost.js.
 IDLE_GAP_MS = 1500
 
 HARNESS_JS = r"""
@@ -64,9 +64,7 @@ setTimeout(() => {
 """
 
 
-#: The same file, driven through the ordering that loses a burst: a window that closes while the
-#: chain the last chunk started has not reached its macrotask yet. `readWhilePending` decides which
-#: ordering the harness produces, so the pinned case and its control differ by nothing else.
+# Same file, driven through the ordering where a window closes before the chain's macrotask.
 PENDING_HARNESS_JS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
@@ -108,11 +106,7 @@ if (readWhilePending) {
 """
 
 
-#: The same file again, driven through ONE `decode()` of a whole batched read. `payload` decides
-#: what that read carries: a burst of the pacer's own frames larger than the decoder's scan bound,
-#: the same burst small enough to sit under it, or a blob of the size that bound exists to keep
-#: out. The burn after the decode stands in for the SSE parse, the delta accumulation and the
-#: render.
+# Same file, driven through one decode() of a whole batched read.
 BATCH_HARNESS_JS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
@@ -236,9 +230,6 @@ def one_decoded_batch(mode: str, burn_ms: float) -> dict:
     return json.loads(got.stdout)
 
 
-#: The task chain one burst starts, in the harness above. Large enough that losing it is
-#: unmistakable and small enough that node's timers stay honest.
-# This is what `delta_task_ms` charges.
 BURST_CHAIN_MS = 40.0
 
 
@@ -287,7 +278,7 @@ def test_a_burst_whose_chain_has_already_closed_is_charged_once():
     assert out["second"]["delta_task_ms"] < BURST_CHAIN_MS * 0.1, out
 
 
-#:`MAX_SSE_CHUNK_CHARS` in the instrument. A single decode above it is the case that used to be discarded whole.
+# Mirrors MAX_SSE_CHUNK_CHARS in streamcost.js.
 MAX_SSE_CHUNK_CHARS = 65536
 
 
@@ -306,12 +297,11 @@ def test_a_batched_sse_read_above_the_decoder_scan_bound_is_still_detected():
     out = one_decoded_batch("batch-over", BURST_CHAIN_MS)
 
     assert out["decoded_chars"] > MAX_SSE_CHUNK_CHARS, out
-    # The decode was seen either way; what used to be lost is everything downstream of it.
     assert out["read"]["decode_calls"] == 1, out
     assert out["read"]["sse_chunks"] == 1, out
     assert out["read"]["sse_bursts"] == 1, out
     assert out["read"]["streaming_observed"] is True, out
-    # ONE chain for the batch, charged once: a burst delivered in one task is one task chain.
+    # One chain per batch: a burst delivered in one task is charged once.
     assert out["read"]["delta_task_ms"] >= BURST_CHAIN_MS * 0.9, out
 
 
@@ -354,7 +344,6 @@ def test_a_stall_longer_than_the_idle_gap_is_still_charged_to_the_stream():
     stall_ms = IDLE_GAP_MS + 400
     out = drain_after_stall(stall_ms)
     assert out["streaming_observed"] is True
-    # The stall began while the stream was in flight, so it belongs to the stream.
     assert out["streaming_ms"] >= stall_ms * 0.9, out
     assert out["stream_blocked_ms"] >= stall_ms * 0.9, out
 
@@ -404,8 +393,7 @@ class _FakeStreamCostPage:
     than driving node keeps the test about the DRIVER's ordering, which is where the defect lives.
     """
 
-    #: What one boundary scan costs. `querySelectorAll` collects its matches up front over the whole
-    #: document, so this is the one part of the instrument that grows with the rung.
+    # querySelectorAll scans the whole document, so this is the cost that grows with rung.
     SCAN_MS = 3.9
 
     def __init__(self) -> None:
@@ -445,7 +433,6 @@ def test_the_close_side_reply_scan_is_counted_in_the_declared_overhead():
     """
     inst = StreamCostInstrument()
     page = _FakeStreamCostPage()
-    # After `start_cell`, which re-reads the page from the context every cell.
     inst.start_cell(_FakeCell())
     inst.page = page
     for _ in range(3):
@@ -470,8 +457,6 @@ def test_the_close_side_drain_does_not_disturb_the_window_s_own_reading():
 
     assert out["streaming_observed"] is True
     assert out["reply_chars_delta"] == 1_000
-    # The window's own overhead figure is what `read()` returned; the close scan is reported beside it
-    # rather than folded into it.
     assert out["overhead_ms"] == pytest.approx(_FakeStreamCostPage.SCAN_MS, abs = 0.05)
     assert out["close_scan_overhead_ms"] == pytest.approx(_FakeStreamCostPage.SCAN_MS, abs = 0.05)
 

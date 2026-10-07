@@ -246,29 +246,24 @@ def test_no_canvas_instruction_is_left_in_the_request_path():
 @pytest.mark.parametrize(
     ("seed_patch", "expected"),
     [
-        # No reasoning support: send nothing, and llama-server keeps its own defaults.
         pytest.param("{ supportsReasoning: false }", {}, id = "no_reasoning_support"),
-        # Qwen3-style gate off: the template prefills an empty thinking block for this flag.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking", reasoningEnabled: false }',
             {"enable_thinking": False},
             id = "thinking_turned_off",
         ),
-        # gpt-oss-style: the effort level is rendered into the prompt.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "reasoning_effort", reasoningEnabled: true,'
             ' reasoningEffort: "low" }',
             {"reasoning_effort": "low"},
             id = "effort_level",
         ),
-        # GLM-style: gate plus a level, clamped to this template's levels as the request build is.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking_effort",'
             ' reasoningEnabled: true, reasoningEffort: "high", reasoningEffortLevels: ["max"] }',
             {"enable_thinking": True, "reasoning_effort": "max"},
             id = "effort_clamped_to_the_template_levels",
         ),
-        # Independent of the gate: decides whether past <think> blocks stay in the prompt.
         pytest.param(
             "{ supportsPreserveThinking: true, preserveThinking: true }",
             {"preserve_thinking": True},
@@ -367,18 +362,15 @@ def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
     assert on.get("permission_mode") == "ask", "the gate that holds the loop's retrieval"
     assert on.get("max_tool_calls_per_message") == 0, "Off suppresses the loop entirely"
     assert (on.get("rag_scope") or {}).get("autoinject") is True
-    # The values, not the keys: unknown size on, Auto off above the threshold.
     assert (out["large"].get("rag_scope") or {}).get("autoinject") is False
     off_scope = out["injectOff"].get("rag_scope") or {}
     assert (off_scope.get("autoinject"), off_scope.get("whole_doc")) == (False, False)
-    # Explicit, and with no budget beside it, as the send is: an omitted flag would let
-    # `unsloth studio run --enable-tools` answer for the count.
+    # An omitted flag would let `unsloth studio run --enable-tools` decide the count.
     assert off.get("enable_tools") is False
     assert "max_tool_calls_per_message" not in off
 
 
-# Tools on, RAG deliberately off: the archive tool is gated on the thread id alone, so a
-# scope-only id would leave it unpriced exactly when RAG is not in play.
+# The archive tool is gated on the thread id alone, so it must be priced with RAG off.
 TOOLS_ON_RAG_OFF = (
     "{ supportsTools: true, toolsEnabled: true, codeToolsEnabled: false, "
     "artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: false, "

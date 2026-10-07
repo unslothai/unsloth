@@ -76,8 +76,7 @@ def _outcome(
     )
 
 
-#: One coherent synthetic world: the autoscroll observer is the dominant cost on both routes, and
-#: the two routes disagree about it, which is the interaction the design exists to surface.
+# The two routes disagree about the dominant autoscroll cost: the interaction to surface.
 _VISUAL = {
     "shipping": 40.0,
     "A": 34.0,
@@ -140,19 +139,13 @@ def _blind_calibration():
     )
 
 
-# planning
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_planned_batch_covers_both_routes_and_the_calibration_arms():
     planned = plan_batch()
     keys = {cell.key for cell in planned}
     assert "shipping" in keys
-    assert "A+B+C+D+E+F" in keys  # the shared floor
+    assert "A+B+C+D+E+F" in keys
     assert {"NULL", "SPIKE0.1", "SPIKE0.5", "SPIKE2"} <= keys
-    assert missing_cells(planned, _all_outcomes())  # calibration cells are still to be run
+    assert missing_cells(planned, _all_outcomes())
 
 
 def test_arms_with_different_scene_lengths_are_refused_before_the_run():
@@ -165,12 +158,6 @@ def test_arms_with_different_scene_lengths_are_refused_before_the_run():
 def test_no_scene_durations_at_all_is_a_refusal_not_a_pass():
     with pytest.raises(BatchPlanError):
         assert_equal_scene_duration({})
-
-
-# judging and rendering
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_quotable_batch_renders_steps_interactions_and_verdicts():
@@ -191,7 +178,6 @@ def test_a_quotable_batch_renders_steps_interactions_and_verdicts():
     assert "[FUSED]" in rendered
     assert "Nothing here is averaged" in rendered
     assert "ABLATION DECISION TABLE" in rendered
-    # the identity is stated and holds on both routes
     assert rendered.count("no residual to attribute") == 2
 
 
@@ -207,8 +193,8 @@ def test_no_absolute_arm_cost_appears_anywhere_in_the_rendered_batch():
     # 34.0 and 26.0 are arm costs; 8.00 and 6.00 are adjacent differences
     assert "34.0 ms/update" not in rendered
     assert "26.0 ms/update" not in rendered
-    assert "6.00 ms/update" in rendered  # shipping -> A
-    assert "8.00 ms/update" in rendered  # A -> A+B
+    assert "6.00 ms/update" in rendered
+    assert "8.00 ms/update" in rendered
 
 
 def test_a_not_quotable_batch_prints_no_ablation_numbers():
@@ -222,7 +208,6 @@ def test_a_not_quotable_batch_prints_no_ablation_numbers():
     assert "NO ABLATION NUMBERS ARE PRINTED" in rendered
     assert "ROUTE visual_first" not in rendered
     assert "6.00 ms/update" not in rendered
-    # the verdicts still print: a reader needs to know the arms ran
     assert "ARM VERDICTS" in rendered
 
 
@@ -252,8 +237,7 @@ def test_fix_implications_rank_the_largest_step_and_name_its_fix():
     )
     rendered = render_fix_implications(result)
     top = rendered.splitlines()[1].strip()
-    # the two routes disagree about the autoscroll observer, so the headline is a RANGE and both routes
-    # are named; quoting only the larger would let a reader pick the flattering route
+    # The routes disagree, so the headline is a range naming both.
     assert top.startswith("9.000 to 18.000 ms")
     assert "autoscroll_forced_layout" in top
     assert "routes disagree: scheduler_first 18.000, visual_first 9.000" in rendered
@@ -290,16 +274,10 @@ def test_a_batch_with_a_dose_fit_an_armpack_refusal_and_a_recovery_renders_all_t
     assert "RETAINED STRUCTURE" in rendered
 
 
-# the harness layer's row stream
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_harness_rows_assemble_and_their_attested_zeros_survive(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
-    # written by hand rather than through PayloadWriter.write, because these are Layer 1's rows
+    # By hand rather than PayloadWriter.write: these are Layer 1's rows.
     with path.open("w", encoding = "utf-8") as handle:
         rows = [
             '{"row_type":"run_meta","tier":"quick","tool_version":"1","corpus_hash":"c",'
@@ -320,7 +298,6 @@ def test_harness_rows_assemble_and_their_attested_zeros_survive(tmp_path: Path):
     payload = assemble_rows(path)
     assert payload["complete"] is True
     assert len(payload["windows"]) == 1
-    # an attested zero survives validation; an action that failed its own assertion is excluded
     assert payload["excluded_cells"][0]["reason"] == "slot_missed"
     assert "must not be quoted" in payload["excluded_cells"][0]["detail"]
 

@@ -92,16 +92,11 @@ def test_torchcodec_exclusive_upper_bound():
     assert fixes._torchcodec_exclusive_upper("0.9") == "<0.10.0"
 
 
-# One row per (torch, torchcodec) pair the runtime guard has an opinion about: the
-# substrings the warning must carry, and the ones it must not. `None` for `contains` means
-# the guard has to stay silent -- the pair is supported and a warning would be noise.
+# (torch, torchcodec, substrings the warning must carry or None for silent, forbidden substrings)
 _GUARD_CASES = [
-    # Inside the lockstep table: each torch minor takes its own codec line and no other.
     ("2.9.0+cu128", "0.7.0", (), ("audio-torch210",)),
     ("2.8.0+cu128", "0.7.0", None, ()),
-    # Untagged torch needs no index pin, so the convenient extra stays on offer...
     ("2.10.0", "0.11.0", ("torchcodec 0.11.0", "audio-torch210", "<0.11.0"), ("<11.0",)),
-    # ...while a tagged one cannot carry an index in an extra, so it gets the pin alone.
     (
         "2.10.0+cu128",
         "0.11.0",
@@ -109,7 +104,6 @@ _GUARD_CASES = [
         ("audio-torch210",),
     ),
     ("2.10.0+cu128", "0.10.0+cu128", None, ()),
-    # The guard must not be silent on the torch minor where the mismatch happens.
     (
         "2.11.0",
         "0.10.0+cu128",
@@ -117,21 +111,16 @@ _GUARD_CASES = [
         ("audio-torch210",),
     ),
     ("2.11.0+cu128", "0.11.1+cu128", None, ()),
-    # The ABI-stable floor starts at torch 2.11: 2.10 keeps the exact pairing.
     ("2.10.0", "0.15.0", ("audio-torch210",), ()),
-    # A torch minor older than the matrix keeps the original no-opinion behaviour.
     ("2.4.0", "0.0.3", None, ()),
 ]
 
-# torchcodec 0.12+ targets torch >=2.11, so it is not locked to one minor.
 _GUARD_CASES += [
     (torch_version, codec_version, None, ())
     for torch_version in ("2.11.0+cu128", "2.12.0", "2.13.0+cu130")
     for codec_version in ("0.12.0", "0.15.0+cu130")
 ]
 
-# 0.11 is pinned to torch 2.11 exactly, so 2.12/2.13 with a pre-0.12 codec still warns, and
-# no audio-torch2xx extra exists for those minors, so none is offered.
 _GUARD_CASES += [
     (torch_version, codec_version, ("torchcodec>=0.12.0",), ("unsloth[audio-torch",))
     for torch_version in ("2.12.1+cu130", "2.13.0")
@@ -213,10 +202,7 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     ]
 
     audited = ["audio-torch211", "audio-torch210", "audio-torch290", "audio-torch280"]
-    # Both halves of the workflow build the inputs; one is the advisory audit, one is
-    # scan_packages. 211 is folded into unsloth-deps.txt, the rest get a file each.
-    # Either index shape counts: the workflow now reaches extras through a guarded helper
-    # that names a missing group. What matters is that both halves still look the group up.
+    # Either index shape counts; both workflow halves must still look the group up.
     indexed = text.count('optional-dependencies"]["audio-torch211"]') + text.count(
         'extra("audio-torch211")'
     )
@@ -226,8 +212,7 @@ def test_security_audit_covers_every_installable_torchcodec_line():
         assert f"audit-reqs/{extra}.txt" in text, extra
         assert f" {extra} " in text or f" {extra};" in text or f" {extra}'" in text, extra
 
-    # scan_packages.py keeps one requirement per package name, so two disjoint torchcodec
-    # ranges in one shard collapse to the first. They have to be scanned apart.
+    # scan_packages keeps one requirement per name, so disjoint ranges need separate shards.
     shards = re.findall(r"files: '([^']+)'", text)
     for shard in shards:
         assert (
@@ -236,7 +221,6 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     scanned = {extra for shard in shards for extra in audited if extra in shard.split()}
     assert scanned == {"audio-torch210", "audio-torch290", "audio-torch280"}
 
-    # Whatever the selector installs on a reachable torch minor has to be in that set.
     for torch_minor in ("2.10", "2.9", "2.8"):
         spec = ips._select_torchcodec_spec(f"{torch_minor}.0")
         assert any(
@@ -330,15 +314,8 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
         assert ips._select_torchcodec_spec(torch_version) in match.group(1), extra
 
 
-# The published torchcodec compatibility table, transcribed from upstream. Sources agree:
-#   https://github.com/meta-pytorch/torchcodec  (README, "older versions" section)
-#   https://pypi.org/project/torchcodec/        (same table in the project description)
-# Kept as a literal on purpose. Every other check here compares our three tables against each
-# OTHER, which passes just as happily when all three are wrong in the same way -- that is how
-# `2.6: {0.2, 0.3}` and `2.5: {0.1, 0.2}` survived: upstream pairs 0.3 with torch 2.7 and 0.2
-# with torch 2.6, so the installer's window picked a release built against the NEXT torch.
-# torch 2.4 -> 0.0.3 is deliberately omitted below: the installer floors at 2.5 and returns
-# None underneath it.
+# Upstream torchcodec table, kept literal so our tables cannot all be wrong together.
+# Source: meta-pytorch/torchcodec README; torch 2.4 omitted (installer floor is 2.5).
 _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -350,9 +327,7 @@ _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
 }
 
 
-# What each download.pytorch.org index actually publishes, read off the live listings:
-# the torch 2.x minors it serves and the torchcodec minors it carries. Explicit minors, not
-# ranges: the inventory is not contiguous (cu129 skips 0.8, 0.9 and 0.12-0.14).
+# Live per-index inventory; not contiguous (cu129 skips 0.8, 0.9, 0.12-0.14).
 _INDEX_INVENTORY = {
     "cpu": {"torch": range(5, 15), "codec": {3, 4, *range(6, 17)}},
     "cu118": {"torch": range(5, 8), "codec": {3, 4}},
@@ -361,7 +336,6 @@ _INDEX_INVENTORY = {
     "cu129": {"torch": range(8, 14), "codec": {6, 7, 10, 11, 15, 16}},
     "cu130": {"torch": range(9, 15), "codec": set(range(8, 17))},
     "cu132": {"torch": range(12, 15), "codec": set(range(12, 17))},
-    # xpu is not listed: an xpu torch is pinned to the cpu leaf, which is covered above.
 }
 
 
@@ -376,14 +350,12 @@ def test_torchcodec_index_follows_the_resident_torch_build():
     assert ips._torchcodec_index_url("2.14.0+cu130") == base + "cu130"
     assert ips._torchcodec_index_url("2.11.0+cpu") == base + "cpu"
 
-    # xpu is sent to cpu: no xpu codec build exists, and PyPI's default is the CUDA one.
     assert ips._torchcodec_index_url("2.14.0+xpu") == base + "cpu"
     assert ips._torchcodec_index_url("2.9.0+xpu") == base + "cpu"
 
-    # Untagged is PyPI's own torch, whose counterpart is PyPI's default torchcodec. Pinning
-    # cpu here would be wrong: on Linux an untagged torch is a CUDA build.
+    # On Linux an untagged torch is a CUDA build, so pinning cpu would be wrong.
     assert ips._torchcodec_index_url("2.11.0") is None
-    # Every rocm leaf answers 404/403 for torchcodec, so a pin there cannot ever serve.
+    # Every rocm leaf 404s for torchcodec.
     assert ips._torchcodec_index_url("2.9.0+rocm6.4") is None
     assert ips._torchcodec_index_url("2.11.0+rocm7.2") is None
     assert ips._torchcodec_index_url(None) is None
@@ -426,7 +398,6 @@ def test_pinning_the_index_starves_only_where_the_retry_covers_it():
     really there.
     """
     starved = {(tag, minor) for tag, minor, _ in _starved_index_cells()}
-    # The one cell no floor could predict: cu129's gap is in the MIDDLE of its range.
     assert starved == {("cu129", 9)}, sorted(starved)
 
 
@@ -435,8 +406,7 @@ def test_the_installer_retries_without_the_index_when_the_pin_finds_nothing():
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
     assert "retrying from the default index" in step
-    # The retry drops the pin and NOTHING else: --no-deps stops a re-resolve undoing the
-    # repair two steps above, and --force-reinstall stops pip calling the pin satisfied.
+    # --no-deps avoids undoing the repair; --force-reinstall stops pip calling the pin satisfied.
     retry = step.split("retrying from the default index", 1)[1]
     assert "_codec_retry_args = [" in retry
     assert 'a != "--index-url" and _codec_args[i - 1] != "--index-url"' in retry
@@ -456,11 +426,9 @@ def test_an_accelerator_with_no_codec_build_of_its_own_takes_the_cpu_one():
         assert ips._torchcodec_index_url(version, spec) == (
             "https://download.pytorch.org/whl/cpu"
         ), spec
-    # The substitution is per tag, not a blanket fallback: cu126 still pins its own leaf.
     assert ips._torchcodec_index_url("2.9.0+cu126", ips._select_torchcodec_spec("2.9.0")) == (
         "https://download.pytorch.org/whl/cu126"
     )
-    # torchao is unaffected: its xpu leaf really does carry +xpu builds.
     assert ips._torch_accelerator_index_url("2.14.0+xpu") == "https://download.pytorch.org/whl/xpu"
 
 
@@ -480,15 +448,12 @@ def test_an_explicit_family_override_still_gets_the_substituted_leaf(monkeypatch
         spec = ips._select_torchcodec_spec(version)
         assert ips._torchcodec_index_url(version, spec) == base + "cpu", version
         assert ips._torchcodec_index_tag(version) == "cpu"
-    # torchao has no substitution, so its own leaf is unchanged by the same override.
     assert ips._torch_accelerator_index_url("2.14.0+xpu") == base + "xpu"
 
-    # A family with no substitution passes straight through.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
     assert ips._torchcodec_index_url("2.11.0+cu128", "torchcodec>=0.11.0,<0.12.0") == base + "cu126"
 
-    # An explicit URL is opaque, so provenance is UNKNOWN, not absent: reporting absent let
-    # an untagged wheel compare equal and the mirror was never contacted.
+    # An explicit URL is opaque, so provenance is unknown, not absent.
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/xpu/")
     assert ips._torchcodec_index_url("2.14.0+xpu", "torchcodec>=0.12.0") == (
@@ -503,8 +468,6 @@ def test_no_cuda_13_index_relies_on_the_unpinned_torchao_fallback():
     of those. It would NOT be harmless on a CUDA-13 leaf whose torch matches the selected
     release, so this fails if such a cell ever appears."""
     ips = _load_install_python_stack()
-    # torchao releases each CUDA-13 leaf carries, and the torch minors it serves, read off
-    # the live listings. A leaf is only reachable for the torch it actually publishes.
     published = {
         "cu130": ({"0.14.0", "0.14.1", "0.15.0", "0.16.0", "0.17.0", "0.18.0"}, range(9, 15)),
         "cu132": ({"0.18.0"}, range(12, 15)),
@@ -533,9 +496,7 @@ def test_the_provenance_check_compares_against_the_tag_the_pin_will_fetch():
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
     assert "_codec_want = _torchcodec_index_tag(_codec_torch_ver)" in step
-    # The old spelling read the torch tag straight off the version string.
     assert '_codec_want = str(_codec_torch_ver).partition("+")' not in step
-    # An unknown tag has to force, not compare equal to an untagged wheel.
     assert "_codec_want is None" in step
 
 
@@ -560,26 +521,14 @@ def test_the_two_pypi_only_rows_stay_unpinned():
     for minor in (5, 6):
         version = f"2.{minor}.0+cu126"
         assert ips._torchcodec_index_url(version, ips._select_torchcodec_spec(version)) is None
-    # 2.7 selects >=0.3.0,<0.6.0, which the indexes do carry, so it pins.
     assert (
         ips._torchcodec_index_url("2.7.0+cu118", ips._select_torchcodec_spec("2.7.0")) is not None
     )
 
 
-# extra -> the first interpreter that must NOT select it, one that must, and whether its
-# codec line ships a Linux aarch64 wheel.
-#
-# torchcodec publishes no sdist, so an extra left open above its last cp tag, or on a host
-# with no wheel, makes pip fail the whole install instead of skipping audio -- and the
-# cu*/rocm*/intel torch 2.10 extras pull it in. requires-python is open-ended (>=3.9), so a
-# newer interpreter reaches these extras too; the marker has to stop it, and it has to match
-# install_python_stack.py.
-#
-# The Python ceilings come from the same upstream table _TORCHCODEC_PYTHON_WINDOWS encodes:
-# the 0.6/0.7 line stops at 3.13, everything from 0.9 up runs to 3.14. aarch64 is per-extra
-# rather than blanket: torchcodec had no aarch64 wheel until 0.11.0, and every release since
-# has kept it, so audio-torch211 must ALLOW aarch64 while the older extras, which top out at
-# 0.10, must still exclude it.
+# torchcodec has no sdist, so extras need markers matching install_python_stack.py.
+# aarch64 wheels start at 0.11.0, so only audio-torch211 allows it.
+# extra -> (first Python that must NOT select it, one that must, aarch64 wheel shipped?)
 _AUDIO_EXTRA_GATES = {
     "audio-torch211": ("3.15", "3.14", True),
     "audio-torch210": ("3.15", "3.14", False),
@@ -587,7 +536,6 @@ _AUDIO_EXTRA_GATES = {
     "audio-torch280": ("3.14", "3.13", False),
 }
 
-# Windows ARM64 and Intel Mac have no wheel at any torchcodec version.
 _WHEELED_HOSTS = (
     {"sys_platform": "linux", "platform_machine": "x86_64"},
     {"sys_platform": "win32", "platform_machine": "AMD64"},
@@ -753,18 +701,7 @@ def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
             )
 
 
-# ----------------------------------------------------------------------------------
-# Wheel availability. The step that installs the selected spec is fatal on failure, so
-# "does this spec have a wheel here" decides whether this branch can break an install,
-# not merely whether audio works. Verified against the live PyPI index; kept as a table
-# so the suite stays deterministic and offline.
-# ----------------------------------------------------------------------------------
-
-# torchcodec version -> platforms it publishes. Read off pypi.org/pypi/torchcodec/json.
-# The three transitions that matter:
-#   win_amd64            absent before 0.7.0
-#   manylinux aarch64    absent before 0.11.0
-#   macosx arm64         minimum macOS 11.0 through 0.11.1, then 14.0 from 0.12.0
+# From pypi.org: win_amd64 from 0.7.0, aarch64 from 0.11.0, macOS 14 minimum from 0.12.0.
 _TORCHCODEC_WHEEL_HISTORY = {
     "0.1.0": {"linux_x86_64", "macos_arm64_11"},
     "0.2.0": {"linux_x86_64", "macos_arm64_11"},
@@ -882,31 +819,21 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
                 )
 
 
-# The cells of the sweep above that were real bugs or are the documented transitions, with
-# the answer written by hand rather than read off _TORCHCODEC_WHEEL_HISTORY. The sweep
-# checks the gate against that oracle and so passes just as happily when both are wrong;
-# these say what the answer has to be.
-#   (host, python, torch minor, must the gate install?)
+# Hand-written answers; the sweep only checks against the history table.
+# (host, python, torch minor, must the gate install?)
 _WHEEL_GATE_ANCHORS = [
-    # aarch64 got its first wheel at 0.11.0, the line torch 2.11 selects; 2.10 takes 0.10.
     ("linux-aarch64", (3, 12), 11, True),
     ("linux-aarch64", (3, 12), 10, False),
-    # torchcodec 0.12+ is macosx_14_0 only, so an older Mac must not be sent to it.
+    # torchcodec 0.12+ is macosx_14_0 only.
     ("macos-arm64-13", (3, 12), 12, False),
     ("macos-arm64-13", (3, 12), 11, True),
     ("macos-arm64-14", (3, 12), 12, True),
-    # Architecture is not the only wheel axis. torch 2.5 selects the 0.1 line, which stops at
-    # Python 3.12, so 3.13 has nothing to install even on plain linux-x86_64. This was masked
-    # while the 2.5 window ran to <0.3.0: it reached 0.2, which does ship cp313, so the gate
-    # said yes for a release built against torch 2.6.
+    # torch 2.5 selects the 0.1 line, which has no cp313 wheel.
     ("linux-x86_64", (3, 12), 5, True),
     ("linux-x86_64", (3, 13), 5, False),
-    # The floor moves too: 0.8+ dropped 3.9, so torch 2.9 has nothing for a 3.9 interpreter.
     ("linux-x86_64", (3, 9), 9, False),
     ("linux-x86_64", (3, 9), 8, True),
 ]
-# win_amd64 starts at 0.7.0 and torch 2.5-2.7 select lines below it. Reachable rather than
-# theoretical: the cu118 index tops out at torch 2.7.
 _WHEEL_GATE_ANCHORS += [
     ("windows-amd64", (3, 12), minor, minor >= 8) for minor in (5, 6, 7, 8, 10, 11, 12)
 ]
@@ -963,7 +890,6 @@ def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatc
     hint = fixes._torchcodec_version_mismatch_hint()
     assert "--index-url https://download.pytorch.org/whl/cu128 'torchcodec>=0.11" in hint
 
-    # cpu is an index too, and the ABI-stable branch takes the same treatment.
     _stub_torch(monkeypatch, "2.12.0+cu130")
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.1")
     assert (
@@ -971,13 +897,11 @@ def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatc
         in fixes._torchcodec_version_mismatch_hint()
     )
 
-    # Untagged torch is PyPI's own build, and rocm publishes no torchcodec: no pin either way.
     for version in ("2.11.0", "2.9.0+rocm6.4"):
         _stub_torch(monkeypatch, version)
         monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.7.0")
         assert "--index-url" not in (fixes._torchcodec_version_mismatch_hint() or "")
 
-    # torchcodec 0.1 is PyPI-only, so the 2.5 row must not send anyone to a torch index.
     _stub_torch(monkeypatch, "2.5.0+cu118")
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.5.0")
     assert "--index-url" not in fixes._torchcodec_version_mismatch_hint()
@@ -997,7 +921,6 @@ def test_the_remedy_drops_the_extra_when_an_index_pin_is_needed(monkeypatch):
     assert "--index-url" in pinned
     assert "unsloth[audio-torch211]" not in pinned
 
-    # Untagged torch needs no pin, so the convenient alternative stays on offer.
     _stub_torch(monkeypatch, "2.11.0")
     unpinned = fixes._torchcodec_version_mismatch_hint()
     assert "--index-url" not in unpinned
@@ -1020,8 +943,6 @@ def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
     assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu126"
 
-    # An explicit family DOES make an untagged torch pin: a private mirror ships torch bare,
-    # and naming the family is how it says which leaf. rocm still never pins a codec.
     assert ips._torchcodec_index_url("2.11.0") == "https://download.pytorch.org/whl/cu126"
     assert ips._torchcodec_index_url("2.11.0+rocm7.0") is None
 
@@ -1040,8 +961,7 @@ def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
         fixes._torchcodec_version_mismatch_hint() or ""
     )
 
-    # The variable, not its value: a mirror URL can carry credentials and this string is
-    # warned into terminals and CI logs. The shell expands it, so the command still runs.
+    # Print the variable, not its value: a mirror URL can carry credentials.
     monkeypatch.setenv(
         "UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/pytorch/cu128/"
     )
@@ -1077,14 +997,13 @@ def test_a_mismatched_accelerator_build_is_named_when_the_codec_cannot_load(monk
 
     monkeypatch.setattr(importlib.metadata, "version", _no_metadata)
     codec = types.ModuleType("torchcodec")
-    codec.__version__ = "0.11.0"  # untagged: PyPI's default build
+    codec.__version__ = "0.11.0"
     monkeypatch.setitem(sys.modules, "torchcodec", codec)
     hint = fixes._torchcodec_provenance_hint()
     assert hint is not None
     assert "https://download.pytorch.org/whl/cu128" in hint
     assert "audio is disabled" in hint
 
-    # Matching provenance says nothing, and neither does a rocm torch.
     codec.__version__ = "0.11.0+cu128"
     assert fixes._torchcodec_provenance_hint() is None
     codec.__version__ = "0.11.0"
@@ -1103,11 +1022,9 @@ def test_the_printed_codec_index_is_redacted(monkeypatch):
         "UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/pytorch/cu128/"
     )
 
-    # The installer still receives the exact URL, credentials and all.
     resolved = ips._torchcodec_index_url("2.11.0+cu128")
     assert resolved == "https://user:secret@mirror.corp.example/pytorch/cu128"
 
-    # What gets printed does not.
     shown = ips._strip_index_url_credentials(resolved)
     assert shown == "https://mirror.corp.example/pytorch/cu128"
     assert "secret" not in shown
@@ -1115,7 +1032,6 @@ def test_the_printed_codec_index_is_redacted(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/simple?token=abc")
     assert "abc" not in ips._strip_index_url_credentials(ips._torchcodec_index_url("2.11.0+cu128"))
 
-    # The status line itself uses the redacting call, not the raw variable.
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     assert 'f" from {_strip_index_url_credentials(_codec_index)}"' in source
     assert 'f" from {_codec_index}"' not in source
@@ -1133,7 +1049,6 @@ def test_the_codec_index_follows_a_configured_pytorch_mirror(monkeypatch):
     ips = importlib.reload(ips)  # _PYTORCH_WHL_BASE is read at import time
     try:
         assert ips._torchcodec_index_url("2.11.0+cu128") == "https://mirror.corp.example/whl/cu128"
-        # A full URL override still wins over the mirror base.
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://other.example/pytorch/cu128")
         assert ips._torchcodec_index_url("2.11.0+cu128") == "https://other.example/pytorch/cu128"
     finally:
@@ -1156,13 +1071,11 @@ def test_the_runtime_remedy_follows_a_configured_pytorch_mirror(monkeypatch):
     assert "secret" not in hint
     assert "download.pytorch.org" not in hint
 
-    # The family names the leaf under the same mirror.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
     assert f'--index-url {fixes._shell_env_ref("UNSLOTH_PYTORCH_MIRROR")}/cu126' in (
         fixes._torchcodec_version_mismatch_hint() or ""
     )
 
-    # With no mirror configured the public URL comes back, family-aware as before.
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR")
     assert "--index-url https://download.pytorch.org/whl/cu126" in (
         fixes._torchcodec_version_mismatch_hint() or ""
@@ -1210,7 +1123,6 @@ def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
     assert "--index-url $env:UNSLOTH_TORCH_INDEX_URL" in windows
     assert "secret" not in windows
 
-    # The mirror branch follows the same rule.
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.corp.example/whl")
     assert "--index-url $env:UNSLOTH_PYTORCH_MIRROR/cu128" in (
@@ -1236,7 +1148,6 @@ def test_the_provenance_remedy_pins_the_compatible_window(monkeypatch):
     assert "'torchcodec>=0.9,<0.10.0'" in hint, hint
     assert "--index-url https://download.pytorch.org/whl/cu128 torchcodec`" not in hint
 
-    # Past the table, the ABI-stable floor is the pin instead of a bare name.
     _stub_torch(monkeypatch, "2.12.0+cu128")
     codec.__version__ = "0.11.0"
     assert "'torchcodec>=0.12.0'" in (fixes._torchcodec_provenance_hint() or "")
@@ -1250,7 +1161,6 @@ def test_a_cuda_index_codec_also_installs_npp():
     assert '_npp_spec = _npp_requirement(_npp_major) if _npp_major else ""' in source
     assert "Installing torchcodec CUDA runtime (NPP)" in source
 
-    # The major follows the index leaf, and a cpu or rocm index asks for nothing.
     import re
 
     for url, want in (
@@ -1263,7 +1173,6 @@ def test_a_cuda_index_codec_also_installs_npp():
         match = re.search(r"/cu(\d+)/?$", url)
         assert (match.group(1)[:2] if match else None) == want, url
 
-    # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
     assert "nvidia-npp-cu12" in dockerfile
 
@@ -1300,7 +1209,6 @@ def test_the_unsuffixed_request_is_bounded_to_the_major():
         spec = _npp_requirement(major)
         assert spec.startswith(f"nvidia-npp>={major}"), spec
         assert spec != "nvidia-npp", "a bare name can resolve to the 0.0.0a0 placeholder"
-        # Upper bound too, so a cu14 host cannot take a 13 runtime or the reverse.
         assert f",<{int(major) + 1}" in spec, spec
 
 
@@ -1316,12 +1224,11 @@ def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
         'if not re.fullmatch(r"[0-9]+", cuda_major):' in source
     ), "the major check must be an explicit ASCII digit match, not str.isdigit()"
 
-    # int()-hostile: must degrade, never raise.
     for major in ("²", "³", "⁵"):
         assert major.isdigit(), "fixture is only meaningful if isdigit() accepts it"
         assert _npp_requirement(major) == f"nvidia-npp-cu{major}"
 
-    # PEP 440-hostile: int()-able, so only an ASCII check keeps them out of a version bound.
+    # int()-able but not PEP 440; only an ASCII check keeps them out.
     for major in ("١٣", "۱۳", "१३"):
         assert major.isdigit() and int(major) == 13
         spec = _npp_requirement(major)
@@ -1330,7 +1237,6 @@ def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
         ), f"{major!r} reached a PEP 440 version bound as {spec!r}"
         assert spec == f"nvidia-npp-cu{major}"
 
-    # The real domain: a one or two character slice of an ASCII match. All of it must parse.
     packaging_req = pytest.importorskip("packaging.requirements").Requirement
     for major in [str(n) for n in range(0, 100)]:
         packaging_req(_npp_requirement(major))
@@ -1352,18 +1258,14 @@ def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
     )
     npp_major = namespace["_cuda_major_for_npp"]
 
-    # The local tag answers whatever the index URL looks like.
     opaque = "https://mirror.example/simple?token=abc"
     assert npp_major("2.11.0+cu128", opaque) == "12"
     assert npp_major("2.11.0+cu130", opaque) == "13"
-    # cpu and rocm ask for nothing, on any URL.
     assert npp_major("2.11.0+cpu", "https://download.pytorch.org/whl/cpu") == ""
     assert npp_major("2.11.0+rocm6.4", "https://download.pytorch.org/whl/rocm6.4") == ""
-    # An untagged torch still falls back to the public leaf.
     assert npp_major("2.11.0", "https://download.pytorch.org/whl/cu126") == "12"
     assert npp_major("2.11.0", opaque) == ""
 
-    # And the call site reads the tag rather than re-matching the URL.
     assert "_cuda_major_for_npp(_codec_torch_ver, _codec_index)" in source
 
 
@@ -1382,7 +1284,7 @@ def test_the_provenance_hint_reads_a_codec_it_cannot_import(monkeypatch):
 
     def _version(name):
         if name == "torchcodec":
-            return "0.11.0"  # untagged: PyPI's default build
+            return "0.11.0"
         raise importlib.metadata.PackageNotFoundError(name)
 
     monkeypatch.setattr(importlib.metadata, "version", _version)
@@ -1391,7 +1293,6 @@ def test_the_provenance_hint_reads_a_codec_it_cannot_import(monkeypatch):
     assert "torchcodec 0.11.0 came from the default index" in hint
     assert "https://download.pytorch.org/whl/cu128" in hint
 
-    # Nothing installed at all still says nothing.
     def _absent(name):
         raise importlib.metadata.PackageNotFoundError(name)
 
@@ -1406,14 +1307,10 @@ def test_an_explicit_index_wins_even_when_torch_carries_no_tag(monkeypatch):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp/simple?token=abc")
     for version in ("2.14.0", "2.13.0+cu130", "2.11.0+rocm7.2", "2.10.0+weird"):
         assert mod._torch_accelerator_index_url(version) == "https://mirror.corp/simple?token=abc"
-    # torchcodec keeps its own two refusals, which are about the WHEEL not existing rather
-    # than about where to look: rocm publishes no torchcodec under any index.
     assert mod._torchcodec_index_url("2.11.0+rocm7.2") is None
     assert mod._torchcodec_index_url("2.14.0") == "https://mirror.corp/simple?token=abc"
-    # No torch at all still means no companion pin.
     assert mod._torch_accelerator_index_url(None) is None
     assert mod._torch_accelerator_index_url("") is None
-    # And provenance stays unknowable through an opaque mirror, so the wheel is replaced.
     assert mod._torch_index_tag("2.14.0") is None
 
 
@@ -1450,23 +1347,15 @@ def test_the_installed_codec_reports_the_cuda_major_it_actually_links(monkeypatc
 
     assert _probe({"libtorchcodec_cuda.so": b"\x00pad\x00libcudart.so.13\x00more"}) == "13"
     assert _probe({"libtorchcodec_cuda.so": b"\x00libcudart.so.12\x00"}) == "12"
-    # Windows spells both the file and the major differently. Its natives are .dll/.pyd, so
-    # an .so-only filter inspected nothing, found no major, and returned "" -- which SKIPS
-    # the NPP install and leaves audio broken on a host with no system toolkit.
+    # Windows natives are .dll/.pyd; an .so-only filter skipped the NPP install.
     assert _probe({"libtorchcodec_core7.dll": b"\x00cudart64_12.dll\x00"}) == "12"
     assert _probe({"libtorchcodec_pybind_ops.pyd": b"cudart64_13.dll"}) == "13"
-    # The win_amd64 cu130 wheel names no major at all: it references nvcudart_hybrid64.dll.
-    # CUDA is plainly there, so "" would be a lie; None keeps the tag-derived answer.
+    # The win cu130 wheel names no CUDA major; None keeps the tag-derived answer.
     assert _probe({"libtorchcodec_core7.dll": b"\x00nvcudart_hybrid64.dll\x00nvcuda.dll"}) is None
-    # A cpu build links no CUDA runtime at all: "" means "needs no NPP", not "unknown".
-    # Checked against the real 0.16.0 cpu wheels, x86_64 and win_amd64: neither carries any
-    # CUDA reference.
+    # "" means needs no NPP, not unknown.
     assert _probe({"libtorchcodec_core.so": b"nothing interesting here"}) == ""
     assert _probe({"libtorchcodec_core7.dll": b"nothing interesting here"}) == ""
-    # Nothing native to read is "cannot tell", not "no CUDA": a stray text file mentioning a
-    # major must neither be believed nor counted as an inspection.
     assert _probe({"version.txt": b"libcudart.so.12"}) is None
-    # Absent entirely: None, which the caller reads as "keep the tag-derived answer".
     monkeypatch.setattr(mod, "_torchcodec_distribution_for_probe", lambda: None)
     assert mod._installed_torchcodec_cuda_major() is None
 
@@ -1493,18 +1382,14 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
         monkeypatch.setattr(mod, "_safe_print", warnings.append)
         assert mod._torch_accelerator_index_url("2.13.0+cu130") is None, base
         assert mod._torchcodec_index_url("2.13.0+cu130") is None, base
-        # The FAMILY override reaches the same base, so it declines the same way.
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
         assert mod._torch_accelerator_index_url("2.13.0") is None, base
         assert mod._detect_cuda_torch_index_url() is None, base
-        # No URL, but the family stays authoritative (no re-probe, provenance kept).
         assert mod._explicit_torch_index_url() is None, base
         assert mod._explicit_torch_index_family() == "cu126", base
         assert mod._explicit_unknown_family_torch_index_url() is None, base
         assert len(warnings) == 1 and "netrc" in warnings[0], warnings
         monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
-    # An explicit full UNSLOTH_TORCH_INDEX_URL is still taken verbatim: that is the user
-    # naming one exact index rather than a base this code appends a leaf to.
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR")
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.example/simple?token=abc")
     mod = _reload_install_python_stack()
@@ -1532,7 +1417,6 @@ def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monk
     def unexpected(*_args, **_kwargs):
         raise AssertionError("a query-authenticated mirror must not reach an install command")
 
-    # Automatic CUDA detection used to return ...?token=abc/cu126.
     monkeypatch.setattr(mod, "_nvidia_smi_path", lambda: None)
     assert mod._detect_cuda_torch_index_url() is None
 
@@ -1552,7 +1436,6 @@ def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monk
     assert mod._ensure_cuda_torch() is False
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
 
-    # XPU triton swap and the miscomputing-AMD CPU demotion synthesize their own leaves.
     monkeypatch.setattr(mod, "_explicit_xpu_torch_index_url", lambda: None)
     monkeypatch.setattr(mod, "_installed_torch_version_label", lambda: "2.10.0+xpu")
     monkeypatch.setattr(mod.subprocess, "run", unexpected)
@@ -1595,7 +1478,6 @@ def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monk
     assert mod._expected_torch_index_url("cu130") is None
     assert mod._ensure_expected_torch_flavor("cu130") is False
 
-    # The "" unknown-pin sentinel must not bypass the final invariant.
     for family, expected in (("xpu", "xpu"), ("current", "cu130")):
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
         assert mod._explicit_unknown_family_torch_index_url() == ""
@@ -1618,12 +1500,10 @@ def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
         lambda: (True, True, "2.11.0+cpu", "", ""),
     )
 
-    # A dependency move to CPU is recorded, without the old cu128 pin bit.
     assert mod._expected_torch_flavor_tag() == "cu130"
     assert mod._recordable_torch_flavor_tag("cu130") == "cpu"
     assert mod._expected_torch_flavor_was_pinned("cpu") is False
 
-    # If the requested family was already resident, the explicit intent still pins it.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
     monkeypatch.setattr(
         mod,
@@ -1634,7 +1514,6 @@ def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
     assert mod._recordable_torch_flavor_tag("xpu") == "xpu"
     assert mod._expected_torch_flavor_was_pinned("xpu") is True
 
-    # An unknown request carries old provenance only if that exact build is still resident.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "current")
     monkeypatch.setattr(
         mod,
@@ -1646,7 +1525,6 @@ def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
     assert mod._recordable_torch_flavor_tag("") == "cu128"
     assert mod._expected_torch_flavor_was_pinned("cu128") is True
 
-    # The unusable request changed no wheel, so a pinned-CPU manifest stays authoritative.
     monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "cpu")
     monkeypatch.setattr(
         mod,
@@ -1712,11 +1590,9 @@ def test_an_explicit_family_is_honoured_when_torch_carries_no_tag(monkeypatch):
     mod = _reload_install_python_stack()
     assert mod._torch_accelerator_index_url("2.14.0") == "https://mirror.example/whl/current"
     assert mod._torchcodec_index_url("2.14.0") == "https://mirror.example/whl/current"
-    # A tagged torch is unaffected: the family still wins, as it did before.
     assert mod._torch_accelerator_index_url("2.14.0+cu130") == (
         "https://mirror.example/whl/current"
     )
-    # And the per-package substitution still applies to the override.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
     assert mod._torchcodec_index_url("2.14.0") == "https://mirror.example/whl/cpu"
 

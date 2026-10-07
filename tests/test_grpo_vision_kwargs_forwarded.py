@@ -250,7 +250,7 @@ def test_num_tiles_survives_the_output_dict_rewrite():
     except_at = next((i for i, l in enumerate(lines) if l.strip() == "except NameError:"), None)
     assert except_at is not None, "the sampling logprob block was not inserted"
     assert num_images_at < num_tiles_at < except_at
-    # still nested inside `if images is not None:`
+    # Still nested inside `if images is not None:`.
     assert lines[num_tiles_at].startswith(" " * 16)
 
 
@@ -423,16 +423,13 @@ def test_the_gradient_path_refuses_an_old_zoo_without_the_chunker():
         _run_gate(block, pixel_values = object(), zoo_module = old_zoo)
     assert "upgrade unsloth_zoo" in str(raised.value)
 
-    # A text-only run is untouched: there are no pixels to drop.
     _run_gate(block, pixel_values = None, zoo_module = old_zoo)
 
-    # And a zoo that exports the chunker passes, once, and remembers it.
     new_zoo = types.ModuleType("unsloth_zoo.rl_replacements")
     new_zoo.grpo_vision_chunks = lambda *_a, **_k: None
     trainer = _run_gate(block, pixel_values = object(), zoo_module = new_zoo)
     assert trainer._unsloth_grpo_vision_zoo_checked is True
-    # Checked once per trainer: the flag short-circuits a later step even on a broken zoo,
-    # so the probe is not paid on every accumulation step.
+    # Checked once per trainer, so the probe is not paid on every accumulation step.
     already = _Trainer()
     already._unsloth_grpo_vision_zoo_checked = True
     import sys
@@ -612,7 +609,6 @@ def test_a_padded_row_per_sample_survives_counts_that_sum_to_the_batch_size():
 
     for num_images in ([2, 0], [0, 2], [1, 2, 0], [1, 0, 2, 1]):
         samples = len(num_images)
-        # Every value in row s is s, so a misattributed row is visible rather than inferred.
         pixel_values = torch.stack(
             [torch.full((2, 3, 4, 4), float(sample)) for sample in range(samples)]
         )
@@ -625,7 +621,7 @@ def test_a_padded_row_per_sample_survives_counts_that_sum_to_the_batch_size():
         assert split is batch, num_images
         assert split["pixel_values"] is pixel_values, num_images
 
-    # All ones is not ambiguous: both readings put row s with sample s, so it still splits.
+    # All ones is not ambiguous: both readings put row s with sample s.
     pixel_values = torch.stack([torch.full((3, 4, 4), float(s)) for s in range(2)])
     split = _unsloth_grpo_split_vision_by_sample(
         {"num_images": [1, 1], "pixel_values": pixel_values}
@@ -705,9 +701,7 @@ def test_both_halves_travel_with_the_generated_module():
     assert "def _unsloth_grpo_unsplit_vision(" in pre
 
 
-# The legacy 0.22.x-0.23.x rewrite is no longer a block that can be exec'd on its own: the
-# counts are built before the no-grad logprob calls and the output block reads them back.
-# tests/test_grpo_legacy_trl_vision.py runs the whole patched function instead.
+# The legacy rewrite cannot be exec'd on its own; tests/test_grpo_legacy_trl_vision.py runs it.
 
 
 def test_the_counts_are_not_added_twice_on_a_trl_that_has_them():

@@ -80,7 +80,7 @@ def _installer(
 
 def _curl_bash(tmp_path: Path, installer: Path, args: list[str]) -> subprocess.CompletedProcess:
     helpers = tmp_path / "helpers.sh"
-    # sleep is the retry backoff: three rejected attempts would otherwise cost a minute.
+    # sleep is the retry backoff; stub it or three rejected attempts cost a minute.
     helpers.write_text(
         "sleep() { :; }\n" + _function("installer_args") + _function("curl_bash"),
         encoding = "utf-8",
@@ -99,7 +99,6 @@ def _received(tmp_path: Path) -> list[str]:
 
 
 def test_the_hermes_recipe_installs_once_the_vendor_drops_no_skills(tmp_path: Path) -> None:
-    # The parser hermes-agent shipped on 2026-09-24.
     installer = _installer(
         tmp_path,
         ["--non-interactive", "--skip-setup", "--skip-browser|--no-playwright|-SkipBrowser"],

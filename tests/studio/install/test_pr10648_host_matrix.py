@@ -39,18 +39,15 @@ import pytest
 
 TEST_DIR = Path(__file__).resolve().parent
 if str(TEST_DIR) not in sys.path:
-    # Same idiom as conftest.py: these test modules are not a package, so the directory
-    # is what makes a sibling importable.
+    # These test modules are not a package, so the directory makes siblings importable.
     sys.path.insert(0, str(TEST_DIR))
 
 from _pr10648_helpers import llama_host, load_studio_module  # noqa: E402
 
-# The install-tree writer the back-compat suite already maintains. Reused rather than
-# re-implemented so a change to what a real tree contains reaches this file too.
+# Reuse the back-compat suite's writer so real-tree changes reach this file too.
 from test_keep_install_backcompat_9979 import build_install  # noqa: E402
 
-# A distinct sys.modules name: the sibling suites load this file under
-# "studio_install_llama_prebuilt", and a shared module leaks monkeypatches across xdist tests.
+# Distinct sys.modules name, or monkeypatches leak across xdist tests.
 ILP = load_studio_module(
     "studio_install_llama_prebuilt_pr10648_matrix", "install_llama_prebuilt.py"
 )
@@ -59,8 +56,7 @@ HostInfo = ILP.HostInfo
 host_profile = ILP.host_profile
 existing_install_current_without_plan = ILP.existing_install_current_without_plan
 
-# Every variable that can move routing or the fast path, cleared per test: CUDA_VISIBLE_DEVICES
-# in particular is set on any GPU box, so the answer would depend on the calling shell.
+# CUDA_VISIBLE_DEVICES is set on any GPU box, so clear routing env per test.
 _ENV_KEYS = (
     "UNSLOTH_PREBUILT_FULL_CHECK",
     "UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE",
@@ -84,11 +80,7 @@ def make_host(**overrides) -> HostInfo:
     return llama_host(HostInfo, **overrides)
 
 
-# The matrix. Rows are operating systems, columns are accelerators.
-
-# WSL reports itself as Linux and HostInfo carries no WSL flag, deliberately (see
-# test_keep_install_backcompat_9979.test_wsl_is_treated_exactly_like_linux_by_the_keep_path).
-# A row anyway, so "WSL is judged by the Linux tables" is stated rather than assumed.
+# WSL reports itself as Linux and HostInfo has no WSL flag; the row states that explicitly.
 ROWS = {
     "linux": dict(system = "Linux", machine = "x86_64"),
     "windows": dict(system = "Windows", machine = "AMD64"),
@@ -97,8 +89,6 @@ ROWS = {
     "macos-x86_64": dict(system = "Darwin", machine = "x86_64", macos_version = (14, 6)),
 }
 
-# The rows that can carry a discrete accelerator, i.e. everything the hardware transitions
-# below apply to. macOS is Metal or nothing.
 GPU_ROWS = ("linux", "windows", "wsl")
 
 NVIDIA_CUDA12 = dict(
@@ -115,8 +105,7 @@ NVIDIA_CUDA13 = dict(
     driver_cuda_version = (13, 0),
     compute_caps = ["8.9"],
 )
-# gfx1100 (Navi 31, discrete): _should_prefer_vulkan_for_amd_igpu routes the integrated archs
-# to Vulkan, which would make the cell test the router instead of the profile.
+# Discrete gfx1100: integrated archs route to Vulkan, testing the router not the profile.
 AMD_ROCM = dict(has_rocm = True, rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
 AMD_NO_ROCM = dict(has_amd_gpu_without_rocm = True)
 INTEL = dict(has_intel_gpu = True)
@@ -133,7 +122,6 @@ ACCELERATORS = {
 
 COLUMNS = tuple(ACCELERATORS)
 
-# (install_kind, the payload_backend key build_install writes) per platform and column.
 _KINDS = {
     "linux": {
         "nvidia-cuda12": ("linux-cuda", "cuda"),
@@ -155,8 +143,6 @@ _KINDS = {
 
 _MACOS_KIND = {"macos-arm64": "macos-arm64", "macos-x86_64": "macos-x64"}
 
-# The CUDA runtimes the on-disk scan reports, per column. host_profile records them, and
-# they are what moves when a box's CUDA toolkit does.
 _CUDA_LINES = {"nvidia-cuda12": ("cuda12",), "nvidia-cuda13": ("cuda13",)}
 # What _detect_host_rocm_version answers; upstream ROCm assets are chosen by it.
 _ROCM_RUNTIME = (6, 2)
@@ -240,8 +226,7 @@ class Probe:
             ILP, "detected_windows_runtime_lines", lambda: (list(self.cuda_lines), {})
         )
         monkeypatch.setattr(ILP, "_detect_host_rocm_version", lambda: self.rocm_runtime)
-        # torch.cuda.is_available() is slow and beside the point here; the preference only has
-        # to be STABLE, since a moved one is _runtime_preference_moved's subject.
+        # The preference only has to be stable; a moved one is _runtime_preference_moved's subject.
         monkeypatch.setattr(
             ILP,
             "detect_torch_cuda_runtime_preference",
@@ -324,8 +309,7 @@ def install_cell(
         payload_backend = cell.payload_backend,
     )
     runtime_dir = ILP.install_runtime_dir(install_dir, route.host)
-    # The fork bundles ship the DiffusionGemma visual server and the marker-only backfill
-    # check looks for it; build_install writes it on Linux and Windows but not on macOS.
+    # build_install writes the DiffusionGemma visual server on Linux and Windows only.
     visual_server = runtime_dir / (
         "llama-diffusion-gemma-visual-server" + (".exe" if route.host.is_windows else "")
     )
@@ -431,9 +415,6 @@ def assert_reinstall_forced(monkeypatch, install_dir: Path) -> None:
     )
 
 
-# (A) the matrix itself: which cells exist.
-
-
 @pytest.mark.parametrize(("row", "column"), MATRIX, ids = MATRIX_IDS)
 def test_every_cell_of_the_matrix_is_reachable_or_explicitly_impossible(row, column):
     """The user population this fast path runs for: every OS crossed with every
@@ -448,9 +429,6 @@ def test_every_cell_of_the_matrix_is_reachable_or_explicitly_impossible(row, col
     assert cell.install_kind.startswith(prefix), cell.cell_id
 
 
-# (B) the acceptance half: an unchanged box keeps its install, in every reachable cell.
-
-
 @pytest.mark.parametrize(("row", "column"), REACHABLE, ids = REACHABLE_IDS)
 def test_an_unchanged_box_keeps_its_install_in_every_cell(tmp_path, probe, row, column):
     """Nothing happened to the user's machine since the install: no download, no listing,
@@ -459,7 +437,6 @@ def test_an_unchanged_box_keeps_its_install_in_every_cell(tmp_path, probe, row, 
     cell = _cell(row, column)
     install_dir = install_cell(tmp_path, probe, cell)
     assert check(install_dir) is True, cell.cell_id
-    # And the recorded profile really is this box, not a default that would match anything.
     assert marker_of(install_dir)["host_profile"] == host_profile(route_for(cell.host).host)
 
 
@@ -473,9 +450,6 @@ def test_a_second_update_on_the_same_box_is_still_current(tmp_path, probe, row, 
     assert check(install_dir) is True, cell.cell_id
     assert check(install_dir) is True, cell.cell_id
     assert check(install_dir) is True, cell.cell_id
-
-
-# (C) the rejection half: one axis flipped at a time, each its own user scenario.
 
 
 def _cpu_cell(row: str) -> Cell:
@@ -722,9 +696,6 @@ def test_a_mac_home_directory_restored_onto_apple_silicon_is_not_current(
     assert_reinstall_forced(monkeypatch, install_dir)
 
 
-# (D) the guard is load-bearing, not incidental.
-
-
 def _assert_everything_but_the_host_still_matches(install_dir: Path, after: HostInfo) -> dict:
     """Everything the fast path checks APART from the host profile still holds.
 
@@ -737,25 +708,19 @@ def _assert_everything_but_the_host_still_matches(install_dir: Path, after: Host
     assert marker["published_repo"] == (route.published_repo or ILP.DEFAULT_PUBLISHED_REPO)
     assert marker["backend_request"] == "auto"
     assert marker["prebuilt_fallback_used"] is False
-    # The marker is intact and self-consistent: the fingerprint recomputes from its own
-    # fields, so nothing has been hand-edited.
     assert ILP._marker_install_fingerprint(marker) == marker["install_fingerprint"]
-    # The release this run would ask for is the release that is installed.
     assert (
         ILP._expected_release_tag_without_plan(
             marker, "latest", PUBLISHED_REPO, "", host = route.host
         )
         == RELEASE_TAG
     )
-    # The tree is intact, executable, and the recorded bytes are still on disk.
     assert ILP._marker_backend_fits_host(marker, route.host) is True
     assert ILP._install_tree_is_usable(install_dir, route.host) is True
     assert ILP._kept_install_payload_is_healthy(install_dir, route.host) is True
     assert ILP._runtime_files_match(install_dir, route.host, marker) is True
     assert ILP._diffusion_visual_server_missing_for_marker(install_dir, route.host, marker) is False
-    # And torch has not moved either, so the CUDA-preference guard is not the one talking.
     assert ILP._runtime_preference_moved(marker, route.host) is False
-    # The one thing that HAS moved.
     assert marker["host_profile"] != host_profile(route.host)
     return marker
 
@@ -772,7 +737,6 @@ def test_adding_a_gpu_is_rejected_by_the_host_profile_and_nothing_else(
     install_dir = moved(tmp_path, probe, cell, after, cuda_lines = ("cuda12",), torch_line = None)
     assert check(install_dir) is False
     marker = _assert_everything_but_the_host_still_matches(install_dir, after)
-    # Neutralise only the profile comparison: everything else is untouched.
     monkeypatch.setattr(ILP, "host_profile", lambda _host: marker["host_profile"])
     assert (
         check(install_dir) is True
@@ -797,9 +761,6 @@ def test_a_cuda_line_move_is_rejected_by_the_host_profile_and_nothing_else(
     assert (
         check(install_dir) is True
     ), "without the host_profile guard this box keeps its cuda12 bundle after moving to cuda13"
-
-
-# (E) the JSON round trip. A profile that never equals itself takes the full path forever.
 
 
 def _tuples_in(value) -> bool:
@@ -876,8 +837,7 @@ def test_the_tuple_valued_fields_survive_the_marker_round_trip(tmp_path, probe):
     assert mac_marker["macos_version"] == [15, 5]
     assert mac_marker["machine"] == "arm64"
 
-    # The round trip is what turns each of those tuples into a list; a profile computed
-    # fresh from the same host must still compare equal to the parsed one.
+    # JSON turns tuples into lists; a fresh profile must still compare equal to the parsed one.
     for cell, parsed in ((cuda, cuda_marker), (rocm, rocm_marker), (mac, mac_marker)):
         probe.set_from(cell)
         assert parsed == host_profile(route_for(cell.host).host), cell.cell_id
@@ -908,8 +868,6 @@ def test_two_different_boxes_never_record_the_same_profile(probe):
         probe.set_from(cell)
         key = json.dumps(host_profile(route_for(cell.host).host), sort_keys = True)
         profile_of_cell[cell.cell_id] = key
-        # Rows that are the same box by construction: WSL reports itself as Linux, and
-        # HostInfo has no WSL flag, so linux-<column> and wsl-<column> are one profile.
         if row == "wsl":
             assert key == profile_of_cell[f"linux-{column}"], "WSL must read exactly as Linux"
             continue

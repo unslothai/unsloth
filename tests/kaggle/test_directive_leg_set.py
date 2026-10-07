@@ -24,7 +24,6 @@ sys.path.insert(0, str(ROOT / ".github" / "scripts" / "kaggle_t4_ci"))
 
 import legs  # noqa: E402
 
-# leg name -> the model it is specified to exercise.
 DIRECTIVE = {
     "default": "unsloth/Qwen3-0.6B",
     "latest_compile": "unsloth/gemma-4-E2B-it",
@@ -49,21 +48,8 @@ def test_every_directive_leg_is_pointed_at_the_model_it_was_specified_for():
         ), f"{name} trains {args[args.index('--model') + 1]!r}, not {model!r}"
 
 
-# Which legs carry the export, and why it is these two rather than all four.
-# The claim is that the PREBUILT llama.cpp binaries convert a trained adapter
-# and that the result runs -- `run_failures` in gguf_export.py rules on the
-# second half. Two legs make it, on the two cheapest checkpoints:
-#
-#   default             609.8 MB Q8_0            40.6s
-#   vision_fla_compile  1980.5 MB Q8_0 + mmproj  99.3s
-#
-# The two that no longer carry it were measured and dropped on cost:
-#
-#   latest_compile      4725.1 MB Q8_0          310.8s
-#   gptoss             13153.7 MB MXFP4         348.1s   (never a Q8_0 at all)
-#
-# 659s for a third and fourth conversion that re-run llama.cpp rather than ask
-# a new question.
+# Only the two cheapest checkpoints carry the export; latest_compile and gptoss were dropped
+# on cost (~660s) since they re-run llama.cpp without asking anything new.
 EXPORTING = ("default", "vision_fla_compile")
 NOT_EXPORTING = ("latest_compile", "gptoss")
 
@@ -132,15 +118,9 @@ def test_no_directive_leg_is_scheduled_beside_a_co_tenant_it_cannot_fit():
         vram = legs.LEGS[name].vram_gb
         assert vram > 0, f"{name} declares no VRAM at all"
         assert vram <= 14.5, f"{name} declares {vram}, which is more than a T4 has"
-        # The rule only bites above half the budget, and that is a real limit
-        # worth stating: Vision_FLA_compile sat at a round 4.0 placeholder
-        # under this threshold and nothing here objected. The measured figure
-        # is 2.84; what stops a placeholder shipping is the UNWIRED note plus
-        # the rule below, not this one.
+        # This rule only applies above half the budget; the UNWIRED note guards placeholders below it.
         if vram > budget / 2:
-            # Not a failure, but it must be a MEASURED number rather than a
-            # round placeholder: every placeholder in this file's history was
-            # a round number and every measured one was not.
+            # Round numbers have always been placeholders, never measurements.
             assert vram != round(vram), (
                 f"{name} declares {vram}, a round number over half the budget, "
                 f"which is what every placeholder in this file's history looked "

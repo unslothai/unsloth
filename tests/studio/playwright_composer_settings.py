@@ -125,7 +125,7 @@ def check_settings(page):
         dest.mkdir(parents = True, exist_ok = True)
         page.screenshot(path = str(dest / "composer-settings-light.png"), full_page = True)
         page.evaluate("document.documentElement.classList.add('dark')")
-        page.wait_for_timeout(250)  # Let the existing theme color transitions settle.
+        page.wait_for_timeout(250)
         page.screenshot(path = str(dest / "composer-settings-dark.png"), full_page = True)
     page.set_viewport_size({"width": 320, "height": 812})
     expect(plain).to_be_visible()

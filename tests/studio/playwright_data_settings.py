@@ -19,9 +19,7 @@ from playwright.sync_api import expect, sync_playwright
 
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
-# The row a search result lands on carries .settings-search-hit for a 1.6 s flash. Polling for
-# the class races that window, and a slow runner (Firefox on Windows) can check on either side
-# of it. Record every element that gains the class instead, so the check sees each flash.
+# The 1.6 s .settings-search-hit flash races polling, so record every element that gains the class.
 ARM_SEARCH_HITS = """() => {
     if (!window.__searchHits) {
         window.__searchHits = [];
@@ -38,7 +36,6 @@ ARM_SEARCH_HITS = """() => {
 }"""
 
 
-# Every [role=dialog] still in the DOM, for the failure report.
 DIALOG_STATE = """() => [...document.querySelectorAll('[role=dialog]')].map(el => {
     const style = getComputedStyle(el);
     return {
@@ -237,17 +234,12 @@ def run(page):
     assert len(deletes()) == 1
     checks.append("pending-delete-locks-choice-and-dismissal")
 
-    # Neither store clears, so the clear fails outright: the confirmation stays open and is armed
-    # for a retry. Whether it closes when only the backend fails turns on the legacy store gate,
-    # which this page cannot reopen once a slow read has shut it, so that is not asserted here.
+    # Both stores fail, so the confirmation stays open; the backend-only case is not asserted here.
     reset(fail = True, failLegacyWrites = True)
     confirm(True)
-    # Pinned to the confirmation itself: `.last` would slide onto Settings once it closed, and a
-    # closing dialog still answers role queries until its exit animation ends.
+    # `.last` would slide onto Settings, and a closing dialog answers role queries until its exit animation ends.
     dialog = page.get_by_role("dialog").filter(has = page.locator("#clear-chats-delete-files"))
     dialog.get_by_role("button", name = "Clear 3 chats", exact = True).click()
-    # Both backend attempts have answered. The action reads "Clearing..." until the clear settles,
-    # so finding it under its own name again, enabled, is the clear being over.
     page.wait_for_function(
         "window.__dataFixture.requests.filter(r => r.method === 'DELETE' && r.done).length === 2"
     )
@@ -598,7 +590,7 @@ def run_libraries(page):
             page.get_by_role("button", name = "Unarchive: Café needle", exact = True)
         ).to_be_visible()
         search.focus()
-        # macOS WebKit uses Option-Tab to include buttons in keyboard navigation.
+        # macOS WebKit needs Option-Tab to include buttons in keyboard navigation.
         key = (
             "Alt+Tab"
             if sys.platform == "darwin" and os.environ.get("PW_ENGINE") == "webkit"
@@ -753,7 +745,6 @@ def run_library_locales(page):
                 expect_search_hit(page, text["archived"])
                 checks.append("localized-settings-search-exits-archive")
             checks.append(f"library-locale-{locale}-{shelf}")
-    # Change locale with the archive and its query still mounted.
     page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('es');}")
     search = page.get_by_role("searchbox", name = "Buscar audio archivado", exact = True)
     expect(search).to_have_value("NoMatchingTitle")
@@ -956,8 +947,6 @@ def main():
                 result.update(run(page))
             except Exception as error:
                 result["error"] = str(error)
-                # A dialog that outlives close() leaves a blank screenshot behind, so record what
-                # is still mounted: its state and whether an exit animation is holding it.
                 try:
                     result["dialogs"] = page.evaluate(DIALOG_STATE)
                 except Exception as state_error:

@@ -72,7 +72,7 @@ def _install_fake_zoo(monkeypatch) -> dict:
     shared = {"epilogue_fusion": True, "compile_threads": ORIGINAL_THREADS}
     fused = {"triton.cudagraphs": True, "compile_threads": ORIGINAL_THREADS}
     no_combo = {"combo_kernels": False, "compile_threads": ORIGINAL_THREADS}
-    unrelated = {"compile_threads": ORIGINAL_THREADS}  # in a non-zoo module
+    unrelated = {"compile_threads": ORIGINAL_THREADS}
 
     def _fake_determine_compile_threads():
         return ORIGINAL_THREADS
@@ -89,7 +89,7 @@ def _install_fake_zoo(monkeypatch) -> dict:
     common.torch_compile = functools.partial(lambda *a, **k: None, options = shared)
     gpt_oss.fused_torch_compile_options = fused
     gpt_oss.no_combo_fused_torch_compile_options = no_combo
-    loss_utils.torch_compile_options = shared  # same object, re-exported
+    loss_utils.torch_compile_options = shared
     patches.torch_compile_options = shared
     outsider.torch_compile_options = unrelated
 

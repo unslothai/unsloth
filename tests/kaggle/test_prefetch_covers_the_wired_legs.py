@@ -56,7 +56,6 @@ def models_for(leg) -> set[str]:
         named = _payload_default(leg.entry)
     if not named:
         return set()
-    # The declared name AND whatever it really resolves to on an sm_75 card.
     return {named, legs.LOAD_REDIRECTS.get(named, named)}
 
 
@@ -65,8 +64,6 @@ def test_every_wired_leg_loads_a_prefetched_checkpoint():
     missing = {}
     for name in wired:
         wanted = models_for(legs.LEGS[name])
-        # The redirect target is what gets read, so satisfying either name is
-        # enough only when they are the same repo.
         if wanted and not (wanted & set(legs.PREFETCH_REPOS)):
             missing[name] = sorted(wanted)
     assert not missing, (
@@ -109,8 +106,7 @@ def test_nothing_is_prefetched_that_no_leg_reads():
     loaded = set()
     for leg in legs.LEGS.values():
         loaded |= models_for(leg)
-    # Studio's own models are fetched by the Studio builder under its own
-    # HF_HOME, so they are deliberately not in this list.
+    # Studio's models are fetched by the Studio builder under its own HF_HOME.
     stray = [repo for repo in legs.PREFETCH_REPOS if repo not in loaded]
     assert not stray, f"prefetched but never loaded by any leg: {stray}"
 
@@ -182,8 +178,7 @@ def test_a_blob_is_counted_once_not_once_per_symlink(tmp_path, monkeypatch):
         blob = blobs / f"sha{index}"
         blob.write_bytes(b"x" * 1000)
         (snapshot / f"shard{index}.safetensors").symlink_to(blob)
-    # A config is a real file in both places on a filesystem without symlinks,
-    # which is the other way the same bytes get counted twice.
+    # Without symlinks a config is a real file in both places, another double count.
     (blobs / "cfg").write_bytes(b"y" * 10)
     os.link(blobs / "cfg", snapshot / "config.json")
 

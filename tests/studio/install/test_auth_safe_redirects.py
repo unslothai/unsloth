@@ -250,7 +250,6 @@ def test_installer_import_without_backend_dependencies(name, mode, tmp_path):
     [
         ("https://hub.example/a", "https://hub.example:99999/b"),
         ("https://hub.example/a", "https://hub.example:abc/b"),
-        # Both ends unreadable: the sentinel must not compare equal to itself.
         ("https://hub.example:abc/a", "https://hub.example:abc/b"),
     ],
 )
@@ -274,7 +273,6 @@ def test_an_unparseable_redirect_port_stays_soft_for_every_client(client, server
     release = {"tag_name": "v1", "published_at": "2026-01-01T00:00:00Z"}
     source = servers(payload = [release] if client == "freshness" else release)
     source.redirects["/start"] = "https://127.0.0.1:99999/final"
-    # No ValueError arm: it must not be raised, so letting it escape fails the test.
     try:
         fetch(client, source.url + "/start", monkeypatch)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:

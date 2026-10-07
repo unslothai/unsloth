@@ -69,7 +69,6 @@ def test_a_retired_argument_is_dropped_rather_than_raising():
     """The bug: this exact call is what a pinned GRPO notebook makes."""
     kept, messages = _collect(ModernGRPOConfig, {"output_dir": "out", "max_prompt_length": 256})
     assert kept == {"output_dir": "out"}
-    # Constructing with the survivors is the thing that used to raise.
     assert ModernGRPOConfig(**kept).output_dir == "out"
     assert any("max_prompt_length" in m for m in messages)
 
@@ -268,7 +267,7 @@ def test_a_rename_survives_a_default_unsloth_overrode_on_the_generated_config():
     @dataclasses.dataclass
     class ModernSFTConfig:
         output_dir: str = "out"
-        warmup_steps: float = 0.0  # what TRL declares
+        warmup_steps: float = 0.0
 
     class UnslothSFTConfig(ModernSFTConfig):
         def __init__(
@@ -277,7 +276,7 @@ def test_a_rename_survives_a_default_unsloth_overrode_on_the_generated_config():
             warmup_steps = 0.1,
             **kwargs,
         ):
-            pass  # what rl.py generates: same field, different default
+            pass
 
     messages = []
     kept = filter_config_init_kwargs(
@@ -326,7 +325,7 @@ def test_the_renames_rl_py_overrides_the_default_of_are_the_known_ones():
     checking the interaction, so it should fail here rather than in training.
     """
     overridden = _rl_py_overridden_defaults()
-    # The entries the audit found, so a matcher that silently stops working fails.
+    # Pin the entries the audit found, so a matcher that silently stops working fails.
     assert {"warmup_steps", "per_device_train_batch_size", "include_num_input_tokens_seen"} <= (
         overridden
     ), sorted(overridden)
@@ -375,7 +374,6 @@ def test_setting_the_new_name_to_its_own_default_is_reported_as_ambiguous():
     assert "cannot be distinguished" in messages[0]
     assert "drop `warmup_ratio`" in messages[0]
 
-    # No `mirrored_from` means no mirrored parameter, so no ambiguity to report.
     messages = []
     filter_config_init_kwargs(
         ModernSFTConfig,
@@ -399,7 +397,6 @@ def test_a_legacy_optional_forwarded_at_none_does_not_erase_the_target():
     assert kept == {}, "an unset legacy alias must not be migrated"
     assert messages == []
 
-    # A value that was actually chosen still migrates.
     kept, _ = _collect(ModernSFTConfig, {"per_gpu_train_batch_size": 16})
     assert kept == {"per_device_train_batch_size": 16}
 
@@ -445,8 +442,7 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
     assert kept["include_for_metrics"] == []
 
 
-# These two guard the wiring: reverting the rl.py template edit would leave every test above green.
-# rl.py is read as text because importing it pulls in torch, trl and unsloth_zoo.
+# Guards the rl.py template wiring; read as text since importing pulls in torch/trl/zoo.
 RL_SOURCE = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
 
 
@@ -487,7 +483,6 @@ def test_the_generated_config_routes_super_through_the_filter():
         "super().__init__(**_unsloth_filter_config_init_kwargs("
         "{RLConfig_name}, _unsloth_config_arguments, mirrored_from = __class__))"
     ) in RL_SOURCE
-    # The raw splat is what the fix removes; it must not come back.
     assert "super().__init__({RLConfig_call_args}{RLConfig_kwargs})" not in RL_SOURCE
 
 
@@ -496,12 +491,12 @@ def test_the_generated_file_imports_the_filter_with_a_safe_fallback():
         "from unsloth.models.rl_config_compat import filter_config_init_kwargs"
         " as _unsloth_filter_config_init_kwargs"
     ) in RL_SOURCE
-    # An import failure must degrade to the historical passthrough, never to a NameError inside a generated trainer.
+    # An import failure must degrade to passthrough, never a NameError in a generated trainer.
     assert (
         "def _unsloth_filter_config_init_kwargs(config_class, kwargs, **kw): return kwargs"
         in RL_SOURCE
     )
-    # ...and an older Unsloth, whose filter has no `mirrored_from`, must not see it.
+    # An older Unsloth filter without `mirrored_from` must not be passed it.
     assert '"mirrored_from" not in inspect.signature(' in RL_SOURCE
 
 

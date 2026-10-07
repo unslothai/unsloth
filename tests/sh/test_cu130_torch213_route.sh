@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# install.sh gives new Linux x86_64 cu130 Python 3.13 installs torch 2.13 (the only route the
-# prebuilt-wheels-cu13 release covers) while an existing 2.4-2.14 install keeps its release.
-# Helpers are extracted from install.sh and sourced; the venv python is a stub.
+# New Linux x86_64 cu130 Python 3.13 installs get torch 2.13; existing 2.4-2.14 installs keep theirs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,7 +21,7 @@ unset UNSLOTH_TORCH_UPGRADE
 
 VENV_DIR=$(mktemp -d)
 mkdir -p "$VENV_DIR/bin"
-# Answers the version probe (-c) with $1 and runs anything else (the PyPI gate) on a real python.
+# Answers the -c version probe with $1; anything else runs on a real python.
 _stub_python() {
     printf '#!/bin/sh\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "$1" > "$VENV_DIR/bin/python"
     chmod +x "$VENV_DIR/bin/python"
@@ -85,7 +83,6 @@ _UVCFG="$VENV_DIR/uv.toml"; printf '[[index]]\nurl = "https://mirror.example/sim
 assert_eq "uv.toml index keeps the old window" "no" "$(UV_CONFIG_FILE="$_UVCFG" _cu130_torch213_route "$CU130")"
 
 echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
-# Runs install.sh's own block (route, kept pin, new-install default) with substep stubbed.
 _PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"$/p' "$INSTALL_SH"; echo fi)
 assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _CU130_NEW_INSTALL_ROUTE && echo yes)"
 substep() { :; }
@@ -135,7 +132,6 @@ assert_eq "legacy layout records its torch before migrating" "yes" \
     "$(grep -q '"\$STUDIO_HOME"/.venv/lib/python\*/site-packages/torch/version.py' "$INSTALL_SH" && echo yes)"
 
 echo "=== a home with any earlier environment is an existing install ==="
-# install.sh's own detection block; the legacy branches that run an interpreter are not reached here.
 _DETECT_BLOCK=$(awk '/^_EXISTING_INSTALL=false$/{p=1} p&&/^if \[ "\$SKIP_TORCH" = true \] && \[ "\$MAC_INTEL" = true \]/{exit} p' "$INSTALL_SH")
 assert_eq "detection block found in install.sh" "yes" "$(printf '%s' "$_DETECT_BLOCK" | grep -q _EXISTING_INSTALL=true && echo yes)"
 _detect() (  # $1 home; prints existing flag and recorded torch

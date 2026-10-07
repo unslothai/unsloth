@@ -101,7 +101,7 @@ def test_the_finalizer_really_restores_the_original():
         generator = C.network_blocker.__wrapped__()
         next(generator)
         assert socket.socket is C._BlockedSocket, "setup did not install the guard"
-        next(generator, None)  # run the finally
+        next(generator, None)
         assert socket.socket is real, "teardown did not hand the original back"
     finally:
         socket.socket = outer

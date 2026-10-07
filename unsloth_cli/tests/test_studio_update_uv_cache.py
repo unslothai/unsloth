@@ -245,9 +245,6 @@ def test_the_seeding_does_not_leak_into_this_process(monkeypatch, tmp_path, cach
     assert "UV_CACHE_DIR" not in os.environ, os.environ.get("UV_CACHE_DIR")
 
 
-# --- Do not move the update off a warm cache onto a cold one -------------------------
-
-
 def test_a_shared_mode_install_keeps_the_cache_that_actually_has_the_wheels(
     monkeypatch, tmp_path, caches
 ):
@@ -283,8 +280,7 @@ def test_the_chosen_cache_is_named_rather_than_left_to_the_child(monkeypatch, tm
     wins, it reaches the child as an explicit path."""
     studio_cache, default_cache = caches
     for warm, expected in ((default_cache, default_cache), (studio_cache, studio_cache)):
-        # Each iteration states its own starting point: the other cache goes cold, and the
-        # previous run's backfilled marker goes away, or either would decide this one.
+        # Reset both caches and the backfilled marker each iteration, or the previous run decides.
         for cache in (studio_cache, default_cache):
             shutil.rmtree(cache, ignore_errors = True)
         _fill(warm)
@@ -430,9 +426,6 @@ def test_a_non_true_no_cache_value_changes_nothing(monkeypatch, tmp_path, caches
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
-# --- The warmth test itself ----------------------------------------------------------
-
-
 def test_package_bytes_beside_metadata_count_as_warm(tmp_path):
     """A real cache has both; the metadata filter must not hide the payload."""
     studio = _studio()
@@ -458,9 +451,6 @@ def test_an_absent_cache_is_not_warm(tmp_path):
     studio = _studio()
 
     assert studio._uv_cache_has_packages(tmp_path / "nope") is False
-
-
-# --- The cache the installer recorded --------------------------------------------------
 
 
 def _record(studio_home: Path, value) -> None:
@@ -580,9 +570,6 @@ def test_a_recorded_path_containing_a_newline_survives_the_round_trip(
     env = studio._with_studio_uv_cache({})
 
     assert env["UV_CACHE_DIR"] == str(weird)
-
-
-# --- Backfilling the marker for installs that predate it --------------------------------
 
 
 def _marker(tmp_path: Path) -> Path:
@@ -707,13 +694,9 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
     studio._backfill_uv_cache_marker({"UV_CACHE_DIR": str(weird)})
 
     assert _marker(tmp_path).read_bytes().strip() == os.fsencode(str(weird))
-    # And the reader gives back the path the filesystem uses, not one with U+FFFD in it.
     assert studio._recorded_install_uv_cache() == weird
     # The tmp_path reaper cannot always delete a name it cannot decode.
     shutil.rmtree(weird, ignore_errors = True)
-
-
-# --- The uv probe ---------------------------------------------------------------------
 
 
 def _probe_kwargs(
@@ -748,7 +731,6 @@ def test_the_probe_asks_from_the_directory_setup_will_ask_from(monkeypatch, tmp_
     seen = _probe_kwargs(monkeypatch, stdout = "relcache\n", cwd = tmp_path / "studio")
 
     assert seen["cwd"] == str(tmp_path / "studio")
-    # And the relative answer resolves against that directory, not against the caller's.
     assert seen["result"] == tmp_path / "studio" / "relcache", seen["result"]
 
 
@@ -1027,7 +1009,6 @@ def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path
         pytest.skip("root can write anywhere")
     studio = _studio()
     studio_cache, _default = caches
-    # Neither the marker nor uv's default can settle it, so the Studio cache is the choice.
     studio_cache.parent.mkdir(parents = True, exist_ok = True)
     studio_cache.mkdir(parents = True, exist_ok = True)
     studio_cache.chmod(0o555)
@@ -1037,7 +1018,6 @@ def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path
         studio_cache.chmod(0o755)
     assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
 
-    # Writable again, and it is handed over as before.
     seen = _run_posix(monkeypatch, tmp_path)
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
 
@@ -1075,7 +1055,6 @@ def test_a_mistyped_studio_home_is_not_materialised_by_the_probe(monkeypatch, tm
     env = studio._with_studio_uv_cache(None)
 
     assert not missing.exists(), sorted(p.name for p in tmp_path.iterdir())
-    # Still named, so setup.sh is told the same path it would have picked itself.
     assert env["UV_CACHE_DIR"] == str(missing / "cache" / "uv")
 
 
@@ -1222,13 +1201,10 @@ def test_a_folded_bucket_name_counts_as_warmth(tmp_path, monkeypatch):
     (cache / "Archive-V0" / "pkg").mkdir(parents = True)
     (cache / "Archive-V0" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
 
-    # On a filesystem that really folds (APFS, NTFS) the bytes are already where uv looks, and
-    # asserting the case-SENSITIVE answer first would fail there. Ask the filesystem rather than
-    # assume: this was green on ext4 and red on the macOS runner until it did.
+    # Ask the filesystem: on APFS / NTFS the folded name already resolves.
     if (cache / "archive-v0").exists():
         assert studio._uv_cache_has_packages(cache) is True
         return
-    # Case-sensitive: uv opens archive-v0, which is not there, so those bytes are unreachable.
     assert studio._uv_cache_has_packages(cache) is False
     _simulate_case_folding(monkeypatch)
     assert studio._uv_cache_has_packages(cache) is True
@@ -1240,8 +1216,7 @@ def test_a_folded_lookalike_is_still_not_a_bucket(tmp_path, monkeypatch):
     cache = tmp_path / "shared-uv"
     (cache / "Archive-V0.backup" / "pkg").mkdir(parents = True)
     (cache / "Archive-V0.backup" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
-    # Holds on a folding filesystem and a case-sensitive one alike: the name is not uv's either
-    # way, so the stub only has to make the folding case reachable on ext4.
+    # The name is not uv's on any filesystem; the stub just makes the folding case reachable on ext4.
     _simulate_case_folding(monkeypatch)
     assert studio._uv_cache_has_packages(cache) is False
 

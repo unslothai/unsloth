@@ -28,7 +28,6 @@ class _Keyboard:
 
     def press(self, key: str) -> None:
         self.pressed.append(key)
-        # Escape dismisses the top layer only.
         if key == "Escape" and self._page.menus and self._page.menu_closes_on_escape:
             self._page.menus.pop()
 
@@ -40,7 +39,7 @@ class _Button:
     def click(self, timeout = None) -> None:
         page = self._page
         if page.click_dismisses_open_menu:
-            page.menus.clear()  # a non-modal menu lets the outside pointerdown through and closes
+            page.menus.clear()
         if page.click_opens_menu:
             page.menus.append("attachments")  # Radix opens on pointerdown
         raise TimeoutError(f"Timeout {timeout}ms exceeded.")
@@ -93,8 +92,8 @@ class _Page:
         if "__sbMenusBefore" in script:
             return any(menu not in self._before for menu in self.menus)
         if '[role="menu"]' in script:
-            return bool(self.menus)  # a presence-only query
-        return 0  # the attachment count
+            return bool(self.menus)
+        return 0
 
     def wait_for_timeout(self, _ms) -> None:
         return None

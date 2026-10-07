@@ -161,7 +161,6 @@ def test_no_cu128_torch212_extras(series: str):
 
 @pytest.mark.parametrize("series", sorted(_TORCH212_TRIO))
 def test_auto_install_maps_torch212_to_defined_extras(series: str):
-    # The printed command must name existing extras and add the index serving their pins.
     source = AUTO_INSTALL.read_text(encoding = "utf-8")
     assert f"'cu{{}}{{}}-{series}'" in source, f"_auto_install.py never selects {series}"
     assert f"'-{series}'" in source, f"{series} missing from the extra-index-url gate"

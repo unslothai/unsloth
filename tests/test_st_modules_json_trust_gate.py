@@ -27,17 +27,7 @@ import sys
 
 import pytest
 
-# sentence-transformers is an extra (`huggingfacenotorch`), not a core dependency, so
-# without this the whole file errors with ModuleNotFoundError in the shard that installs
-# the core set only, rather than skipping.
-#
-# Two jobs run this file, and for different reasons. version-compat-ci's zoo-imports job
-# names it on the pytest line and installs sentence-transformers for it, which is where
-# it runs under the CUDA spoof against the pinned transformers matrix. studio-backend-ci's
-# "Repo tests (CPU, auto-discovered)" shard collects it by discovery, where without a
-# sentence-transformers install the importorskip would leave it permanently skipped: that
-# branch also installs the package so the gate runs there too, on the core dependency set
-# rather than the version matrix.
+# sentence-transformers is an extra, so skip rather than error in core-only shards.
 pytest.importorskip("sentence_transformers")
 
 from unsloth import FastSentenceTransformer  # noqa: E402
@@ -205,8 +195,7 @@ def test_a_module_config_may_not_smuggle_a_class_path_past_the_gate(tmp_path):
 @pytest.mark.parametrize(
     "module_name, config_name, config",
     [
-        # Each module names its own config file, so a check reading only "config.json" skips the two
-        # modules whose loaders resolve a dotted path out of it, which are the reason it exists.
+        # Each module names its own config file; the dotted-path loaders are why this exists.
         ("Router", "router_config.json", {"types": {"query": MARKER + ".Thing"}}),
         ("WordEmbeddings", "wordembedding_config.json", {"tokenizer_class": MARKER + ".Thing"}),
     ],
@@ -899,10 +888,7 @@ def test_an_empty_router_config_still_checks_the_fallback(tmp_path, monkeypatch)
 
     _simulate_pre_six(monkeypatch)
 
-    # Two directories on purpose. On a delegated route nothing is local, and the only
-    # files on disk are the ones this gate downloaded, so the cache has to start empty:
-    # writing both into one folder lets the reader find the fallback on disk and refuse
-    # for a reason that has nothing to do with whether it was ever fetched.
+    # Two dirs on purpose: on a delegated route the cache must start empty.
     remote = tmp_path / "remote"
     remote.mkdir()
     (remote / "router_config.json").write_text("{}", encoding = "utf8")
@@ -940,7 +926,6 @@ def test_an_empty_router_config_still_checks_the_fallback(tmp_path, monkeypatch)
             "sentence_transformers.models.Router",
             st_models.Router,
         )
-    # Both files, because the first one was empty.
     assert requested == ["router_config.json", "config.json"]
 
 
@@ -1138,8 +1123,7 @@ def test_the_module_configs_are_read_from_the_validated_snapshot(tmp_path, monke
         == commit
     )
 
-    # modules.json is fetched on the caller's revision, because that is what resolves the
-    # commit. Everything after it is fetched on the commit that resolution produced.
+    # modules.json uses the caller's revision; everything after uses the resolved commit.
     assert revisions[0] == ("modules.json", "main")
     assert [r for name, r in revisions[1:]] == [commit] * len(revisions[1:])
     assert len(revisions) > 1
@@ -1259,7 +1243,7 @@ def test_a_404_without_a_commit_header_is_tolerated_where_upstream_gates_it(tmp_
     import sentence_transformers
     from huggingface_hub.errors import EntryNotFoundError
 
-    # The version is the condition under test; the floor lane installs sentence-transformers 5.x.
+    # The floor lane installs sentence-transformers 5.x, so force the version under test.
     monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
     monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
     _patch_download(

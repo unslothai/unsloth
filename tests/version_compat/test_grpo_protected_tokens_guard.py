@@ -42,8 +42,6 @@ import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 _spoof.apply()
 
 
-# Fixtures, not the installed TRL, so both groups are covered on a runner that has neither.
-# Both satisfy the selecting regex and the two-statement rule; they differ only in the helper.
 _TRL_0_18_BLOCK = """
     def _generate_and_score_completions(self, inputs):
         device = self.accelerator.device

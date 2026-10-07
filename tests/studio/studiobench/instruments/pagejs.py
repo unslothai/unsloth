@@ -27,8 +27,7 @@ from . import register_instrument
 
 _HERE = Path(__file__).resolve().parent
 
-# How far the three clocks may disagree before the window is not scoreable. Not tuned: it is the
-# threshold declared in the design, and the point is that it is declared rather than discovered.
+# Declared design threshold, not tuned.
 CLOCK_DISAGREEMENT_LIMIT = 0.20
 
 
@@ -57,9 +56,7 @@ class _PageInstrument(Instrument):
             self.unavailable = f"could not install {self.script_name}: {exc}"
 
     def start_cell(self, cell: Cell) -> None:
-        # Re-read the page every cell: a crashed renderer is recovered by opening a NEW page, so an
-        # instrument that cached it in attach() would spend the rest of the run evaluating against a closed
-        # one.
+        # Re-read every cell: crash recovery opens a NEW page.
         self.page = self.ctx.page if self.ctx else None
 
     def _eval(
@@ -117,8 +114,7 @@ class FramesInstrument(_PageInstrument):
                     pass
 
             ctx.cdp.on("Page.screencastFrame", on_frame)
-            # Tiny frames: the point is the COUNT and its timing, and a full-size capture would cost the
-            # renderer real encode time inside the window being measured.
+            # Tiny frames so encoding does not cost renderer time inside the window.
             ctx.cdp.send(
                 "Page.startScreencast",
                 {
@@ -213,17 +209,8 @@ class FramesInstrument(_PageInstrument):
                 "against and frame counts rest on the page's own report alone"
             )
             return result
-        # THE THIRD CLOCK IS NOT RESOLVED, AND THIS SAYS SO RATHER THAN INVENTING IT. Two of the three are
-        # sound: the 1ms timer has a real expectation and `timer_clock_ratio` measures how much of its
-        # budget the main thread could answer, and the compositor is a liveness signal only. The rAF loop
-        # has NO sound expectation on a headless engine, since there is no display and it runs as fast as
-        # it can. Normalising against the best window in the cell was tried and is wrong: an early idle
-        # window runs far above 60, so every later window scores about 0.44 and `clocks_agree` came out
-        # FALSE on 34 of 34 windows of a page demonstrably steady at 60 fps with 2% blocked time.
-        # So `clocks_agree` is null WITH A REASON, `timer_clock_ratio` is the load-bearing availability
-        # signal, and the frame columns are the page's own account of itself. Restoring the third clock
-        # needs a vsync-locked source: a headed run, or `Page.startScreencast` correlated against
-        # `LatencyInfo` in a trace, which is Layer 2's surface.
+        # The rAF clock has no sound expectation headless, so clocks_agree is null with a reason.
+        # timer_clock_ratio is the load-bearing availability signal.
         result["timer_clock_ratio"] = round(lag_ticks / expected_ticks, 3)
         result["clocks_agree"] = None
         result["clocks_reason"] = (

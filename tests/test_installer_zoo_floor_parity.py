@@ -34,11 +34,8 @@ PYPROJECT = REPO / "pyproject.toml"
 INSTALL_SH = REPO / "install.sh"
 INSTALL_PS1 = REPO / "install.ps1"
 
-# Every `--no-deps` site that names a zoo floor, one per installer branch:
-#   install.sh   migrated + SKIP_TORCH, fresh + SKIP_TORCH
-#   install.ps1  migrated + SkipTorch, fresh + SkipTorch
-# Pinned so that adding a fifth without thinking about the floor fails here rather than
-# shipping a path nothing checks.
+# One `--no-deps` zoo-floor site per installer branch (install.sh/ps1 x migrated/fresh);
+# pinned so a fifth site fails here instead of shipping unchecked.
 EXPECTED_NO_DEPS_SITES = 4
 
 _ZOO_SPEC = re.compile(r"""unsloth[-_]zoo\s*(?:>=|==)\s*[0-9][^"'\s]*""")

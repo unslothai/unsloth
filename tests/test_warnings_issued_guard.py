@@ -70,9 +70,6 @@ class _Bare(torch.nn.Module):
     """A module with no `warnings_issued`, exactly like transformers >= 5.1."""
 
 
-# ---- the behaviour ---------------------------------------------------------
-
-
 def test_a_module_without_the_attribute_gets_a_dict():
     m = _Bare()
     with pytest.raises(AttributeError):
@@ -133,9 +130,6 @@ def test_running_twice_is_idempotent():
     assert m.warnings_issued == {"estimate_tokens": True}
 
 
-# ---- what it deliberately does not touch -----------------------------------
-
-
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
     """trl accepts a repo id string and builds the model itself. Attaching an
@@ -154,10 +148,7 @@ def test_a_model_that_refuses_the_assignment_does_not_raise():
                 raise RuntimeError("no")
             super().__setattr__(name, value)
 
-    GUARD(_Locked())  # must not propagate
-
-
-# ---- through the real wrapper, against a trl-shaped trainer ----------------
+    GUARD(_Locked())
 
 
 @dataclasses.dataclass
@@ -233,9 +224,6 @@ def test_no_model_at_all_still_reaches_the_wrapped_init():
         _wrapped()()
 
 
-# ---- the source, so the fix cannot be half-applied -------------------------
-
-
 def _new_init_body():
     tree = ast.parse(SRC)
     for node in ast.walk(tree):
@@ -266,7 +254,7 @@ def test_the_guard_is_outside_the_version_branch():
     found = []
     for node in ast.walk(ns):
         if isinstance(node, ast.FunctionDef) and node.name == "new_init":
-            for stmt in node.body:  # top level of new_init only
+            for stmt in node.body:
                 for sub in ast.walk(stmt):
                     if (
                         isinstance(sub, ast.Call)
@@ -282,9 +270,6 @@ def test_the_generated_compiled_guard_is_still_there():
     rl = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     assert "warnings_issued_check" in rl
     assert "model.warnings_issued = {}" in rl
-
-
-# ---- the upstream facts this rests on --------------------------------------
 
 
 def test_trl_still_writes_the_attribute_unconditionally():
@@ -363,14 +348,10 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-# ---- the kwargs the wrapper exists to move -------------------------------
-#
-# A real trl config, not a stand-in: `new_init` branches on isinstance(TrainingArguments), so a plain dataclass takes
-# the other branch and the tests would pass against the bug.
+# A real trl config: new_init branches on isinstance(TrainingArguments).
 def _sft_config():
     pytest.importorskip("trl")
-    # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds that name to
-    # the MLX training config. The defining module still holds the real one.
+    # Not `trl.SFTConfig`: on Apple Silicon `import unsloth` rebinds it to the MLX config.
     from trl.trainer.sft_config import SFTConfig
     return SFTConfig
 

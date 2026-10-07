@@ -71,7 +71,6 @@ def test_a_real_checkout_is_passed_through(monkeypatch, tmp_path):
 
 
 def test_site_packages_is_refused_with_an_actionable_message(monkeypatch, tmp_path):
-    # What the second `update --local` on Windows actually derived.
     site = tmp_path / "Lib" / "site-packages"
     site.mkdir(parents = True)
     studio, _ = _neutered(monkeypatch)
@@ -81,13 +80,11 @@ def test_site_packages_is_refused_with_an_actionable_message(monkeypatch, tmp_pa
     out = result.output
     assert "needs an Unsloth checkout" in out
     assert "no pyproject.toml under" in out
-    # Both ways forward, because neither is obvious from the uv error it replaces.
     assert "STUDIO_LOCAL_REPO=" in out
     assert "unsloth studio update" in out
 
 
 def test_the_derived_root_is_used_when_nothing_is_set(monkeypatch):
-    # The normal developer case: running from a checkout with no override.
     studio, seen = _neutered(monkeypatch)
     monkeypatch.delenv("STUDIO_LOCAL_REPO", raising = False)
     result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
@@ -96,8 +93,6 @@ def test_the_derived_root_is_used_when_nothing_is_set(monkeypatch):
 
 
 def test_a_pypi_update_never_looks_for_a_checkout(monkeypatch, tmp_path):
-    # Without --local there is no local repo to find, and a stale STUDIO_LOCAL_REPO must not leak into
-    # the setup environment.
     site = tmp_path / "site-packages"
     site.mkdir()
     studio, seen = _neutered(monkeypatch)
@@ -109,9 +104,6 @@ def test_a_pypi_update_never_looks_for_a_checkout(monkeypatch, tmp_path):
 
 
 def test_a_relative_override_is_absolutised(monkeypatch, tmp_path):
-    # setup.sh does `cd "$SCRIPT_DIR"` before install_python_stack.py runs, so a relative path handed
-    # straight through resolves against studio/ (which has no pyproject.toml) and hits the exact uv
-    # error the guard replaces.
     checkout = tmp_path / "unsloth"
     checkout.mkdir()
     (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
@@ -139,8 +131,6 @@ def test_a_tilde_override_is_expanded(monkeypatch, tmp_path):
 
 
 def test_a_blank_override_falls_back_to_the_derived_root(monkeypatch):
-    # `STUDIO_LOCAL_REPO= ` (install.sh resets it to empty) must not become Path(" ") and fail the
-    # guard on a perfectly good checkout.
     studio, seen = _neutered(monkeypatch)
     monkeypatch.setenv("STUDIO_LOCAL_REPO", "   ")
     result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
@@ -168,7 +158,6 @@ def test_the_override_runs_that_checkouts_setup_script(monkeypatch, tmp_path):
 
     studio = _studio()
     assert studio._find_setup_script(checkout) == script
-    # No override: unchanged, still resolved from the installed package root.
     assert studio._find_setup_script(None) != script
 
 
@@ -201,8 +190,6 @@ def test_a_pypi_update_passes_no_checkout(monkeypatch):
 
 
 def test_windows_is_shown_a_powershell_assignment(monkeypatch, tmp_path):
-    # `VAR=value command` is POSIX shell syntax. PowerShell parses the assignment as a command name, so
-    # the only recovery instruction the guard prints was unusable on the platform it exists for.
     import platform as _platform
 
     site = tmp_path / "Lib" / "site-packages"
@@ -214,7 +201,6 @@ def test_windows_is_shown_a_powershell_assignment(monkeypatch, tmp_path):
     assert result.exit_code == 2, result.output
     out = result.output
     assert "$env:STUDIO_LOCAL_REPO=" in out
-    # The POSIX prefix form must not be the one Windows is told to run.
     assert "    STUDIO_LOCAL_REPO=/path/to/unsloth" not in out
 
 

@@ -46,7 +46,7 @@ def fetch():
 
 
 def _stub(path: Path, output: str, rc: int) -> None:
-    # quoted heredoc: the message has a backtick an `echo` would run as a substitution
+    # Quoted heredoc: the message has a backtick echo would execute.
     path.write_text(
         "#!/usr/bin/env bash\n"
         "cat >&2 <<'UNSLOTH_EOF'\n"
@@ -98,5 +98,4 @@ def test_a_server_with_no_banner_at_all_still_fails(fetch, tmp_path):
 
 
 def test_the_loader_message_really_does_contain_the_substring():
-    # the premise: without it the exit-code check above is only belt and braces
     assert "version" in GLIBC_FAILURE

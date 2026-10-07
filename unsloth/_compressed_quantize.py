@@ -62,8 +62,7 @@ def compressed_ignore_patterns(config):
     class name) match.
     """
     ignore = ["lm_head"]
-    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family: their shapes are
-    # not divisible by the grouped-scheme group_size and would error. No-ops elsewhere.
+    # Skip what RedHatAI/NVIDIA skip for Qwen3.5 / Qwen3-Next: shapes not divisible by group_size.
     ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
     if _is_moe(config):
         # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
@@ -86,18 +85,15 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         ds = load_dataset("HuggingFaceH4/ultrachat_200k", split = f"train_sft[:{num_samples}]")
         ds = ds.shuffle(seed = 42)
     elif kind == "hfid":
-        # Not every dataset has a "train" split (e.g. train_sft only); fall back to the first one.
         try:
             ds = load_dataset(value, split = f"train[:{num_samples}]")
         except (ValueError, KeyError):
             from datasets import get_dataset_split_names
             try:
-                # Resolve the first split name so only num_samples rows are fetched, instead of materializing the
-                # whole dataset just to take a small slice.
+                # Resolve the split name so only num_samples rows are fetched.
                 split = get_dataset_split_names(value)[0]
                 ds = load_dataset(value, split = f"{split}[:{num_samples}]")
             except Exception:
-                # Last resort: materialize, then subselect (preserves the original behavior).
                 ds = load_dataset(value)
                 if isinstance(ds, DatasetDict):
                     ds = ds[next(iter(ds.keys()))]
@@ -128,24 +124,21 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
                 "pass a non-empty calibration_dataset."
             )
     except TypeError:
-        pass  # streaming / iterable datasets have no len(); let llm-compressor handle them
+        pass  # no len() on iterable datasets
 
     cols = set(ds.column_names)
     if "input_ids" in cols:
-        # Drop non-model-input columns (e.g. a leftover 'messages' list) so llm-compressor's collator does
-        # not try to batch them.
+        # Drop non-input columns so llm-compressor's collator does not try to batch them.
         keep = {"input_ids", "attention_mask", "labels", "position_ids"}
         extra = [c for c in ds.column_names if c not in keep]
         if extra:
             ds = ds.remove_columns(extra)
         return ds
     if "messages" in cols:
-        # Base / non-chat tokenizers have no chat template, and apply_chat_template would raise, so
-        # concatenate message contents instead.
+        # Base tokenizers have no chat template, so concatenate message contents instead.
         has_chat_template = bool(getattr(_tok, "chat_template", None))
 
         def _content_to_text(content):
-            # content may be a str, None, or a multimodal list of parts (str or {"text": ...}).
             if content is None:
                 return ""
             if isinstance(content, str):
@@ -189,8 +182,6 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
 
 def _from_pretrained(auto_model, model_path, trust_remote_code):
     import torch
-
-    # transformers renamed torch_dtype -> dtype; support both.
     try:
         return auto_model.from_pretrained(
             model_path,
@@ -229,8 +220,7 @@ def main():
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier
 
-    # Import the VLM auto-class only when needed: some transformers versions lack it, and the text path
-    # must not fail over a newer class.
+    # Some transformers versions lack the VLM auto-class; the text path must not fail over it.
     if args.is_vlm:
         from transformers import AutoProcessor
         try:
@@ -249,10 +239,8 @@ def main():
 
     model = _from_pretrained(auto_model, args.model, args.trust_remote_code)
     model.eval()
-    # A tokenizer may be absent if the caller saved it separately; only calibration needs one.
     try:
-        # The tokenizer/processor has its own trust flag: consent for one component must not let the other's
-        # custom code run.
+        # The processor has its own trust flag: consent for one component must not cover the other.
         tokenizer = auto_proc.from_pretrained(
             args.model, trust_remote_code = args.trust_remote_code_tokenizer
         )
@@ -264,8 +252,6 @@ def main():
             )
         tokenizer = None
 
-    # MoE models: keep the router/gate unquantized and calibrate every expert even if the sample set
-    # does not route tokens to all of them.
     config = getattr(model, "config", None)
     is_moe = _is_moe(config)
     ignore = compressed_ignore_patterns(config)
@@ -282,9 +268,8 @@ def main():
             args.num_calibration_samples,
             args.max_seq_length,
         )
-        # The sequential pipeline onloads layer-by-layer, so a model that does not fit at once still
-        # calibrates; tracing works only because this runs in a clean process without Unsloth's attention
-        # patches. Fall back to the memory-hungry "basic" pipeline only if tracing fails.
+        # Sequential pipeline onloads layer by layer; tracing works only in this clean process without
+        # Unsloth's attention patches. Fall back to the memory-hungry basic pipeline if tracing fails.
         try:
             oneshot(
                 model = model,
@@ -301,8 +286,7 @@ def main():
                 "retrying with the 'basic' pipeline (needs the full model to fit in memory).",
                 flush = True,
             )
-            # Free the partially-processed model before loading a fresh copy so the fallback never holds two
-            # on GPU: llm-compressor keeps the model in a global session after a failed run.
+            # llm-compressor keeps the model in a global session after a failure, so free it before reloading.
             import gc as _gc
             import torch as _torch
 

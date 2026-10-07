@@ -50,7 +50,6 @@ class _Model:
 
 def test_is_vlm_handles_none_architectures():
     is_vlm = _load_is_vlm()
-    # architectures = None must not raise (it did before: `for x in None`).
     assert is_vlm(_Model(_Cfg(None))) is False
 
 

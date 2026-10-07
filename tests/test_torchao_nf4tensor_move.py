@@ -213,8 +213,7 @@ def test_it_is_wired_into_the_init_sequence():
 def test_the_real_environment_is_left_alone():
     """On a torchao that still ships the old path the fix must be a no-op
     rather than redirecting a working import."""
-    # In a child: once anything in this session has imported unsloth the alias is registered, so an in-process check
-    # would read the new layout as old.
+    # Run in a child: once unsloth is imported the alias makes the new layout read as old.
     p = subprocess.run(
         [
             sys.executable,

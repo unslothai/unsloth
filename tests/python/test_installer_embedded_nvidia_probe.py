@@ -38,8 +38,7 @@ CUDA_OUT = "cuda;12;6;9.0,9.0"
 
 
 def _embedded(path: Path) -> str:
-    # Anchored on the function: both files carry other here-strings, and the first one is a
-    # different probe.
+    # Anchored on the function: both files carry other here-strings.
     text = path.read_text(encoding = "utf-8")
     at = text.index("function Read-NvidiaLibraryRawViaPython")
     match = re.search(r"\$probeSource = @'\n(.*?)\n'@\n", text[at:], re.S)
@@ -52,7 +51,7 @@ SETUP_PROBE = _embedded(ROOT / "studio" / "setup.ps1")
 
 
 def test_both_copies_are_byte_identical():
-    # Leading whitespace IS Python syntax, so this is a byte comparison, not a stripped one.
+    # Leading whitespace is Python syntax, so compare bytes, not stripped text.
     assert INSTALL_PROBE == SETUP_PROBE
 
 
@@ -66,7 +65,6 @@ def test_the_probe_compiles():
 
 
 class _Fn:
-    # The probe sets .restype / .argtypes on every export.
     def __init__(self, impl):
         self._impl, self.restype, self.argtypes = impl, None, None
 
@@ -103,7 +101,6 @@ def _run(
     for attr in ("c_int", "c_uint", "c_void_p", "POINTER"):
         setattr(shim, attr, getattr(ctypes, attr))
     shim.CDLL = fake_cdll
-    # Identity byref, so a fake export can write through to the caller's c_int.
     shim.byref = lambda obj: obj
     buffer = io.StringIO()
     with pytest.MonkeyPatch.context() as mp, redirect_stdout(buffer):
@@ -167,7 +164,6 @@ def _cuda(
 ):
     def cu_init(flags):
         if seen is not None:
-            # What the driver would see: the mask at the moment cuInit reads it.
             seen.append(os.environ.get("CUDA_VISIBLE_DEVICES"))
         return init
 
@@ -200,11 +196,9 @@ def _cuda(
         pytest.param(
             {"packed": 13010}, None, "nvml;13;1;8.9,8.9", id = "version_is_major_1000_minor_10"
         ),
-        # A partial list would misreport the lowest capability and so the pre-Turing cap.
         pytest.param({"bad_handle": 1}, None, "", id = "unreadable_handle_voids_source"),
         pytest.param({"bad_cap": 1}, None, "", id = "unreadable_capability_voids_source"),
         pytest.param({"count": 0}, None, "", id = "no_devices"),
-        # Below 1000 the packed form cannot encode a real CUDA version.
         pytest.param({"packed": 999}, None, "", id = "nonsense_driver_version"),
         pytest.param({"init": 1}, {}, CUDA_OUT, id = "failed_nvml_init_falls_through"),
         pytest.param(None, {}, CUDA_OUT, id = "nvml_absent_uses_driver_api"),
@@ -231,8 +225,7 @@ def test_a_partial_read_still_shuts_nvml_down():
 @POSIX_ONLY
 @pytest.mark.parametrize("value, nvml_first", [("1", False), ("0", True)])
 def test_the_skip_nvml_switch(monkeypatch, value, nvml_first):
-    # "1" is the CUDA-only retry after a child NVML held past its deadline: NVML is never loaded
-    # or initialised, and the driver API is. Any other value still reads NVML first.
+    # "1" is the CUDA-only retry after a child NVML hung: NVML is never loaded.
     monkeypatch.setenv("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", value)
     nvml, cuda = _nvml(), _cuda()
     out = _run({LINUX_NVML: nvml, LINUX_CUDA: cuda})
@@ -260,7 +253,6 @@ def test_cuinit_sees_the_physical_inventory(monkeypatch, mask):
 
 @POSIX_ONLY
 def test_the_capability_attributes_are_75_and_76():
-    # A wrong attribute number returns a plausible integer rather than an error.
     attrs: list = []
     _run({LINUX_NVML: None, LINUX_CUDA: _cuda(attrs = attrs)})
     assert set(attrs) == {75, 76}
@@ -296,8 +288,7 @@ def test_windows_loads_only_the_driver_paths_it_is_handed(monkeypatch):
 
 
 def test_a_cuda_stand_in_beside_python_is_not_an_nvidia_gpu(monkeypatch):
-    # ZLUDA ships nvcuda.dll and nvml.dll that answer as a driver on an AMD host (#11736):
-    # without the driver in System32 the probe must say nothing, not report a GPU.
+    # ZLUDA ships nvcuda.dll and nvml.dll on AMD hosts; with no System32 driver, report nothing.
     order: list[str] = []
     stand_in = {"nvml.dll": _nvml(), "nvcuda.dll": _cuda()}
     assert _run_windows(monkeypatch, stand_in, (SYSTEM32_NVML, SYSTEM32_CUDA), order) == ""

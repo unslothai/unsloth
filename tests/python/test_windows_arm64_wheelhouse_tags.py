@@ -29,24 +29,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
-# Read once: the source-level tests below want these whole files and none of them mutate
-# what they read.
 INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
 STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
 EXTRAS_SRC = (REPO_ROOT / "studio" / "backend" / "requirements" / "extras.txt").read_text(
     encoding = "utf-8"
 )
 
-# Constants of the running interpreter, restated in nearly every test below.
 MAJOR, MINOR = sys.version_info[:2]
 TAG = f"cp{MAJOR}{MINOR}"
 
-#: The two index URLs the tables below distinguish: PyPI itself, and an exclusive mirror.
 PYPI = "https://pypi.org/simple"
 CORP = "https://pypi.corp.test/simple"
 
-#: Every variable either resolver reads for its index configuration, cleared so the box
-#: running the suite cannot decide a row.
 RESOLVER_INDEX_VARS = tuple(
     "UV_OFFLINE UV_NO_INDEX UV_DEFAULT_INDEX UV_INDEX_URL UV_INDEX UV_EXTRA_INDEX_URL "
     "PIP_INDEX_URL PIP_NO_INDEX PIP_EXTRA_INDEX_URL".split()
@@ -74,7 +68,6 @@ def _fresh_find_links(ips):
     ips._find_links_wheel_versions.cache_clear()
 
 
-#: What `_pip_config_index_policy` reports when pip's files set no index key.
 PIP_FILES_SILENT = {
     "no_index": None,
     "index_url": None,
@@ -180,7 +173,6 @@ class TestWheelMatchesInterpreter:
     def test_abi3_is_forward_compatible(self, ips):
         free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
         matched = ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}2", "abi3"))
-        # The stable ABI is not implemented on free-threaded builds.
         assert matched is not free_threaded
         assert not ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}{MINOR + 1}", "abi3"))
 
@@ -199,10 +191,8 @@ class TestWheelMatchesInterpreter:
         )
         exact = f"cp{MAJOR}{MINOR}"
         assert ips._wheel_matches_interpreter(_wheel("cffi", exact, "abi3")) is (not gil_disabled)
-        # The TAG a free-threaded build CAN install, and the one a GIL build cannot.
         ft_wheel = _wheel("cffi", exact, f"{exact}t")
         assert ips._wheel_matches_interpreter(ft_wheel) is bool(gil_disabled)
-        # And the forward-compatible spelling stays gated the same way.
         assert ips._wheel_matches_interpreter(_wheel("cffi", f"cp{MAJOR}2", "abi3")) is (
             not gil_disabled
         )
@@ -237,7 +227,6 @@ class TestBlockerMap:
         assert set(ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY) <= skipped
 
     def test_whisper_needs_tiktoken_as_well_as_the_numba_chain(self, ips):
-        # Whisper's metadata requires tiktoken, so hosting llvmlite alone re-enables the sdist.
         blockers = ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY[ips._canonical_dist_name("openai-whisper")]
         assert "tiktoken" in blockers
         assert "numba" in blockers
@@ -273,7 +262,6 @@ class TestInstallPs1Mirror:
                 assert "Remove-IndexUrlCredentials" in line, line.strip()
 
 
-#: Tag triples for the wheels staged below: a pure-python wheel, and one built right here.
 PURE = ("py3", "none", "any")
 HERE = (TAG, TAG, _this_platform())
 
@@ -366,7 +354,6 @@ class TestAHostedOptionalIsActuallyInstalled:
     filtered out here, so in all three cases hosting a wheel changed nothing.
     """
 
-    #: The torch an xformers was built against, and the one now resident beside it.
     OTHER_TORCH = "2.9.0+cu128"
     THIS_TORCH = "2.15.0.dev20260101+cu134"
 
@@ -435,7 +422,7 @@ class TestAHostedOptionalIsActuallyInstalled:
         assert ips._wheelhouse_best_version("xformers", ">=0.0.22.post7") == "0.0.31"
 
     def test_the_newest_clearing_wheel_wins(self, ips, wheelhouse):
-        # Both clear the floor: 0.0.100 is the newer release and the SMALLER of the two as text.
+        # 0.0.100 is the newer release and the smaller one as text.
         for version in ("0.0.23", "0.0.100"):
             _stage(wheelhouse, "xformers", version)
         assert (
@@ -450,8 +437,6 @@ class TestAHostedOptionalIsActuallyInstalled:
             (True, False, THIS_TORCH, False, "a failed refresh keeps a matching resident copy"),
             (True, True, THIS_TORCH, False, "a matching xformers is kept"),
             (True, True, None, False, "no recorded pair is not evidence of a wrong one"),
-            # The check ran only after a hosted attempt, so a wheelhouse that stopped offering
-            # xformers left the copy an earlier run installed losing its ops at import time.
             (False, True, OTHER_TORCH, True, "nothing hosted, and the resident copy is wrong"),
             (False, True, THIS_TORCH, False, "nothing hosted, and the resident copy matches"),
         ],
@@ -613,7 +598,6 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ("1.0.0", "!=1.0.0", False),
             ("1.0.1", "!=1.0.0", True),
             ("1.0", "", True),
-            # packaging answers these now; None is still the contract without packaging.
             ("1!2.0", "==2.0", False),
             ("1.0", "===1.0", True),
             ("not-a-version", "==1.0", False),
@@ -624,7 +608,6 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_pins_are_read_canonically_and_markers_evaluated(self, ips, tmp_path):
         req = tmp_path / "r.txt"
-        # One marker true on every host and one true on none, so the answer cannot depend on the box.
         req.write_text(
             "# comment\n"
             "-r other.txt\n"
@@ -645,7 +628,6 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 class TestDuplicateRequirementRowsAreSplitByMarker:
     """extras.txt states MeCab twice, once per marker."""
 
-    # One marker true on every host and one true on none; the real pair is host-dependent.
     ACTIVE = 'python_version >= "3"'
     INACTIVE = 'sys_platform == "nonesuch"'
 
@@ -861,7 +843,6 @@ class TestThePublicIndexUnblocksWhatItAlreadyPublishes:
         self, ips, monkeypatch, wheelhouse, native_cp314, soxr_published
     ):
         assert "librosa" not in ips._windows_arm64_skip_packages()
-        # And still dropped where the wheels are not published for this build.
         monkeypatch.setattr(ips, "_wheel_matches_interpreter", lambda name: False)
         ips._find_links_wheel_versions.cache_clear()
         assert "librosa" in ips._windows_arm64_skip_packages()
@@ -894,7 +875,6 @@ class TestThePublicIndexClaimNeedsTheIndex:
 
     @pytest.fixture(autouse = True)
     def _native(self, ips, monkeypatch, native_cp314):
-        # uv runs the pass; the pip rows below switch it off explicitly.
         monkeypatch.setattr(ips, "USE_UV", True)
         for var in RESOLVER_INDEX_VARS:
             monkeypatch.delenv(var, raising = False)
@@ -974,21 +954,18 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
 
     @pytest.fixture(autouse = True)
     def _clean(self, ips, monkeypatch, tmp_path):
-        # uv's configuration files only matter to uv, the resolver that runs the pass here.
         monkeypatch.setattr(ips, "USE_UV", True)
         extra = ("UV_NO_CONFIG", "UV_CONFIG_FILE", "APPDATA", "PROGRAMDATA")
         for var in RESOLVER_INDEX_VARS + extra:
             monkeypatch.delenv(var, raising = False)
         (tmp_path / "proj").mkdir()
-        # uv reads the user file from %APPDATA% on Windows and $XDG_CONFIG_HOME elsewhere, so both
-        # names point at one directory and the case is real on every platform.
+        # uv reads the user file from %APPDATA% on Windows, $XDG_CONFIG_HOME elsewhere.
         (tmp_path / "user").mkdir()
         monkeypatch.setenv("APPDATA", str(tmp_path / "user"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
         monkeypatch.chdir(tmp_path / "proj")
         self.tmp = tmp_path
 
-    #: Where _write puts the "user file" row, spelled the same on every platform.
     user_config = "user/uv/uv.toml"
 
     def _write(self, rel, body):
@@ -999,8 +976,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     def test_nothing_configured_is_pypi(self, ips):
         assert ips._public_pypi_is_reachable() is True
 
-    #: The two files uv discovers in the project directory, and the fragments the rows
-    #: below compose out of, so a case that is one statement is one line.
     UV = "proj/uv.toml"
     PJ = "proj/pyproject.toml"
     NO_IDX = "no-index = true\n"
@@ -1024,7 +999,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     @pytest.mark.parametrize(
         "rel, body, reachable, why",
         [
-            # An exclusive source, however and wherever it is spelled.
             (UV, NO_IDX, False, "no-index"),
             (UV, f'default-index = "{CORP}"\n', False, "an exclusive default-index"),
             (UV, CORP_IDX, False, "the older spelling of the same key"),
@@ -1036,7 +1010,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
             ("uv.toml", NO_IDX, False, "a parent directory"),
             ("user/uv/uv.toml", NO_IDX, False, "the user file"),
             (UV, "this is = not [ toml\n", False, "an unreadable file is not guessed at"),
-            # Sources that leave PyPI in play, so the reader is not a blanket "not reachable".
             (UV, CORP_ADDED, True, "an [[index]] without default = true is additive"),
             (PJ, '[project]\nname = "x"\n', True, "a pyproject with no [tool.uv] at all"),
             # uv pip's own precedence, verified on uv 0.10.7 with a dry-run resolve.
@@ -1053,7 +1026,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
                 False,
                 "[tool.uv.pip] outranks [tool.uv], as [pip] does the top level",
             ),
-            # An extra index that is PyPI keeps PyPI in play, wherever it is written.
             (UV, CORP_IDX + PYPI_EXTRA, True, "extra-index-url in the file"),
             (UV, CORP_IDX + "[pip]\n" + PYPI_EXTRA, True, "extra-index-url under [pip]"),
             (UV, CORP_DEFAULT + "\n" + PYPI_ADDED, True, "a second [[index]], not the default"),
@@ -1078,7 +1050,6 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     def test_project_outranks_user_for_a_scalar(self, ips):
         self._write("proj/uv.toml", "no-index = false\n")
         self._write(self.user_config, "no-index = true\n")
-        # Vacuous unless the user file is somewhere uv would look.
         assert (self.tmp / self.user_config) in [p for p, _ in ips._uv_config_files()]
         assert ips._public_pypi_is_reachable() is True
 
@@ -1198,7 +1169,6 @@ class TestPipConfigurationFilesDecideWherePyPIIs:
         self._listing(":env:.cache-dir='/tmp/pip'\nglobal.timeout='60'\n")
         assert self.ips._public_pypi_is_reachable() is True
 
-    #: Rows as `pip config list` prints them, composed so a case stays one line.
     G_CORP = f"global.index-url='{CORP}'\n"
     G_PYPI = f"global.index-url='{PYPI}'\n"
     G_NO_IDX = "global.no-index='true'\n"

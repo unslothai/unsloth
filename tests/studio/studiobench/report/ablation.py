@@ -191,8 +191,7 @@ def render_fix_implications(result: BatchResult, *, top_n: int = 3) -> str:
         bound_only = any(bound for _, _, bound in measurements)
         prefix = "<= " if bound_only else ""
         if len(values) > 1 and max(values) - min(values) > 1e-9:
-            # Printing only the largest would let a reader take the most flattering route as the
-            # answer. The spread IS the interaction term and it belongs next to the number.
+            # Print the whole spread, not just the largest: the spread is the interaction term.
             spread = ", ".join(
                 f"{route_id} {value:.3f}" for route_id, value, _ in sorted(measurements)
             )

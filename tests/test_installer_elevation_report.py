@@ -95,7 +95,7 @@ def test_install_ps1_warns_before_anything_is_created():
         "[System.IO.Directory]::CreateDirectory($envOverride)",
         '$probe = Join-Path $StudioHome (".unsloth-write-probe-',
         'step "winget" "available"',
-        # `& $script:UvExe`, not a bare `uv`, since #8161 resolved the binary up front.
+        # `& $script:UvExe`, not a bare `uv`: the binary is resolved up front.
         "venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
@@ -121,7 +121,7 @@ def test_install_ps1_marker_uses_the_parsed_tauri_flag():
     assert "-Tauri:$TauriMode" in src, "the parsed --tauri flag must be what drives the marker"
     # The flag has to be parsed before the call, or it is always false.
     assert src.index('"--tauri"    { $TauriMode = $true }') < src.index("-Tauri:$TauriMode")
-    # And the env var must still be unassigned there, or this test proves nothing.
+    # The env var must still be unassigned there, or this test proves nothing.
     assert src.index("-Tauri:$TauriMode") < src.index("$env:UNSLOTH_TAURI_MODE = if ($TauriMode)")
 
 
@@ -132,11 +132,9 @@ def test_install_ps1_warning_names_the_root_actually_written():
     notice = src[src.index("function Write-ElevationNotice") : src.index("-Tauri:$TauriMode")]
     assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
-    # Anchored on the assignment: the right-hand side must stay free to change.
     root = src[src.index("$UnslothRoot =") : src.index("-Tauri:$TauriMode")]
     assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
-    # The notice runs before the resolver, so $StudioHome does not exist yet and
-    # naming it would render empty; mirror the override precedence instead.
+    # The notice runs before the resolver, so $StudioHome is unset; mirror the override precedence.
     assert "$StudioHome" not in root, "$StudioHome is not assigned until the resolver below"
     assert (
         "UNSLOTH_STUDIO_HOME" in root and "$env:STUDIO_HOME" in root
@@ -177,8 +175,7 @@ def test_the_legacy_root_comparison_is_canonical():
         assert (
             "[System.IO.Path]::GetFullPath" in body
         ), f"{path.name} must normalize separators and .. segments"
-        # ...but not FIRST: GetFullPath uses [Environment]::CurrentDirectory, which
-        # Set-Location does not move, so it disagreed with the Resolve-Path resolver.
+        # Not first: GetFullPath uses [Environment]::CurrentDirectory, which Set-Location does not move.
         assert (
             "GetUnresolvedProviderPathFromPSPath" in body
         ), f"{path.name} must resolve a relative override against the PowerShell location"
@@ -191,7 +188,6 @@ def test_the_legacy_root_comparison_is_canonical():
         )
         # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
         assert "Substring(1)" in body, f"{path.name} must handle a bare ~"
-        # An unresolvable path must not take the install down.
         assert "catch { }" in body, f"{path.name} must survive an unresolvable path"
 
 
@@ -231,8 +227,7 @@ def test_every_handoff_variable_is_restored_not_just_skip_studio_base():
         ("SKIP_STUDIO_FRONTEND", "$previousSkipStudioFrontend"),
         ("STUDIO_LOCAL_INSTALL", "$previousStudioLocalInstall"),
         ("STUDIO_LOCAL_REPO", "$previousStudioLocalRepo"),
-        # Cleared unconditionally before, which the --with-llama-cpp-dir bail now reaches
-        # without having set them. UNSLOTH_LOCAL_LLAMA_CPP_DIR is a user-facing input.
+        # The --with-llama-cpp-dir bail reaches the clear without having set them.
         ("UNSLOTH_LOCAL_LLAMA_CPP_DIR", "$previousLocalLlamaCppDir"),
         ("UNSLOTH_INSTALL_ROLLBACK_MANAGED", "$previousInstallRollbackManaged"),
         ("UNSLOTH_SETUP_PYTHON", "$previousSetupPython"),
@@ -290,8 +285,7 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
         "IsNullOrWhiteSpace($env:STUDIO_HOME)",
         "$env:STUDIO_HOME.Trim()",
         'Join-Path $env:USERPROFILE ".unsloth"',
-        # Both copies run above the resolver's own USERPROFILE fallback, so both must guard
-        # it; dropping it in one file aborts the install rather than misnaming a folder.
+        # Both copies run above the USERPROFILE fallback; missing the guard aborts the install.
         "IsNullOrWhiteSpace($env:USERPROFILE)",
     ):
         assert fragment in install_root, f"install.ps1 root resolution lost {fragment!r}"
@@ -334,7 +328,6 @@ def test_setup_ps1_warning_names_the_root_actually_written():
     ), "UNSLOTH_STUDIO_HOME wins when both are set"
     for phrase in ("Close this window", "normal PowerShell"):
         assert phrase not in block, f"{phrase!r} is wrong for the desktop repair flow"
-    # Naming $StudioHome directly here would render empty.
     assert idx < src.index(
         "$StudioHome = Join-Path $env:USERPROFILE"
     ), "this test is only meaningful while the notice precedes the resolver"

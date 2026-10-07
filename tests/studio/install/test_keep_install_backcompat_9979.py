@@ -31,8 +31,7 @@ from pathlib import Path
 import pytest
 
 WINDOWS_HOST = os.name == "nt"
-# os.access(path, os.X_OK) answers "does this exist" on Windows, so the executable=False
-# trees below are indistinguishable from healthy ones there.
+# os.X_OK means only 'exists' on Windows, so executable=False trees look healthy there.
 SKIP_X_OK = pytest.mark.skipif(
     WINDOWS_HOST,
     reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
@@ -60,8 +59,7 @@ def _windows_runnable_stub() -> bytes | None:
             probe = subprocess.run([str(copy)], capture_output = True, timeout = 60)
         except Exception:
             return None
-    # A loader failure returns rather than raises, so an unchecked run would accept the
-    # very image this is meant to rule out, and every healthy fixture would inherit it.
+    # A loader failure returns rather than raises, so check the return code.
     return stub if probe.returncode == 0 else None
 
 
@@ -148,7 +146,6 @@ MACOS = _host(
     macos_version = (15, 5),
 )
 
-# The payload each platform's kinds share, as runtime_payload_health_groups computes it.
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -157,7 +154,6 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
-        # The Linux half of the same impl split as llama-server-impl.dll below;
         # llama-server and llama-quantize load these by DT_NEEDED.
         "libllama-server-impl.so",
         "libllama-quantize-impl.so",
@@ -173,8 +169,6 @@ _SHARED_PAYLOAD = {
         "ggml-cpu.dll",
         "mtmd.dll",
     ],
-    # The names the real macos-arm64 bundle ships, one per library the runtime
-    # links against.
     "macos": [
         "libllama-common.dylib",
         "libllama.dylib",
@@ -184,8 +178,7 @@ _SHARED_PAYLOAD = {
         "libmtmd.dylib",
     ],
 }
-# Non-empty, because a zero-byte runtime library is now rejected as damage, and long
-# enough for tests that corrupt a payload by halving it to have something left.
+# Non-empty: zero-byte libraries are damage; long enough to survive halving.
 _PAYLOAD_BYTES = "xxxx"
 _BACKEND_PAYLOAD = {
     ("linux", "cuda"): ["libggml-cuda.so"],
@@ -279,9 +272,9 @@ def build_install(
     return install_dir
 
 
-# The shipped marker shapes, oldest first, trimmed to the keys the keep path reads.
+# Shipped marker shapes, oldest first, trimmed to the keys the keep path reads.
 
-S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
+S1 = {
     "requested_tag": "b6099",
     "tag": "b6099",
     "asset": "llama-b6099-bin-ubuntu-x64.tar.gz",
@@ -292,7 +285,7 @@ S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
     "prebuilt_fallback_used": False,
     "installed_at_utc": "2026-03-26T04:11:07Z",
 }
-S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
+S2 = {
     **S1,
     "release_tag": "b6210",
     "published_repo": "unslothai/llama.cpp",
@@ -302,26 +295,25 @@ S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
     "runtime_line": "cuda12",
     "install_fingerprint": "aa" * 32,
 }
-S5 = {**S2, "force_cpu": False}  # 2026-07-20 #7228
+S5 = {**S2, "force_cpu": False}
 S6 = {
     **S5,
-    "llama_backend": "vulkan",  # 2026-07-27 #7373
+    "llama_backend": "vulkan",
     "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz",
     "runtime_line": None,
 }
-S7 = {**S5, "ggml_tree": "b7440"}  # 2026-08-04 #7817
+S7 = {**S5, "ggml_tree": "b7440"}
 S8 = {
     **S7,
-    "rocm_gfx": "gfx1151",  # 2026-08-08 #8050
+    "rocm_gfx": "gfx1151",
     "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
     "runtime_line": None,
 }
-S9 = {**S7, "backend": "cuda", "backend_request": "auto"}  # 2026-08-13 #8520
-S10 = {**S9, "gfx_target": None, "mapped_targets": []}  # 2026-08-13 #7670
-S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}  # 2026-08-18 #8841 == main
-S12 = {**S11, "runtime_asset": None}  # this PR
+S9 = {**S7, "backend": "cuda", "backend_request": "auto"}
+S10 = {**S9, "gfx_target": None, "mapped_targets": []}
+S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}
+S12 = {**S11, "runtime_asset": None}
 
-# A real marker, produced by actually running studio/install_llama_prebuilt.py.
 S12_REAL = {
     "requested_tag": "latest",
     "tag": "b10698",
@@ -591,7 +583,6 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     assert ILP.persisted_backend_request(install_dir) == expected
 
 
-# ---------------------------------------------------------------------------
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
     system = "Darwin",

@@ -127,7 +127,7 @@ def test_broken_preprocessor_config_is_not_replaced_by_defaults(tmp_path):
 
 
 def test_unlisted_vlm_without_preprocessor_config_still_fails(tmp_path):
-    # LLaVA has a registered image processor, but its class defaults need not match the checkpoint.
+    # LLaVA's registered image processor defaults need not match the checkpoint.
     repo = _tokenizer_repo(tmp_path)
     transformers.LlavaConfig().save_pretrained(repo)
     processor, err = NS["_construct_vlm_processor_fallback"](repo, "llava", None, False)

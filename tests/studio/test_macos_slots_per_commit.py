@@ -87,7 +87,6 @@ def _job_runs_on_macos(job, doc = None) -> bool:
             continue
         if MACOS.search(value):
             return True
-        # `runs-on: ${{ matrix.os }}` -- resolve against the matrix it names.
         for key in re.findall(r"matrix\.([\w-]+)", value):
             matrix = _matrix(job, doc)
             candidates = list(matrix.get(key) or [])
@@ -128,7 +127,7 @@ def test_no_macos_workflow_runs_on_every_push_to_main():
     for name, doc, _ in _macos_workflows():
         push = (_on(doc) or {}).get("push")
         if not isinstance(push, dict):
-            continue  # no push trigger at all is the strongest form of this
+            continue
         if not push.get("paths") and not push.get("paths-ignore"):
             offenders.append(name)
     assert not offenders, (
@@ -274,7 +273,7 @@ def test_a_listed_python_input_brings_its_sibling_imports(name):
         for module in sorted(names):
             sibling = source.parent / f"{module}.py"
             if not sibling.is_file():
-                continue  # stdlib or third-party, not a checked-in sibling
+                continue
             rel = sibling.relative_to(REPO).as_posix()
             if not _covered(rel, patterns):
                 missing.append(f"{rel} (imported by {pattern})")
@@ -317,10 +316,8 @@ def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     )
 
 
-# Images GitHub still schedules. macos-14 is absent deliberately: brownouts from 2026-10-05,
-# removal 2026-11-02. Add to this set when GitHub ships an image, and remove from it when GitHub
-# announces a retirement -- the removal is the point, because that is when this guard starts
-# naming the jobs that have to move.
+# Images GitHub still schedules. macos-14 is deliberately absent (being retired). Remove
+# an image when GitHub announces its retirement.
 LIVE_MACOS_IMAGES = {
     "macos-15",
     "macos-15-intel",
@@ -340,15 +337,10 @@ def _macos_labels():
         for jid, job in doc["jobs"].items():
             if not isinstance(job, dict):
                 continue
-            # runs-on plus the matrix it may select from: a retired image hides in an `include:`
-            # list just as easily as in a literal runs-on.
+            # A retired image can hide in a matrix `include:` too.
             blob = str(job.get("runs-on", ""))
             blob += str(_matrix(job, doc) if isinstance(job.get("strategy"), dict) else "")
-            # Only things shaped like a GitHub image name. The loose MACOS pattern used elsewhere
-            # in this file also matches build targets that merely contain "macos":
-            # release-desktop's matrix carries `macos-aarch64`, which is a Rust triple's nickname
-            # and never a runner label. Every real macOS image is macos-latest or
-            # macos-<version>[-intel].
+            # Only image names: release-desktop's `macos-aarch64` is a Rust target, not a runner.
             for label in re.findall(r"\bmacos-(?:latest|\d+(?:-intel)?)\b", blob, re.I):
                 found.append((path.name, jid, label.lower()))
     return found

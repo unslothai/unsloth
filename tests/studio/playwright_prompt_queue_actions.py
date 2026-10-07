@@ -131,7 +131,6 @@ def check_actions(page):
     order(["q2", "q0", "q1"])
     expect(rows.first).not_to_have_class(re.compile(r"opacity-40"))
 
-    # Dragging a file must remain available to the outer attachment dropzone.
     assert rows.first.evaluate("""row => {
       const transfer = new DataTransfer();
       transfer.items.add(new File(['file'], 'example.txt', {type:'text/plain'}));
@@ -256,7 +255,6 @@ def check_motion(page, reduced = False):
         print("PASS: reduced motion keeps direct dragging without settling animations", flush = True)
         return
 
-    # Cancelled gestures never reach the queue engine.
     for cancel in ("escape", "outside", "pointercancel"):
         reset()
         target = row("q2").bounding_box()
@@ -302,7 +300,6 @@ def check_motion(page, reduced = False):
     expect(attempts).to_have_text("0")
     expect(page.locator('[data-queue-dragging="true"]')).to_have_count(0)
 
-    # Holding at the edge scrolls without further pointer events.
     reset()
     page.get_by_role("button", name = "Long queue", exact = True).click()
     expect(rows).to_have_count(12)

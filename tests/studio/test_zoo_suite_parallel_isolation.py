@@ -34,11 +34,9 @@ ACTION = (
     Path(__file__).resolve().parents[2] / ".github" / "actions" / "core-cpu-setup" / "action.yml"
 )
 
-# The two halves of Core. Both run the same matrix; only their test steps differ.
 CORE_JOBS = ("consolidated", "consolidated-zoo")
 SETUP_ACTION = "./.github/actions/core-cpu-setup"
 
-# (ignored path, why it cannot share a worker with the rest of the suite)
 ISOLATED = [
     ("tests/test_mlx_generate.py", "8 failures under xdist that serial does not produce"),
     (
@@ -57,7 +55,6 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-# Deselected because it needs a GPU.
 MLX_DESELECT = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"
@@ -188,7 +185,6 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
     assert (
         "-n " not in _zoo_mlx_group()
     ), "the mlx group runs under xdist, which is the arrangement it exists to avoid"
-    # Per-file exclusions are applied while building the group, not on pytest itself.
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         name = path.rsplit("/", 1)[-1]
@@ -305,9 +301,7 @@ def test_both_halves_of_core_share_one_install_preamble() -> None:
         f"same environment, so their preambles have to be the same steps in the same order"
     )
     for left, right in zip(a, b):
-        # The pip cache `name` is the one field that MUST differ: a shared name is a
-        # shared key, and only the first job to finish on main would ever save.
-        # tests/studio/test_pip_cache_naming.py owns that rule.
+        # A shared pip cache name is a shared key; see tests/studio/test_pip_cache_naming.py.
         left, right = dict(left), dict(right)
         if "pip-cache-restore" in str(left.get("uses", "")):
             left["with"] = {k: v for k, v in left["with"].items() if k != "name"}

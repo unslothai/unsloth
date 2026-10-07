@@ -19,20 +19,18 @@ cuda_available = torch.cuda.is_available()
 xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
-# Only the kernel battery needs fbgemm (CUDA-only); the fallback tests below never reach it.
 pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = "needs CUDA or XPU")
 
 
 def skip_without_fbgemm():
     # unsloth's own probe, not an sm_90 check, so future arches enable themselves.
-    # Called inside the test so collection never imports unsloth.
+    # Imported here so collection never imports unsloth.
     from unsloth.kernels import fp8
     if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
         pytest.skip("needs fbgemm f8f8bf16_blockwise")
 
 
 def _block_quantize_weight(W, block):
-    # Per (block[0], block[1])-block absmax quantization to float8_e4m3fn.
     n, k = W.shape
     p, q = math.ceil(n / block[0]), math.ceil(k / block[1])
     scale = torch.empty(p, q, device = W.device, dtype = torch.float32)
@@ -87,7 +85,6 @@ def _bf16_atol(ref, floor = 5e-2):
 
 def _check_grad(X, out, Wq, scale, block):
     # grad_output is all-ones, so grad_X is the row-sum of the dequantized weight.
-    # The old backward hardcoded 128x128 and returned finite but mis-scaled grads.
     out.sum().backward()
     assert X.grad is not None and torch.isfinite(X.grad).all()
     grad_ref = torch.ones(out.shape, device = out.device, dtype = torch.float32) @ _dequant(
@@ -103,9 +100,7 @@ def _rel_err(out, ref):
 
 def test_output_tile_grid_battery_matches_reference():
     skip_without_fbgemm()
-    # Both dispatch buckets' former failure zones plus safe shapes.
-    # On fbgemm <=1.3.0 the bad ones hit ~0.7 rel error;
-    # healthy quant noise is ~0.04.
+    # On fbgemm <= 1.3.0 the bad shapes hit ~0.7 rel error; healthy quant noise is ~0.04.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -136,7 +131,7 @@ def test_odd_k_uses_dequant_fallback():
 
     torch.manual_seed(0)
     block = [128, 128]
-    N, K = 320, 130  # K % 16 != 0 used to crash inside the CUTLASS kernel
+    N, K = 320, 130  # K % 16 != 0
     W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
     scale.block_size = block
@@ -156,7 +151,7 @@ def test_odd_n_uses_dequant_fallback():
 
     torch.manual_seed(0)
     block = [128, 128]
-    N, K = 250, 256  # N % 8 != 0 used to crash inside the CUTLASS kernel
+    N, K = 250, 256  # N % 8 != 0
     W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
     scale.block_size = block
@@ -173,7 +168,7 @@ def test_non_square_block_uses_dequant_fallback():
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
-    block = [128, 64]  # kernel only implements 128x128x128, used to crash
+    block = [128, 64]  # kernel only implements 128x128x128
     N, K = 256, 256
     W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
@@ -190,8 +185,8 @@ def test_non_square_block_uses_dequant_fallback():
 
 @pytest.mark.parametrize("kind", ["per_tensor", "per_tensor_2d", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
-    # All four used to reach f8f8bf16_blockwise and raise: no block grid to unpack (0-dim or (1, 1)), a non-float32
-    # scale, and a strided view no .view() flattens.
+    # No block grid (0-dim or (1, 1)), a non-float32 scale, or a strided view must not reach
+    # f8f8bf16_blockwise.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
@@ -225,8 +220,7 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
 @pytest.mark.parametrize("block", [[128, 64], [64, 128]])  # square stays on the kernel
 @pytest.mark.parametrize("N,K", [(256, 512), (256, 256)])
 def test_transposed_weight_swaps_block_axes(block, N, K):
-    # fast_lora's backward passes downW.t(), whose block axes are swapped too. At N == K both grids validate, which is
-    # where a rectangular block mis-scaled dX.
+    # fast_lora's backward passes downW.t(), swapping block axes; at N == K both grids validate.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)

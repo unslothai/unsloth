@@ -69,7 +69,6 @@ def test_an_element_that_never_stops_times_out(page):
 
 
 def test_a_node_replaced_mid_wait_is_looked_up_again(page):
-    # A re-render that swaps the node must not strand the wait on the detached one.
     page.set_content('<div id="wrap"><div id="box" style="width:100px;height:40px">x</div></div>')
     page.evaluate(
         """() => setTimeout(() => {

@@ -61,9 +61,6 @@ def _row(action: str, capture: dict, **expect) -> dict:
     }
 
 
-# ── the scroll gesture is bounded at both ends, at the extent's own allowance ─────
-
-
 def _scroll_row(
     mounted,
     *,
@@ -126,7 +123,6 @@ def test_the_extent_is_reconstructed_so_both_checks_answer_about_one_scrollbar()
     treat = _scroll_row(6, bottom = 8_600, client = 800)
     treat["census"]["viewport_scroll_height"] = 9_400
     checks = {c["invariant"]: c for c in B.compare_behaviour(base, treat)["checks"]}
-    # 10000 vs 9400 either way round, so the two details agree to the printed digit.
     assert "6.0% drift" in checks["scroll_bottom_agrees"]["detail"], checks
     assert "6.0% drift" in checks["scroll_extent"]["detail"], checks
     assert "scroll extent" in checks["scroll_bottom_agrees"]["detail"], checks
@@ -259,7 +255,7 @@ def test_the_ceiling_and_the_extent_check_enforce_one_tolerance_on_one_quantity(
 
     got = B.compare_behaviour(base, treat)
     checks = {c["invariant"]: c for c in got["checks"]}
-    # The pair really is inside the extent allowance; that is what makes the red false.
+    # Inside the extent allowance, which is what makes the red false.
     assert checks["scroll_extent"]["ok"] is True, checks
     assert "9.5% drift, 10% allowed" in checks["scroll_extent"]["detail"], checks
     assert checks["scroll_travelled:treatment"]["ok"] is True, checks
@@ -269,7 +265,6 @@ def test_the_ceiling_and_the_extent_check_enforce_one_tolerance_on_one_quantity(
         in (checks["scroll_travelled:treatment"]["detail"])
     ), checks
 
-    # Still a ceiling: past the pair's reference allowance it is reported.
     beyond = _scroll_row(6, fraction = (5_880 + 1_060) / 5_880, bottom = 8_250, client = 800)
     beyond["census"]["viewport_scroll_height"] = 9_050
     worse = B.compare_behaviour(base, beyond)

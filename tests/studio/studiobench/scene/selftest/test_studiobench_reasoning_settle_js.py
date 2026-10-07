@@ -46,8 +46,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from studiobench.scene.actions import REASONING_JS, SETTLE_QUIET_FRAMES  # noqa: E402
 
 PANES = 16
-SPANS_BEFORE = 44075  # what the grid arm read at the state flip, and had to stop reading
-SPANS_SETTLED = 74250  # what both arms read once the mount finished
+SPANS_BEFORE = 44075
+SPANS_SETTLED = 74250
 
 HARNESS_JS = r"""
 const fs = require("fs");
@@ -208,28 +208,24 @@ def test_a_slow_state_flip_does_not_bank_quiet_frames_before_it():
     )
     assert out["spansOpen"] == SPANS_SETTLED
     assert out["openCensored"] is False
-    # The flip and the settled read are different moments, and both are reported so a reader can see
-    # how much of open_ms was spent after the state arrived.
     assert out["openStateReachedMs"] < out["openMs"]
 
 
 def test_the_streak_requires_that_many_frames_after_the_flip():
     """The quiet window is measured from the flip, so the read lands after the mount finishes."""
     out = run_settle(flip_frame = 6, mount_done_frame = 40)
-    # The census stops moving at frame 40; the streak then needs SETTLE_QUIET_FRAMES more.
     assert out["openFrames"] >= 40 + SETTLE_QUIET_FRAMES
     assert out["quietFramesRequired"] == SETTLE_QUIET_FRAMES
 
 
 def test_a_census_that_never_goes_quiet_is_withheld_with_a_reason():
     """Silence beats a confident wrong answer: no number, and a reason naming the budget."""
-    # Spans still climbing when the budget runs out: 8000ms / 16ms = 500 frames.
+    # Budget is 8000ms / 16ms = 500 frames.
     out = run_settle(flip_frame = 6, mount_done_frame = 100_000)
     assert out["spansOpen"] is None
     assert out["openMs"] is None
     assert out["openCensored"] is True
     assert "still changing" in out["openCensoredReason"]
-    # It reached the state, so the reason must say THAT rather than blaming the open count.
     assert out["openStateReachedMs"] is not None
 
 
@@ -268,7 +264,6 @@ def test_losing_the_state_restarts_the_streak():
         lose_state_for = 6,
     )
     assert out["openCensored"] is False
-    # It cannot have returned during the window where the count was below `want`.
     assert out["openFrames"] >= 2 + 1 + 6
 
 
@@ -291,7 +286,6 @@ def test_the_timing_includes_the_click_dispatch_it_names():
         "open_ms excluded the click dispatch, so it names an operation larger than the one it "
         "measures. That is this branch's own defect, committed by the fix for it."
     )
-    # And the two halves are reported apart, because they answer different questions.
     assert out["openMs"] == pytest.approx(out["openDispatchMs"] + out["openSettleMs"], abs = 0.2)
     assert out["openSettleMs"] < out["openMs"]
 
@@ -307,16 +301,10 @@ def test_the_state_reached_mark_shares_the_timing_origin():
     assert out["openStateReachedMs"] <= out["openMs"]
 
 
-# The close direction: the same defect the quiet streak fixes for the open direction, from the
-# other side. `data-state` flips on the click and BOTH collapse mechanisms keep the children in
-# the document until the exit animation ends (Radix's `Presence` until `animationend`, the grid
-# arm until `transitionend` or its 250 ms backstop) so `pre span` is frozen at its open value and
-# a streak that only asks whether the census has stopped moving is satisfied by one that has not
-# started.
-# The grid arm is `UnmeasuredCollapsibleContent`.
+# Collapse keeps children mounted until the exit animation ends (Radix Presence, or the grid arm
+# until transitionend / 250 ms backstop), so a frozen span count is not a finished close.
 
 
-# ── the close direction ─────────────────────────────────────────────────────────────────────────
 def test_a_collapse_is_not_settled_while_its_panes_are_still_mounted():
     """THE REGRESSION. `close_ms` must not name the state flip plus four frames.
 
@@ -347,7 +335,6 @@ def test_the_close_bias_does_not_depend_on_the_paint_interval():
     slow_page = run_settle(flip_frame = 1, mount_done_frame = 2, close_unmount_frame = 2)
     assert fast_page["closeFrames"] >= 20 + SETTLE_QUIET_FRAMES
     assert slow_page["closeFrames"] >= 2 + SETTLE_QUIET_FRAMES
-    # Both readings are the same quantity: the teardown, plus the streak that proves it is over.
     assert fast_page["closeFrames"] - 20 == slow_page["closeFrames"] - 2
 
 

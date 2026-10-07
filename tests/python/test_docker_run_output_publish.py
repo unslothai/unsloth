@@ -115,9 +115,7 @@ def test_no_staging_files_are_left_behind(runner, monkeypatch, tmp_path, noteboo
 def test_every_created_level_is_chowned_to_the_nearest_existing_ancestor(
     runner, monkeypatch, tmp_path
 ):
-    # mkdir(2) uses the CALLER's uid, so a new `sub/dir` is root-owned and
-    # _stage_metadata then gives the OUTPUT that owner too. Recorded, not observed:
-    # chowning to another uid needs root.
+    # mkdir(2) uses the caller's uid; recorded rather than observed since chown needs root.
     anchor = os.stat(tmp_path)
     chowned = []
     monkeypatch.setattr(runner.os, "chown", lambda p, u, g: chowned.append((str(p), u, g)))
@@ -132,8 +130,7 @@ def test_every_created_level_is_chowned_to_the_nearest_existing_ancestor(
 
 
 def test_the_ancestor_is_the_nearest_one_that_exists(runner, monkeypatch, tmp_path):
-    # the deepest EXISTING directory, not the mount root: a user can own
-    # /workspace/host/projectA without owning everything above it
+    # Deepest existing directory, not the mount root.
     base = tmp_path / "exists"
     base.mkdir()
     chowned = []
@@ -176,9 +173,7 @@ def test_an_existing_output_directory_is_left_alone(runner, tmp_path):
     )
 
 
-# A bind-mounted OUTPUT FILE makes the destination a mount point, and rename(2) onto
-# one returns EBUSY even though the file is writable, so the cleanup then deleted a
-# finished run's result. Simulated by raising the kernel's errno.
+# rename(2) onto a bind-mounted file returns EBUSY; simulate via errno.
 
 
 def _replace_raising(errno_value):
@@ -202,7 +197,7 @@ def test_a_busy_destination_still_gets_the_executed_notebook(
         "the rename cannot work on a single-file bind mount, but the file itself "
         "is writable, so the finished notebook must still reach the user"
     )
-    # writing through the existing inode is what a bind mount needs
+    # Written through the existing inode, as a bind mount needs.
     assert _mode(out) == 0o664
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".unsloth-run-")]
     assert not leftovers, leftovers

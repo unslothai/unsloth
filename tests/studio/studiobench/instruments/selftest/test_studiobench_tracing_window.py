@@ -111,9 +111,6 @@ def _window(name: str):
     return types.SimpleNamespace(name = name)
 
 
-# ── the trace survives the probe ─────────────────────────────────────────────────────────────
-
-
 def test_a_second_window_is_still_traced_after_the_metrics_probe_fails():
     cdp = _Cdp(metrics_fail = True)
     inst = _instrument(cdp)
@@ -151,9 +148,6 @@ def test_no_tracing_session_is_left_running_in_the_browser():
     inst.detach()
 
     assert cdp.tracing_active is False
-
-
-# ── the controls ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_a_healthy_window_still_cross_checks_against_the_metrics():

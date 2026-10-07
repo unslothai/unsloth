@@ -62,7 +62,7 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
     uzu = types.ModuleType("unsloth_zoo.utils")
     uzu._get_dtype = lambda x: x
     uzd = types.ModuleType("unsloth_zoo.device_type")
-    uzd.device_is_bf16_supported = lambda: bf16_supported  # device-aware signal stub
+    uzd.device_is_bf16_supported = lambda: bf16_supported
 
     env_keys = (
         "UNSLOTH_FORCE_FLOAT32",
@@ -103,7 +103,6 @@ def _decide(dtype, *, bf16_supported, force_float32, full_finetuning, mixed_prec
 
 
 def test_v100_normal_fullft_fp16_explicit():
-    # Normal model, full FT (weights upcast to float32), V100, fp16=True.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
         bf16_supported = False,
@@ -118,7 +117,6 @@ def test_v100_normal_fullft_fp16_explicit():
 
 
 def test_v100_normal_fullft_precision_unset():
-    # Same, but user left precision unset -> must pick fp16, never bf16.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
         bf16_supported = False,
@@ -134,7 +132,6 @@ def test_v100_normal_fullft_precision_unset():
 
 
 def test_force_float32_model_fullft_is_pure_float32():
-    # FORCE_FLOAT32 model (Gemma3, gpt_oss, ...) in full FT -> pure float32, no autocast.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
         bf16_supported = False,
@@ -150,7 +147,6 @@ def test_force_float32_model_fullft_is_pure_float32():
 
 
 def test_no_bf16_on_volta_in_auto_branch():
-    # bf16 model dtype but no bf16 HW, precision unset -> fp16, never bf16.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
         bf16_supported = False,
@@ -164,8 +160,7 @@ def test_no_bf16_on_volta_in_auto_branch():
 
 
 def test_bf16_gpu_unchanged_auto_branch():
-    # Regression guard: on a bf16 GPU, a float32 model with unset precision
-    # still selects bf16 autocast (behavior must not change for bf16 hardware).
+    # On bf16 hardware a float32 model with unset precision must still pick bf16 autocast.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
         bf16_supported = True,
@@ -180,7 +175,6 @@ def test_bf16_gpu_unchanged_auto_branch():
 
 
 def test_genuine_bf16_model_with_fp16_still_raises():
-    # A real bfloat16 model on bf16 HW with fp16 requested is a genuine mismatch.
     _, _, _, raised = _decide(
         torch.bfloat16,
         bf16_supported = True,
@@ -194,10 +188,8 @@ def test_genuine_bf16_model_with_fp16_still_raises():
 
 
 def test_explicit_bf16_exports_bf16_env():
-    # Issue #4891: bfloat16 model, user explicitly sets bf16=True.
-    # The env var must still be exported: downstream readers (unsloth_zoo/rl_replacements.py and
-    # unsloth/models/rl_replacements.py) default ACCELERATE_MIXED_PRECISION to 'fp16' when it is unset, which wraps a
-    # bfloat16 model in a float16 autocast and crashes GRPO inside matmul_lora.
+    # Issue #4891: downstream readers default ACCELERATE_MIXED_PRECISION to fp16 when unset,
+    # which crashes GRPO on a bf16 model, so the env var must still be exported.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
         bf16_supported = True,
@@ -213,7 +205,6 @@ def test_explicit_bf16_exports_bf16_env():
 
 
 def test_explicit_fp16_exports_fp16_env():
-    # float16 model with fp16 explicitly requested must export 'fp16'.
     fp16, bf16, amp, raised = _decide(
         torch.float16,
         bf16_supported = False,
@@ -229,7 +220,6 @@ def test_explicit_fp16_exports_fp16_env():
 
 
 def test_force_float32_beats_explicit_bf16():
-    # force_float32 must keep precedence over the explicit-flag export.
     fp16, bf16, amp, raised = _decide(
         torch.float32,
         bf16_supported = True,
@@ -245,8 +235,6 @@ def test_force_float32_beats_explicit_bf16():
 
 
 def test_unsloth_mixed_precision_bfloat16_beats_explicit_bf16():
-    # UNSLOTH_MIXED_PRECISION='bfloat16' (pure bf16 full FT, no autocast) must keep precedence over the explicit-flag
-    # export.
     fp16, bf16, amp, raised = _decide(
         torch.bfloat16,
         bf16_supported = True,

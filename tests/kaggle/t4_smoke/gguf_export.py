@@ -44,17 +44,11 @@ import os
 import subprocess
 import time
 
-# Where a GGUF may legitimately appear, relative to the directory passed to
-# save_pretrained_gguf. The empty string is that directory itself; "_gguf" is
-# the sibling unsloth actually writes to. Both are searched because relying on
-# either alone has already produced a wrong answer.
+# unsloth writes to the "_gguf" sibling; search both locations.
 GGUF_SEARCH_SUFFIXES = ("", "_gguf")
 
-# Marks the prebuilt branch in unsloth's own install output.
 PREBUILT_MARKER = "skipping compilation"
 
-# Substrings that mean a source build happened instead. If any appears, the
-# leg took the expensive path and should say so even though it succeeded.
 SOURCE_BUILD_MARKERS = ("cmake", "Building llama.cpp", "make -j")
 
 
@@ -96,11 +90,7 @@ def export_gguf(
         model.save_pretrained_gguf(save_dir, tokenizer, quantization_method = quantization)
         record["ok"] = True
     except BaseException as exc:  # noqa: BLE001
-        # unsloth/save.py:4777 wraps the real cause in
-        # `RuntimeError(f"Failed to save model: {e}")` and interpolates str(e)
-        # from exceptions whose args are empty, producing a message that ends
-        # at the colon with no cause in it. Record the type too, so a report
-        # from that path still names something.
+        # save.py wraps causes with empty messages, so record the exception type too.
         record["ok"] = False
         record["error"] = f"{type(exc).__name__}: {exc}"[:4000]
     record["seconds"] = round(time.time() - started, 1)
@@ -167,8 +157,6 @@ def run_gguf(
                 "seconds": round(time.time() - started, 1),
                 "error": f"{type(exc).__name__}: {exc}"[:1000],
             }
-        # One success is enough; the second is only run when the first is
-        # unavailable or failed, so a healthy leg pays for one process.
         if record[name].get("returncode") == 0:
             break
     return record
@@ -191,8 +179,7 @@ def export_failures(record: dict, *, accept_quantizations = None) -> list:
 
     ggufs = record.get("ggufs") or []
     if not ggufs:
-        # The trap, stated in the failure itself so the reader does not have to
-        # know it: an export can "succeed" and leave no GGUF anywhere.
+        # An export can "succeed" and leave no GGUF anywhere.
         failures.append(
             f"no .gguf under {record.get('save_dir')!r} or its _gguf sibling, "
             f"even though the export reported ok={record.get('ok')}"
@@ -259,17 +246,7 @@ def llama_cpp_facts(install_output: str, returned) -> dict:
         "returned": paths,
         "all_exist": all(os.path.exists(p) for p in paths) if paths else False,
         "dir": os.path.dirname(paths[0]) if paths else None,
-        # TRI-STATE, and the third state is the point. The prebuilt banner is
-        # printed once, by the install that actually downloads the bundle; a
-        # second cycle in the same session finds llama.cpp already there and
-        # prints nothing. Measured on unsloth-probe-visleg-full-b3a317, where
-        # cycle 0 read `prebuilt: true` and cycle 1 read `prebuilt: false` for
-        # the SAME installation -- and `false` reads as "built from source",
-        # which is the one thing this field exists to catch.
-        #
-        # None means "this run did not install it, so it cannot say". The
-        # source-build markers stay a plain list, because those are printed by
-        # the build itself and their absence is meaningful either way.
+        # Tri-state: the prebuilt banner prints only on the install that downloads it, so None means unknown.
         "prebuilt": (
             True
             if PREBUILT_MARKER in (install_output or "")

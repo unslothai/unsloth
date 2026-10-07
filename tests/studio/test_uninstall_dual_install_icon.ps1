@@ -1,26 +1,17 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit test for _RemoveDataDirKeepingWslIcon in scripts/uninstall.ps1.
-#
-# A native uninstall must NOT delete the shared unsloth.ico while a WSL shortcut
-# still points at it (else that shortcut blanks). Extracts the helper via AST and
-# runs it on a temp data dir with a controlled ShortcutDirs list (dual-install vs
-# native-only), so no real Desktop / Start Menu is touched.
-#
+# A native uninstall must keep the shared unsloth.ico while a WSL shortcut still points at it.
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
 
 $ErrorActionPreference = "Stop"
 $uninstallPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "scripts", "uninstall.ps1")
 $uninstallPath = (Resolve-Path $uninstallPath).Path
 
-# --- Extract the nested helper function source (not the whole uninstaller) ---
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($uninstallPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "uninstall.ps1 has parse errors" }
-# _RemoveTreeKeeping does the actual deleting: the helper delegates to it so a
-# directory a previous pass decided to keep (a live Unsloth's private %TEMP%)
-# survives the data-dir removal.
+# The helper delegates deletion to _RemoveTreeKeeping, so both must be extracted.
 $wanted = @("_RemoveDataDirKeepingWslIcon", "_RemoveTreeKeeping")
 $fn = @()
 foreach ($name in $wanted) {
@@ -31,7 +22,6 @@ foreach ($name in $wanted) {
     $fn += $found[0]
 }
 
-# Stubs the helper depends on (nested in Uninstall-UnslothStudio in production).
 function _Substep { param([string]$Msg, [string]$Color = "Gray") }
 function _RemovePath {
     param([string]$Path)
@@ -50,7 +40,6 @@ function Check($name, $cond) {
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("undi_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
-    # ----- Case A: a WSL shortcut survives -> keep unsloth.ico, drop the rest, keep dir -----
     $progA = Join-Path $work "shortcutsA"
     New-Item -ItemType Directory -Force -Path $progA | Out-Null
     Set-Content -LiteralPath (Join-Path $progA "Unsloth Studio (WSL - Ubuntu-24.04).lnk") -Value "x"
@@ -65,7 +54,6 @@ try {
     Check "A: launch-studio.ps1 removed" (-not (Test-Path -LiteralPath (Join-Path $dataA "launch-studio.ps1")))
     Check "A: studio.conf removed"      (-not (Test-Path -LiteralPath (Join-Path $dataA "studio.conf")))
 
-    # ----- Case B: no WSL shortcut -> whole dir removed (native-only uninstall) -----
     $progB = Join-Path $work "shortcutsB"
     New-Item -ItemType Directory -Force -Path $progB | Out-Null
     Set-Content -LiteralPath (Join-Path $progB "Unrelated.lnk") -Value "x"
@@ -76,14 +64,12 @@ try {
     _RemoveDataDirKeepingWslIcon -DataDir $dataB -ShortcutDirs @($progB)
     Check "B: whole data dir removed"   (-not (Test-Path -LiteralPath $dataB))
 
-    # ----- Case C: empty shortcut dirs -> whole dir removed -----
     $dataC = Join-Path $work "dataC"
     New-Item -ItemType Directory -Force -Path $dataC | Out-Null
     Set-Content -LiteralPath (Join-Path $dataC "unsloth.ico") -Value "ICO"
     _RemoveDataDirKeepingWslIcon -DataDir $dataC -ShortcutDirs @()
     Check "C: removed when no shortcut dirs" (-not (Test-Path -LiteralPath $dataC))
 
-    # ----- Case D: missing data dir -> no-op, no throw -----
     $dataD = Join-Path $work "doesNotExist"
     _RemoveDataDirKeepingWslIcon -DataDir $dataD -ShortcutDirs @($progA)
     Check "D: missing dir is a safe no-op" (-not (Test-Path -LiteralPath $dataD))

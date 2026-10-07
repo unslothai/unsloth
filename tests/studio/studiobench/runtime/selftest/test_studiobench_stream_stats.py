@@ -47,9 +47,6 @@ OPENING = ("R" * 2_000, "C" * 8_000)
 FOLLOW = ("r" * 300, "c" * 1_200)
 
 
-# ── level 1: the pacer and the action, over a real socket ────────────────────────────────────
-
-
 def _consume(pacer: Pacer, *, stop_after_bytes: int | None = None) -> None:
     """Read one stream off the wire. `stop_after_bytes` closes the socket mid-reply, which is what
     an interrupted opening reply looks like from the pacer's side."""
@@ -180,7 +177,6 @@ def test_send_turn_keeps_the_stats_of_every_turn_before_it():
             tags.append(result.expect["pacer_tag"])
 
         streams = pacer.all_stats()
-        # The opening reply is STILL THERE, and still says it did not finish.
         assert [s["tag"] for s in streams] == [CELL_ID] + tags
         assert streams[0]["completed"] is False
         assert streams[0]["chars_sent"] == opening["chars_sent"]
@@ -198,9 +194,6 @@ def test_send_turn_keeps_the_stats_of_every_turn_before_it():
         assert CELL_ID in check["reason"] and "did not complete" in check["reason"]
     finally:
         pacer.stop()
-
-
-# ── the check on its own ─────────────────────────────────────────────────────────────────────
 
 
 def test_the_check_passes_when_every_planned_turn_streamed_in_full():
@@ -254,8 +247,6 @@ def test_a_cell_with_nothing_planned_is_not_checked():
     got = check_planned_streams([], [])
     assert got["checked"] is False and got["ok"] is True
 
-
-# ── level 2: what the cell does with it ──────────────────────────────────────────────────────
 
 CENSUS = {"messages": 6, "elements": 1200, "highlight_spans": 200, "assistant_chars": 1120}
 
@@ -367,7 +358,6 @@ def cell_runner(monkeypatch, tmp_path):
     monkeypatch.setattr(session_mod, "cdp_counters", lambda before, after: {})
     monkeypatch.setattr(session_mod, "SceneRunner", _SceneRunner)
     monkeypatch.setattr(session_mod, "dump_diagnostics", lambda *a, **k: None)
-    # NOT the 10K equivalence path, which reseeds a mirror thread and is a different subject.
     monkeypatch.setattr(session_mod, "EQUIVALENCE_RUNG", "1K")
 
     paths = Paths.under(tmp_path / "out")
@@ -393,9 +383,7 @@ def cell_runner(monkeypatch, tmp_path):
                     thread_id = "t1",
                     seconds = 0.5,
                     messages = 0,
-                    # Both markers `SeededThread` declares, present and None: the readiness gate reads `last_marker`
-                    # unconditionally, so a stub that omits it fails on the attribute rather than on the stream
-                    # accounting.
+                    # Both markers present as None: the readiness gate reads last_marker unconditionally.
                     first_marker = None,
                     last_marker = None,
                 ),
@@ -438,7 +426,6 @@ def test_a_cell_whose_opening_reply_under_delivered_does_not_complete(cell_runne
     assert row["stream"]["finished"] is True
     assert row["completed"] is False
     assert "did not stream what it planned" in row["failure"]["message"]
-    # The named reason and the per-turn evidence reach the payload with the failure.
     check = row["pacer"]["check"]
     assert check["ok"] is False
     assert check["turns"][0]["chars_sent"] == 4_624
@@ -494,7 +481,6 @@ def _scene_with(rows: list[dict]):
     return _Fixed
 
 
-#:A `send_turn` that RAN, loaded the pacer and pressed Enter, and whose own assertion failed.
 SEND_TURN_THAT_FAILED = {
     "action": "send_turn",
     "ran": True,
@@ -631,9 +617,6 @@ def test_a_send_turn_that_did_not_run_is_not_demanded_of_the_pacer(cell_runner, 
     assert row["pacer"]["check"]["planned_turns"] == 1
 
 
-# ── level 3: the whole cell, against a real pacer over real wire bytes ───────────────────────
-
-
 class _WirePage:
     """A page whose sends really do fetch a stream off the pacer, so `isRunning` is true for
     exactly as long as bytes are arriving. Everything the browser does with them is out of scope
@@ -686,10 +669,7 @@ class _WirePage:
             return self.running
         if "messageCount" in expr:
             return self.messages
-        # THE THREAD'S LENGTH AS WELL AS THE MOUNTED COUNT. `send_turn` proves a send worked by
-        # `threadTotal()` growing, not `messageCount()`, so a windowed arm whose window slides is not read
-        # as a send that did nothing. This page models a fully mounted arm; without the second name the
-        # shipped action sees 0 both sides and every follow-up reports that it never started a reply.
+        # send_turn checks threadTotal(), not messageCount(), so the fake page must answer both.
         if "threadTotal" in expr:
             return self.messages
         if "assistantChars" in expr:
@@ -774,9 +754,7 @@ def test_a_healthy_multi_turn_cell_passes_the_check_over_real_wire_bytes(monkeyp
                     thread_id = "t1",
                     seconds = 0.5,
                     messages = 0,
-                    # Both markers `SeededThread` declares, present and None: the readiness gate reads `last_marker`
-                    # unconditionally, so a stub that omits it fails on the attribute rather than on the stream
-                    # accounting.
+                    # Both markers present as None: the readiness gate reads last_marker unconditionally.
                     first_marker = None,
                     last_marker = None,
                 ),
@@ -808,7 +786,6 @@ def test_a_healthy_multi_turn_cell_passes_the_check_over_real_wire_bytes(monkeyp
         assert row["completed"] is True, row.get("failure")
         check = row["pacer"]["check"]
         assert check["ok"] is True and check["planned_turns"] == 3
-        # Every planned turn delivered EXACTLY what it was loaded with, over the wire.
         assert [t["chars_sent"] for t in check["turns"]] == [1_600, 400, 400]
         assert [t["tag"] for t in check["turns"]] == [
             CELL_ID,

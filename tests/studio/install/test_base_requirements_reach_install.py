@@ -152,7 +152,6 @@ class TestSharedBasePhase:
             "_step": lambda *_args, **_kwargs: None,
             "_LABEL": "python",
             "pip_install": record_install,
-            # The skip gate, stubbed: this class pins that the shared file reaches BOTH core paths.
             "_requirements_satisfied": lambda *_args, **_kwargs: satisfied,
             "_record_step": lambda *_args, **_kwargs: None,
         }

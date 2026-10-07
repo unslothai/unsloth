@@ -42,7 +42,6 @@ def test_spec_is_a_bounded_pin() -> None:
     spec = _spec_value()
     assert spec is not None, "_LLM_COMPRESSOR_SPEC must be defined at module scope"
     assert "llmcompressor" in spec, f"spec must name llmcompressor, got {spec!r}"
-    # A lower and an upper bound: pip cannot jump to an arbitrary (e.g. inflated) future release.
     assert ">=" in spec and "<" in spec, f"spec must have lower and upper bounds, got {spec!r}"
 
 
@@ -78,7 +77,6 @@ def test_floor_stays_compatible_with_supported_torch() -> None:
 
 def test_install_command_uses_pinned_spec_not_bare_name() -> None:
     fn = _get_function("install_llm_compressor")
-    # No argv list may pass the bare, unpinned package literal "llmcompressor".
     for node in ast.walk(fn):
         if isinstance(node, ast.List):
             for elt in node.elts:

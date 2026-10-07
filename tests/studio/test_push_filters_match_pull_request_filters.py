@@ -39,16 +39,9 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Workflows whose push trigger is deliberately broader than their pull_request trigger.
-# Each needs the reason written here; this set shrinking is good and it growing needs an
-# argument, not a convenience.
+# Each entry needs its reason here; growing this needs an argument.
 DELIBERATELY_UNFILTERED_ON_PUSH = {
-    # Every job here is a function of the dependency manifests, so a PR touching none of
-    # them cannot change a verdict -- but a FLOATING pin can, with no diff at all: a
-    # version range resolving to a new release, or a freshly published advisory against an
-    # unchanged tree. The workflow's own comment records that the daily cron and every
-    # push to main are left unfiltered for exactly that reason, so scoping push here would
-    # narrow a deliberate safety net rather than remove waste.
+    # Floating pins and new advisories change verdicts with no diff, so push stays unfiltered.
     "security-audit.yml",
 }
 

@@ -13,7 +13,6 @@ from types import ModuleType
 
 import pytest
 
-# <repo-root>/studio  →  makes `backend` importable as a package
 _STUDIO_DIR = Path(__file__).resolve().parents[3] / "studio"
 if str(_STUDIO_DIR) not in sys.path:
     sys.path.insert(0, str(_STUDIO_DIR))
@@ -21,8 +20,7 @@ if str(_STUDIO_DIR) not in sys.path:
 
 _STACK_FILE = _STUDIO_DIR / "install_python_stack.py"
 
-# What install_python_stack() resets at the top of every pass: the module is loaded once per test
-# FILE, so without this each test measures the previous one.
+# The module is loaded once per test file, so per-pass state must be reset.
 _PASS_STATE_DEFAULTS = {
     "_INSTALL_ACTIONS": 0,
     "_PASS_EVIDENCE": None,
@@ -68,7 +66,7 @@ def _loaded_stacks(test_module):
         except OSError:
             continue
         except TypeError:
-            continue  # an unhashable __file__ cannot be cached, and is not a path either
+            continue
         found[id(module)] = module
     return found.values()
 
@@ -100,8 +98,7 @@ def reset_install_pass_state(request):
 def pin_installer_torch_vendor(request, monkeypatch):
     """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
-    # A file's own copy outlives a later file re-registering the sys.modules key.
     for module in [*sys.modules.values(), *vars(request.module).values()]:
-        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        # __dict__: hasattr would trip a lazy __getattr__.
         if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
             monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)

@@ -2,46 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * layoutcost.js -- counts and times the DOM operations suspected of forcing synchronous layout
- * during streaming.
- *
- * Under investigation: use-intent-aware-autoscroll.tsx, whose MutationObserver on the thread
- * viewport reads `scrollHeight`, writes `--aui-scroll-stabilizer` and calls `scrollTo` on every
- * delivery -- per streamed character, at a cost proportional to the whole thread. So the five
- * instrumented operations are exactly the ones that shape is made of: scrollHeight reads (the
- * forced-layout trigger), scrollTop writes, scrollTo calls, MutationObserver callbacks AND
- * records per callback (one callback with 400 records and 400 callbacks cost wildly differently
- * and look identical in a callback-only profile), and custom-property writes with
- * `--aui-scroll-stabilizer` counted separately. Timings are here because a count cannot tell
- * 4,000 cheap reads from 4,000 that each walk a 300-message thread.
- * Configured childList + subtree + characterData + an attributeFilter.
- *
- * SELF COST. Wrapping a getter to time it makes it slower, so the distortion is measured rather
- * than assumed: `selfCostEstimate()` times N wrapped reads against N through the ORIGINAL
- * descriptor on a detached clean element, giving the per-call wrapper overhead; and the Python
- * driver runs the same cell with and without injection and compares frame statistics, which
- * catches cache effects and lost inlining that no microbenchmark sees. If the two runs disagree
- * about the app, the counts stay usable and the timings do not.
- * Reported as `overheadMsPerCall`.
- *
- * `clockGranularityMs` exists because a clean read can be faster than a clamped
- * `performance.now()` can resolve: maxMs 0 means "below the clock", not "free".
- * A genuine 0.003 ms read is indistinguishable from zero.
- *
- * OFF BY DEFAULT because it perturbs the measurement; the driver injects it only for the deep
- * tier, where the question has narrowed to "which operation". `window.__sbLayoutCostDisabled`
- * is a secondary escape hatch for bisecting the instrument itself.
- *
- * It does not measure layout time, only how often the app asks for something that can force it;
- * attribution comes from the trace. `window.scrollY`, `getBoundingClientRect`, `offsetHeight`
- * and `getComputedStyle` also force layout and are deliberately NOT wrapped: they are not in the
- * path under investigation and every wrapper makes the run less like the app.
- *
- * ZERO DISCIPLINE. A 0 because the operation did not happen and a 0 because the patch could not
- * be installed must never print the same, so `snapshot()` carries `attempted` per family and
- * `unavailable` lists names whose descriptor was missing or non-configurable. Failing to install
- * is not an error and never throws.
- * A WebKit build that refuses the patch reads as not attempted.
+ * Counts and times DOM operations suspected of forcing synchronous layout during streaming.
+ * Off by default (perturbing); zero counts are distinguishable from patches that never installed.
+ * Counts how often the app asks for layout, not layout time; scrollY, getBoundingClientRect,
+ * offsetHeight and getComputedStyle are deliberately not wrapped (not in the suspected path).
+ * selfCostEstimate() times wrapped vs original-descriptor reads on a detached element to give
+ * per-call wrapper overhead. maxMs 0 means below clockGranularityMs, not free.
  */
 
 (function () {
@@ -159,7 +125,7 @@
     try {
       state.unavailable.push({ name: name, reason: reason });
     } catch (e) {
-      /* nothing sensible to do here, and throwing would take the app with it */
+      /* throwing here would take the app with it */
     }
   }
 
@@ -171,10 +137,7 @@
     }
   }
 
-  // Keyed by a coarse stable descriptor, not element identity, so detached DOM is not pinned alive.
-  // Coarse because the question is which KIND of element is read, and a 300-message thread has
-  // about six kinds.
-  // Cap keys so a page reading thousands of distinct elements cannot grow an unbounded object.
+  // Keyed by a coarse descriptor, not element identity, so detached DOM is not pinned; keys capped.
 
   function keyFor(el) {
     try {
@@ -195,7 +158,6 @@
           if (list.length > 0) {
             cls = String(list[0] || "");
           }
-          // contains(), not matches(): no selector engine inside the getter.
           isViewport = !!list.contains && list.contains(VIEWPORT_CLASS);
         }
       } catch (e) {
@@ -234,8 +196,7 @@
     };
     state.breakdown[key] = b;
     if (!isOther) {
-      // The overflow bucket is not charged to the budget, so breakdownKeyCount counts REAL keys.
-      // At most MAX_KEYS + 1 entries.
+      // The overflow bucket is not charged to the budget, so breakdownKeyCount counts real keys.
       state.breakdownKeyCount += 1;
     }
     return b;
@@ -329,7 +290,6 @@
       Object.defineProperty(ElementProto, "scrollTop", {
         configurable: true,
         enumerable: d.enumerable,
-        // scrollTop's getter is left alone: not the operation under investigation.
         get: d.get,
         set: function (v) {
           if (!state.active) {
@@ -437,7 +397,6 @@
         value: function (name) {
           if (state.active) {
             try {
-              // Only custom properties: ordinary style writes would bury the signal.
               if (typeof name === "string" && name.charCodeAt(0) === 45 && name.charCodeAt(1) === 45) {
                 state.counters.customPropSets += 1;
                 if (name === STABILIZER_PROP) {
@@ -458,10 +417,8 @@
     }
   }
 
-  // A subclass, not a Proxy: instanceof and the native methods keep working.
-  // Two independent discriminators (viewport class, aria-expanded filter) separate the autoscroll
-  // observer from React's, reported separately so disagreement is visible.
-  // The split key is `viewportObserver`; no other observer requests that attributeFilter.
+  // A subclass, not a Proxy, so instanceof and native methods keep working. The autoscroll observer
+  // is split out (viewportObserver) by viewport class and its aria-expanded attributeFilter.
 
   function installMutationObserver() {
     var Native = W.MutationObserver;
@@ -485,7 +442,6 @@
       Wrapped = class extends Native {
         constructor(callback) {
           if (typeof callback !== "function") {
-            // Let the native constructor produce its own TypeError.
             super(callback);
             return;
           }
@@ -504,7 +460,6 @@
             try {
               return callback.call(this, records, observer);
             } finally {
-              // finally: a throwing callback still consumed the time.
               try {
                 var dt = now() - t0;
                 state.counters.moCallbacks += 1;
@@ -562,7 +517,7 @@
           } catch (e) {
             /* classification is optional, observing is not */
           }
-          // apply(arguments), not (target, init): observe() with no options has its own spec behaviour.
+          // apply(arguments): observe() with no options has its own spec behaviour.
           return super.observe.apply(this, arguments);
         }
       };
@@ -660,16 +615,13 @@
 
     var origGet = originals.scrollHeightDesc.get;
     var result;
-    // Save/restore counters so the probe does not contaminate the measurement it corrects.
     var saved = copyRawState();
     try {
       var probe = doc.createElement("div");
       probe.className = "sb-selfcost-probe";
-      // Detached and never inserted: this measures the WRAPPER, not the app's layout.
       var i;
       var sink = 0;
 
-      // Warm both paths so neither loop is charged for the JIT.
       for (i = 0; i < n; i++) {
         sink += probe.scrollHeight;
       }
@@ -727,8 +679,7 @@
       try {
         restoreRawState(saved);
       } catch (e2) {
-        /* leaving inflated counters would be worse than this catch being empty, but there is
-           nothing further to try */
+        /* nothing further to try */
       }
     }
 
@@ -768,7 +719,6 @@
         installedAt: api.installedAt,
         resetAt: api.resetAt,
         snapshotAt: nowStamp(),
-        // Per family, so zero counts differ from a patch that never landed.
         attempted: copyPlain(state.attempted),
         unavailable: copyPlain(state.unavailable),
         counters: copyPlain(state.counters),
@@ -808,7 +758,6 @@
   }
 
   function uninstall() {
-    // Restores the captured descriptors; counters are left alone.
     state.active = false;
     try {
       if (originals.scrollHeightDesc && ElementProto) {
@@ -874,7 +823,6 @@
   W.__sbLayoutCost = api;
 
   if (W.__sbLayoutCostDisabled === true) {
-    // Injected but told to stand down: everything reads as not attempted, not a row of zeros.
     return;
   }
 

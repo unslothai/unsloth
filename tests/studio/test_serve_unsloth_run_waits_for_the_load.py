@@ -35,8 +35,8 @@ pytestmark = pytest.mark.skipif(
     reason = "the script needs bash, setsid and jq, as on the Linux runner",
 )
 
-# `unsloth run -H HOST -p PORT ...`: healthy at once, banner BANNER_AFTER sleeps after the first
-# health answer, or exit that many sleeps after it without a banner when BANNER_AFTER is negative.
+# Healthy at once; banner BANNER_AFTER sleeps after the first health answer, or exit that
+# many sleeps after it without a banner when negative.
 STANDIN_UNSLOTH = textwrap.dedent(
     f"""\
     #!{sys.executable}
@@ -146,18 +146,16 @@ def _serve(
             timeout = 60,
         )
     finally:
-        # The script leaves the server running for the steps after it, as CI wants.
+        # The script leaves the server running for later CI steps.
         subprocess.run(["pkill", "-f", f"{bin_dir}/unsloth run "], capture_output = True)
     polls = len(counter.read_text()) if counter.exists() else 0
     healthy_at = tmp_path / "healthy_at"
-    # Polls spent waiting for the banner, not starting the server.
     if healthy_at.exists():
         polls -= int(healthy_at.read_text())
     return result, polls
 
 
 def test_a_banner_after_the_old_30_second_window_is_still_read(tmp_path):
-    # 15 polls to come up healthy, then 40 more to load: the load alone outlasts the old window.
     result, polls = _serve(tmp_path, banner_after = 40, start_after = 15)
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"UNSLOTH_API_KEY={KEY}" in result.stdout
@@ -169,5 +167,4 @@ def test_a_server_that_dies_while_loading_fails_at_once_and_says_so(tmp_path):
     result, polls = _serve(tmp_path, banner_after = -5)
     assert result.returncode == 1
     assert "process exited before printing its banner" in result.stderr
-    # Not the whole banner budget: the script noticed the exit within a few polls.
     assert polls < 30, f"the script kept polling a dead server for {polls} polls"

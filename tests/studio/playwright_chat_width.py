@@ -33,9 +33,6 @@ from _playwright_robust import (  # noqa: E402
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8888")
 PASSWORD = os.environ.get("STUDIO_NEW_PW") or os.environ.get("STUDIO_PW", "")
 TIMEOUT_MS = 60_000
-# A step that runs past its budget stops the run with its name, instead of the next steps
-# waiting out their own timeouts. Sized on the waits each step chains at TIMEOUT_MS; a
-# hosted runner does each in seconds.
 STEP_BUDGET_S = step_budget_s(360)
 _watchdog = None
 
@@ -179,7 +176,6 @@ def check_widths(page):
         measurements[preset] = {}
         for width in (390, 768, 900, 1280, 1536, 1920, 2560):
             page.set_viewport_size({"width": width, "height": 900})
-            # Measure once both surfaces have reflowed to the new viewport, not 300 ms after it.
             wait_for_settled(page.locator(".aui-assistant-message-root"))
             wait_for_settled(page.locator(".unsloth-composer-shell"))
             measurements[preset][width] = page.evaluate(
@@ -210,10 +206,7 @@ def check_widths(page):
             assert full[surface] >= wide[surface] - 1, (width, surface, full, wide)
             assert wide[surface] >= standard[surface] - 1, (width, surface, wide, standard)
         assert not any(measurements[preset][width]["overflow"] for preset in measurements)
-    # The ordering above is >=, so three presets pinned to one width satisfy all of it and
-    # a setting that stopped working entirely would read as a pass. At the widest viewport
-    # they are separated by construction (appearance-custom-store.ts: 48rem, 72rem,
-    # max(72rem, 100% - 6rem)), so require that separation.
+    # The ordering above is >=, so also require the widest-viewport separation of the three presets.
     widest = max(measurements["Standard"])
     for surface in ("message", "composer"):
         standard = measurements["Standard"][widest][surface]

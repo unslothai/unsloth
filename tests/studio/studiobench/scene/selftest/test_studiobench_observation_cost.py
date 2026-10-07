@@ -81,9 +81,6 @@ def _runner(order: list):
     return runner
 
 
-# ── defect one: the observation is outside the window ───────────────
-
-
 def test_the_census_and_the_digest_are_taken_after_the_action_window_closes():
     """THE REGRESSION TEST FOR THE 14.3-vs-49.0 fps READING.
 
@@ -125,9 +122,6 @@ def test_the_gap_windows_census_is_taken_before_the_gap_opens():
     assert names.index("census") < names.index("open")
 
 
-# ── defect two: the silent substitution ─────────────────────────────
-
-
 class _Page:
     """A page whose New chat button is present but refuses to be clicked, which is the real
     condition: the sidebar's sticky group label covers it, so Playwright's actionability retries
@@ -156,13 +150,9 @@ class _Page:
         *_a,
         **_k,
     ):
-        # The end of the thread, which `thread_reopen` reads out of the DOM before it touches anything so
-        # it has a string to recognise the rebuilt thread by. It has to be a string here or the action
-        # refuses on that precondition.
+        # `thread_reopen` reads the thread end as a string before acting, or it refuses.
         if "data-role=" in script and "user" in script:
             return "studiobench turn 8: continue with unit 3"
-        # Otherwise a thread with messages in it, so `thread_reopen` gets past its own precondition and
-        # reaches the transition under test.
         return 18
 
     def wait_for_timeout(self, _ms):
@@ -225,9 +215,6 @@ def test_thread_reopen_says_so_in_the_log_as_well_as_in_the_row():
     assert any("NOT MEASURED" in line for line in lines), lines
 
 
-# ── the action bar does not exist while a reply is being written ────
-
-
 class _RunningPage:
     """A page whose reply finishes after `runs_for` polls."""
 
@@ -243,9 +230,7 @@ class _RunningPage:
         return 18
 
     def wait_for_timeout(self, ms):
-        # Actually sleeps, like Playwright's. A no-op lets the bounded wait spin thousands of times inside
-        # its deadline, which exhausted the scripted reply and made a test about a reply that never lands
-        # pass for the opposite reason.
+        # Must really sleep: a no-op lets the bounded wait spin and exhaust the scripted reply.
         self.waits += 1
         time.sleep(ms / 1000.0)
 

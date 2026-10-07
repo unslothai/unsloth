@@ -173,8 +173,7 @@ def test_the_node_bypass_stays_off_for_anything_else(monkeypatch, value):
     assert LLAMA.prebuilt_full_check_requested() is False
 
 
-# The migration run: a pre-record marker has no digest and, on Windows, no loader preflight, so
-# this run decides whether the bytes on disk become the reference every later run is held to.
+# A pre-record marker's run decides whether disk bytes become the reference for later runs.
 _LOGIC = _load("studio_install_llama_prebuilt_pr10648_logic", "install_llama_prebuilt.py")
 
 
@@ -201,7 +200,6 @@ def _legacy_marker_install(tmp_path, helpers, windows: bool):
     checksums = helpers.release_checksums((choice.name, choice.expected_sha256, repo))
     plan = helpers.release_plan([choice], checksums)
     helpers.write_metadata(install_dir, choice, checksums)
-    # Strip the keys that postdate this work, which is what an older Studio's marker looks like.
     # runtime_files is not a fingerprint input, so the stripped marker stays self-consistent.
     import json as _json
 
@@ -291,7 +289,6 @@ def test_a_marker_that_vanishes_between_the_two_reads_does_not_crash(tmp_path, m
 
     class Ops:
         def load_prebuilt_metadata(self, install_dir):
-            # Present for _kept_marker_patch's read, gone for the backfill's.
             calls.append(1)
             return {"install_fingerprint": "abc"} if len(calls) == 1 else None
 
@@ -311,7 +308,6 @@ def test_a_marker_that_vanishes_between_the_two_reads_does_not_crash(tmp_path, m
     )()
 
     monkeypatch.setattr(CORE, "_kept_marker_patch", lambda ops, d, s: {"fingerprint_coverage": {}})
-    # The bug was an AttributeError here, not a wrong answer.
     CORE._backfill_fingerprint_inputs(Ops(), tmp_path, selection)
 
 
@@ -332,8 +328,7 @@ def test_a_blocked_marker_swap_is_retried_then_reported(tmp_path, monkeypatch):
             raise blocked
         Path(src).rename(dst)
 
-    # Swap the MODULE's os reference, never os.name itself: pathlib reads os.name at runtime, so
-    # setting it globally makes every path in the process a backslash one.
+    # Swap the module's os, never os.name: pathlib reads os.name at runtime.
     class FakeOs:
         name = "nt"
         replace = staticmethod(blocked_then_ok)
@@ -365,9 +360,7 @@ def test_a_swap_blocked_for_any_other_reason_raises_at_once(tmp_path, monkeypatc
     assert len(attempts) == 1, "a non-transient failure was retried"
 
 
-# The walk-back records why AUTOMATIC selection took an older release, so reusing it for a run
-# that NAMED one answers "already matches N" while N is not installed. The full path turns off
-# older-release fallback as soon as published_release_tag is supplied.
+# The walk-back is for AUTOMATIC selection; a named release must not reuse it.
 def _mac(macos_version = (14, 7)):
     return LLAMA.HostInfo(
         system = "Darwin",
@@ -432,8 +425,7 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
         lambda marker, expected, host, *, pinned = False: seen.append(pinned) or False,
     )
     host = _mac()
-    # Everything the guards AHEAD of the release check demand: failing an earlier one would
-    # make this pass vacuously, with the pin never computed at all.
+    # Satisfy every earlier guard, or this passes with the pin never computed.
     monkeypatch.setattr(
         LLAMA,
         "load_prebuilt_metadata",
@@ -469,9 +461,7 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
     assert seen == [True], f"the pin never reached the expectation check: {seen}"
 
 
-# The mode restore protects a REFRESH, which has another reader. A first write has neither a
-# mode to preserve nor a reader, and raising there aborts a whole Node install over a cosmetic
-# call, reachable on Windows through the sharing violation the swap already retries.
+# A first write has no mode to preserve; raising there would abort a Node install.
 def _refuse_mode_change(monkeypatch, module):
     def refuse(path, mode):
         raise PermissionError(13, "Permission denied")
@@ -514,11 +504,7 @@ def test_the_runtime_record_refresh_still_never_raises(tmp_path, monkeypatch):
     NODE.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
 
 
-# A release found untrustworthy must not read as "update unavailable"
-# The keep paths exist because a lookup that could not ANSWER says nothing about the tree on disk.
-# An asset outside the checksum index, or a manifest digest disagreeing with it, is the opposite:
-# the release was fetched and found untrustworthy. Reporting "update unavailable, existing prebuilt
-# kept" over that turns a tamper signal into a routine offline notice.
+# An untrustworthy release must not read as 'update unavailable': that hides a tamper signal.
 def _ops():
     """The one name expected_sha256_for reads, over prebuilt_core's own defaults. A component
     module supplies SHA256_ASSET_NAME; neither core nor llama defines it, and without it the
@@ -552,11 +538,7 @@ def test_a_plain_lookup_failure_is_not_an_integrity_error():
     assert not isinstance(CORE.PrebuiltFallback("offline"), CORE.ReleaseIntegrityError)
 
 
-# llama's keep arm must refuse an untrustworthy release too
-# llama has kept an install on a failed lookup since before this branch, and that arm caught every
-# PrebuiltFallback including the integrity refusals. Closed here so the two installers cannot
-# disagree about what a keep is allowed to hide. The condition is inline, so this drives the real
-# install_prebuilt: with the guard removed the whole install suite stayed green.
+# llama's keep arm must refuse integrity failures too; the guard is inline, so drive install_prebuilt.
 def _llama_keep_probe(monkeypatch, tmp_path, raised):
     """Run llama's install_prebuilt with the planner raising *raised*, over a tree its own
     _existing_install_runs accepts, and report whether it took the keep arm."""

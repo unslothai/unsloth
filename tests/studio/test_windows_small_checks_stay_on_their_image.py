@@ -30,9 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-windows-inference-smoke.yml"
 JOB = "small-checks"
 
-# What each phase is allowed to run on. Kept here deliberately: this is the platform
-# contract, and a test that read it back out of the workflow could not detect the workflow
-# being wrong.
+# Kept here deliberately: a test reading this from the workflow could not catch it being wrong.
 EXPECTED_IMAGES = {
     "pester": {"windows-latest"},
     "no-vs-gpu": {"windows-latest"},

@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-# Packed NVFP4 bases (plain `weight` attribute = weight_packed with an NVFP4QuantState) through Unsloth's fused LoRA kernels.
 import os
 
 import pytest

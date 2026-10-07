@@ -33,7 +33,6 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-inference-smoke.yml"
 JOB = "inference-smoke"
 
-# The step that every phase gates on, directly or through the SDK install that follows it.
 SHARED = ("steps.install", "steps.sdks")
 
 
@@ -115,7 +114,7 @@ def test_no_step_rides_the_implicit_success_into_skipping_a_later_phase():
     offenders = []
     for i, step in enumerate(steps):
         if _phase_of(i, steps) == 0:
-            continue  # the shared preamble is meant to fail-fast
+            continue
         if "if" not in step:
             offenders.append(step.get("name") or step.get("uses"))
     assert not offenders, (
@@ -152,7 +151,6 @@ def test_step_ids_are_unique_and_every_reference_resolves():
 
 def test_every_step_that_can_block_carries_its_own_timeout():
     steps = _steps()
-    # A step is "blocking" if it downloads a model, waits on the server, or drives it.
     blocking = re.compile(r"hf-download-with-retry|wait-for-health|curl |seq 1 ")
     offenders = [
         step.get("name")

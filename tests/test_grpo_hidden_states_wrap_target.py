@@ -101,8 +101,7 @@ def test_plain_causal_lm_returns_hidden_states_after_the_wrapper():
         config.hidden_size,
     ), f"expected hidden states of width {config.hidden_size}, got {tuple(wrapped.shape)}"
 
-    # Must be the hidden states the head consumes, or the logprobs are wrong rather
-    # than merely mis-shaped.
+    # Must be the hidden states the head consumes, or the logprobs are wrong, not just mis-shaped.
     with _return_hidden_states("0"), torch.no_grad():
         reference = model(input_ids = input_ids).logits
     lm_head = model.get_output_embeddings().weight

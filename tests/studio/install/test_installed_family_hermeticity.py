@@ -115,8 +115,7 @@ def _route(
     buf = io.StringIO()
 
     stack_mod._invalidate_torch_runtime_probe()
-    # Pass state: the second _ensure_rocm_torch of a pass answers from the first; each call here is
-    # its own pass.
+    # Each call here is its own pass, so reset the per-pass cache.
     stack_mod._BNB_ROCM_PASS_PROVENANCE = None
     with (
         patch.dict(os.environ, env or {}, clear = False),
@@ -134,8 +133,7 @@ def _route(
         patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
         patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = family),
         patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = torch_owns_rocm),
-        # The third door into the running interpreter, pinned like the other two, or the verdict
-        # depends on whether the pytest machine has bitsandbytes.
+        # Pin bnb provenance too, or the verdict depends on whether the runner has bitsandbytes.
         patch.object(stack_mod, "_installed_bnb_provenance", return_value = bnb_provenance),
         patch.object(stack_mod.os.path, "isdir", return_value = True),
         patch.object(stack_mod.subprocess, "run", return_value = probe),
@@ -160,7 +158,6 @@ def _route(
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
-# The generic-ROCm hosts are the interesting ones: that is where the skip arms live.
 HOSTS = {
     "gfx1103-cpu-torch": ("gfx1103", "2.10.0+cpu||"),
     "gfx1103-generic-rocm": ("gfx1103", "2.10.0+rocm7.1|7.1|"),
@@ -192,8 +189,7 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
     [
         (None, False, True),
         ("gfx110x-all", True, False),
-        # Family matches but torch does not own it: the orphan, so the running torch is the
-        # generic build with no gfx1103 kernels and the skip must not fire.
+        # Orphan family: the running torch is generic with no gfx1103 kernels, so no skip.
         ("gfx110x-all", False, True),
         ("gfx120x-all", True, True),
     ],
@@ -226,5 +222,4 @@ def test_the_states_are_distinguishable():
         assert stack_mod._installed_rocm_wheel_family() == "gfx110x-all"
         assert stack_mod._torch_requires_rocm_sdk() is False
     with ambient("two-families-after-switch"):
-        # Two runtimes, no `rocm` to arbitrate: unknowable, not a guess.
         assert stack_mod._installed_rocm_wheel_family() is None

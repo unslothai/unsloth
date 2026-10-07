@@ -43,11 +43,7 @@ def _body() -> str:
 def test_the_load_requests_all_three_flags():
     body = _body()
     assert '"cache_type_kv": "q8_0"' in body
-    # Sized to the VISIBLE cards rather than hardcoded to two.
-    # --studio-concurrent pins this half to one card so it can share with a
-    # training leg, and [1.0, 1.0] against a one-card server asks llama.cpp to
-    # split across a device that is not there: what comes back is a failure
-    # about the load rather than about the flag.
+    # Sized to visible cards: --studio-concurrent pins this half to one card.
     assert '"tensor_split": [1.0] * max(1, len(cards))' in body
     assert "cards = gpu_inventory()" in body
     assert '"max_seq_length": self.args.studio_ctx' in body
@@ -65,8 +61,7 @@ def test_a_one_card_run_says_the_two_card_split_was_not_exercised():
     body = _body()
     assert 'detail["tensor_split_over_two_cards"] = len(cards) >= 2' in body
     assert "was NOT exercised" in body
-    # And it is a RECORD, not a failure: sharing is a scheduling decision, so a
-    # one-card run is not a defect and must not go red for being one.
+    # A record, not a failure: a one-card run is a scheduling decision.
     func = _func("assert_server_flags")
     for node in ast.walk(func):
         if isinstance(node, ast.If) and "cards" in ast.unparse(node.test):
@@ -177,8 +172,7 @@ def test_it_runs_between_gpu_inference_and_training():
     train_at = SRC.index("trained = self.assert_training()")
     assert infer_at < flags_at < train_at
 
-    # And it is guarded by gpu_ok rather than by a constant, or the call sits
-    # in the right place and never runs.
+    # Guarded by gpu_ok, not a constant, or the call never runs.
     tree = ast.parse(SRC)
     calls = [
         node

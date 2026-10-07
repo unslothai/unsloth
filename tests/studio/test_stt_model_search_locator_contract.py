@@ -19,7 +19,6 @@ SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.
 EXTRA_UI = REPO / "tests/studio/playwright_extra_ui.py"
 EN_LOCALE = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
-# Every element the dictation step drives, and the i18n key it replaced.
 TEST_IDS = {
     "dictation-engine-trigger": "settings.voice.dictation.engineLabel",
     "dictation-engine-model": "settings.voice.dictation.engineModel",
@@ -27,7 +26,6 @@ TEST_IDS = {
     "stt-model-search": "settings.voice.dictation.sttModelSearchPlaceholder",
 }
 TEST_ID = "stt-model-search"
-# Tab buttons come from one map, so the test id is templated.
 TAB_TEST_ID = "data-testid={`settings-tab-${tab.id}`}"
 
 
@@ -60,7 +58,6 @@ def test_the_voice_settings_tab_is_reachable_by_test_id():
     assert 'get_by_test_id("settings-tab-voice")' in EXTRA_UI.read_text(encoding = "utf-8")
 
 
-# Locators that resolve through user-visible copy (get_by_role only with a name).
 COPY_LOCATORS = (
     "get_by_placeholder",
     "get_by_label",
@@ -68,7 +65,6 @@ COPY_LOCATORS = (
     "get_by_alt_text",
     "get_by_title",
 )
-# The per-line pattern this guard replaced.
 PER_LINE = r"get_by_(placeholder|label)\(|get_by_role\([^)]*name\s*="
 
 
@@ -149,9 +145,8 @@ def test_ci_actually_runs_this_file():
     """Repo-root pytest discovery skips this file, so a workflow must name it."""
     workflow = (REPO / ".github/workflows/studio-ui-smoke.yml").read_text(encoding = "utf-8")
     assert f"pytest tests/studio/{Path(__file__).name}" in workflow, workflow
-    # A filter entry naming this file, not just the pytest command above: the workflow no
-    # longer triggers on all of tests/studio, so the file has to be listed to trigger it.
-    # Matched as a paths: list item without yaml, which this job does not install.
+    # The workflow no longer triggers on all of tests/studio, so this file must be listed.
+    # Matched without yaml, which this job does not install.
     entry = re.compile(rf"^\s*-\s*'tests/studio/{re.escape(Path(__file__).name)}'\s*$", re.M)
     assert (
         len(entry.findall(workflow)) >= 2

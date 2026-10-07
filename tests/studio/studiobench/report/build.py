@@ -40,8 +40,6 @@ def _records(path: str | Path) -> list[dict[str, Any]]:
             try:
                 out.append(json.loads(line))
             except ValueError:
-                # A truncated final line is expected when a run was killed mid-write; the records before it are
-                # still good and are still reported.
                 continue
     return out
 
@@ -62,20 +60,10 @@ def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple
         reason = None
         if not completed:
             reason = f"{failure.get('kind') or 'unknown'}: {failure.get('message') or 'no message'}"
-        # NOT COMPLETE, RATHER THAN NOT PRESENT. A cell whose thread lost messages, or that stopped
-        # following the reply, reaches here `completed=True` with a full set of timings, because both
-        # gates are advisory where they are emitted. Those timings are CHEAPER than a correct cell's and
-        # the ladder is ABSOLUTE with no second arm to contradict them, so the rung came out green and
-        # fast on a cell whose own self-check had recorded the loss.
-        # It is marked incomplete rather than dropped: `score_rung` gives an incomplete rung 0 and KEEPS
-        # ITS WEIGHT, and aggregating over only the rungs that survived is the crash-beats-limp bug in a
-        # different hat. A build whose thread loses its middle at 100K is not usable at 100K, and lowering
-        # `onset` is the honest way to say so.
+        # Gate-failed cells are marked incomplete, not dropped, so score_rung keeps their weight at 0.
         elif str(r.get("cell_id")) in gate_failures:
             completed = False
             reason = gate_failures[str(r.get("cell_id"))]
-        # If a rung was repeated and any rep failed, the rung is not clean. Recording the failure rather
-        # than the success is deliberate: the interesting fact about a bimodal rung is that it can fail.
         prev = out.get(int(tokens))
         if prev is None or (prev[0] and not completed):
             out[int(tokens)] = (completed, reason)
@@ -85,16 +73,10 @@ def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple
 def score_payload(path: str | Path, declared_rungs: Sequence[int] | None = None) -> LadderScore:
     """Score one run. `declared_rungs` is the ladder the tier promised, in tokens."""
 
-    # BEFORE anything is scored, and against the RAW rows. `--report` reads the same file the run
-    # wrote, so a probe run allowed to print its own A/B table would be scorable a second time here by
-    # somebody who did not set the variable. It reads the unfiltered rows deliberately: a probed
-    # attempt later superseded still means the payload was recorded with the camera in the shot.
+    # Refuse probed payloads before scoring, on raw rows, so superseded probed attempts still count.
     raw = _records(path)
     refuse_if_probed(raw, str(path))
-    # A CELL THAT WAS RE-RUN IS SCORED ON THE RUN THAT FINISHED IT. `--resume` re-runs dead cells under
-    # the same `cell_id` into the same file, and scoring both attempts as one cell kept the crash
-    # forever, so a rung since re-run successfully still came out INCOMPLETE and zero. The dead
-    # attempt is still in the payload and in EXCLUDED CELLS; it is only kept out of the score.
+    # Score re-run cells on their latest attempt; --resume reuses cell_id in the same file.
     records = latest_attempt_rows(raw)
     measures = measures_from_records(records)
     completion = _completion_by_rung(records)
@@ -126,10 +108,7 @@ def build_report(
 ) -> tuple[str, LadderScore, dict[str, Any]]:
     """Return (rendered summary, ladder, assembled payload)."""
 
-    # FIRST, before the payload is assembled. `score_payload` refuses too but runs second here, and
-    # `assemble_rows` validates the schema on the way past, so a probed payload that also tripped an
-    # unrelated schema complaint would report THAT instead. A refusal that any other failure can
-    # pre-empt is not a refusal.
+    # Refuse first so an unrelated schema error cannot pre-empt the probe refusal.
     refuse_if_probed(_records(path), str(path))
     payload = assemble_rows(path)
     ladder = score_payload(path, declared_rungs)

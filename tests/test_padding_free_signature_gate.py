@@ -16,9 +16,7 @@ from torch import nn  # noqa: E402
 try:
     from unsloth.trainer import _forward_accepts_packing_kwargs  # noqa: E402
 except ImportError:
-    # On Apple Silicon with MLX, `unsloth/__init__.py` swaps `unsloth.trainer` for a shim
-    # carrying only the MLX trainer names, so these helpers are unreachable and padding-free
-    # does not apply. Skip rather than fail collection, which aborts more than itself.
+    # On MLX, unsloth.trainer is a shim without these helpers, so skip rather than fail.
     import unsloth
     if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
         raise
@@ -228,7 +226,6 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing)
             args = None,
             **kwargs,
         ):
-            # What TRL does with a string: materialize it, then expose it as self.model.
             self.model = built if isinstance(model, str) else model
             self.args = args
             inits.append(model)
@@ -236,7 +233,6 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing)
     injected = []
     for _name in ("enable_padding_free_metadata", "enable_sample_packing"):
         monkeypatch.setattr(trainer_module, _name, lambda model, trainer: injected.append(model))
-    # No hub access: the config is irrelevant to the signature question.
     monkeypatch.setattr(trainer_module, "_resolve_string_model_config", lambda *a, **k: None)
 
     module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
@@ -305,7 +301,6 @@ def test_the_class_behind_a_string_is_resolved_without_downloading_weights():
     config = LlamaConfig(architectures = ["LlamaForCausalLM"])
     assert _resolve_string_model_class("any/name", config, None) is LlamaForCausalLM
 
-    # and with no `architectures` recorded, the auto mappings answer from the config class
     bare = LlamaConfig()
     bare.architectures = None
     assert _resolve_string_model_class("any/name", bare, None) is LlamaForCausalLM
@@ -352,10 +347,7 @@ def test_a_native_architecture_is_answered_without_touching_remote_code():
         ({}, True, True),
         ({}, False, False),
         ({}, None, False),
-        # an explicit None in model_init_kwargs is NOT a grant, and must not be
-        # overwritten by a truthy top-level attribute: `_resolve_string_model_config`
-        # reads it by membership too, and the two must agree or the module would run
-        # under a grant the config load did not accept
+        # An explicit None is not a grant and must match _resolve_string_model_config's reading.
         ({"trust_remote_code": None}, True, False),
         ({"trust_remote_code": False}, True, False),
         ({"trust_remote_code": True}, False, True),
@@ -404,8 +396,6 @@ def test_the_same_auth_keys_reach_both_fetches():
 
     sibling = _inspect.getsource(trainer_module._resolve_string_model_config)
     resolver = _inspect.getsource(_resolve_string_model_class)
-    # trust_remote_code is the grant and is handled separately; every other key the
-    # config fetch forwards must also be forwarded here
     for key in ("revision", "subfolder", "token", "use_auth_token", "cache_dir", "code_revision"):
         assert f'"{key}"' in sibling, f"{key} is not forwarded by the config fetch"
         assert f'"{key}"' in resolver, f"{key} is not forwarded by the class fetch"
@@ -443,7 +433,6 @@ def test_the_same_auth_keys_reach_both_fetches():
 
     assert captured.get("use_auth_token") == "hf_legacy"
     assert captured.get("revision") == "abc123"
-    # the grant itself is not an auth key and must not be forwarded as one
     assert "trust_remote_code" not in captured
 
 
@@ -453,13 +442,9 @@ def test_an_unresolvable_string_returns_none_rather_than_guessing():
 
     from unsloth.trainer import _resolve_string_model_class
 
-    # no config at all
     assert _resolve_string_model_class("any/name", None, None) is None
-    # not a string
     assert _resolve_string_model_class(_NoKwargs(), LlamaConfig(), None) is None
 
-    # an architecture name that is not in the transformers namespace, and a config class
-    # that is in no auto mapping
     class _UnknownConfig:
         architectures = ["NoSuchModelForCausalLM"]
         auto_map = None
@@ -565,7 +550,6 @@ def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
     module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    # packing=True so the reason chain actually emits its warning
     config = SimpleNamespace(packing = True, padding_free = None, max_length = 512)
     with caplog.at_level(logging.WARNING, logger = trainer_module.logger.name):
         module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
@@ -590,7 +574,6 @@ def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch
             args = None,
             **kwargs,
         ):
-            # what actually gets built disagrees with what the config advertised
             self.model = _NoKwargs() if isinstance(model, str) else model
             self.args = args
 
@@ -599,7 +582,6 @@ def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch
     monkeypatch.setattr(
         trainer_module, "_resolve_string_model_config", lambda *a, **k: _fake_config()
     )
-    # the optimistic, and wrong, answer
     monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _TakesKwargs)
 
     module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
@@ -640,7 +622,6 @@ def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
     trainer_module._patch_sft_trainer_auto_packing(module)
 
     config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
-    # still caught, just later and loudly, exactly as before this resolution existed
     with pytest.raises(ValueError, match = "packed_seq_lengths"):
         module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
 
@@ -681,8 +662,6 @@ def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
     mixed_narrow = peft.get_peft_model(_NarrowLlama(_config()), lora, mixed = True)
     mixed_stock = peft.get_peft_model(transformers.LlamaForCausalLM(_config()), lora, mixed = True)
 
-    # the wrapper really is the shape described above, so this test cannot quietly
-    # stop testing anything if PEFT changes
     assert type(mixed_narrow).__name__ == "PeftMixedModel"
     assert not hasattr(mixed_narrow, "get_base_model")
 
@@ -698,10 +677,7 @@ def test_every_delegating_wrapper_is_unwrapped():
     assert _DELEGATING_MODULE_WRAPPERS, "nothing resolved: the gate would read the wrapper"
     for wrapper, attribute in _DELEGATING_MODULE_WRAPPERS:
         for inner, expected in ((_NoKwargs(), False), (_TakesKwargs(), True)):
-            # A subclass, because FSDP exposes `module` as a read-only property and a class
-            # attribute shadows it. Uninitialised on purpose: the gate reads only the type
-            # and the held model, so device placement, process groups and a compile step are
-            # all beside the question, and FSDP's __setattr__ rejects a stub anyway.
+            # Subclass: FSDP's `module` is read-only. Uninitialised: its __setattr__ rejects stubs.
             stub = type("_Stub", (wrapper,), {attribute: inner})
             wrapped = stub.__new__(stub)
 

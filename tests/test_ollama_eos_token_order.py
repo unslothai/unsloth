@@ -18,8 +18,7 @@ import sys
 
 _CHAT_TEMPLATES = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "chat_templates.py")
 
-# `<unk>` shares its first three characters with the `<unused*>` family: that is what
-# makes the order matter.
+# `<unk>` shares its first three characters with `<unused*>`, which makes order matter.
 _TOKENS = ["<pad>", "<eos>", "<unk>", "<unused0>", "<unused1>", "<unused2>"]
 _BOS = "<pad>"
 

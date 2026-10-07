@@ -54,9 +54,7 @@ class _Verdict:
 
 
 class _Bundle:
-    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta` records the
-    # engine and `requested_identity` resolves the same way, so a stub naming a fixed one would make a
-    # legitimate resume look like an engine change off Linux and macOS.
+    # Resolve the engine like browser.launch, or a fixed stub looks like an engine change off Linux/macOS.
     engine = browser_mod.default_engine()[0]
     engine_note = "stubbed for this test"
     browser = context = page = cdp = None
@@ -99,9 +97,7 @@ def studio(monkeypatch, tmp_path):
 
     def fake_install(ref, home, *args, **kwargs):
         install = StudioInstall(home = Path(home), repo = Path(home).parent / "repo", branch = ref)
-        # `setattr` rather than a constructor argument, so this fixture also builds against a
-        # `StudioInstall` that has no commit field and the tests fail on the subject rather than the way
-        # in.
+        # setattr so the fixture builds against a StudioInstall without a commit field.
         install.commit = state["commits"].get(ref, f"c-{ref}-1")
         return install
 
@@ -150,9 +146,6 @@ def _rows(state):
     return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line]
 
 
-# ── what a run records ───────────────────────────────────────────────────────────────────────
-
-
 def test_a_run_records_the_commit_its_ref_resolved_to(studio):
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
@@ -170,13 +163,10 @@ def test_an_attached_studio_records_no_commit(studio):
     assert meta["studio_commit"] == ""
 
 
-# ── the refusal ──────────────────────────────────────────────────────────────────────────────
-
-
 def test_a_resume_after_the_branch_moved_is_refused(studio):
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
-    studio["commits"]["main"] = "c-main-2"  # `main` advanced overnight
+    studio["commits"]["main"] = "c-main-2"
     with pytest.raises(SystemExit) as excinfo:
         sb.run(_args(studio, "--branch", "main", "--resume"))
 
@@ -203,16 +193,13 @@ def test_a_resume_after_the_treatment_moved_is_refused(studio):
 
     assert sb.run(_args(studio, "--branch", "main", "--ab", "fix"), ab_ref = "fix") == 0
 
-    studio["commits"]["fix"] = "c-fix-2"  # the pull request was pushed to
+    studio["commits"]["fix"] = "c-fix-2"
     with pytest.raises(SystemExit) as excinfo:
         sb.run(_args(studio, "--branch", "main", "--ab", "fix", "--resume"), ab_ref = "fix")
 
     message = str(excinfo.value)
     assert "treatment_commit" in message
     assert "c-fix-1" in message and "c-fix-2" in message
-
-
-# ── the controls ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_the_same_commit_still_resumes(studio):

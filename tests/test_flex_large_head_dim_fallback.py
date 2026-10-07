@@ -96,7 +96,6 @@ def test_force_enable_refuses_an_explicit_opt_out():
     )
     u._FLEX_SUPPORT_FORCED.clear()
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
-    # and it must not have mutated the class on the way out
     assert u._declares_flex_support(cls) is False
 
 
@@ -141,7 +140,6 @@ def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
 
 
 def test_per_layer_head_dims_take_the_maximum(_no_env):
-    # 5.x per_layer_config: the largest layer decides.
     cfg = _Cfg(
         model_type = "fake",
         head_dim = 128,
@@ -157,7 +155,6 @@ def test_per_layer_head_dims_take_the_maximum(_no_env):
 
 
 def test_a_homogeneous_small_config_is_unaffected_by_the_per_layer_read(_no_env):
-    # 4.x configs have no per_layer_config at all; the global head_dim must still decide.
     assert (
         u._prefers_flex_for_head_dim(_Cfg(model_type = "fake", head_dim = 128, num_attention_heads = 8))
         is False
@@ -246,7 +243,6 @@ def test_forcing_flex_that_cannot_be_scoped_keeps_flash_attention(monkeypatch, m
 
 
 def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch):
-    # a deliberate _supports_flex_attn = False still wins over the env var
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "1")
     cls = _real_model_class(
         "transformers.models.t5gemma2.modeling_t5gemma2", "T5Gemma2ForConditionalGeneration"
@@ -255,9 +251,8 @@ def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch
     assert u._enable_flex_attention_support(cls, "t5gemma2") is False
 
 
-# Upstream skips the mask for an unpadded batch, but `_ignore_causal_mask_sdpa` returns False
-# while tracing, so Unsloth's compiled create_causal_mask always builds one. Pins both halves,
-# and that with UNSLOTH_COMPILE_DISABLE=1 the uncompiled wrapper keeps upstream's skip.
+# Upstream skips the mask for an unpadded batch, but `_ignore_causal_mask_sdpa` returns False while
+# tracing, so the compiled create_causal_mask always builds one; UNSLOTH_COMPILE_DISABLE=1 keeps the skip.
 
 
 def _mask_for(
@@ -343,7 +338,6 @@ def test_our_compiled_wrapper_is_what_defeats_the_skip():
     """Pins the cause, so this is a deliberate trade and not an accident nobody noticed."""
     from transformers import masking_utils
 
-    # Skips when the pair does not stash the original or the wrapper cannot be read.
     if not _mask_wrapper_is_compiled():
         pytest.skip("the mask wrapper calls the uncompiled original in this run")
     assert _mask_for(masking_utils.create_causal_mask, None) is not None

@@ -55,9 +55,7 @@ def test_the_helper_is_defined():
 def test_every_uv_requirements_flag_uses_a_sanitised_path():
     lines = _code_lines(INSTALL_PS1.read_text(encoding = "utf-8"))
 
-    # Variables the helper's result reaches, rather than a naming convention: first those assigned
-    # from the helper itself, then those assigned from the .Path of one of those. Keying on a name
-    # like "*Safe" would pass for a variable that merely looked sanitised.
+    # Track variables by data flow from the helper, not by name.
     from_helper = set()
     for line in lines:
         hit = re.search(rf"(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*{HELPER}\b", line)
@@ -72,8 +70,6 @@ def test_every_uv_requirements_flag_uses_a_sanitised_path():
             sanitised.add(hit.group(1))
     sanitised |= {f"{name}.Path" for name in from_helper}
 
-    # `-r <arg>` where the argument is a PowerShell variable. A literal path in the repo cannot
-    # carry a user-chosen space, so only variables are of interest here.
     uses = [(n, line) for n, line in enumerate(lines, 1) if re.search(r"\s-r\s+\$", line)]
     assert uses, "no uv -r call sites found; this test is no longer measuring anything"
 
@@ -146,9 +142,7 @@ def test_an_8dot3_alias_is_only_used_once_it_resolves():
     text = INSTALL_PS1.read_text(encoding = "utf-8")
     body = text[text.index(f"function {HELPER}") :]
     body = body[: body.index("\n    function ")]
-    # [^)]* so the assertion pins the CHECK, not the argument list: the guard also has to carry
-    # -ErrorAction SilentlyContinue, because under the installer's "Stop" a bare Test-Path in an
-    # ACL-denied directory throws instead of returning false (install.ps1:3277).
+    # Test-Path needs -ErrorAction SilentlyContinue: under Stop it throws on ACL-denied dirs.
     assert re.search(r"-and \(Test-Path -LiteralPath \$short -PathType Leaf\b[^)]*\)", body), (
         f"{HELPER} accepts an 8.3 short path on 'contains no space' alone, so an alias that "
         "does not resolve is handed to uv and later to Remove-Item"

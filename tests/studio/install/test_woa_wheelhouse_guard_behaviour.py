@@ -40,7 +40,6 @@ from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
-#: A corporate index that is not PyPI, and PyPI itself: the only distinction these make.
 CORP = "https://corp.example/simple"
 PYPI = "https://pypi.org/simple"
 
@@ -50,8 +49,7 @@ HELPERS = (
     "Test-WoaVersionAtLeast",
     "Test-WoaWheelTags",
     "Test-WoaWheelTagsUsable",
-    # Everything Test-WoaResolveReachesPyPI calls: a missing helper answers True and lets a
-    # lookalike index pass unnoticed.
+    # A missing helper answers True and lets a lookalike index pass.
     "Test-UvEnvFlag",
     "Test-NoIndexRequested",
     "Test-WoaUrlIsPublicPyPI",
@@ -86,11 +84,7 @@ def _drop_list_block(source: str) -> str:
 PRELUDE = "\n".join(_function(INSTALL_SRC, name) for name in HELPERS)
 
 
-#: Everything Test-WoaResolveReachesPyPI consults before it is told anything. The session
-#: running pytest supplies all of them for free -- a developer with UV_OFFLINE exported, a
-#: sibling suite that sets one and forgets to unset it, or a uv.toml / [tool.uv] anywhere
-#: above the working directory -- and each one silently decides the answer these tests are
-#: asserting on. Scrubbed here so the only resolver policy in a case is the one it sets.
+# Scrub ambient resolver policy (UV_OFFLINE, uv.toml, ...) so each case sets the only one.
 _UV_POLICY_ENV = (
     "UV_OFFLINE",
     "UV_NO_INDEX",
@@ -108,12 +102,7 @@ _UV_POLICY_ENV = (
     "ProgramData",
 )
 
-#: Matched case-folded, because the one mixed-case name above is the one that would survive
-#: a literal match on the platform it matters on: CPython's `os.environ` puts every key
-#: through `.upper()` on `nt` ("Where Env Var Names Must Be UPPERCASE", os.py), so Windows
-#: hands `ProgramData` to the comprehension below as `PROGRAMDATA`, it compares unequal, and
-#: the child keeps reading %PROGRAMDATA%\uv\uv.toml -- uv's system-level config, and the one
-#: file that can turn a row asserting True into a machine-dependent False.
+# Case-folded: os.environ upper-cases keys on nt, so 'ProgramData' would survive a literal match.
 _UV_POLICY_ENV_FOLDED = frozenset(name.upper() for name in _UV_POLICY_ENV)
 
 
@@ -125,10 +114,7 @@ def _scrubbed_environ(environ = None) -> dict[str, str]:
 
 def _run(script: str, *, cwd: str | pathlib.Path | None = None) -> str:
     env = _scrubbed_environ()
-    # run_pwsh, not subprocess.run: the scrub above keeps HOME, so without the runner's own
-    # XDG_CACHE_HOME every worker still shares one ~83 KB pwsh startup-profile cache and ~1
-    # startup in 500 dies reading a half-written copy. run_pwsh layers its private cache
-    # directory onto the env dict handed to it and leaves every other key exactly as scrubbed.
+    # run_pwsh gives each worker a private pwsh startup cache (~1 in 500 startups die otherwise).
     proc = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
         capture_output = True,
@@ -171,7 +157,6 @@ Remove-Item -LiteralPath $dir -Recurse -Force
 @pytest.mark.parametrize(
     ("wheel", "py_tag", "abi_tag", "usable"),
     [
-        # The two interpreter-agnostic shapes the wheelhouse actually ships.
         ("hf_transfer-0.1.9-cp38-abi3-win_arm64.whl", "cp313", "cp313", True),
         ("sqlite_vec-0.1.9-py3-none-win_arm64.whl", "cp313", "cp313", True),
         # Bug 2: abi3 does not reach BACKWARDS to an older interpreter.
@@ -179,9 +164,7 @@ Remove-Item -LiteralPath $dir -Recurse -Force
         ("foo-1.0-py314-none-win_arm64.whl", "cp313", "cp313", False),
         # Free-threaded CPython has no stable ABI (CPython #111506).
         ("hf_transfer-0.1.9-cp38-abi3-win_arm64.whl", "cp313", "cp313t", False),
-        # An exact match needs no special case.
         ("regex-2026.9.3-cp313-cp313-win_arm64.whl", "cp313", "cp313", True),
-        # A wheel built for another interpreter is not this venv's business either way.
         ("regex-2026.9.3-cp312-cp312-win_arm64.whl", "cp313", "cp313", False),
     ],
 )
@@ -238,11 +221,9 @@ def test_the_scrub_drops_program_data_however_the_platform_spelled_it(spelling):
         ({"PIP_INDEX_URL": CORP}, True),
         ({"PIP_NO_INDEX": "1"}, True),
         ({"UV_INDEX_URL": CORP, "PIP_EXTRA_INDEX_URL": PYPI}, False),
-        # Pointed at PyPI explicitly is still PyPI.
         ({"UV_DEFAULT_INDEX": PYPI}, True),
         ({"UV_OFFLINE": "1"}, False),
         ({"UV_NO_INDEX": "1"}, False),
-        # An unset-looking value must not read as "offline".
         ({"UV_OFFLINE": "0"}, True),
         ({"UV_NO_INDEX": "false"}, True),
     ],
@@ -286,10 +267,7 @@ def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
     assert ("xformers" in dropped) is still_dropped
 
 
-# A uv config can take PyPI out of the resolve as decisively as UV_OFFLINE can. Every case below
-# is one install.ps1's subset parser got WRONG until it learned to scan for quotes, each answering
-# "PyPI is reachable" for a config that had disabled it, which deletes wheelhouse copies of wheels
-# the resolve can never fetch. Expectations derived with tomllib, not written by hand.
+# Configs install.ps1's subset parser got wrong; expectations derived with tomllib.
 UV_CONFIG_CASES = [
     # A comment needs no whitespace in front of it. `(^|\s)#` missed this one entirely.
     ("comment_nospace", "uv.toml", "no-index = true# offline lab\n", False),

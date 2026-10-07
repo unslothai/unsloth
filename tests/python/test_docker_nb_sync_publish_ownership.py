@@ -129,7 +129,6 @@ def test_the_refresh_keeps_the_destinations_metadata(tmp_path: Path):
 
 
 def test_the_ebusy_fallback_keeps_the_destinations_metadata(tmp_path: Path):
-    # an `mv` that refuses only the staging rename models a single-FILE bind mount
     binp = tmp_path / "bin"
     binp.mkdir()
     stub = binp / "mv"
@@ -153,11 +152,6 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
         "both must be best effort: a filesystem that refuses them must not cost "
         "the user their refresh"
     )
-    # This used to assert `[ -e "$2" ] || return 0`, i.e. that a brand-new
-    # notebook was left alone. That was the defect: with nothing to inherit
-    # from, the early return published the clone's root:root 0644 and the host
-    # user could not edit a notebook upstream had just added. It now falls
-    # through to own_like_dir instead.
     assert 'if [ ! -e "$2" ]; then' in block
     assert (
         "own_like_dir" in block
@@ -174,7 +168,7 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     bypasses the chmod (CAP_DAC_OVERRIDE)."""
     template, dest, remote = _world(tmp_path)
     nb_dir = dest / "nb"
-    os.chmod(nb_dir, 0o500)  # publish into nb/ now fails, DEST root stays writable
+    os.chmod(nb_dir, 0o500)
     try:
         res = _run(tmp_path, template, dest, remote)
     finally:
@@ -235,8 +229,7 @@ def test_a_marker_the_user_cannot_truncate_is_still_advanced(tmp_path: Path):
     assert "Permission denied" not in res.stderr
 
 
-# mkdir(2) gives a new DIRECTORY the caller's uid and only setgid carries down, so a
-# category folder upstream adds lands root:root and the user cannot write into it
+# mkdir(2) uses the caller's uid, so new category folders would land root:root.
 
 SYNC_SH = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
 
@@ -304,17 +297,14 @@ def test_an_existing_notebook_directory_is_left_alone(tmp_path: Path):
 def test_every_directory_creating_site_routes_through_the_helper():
     """Four sites create $DEST or a directory inside it; none may call bare mkdir."""
     source = SYNC_SH.read_text(encoding = "utf-8")
-    # The WHOLE file, not just what follows the helper: `mkdir -p "$DEST"` sat above
-    # it, and the root it created as root:root is the anchor every other site
-    # inherits from, so scoping this scan to the tail is what let that one through.
+    # Scan the whole file: the root `mkdir -p "$DEST"` sits above the helper.
     stray = [
         line.strip() for line in source.splitlines() if "mkdir -p" in line and '"$DEST' in line
     ]
     assert not stray, f"these still create a directory as root inside $DEST: {stray}"
     body = source[source.index("mkdir_keep_owner() {") :]
-    body = body[body.index("\n}\n") :]  # everything after the helper itself
-    # Real invocations only: counting the substring also counted the word where a
-    # comment merely names the helper, so prose could satisfy or break this.
+    body = body[body.index("\n}\n") :]
+    # Real invocations only, so prose mentioning the helper does not count.
     calls = [
         line.strip() for line in body.splitlines() if line.strip().startswith("mkdir_keep_owner ")
     ]
@@ -322,14 +312,6 @@ def test_every_directory_creating_site_routes_through_the_helper():
         "expected the notebook root, populate, restore and publish to route "
         f"through the helper: {calls}"
     )
-
-
-# --- a notebook that has no destination to inherit from -------------------------
-# stage_metadata returned early when $2 did not exist, so a notebook upstream had
-# just added kept the clone's root:root 0644 through the rename, and the two
-# `cp -a` copies in populate/restore kept the TEMPLATE's. unsloth_run.py's
-# _stage_metadata has had a new-file branch for this since the earlier ownership
-# fix; the shell twin did not.
 
 
 def _drive_sh(tmp_path: Path, snippet: str, *funcs: str) -> list:
@@ -370,7 +352,7 @@ def test_a_brand_new_notebook_gets_the_destination_directorys_owner(tmp_path: Pa
     dest_dir.mkdir()
     staged = dest_dir / ".unsloth_nb_new.1"
     staged.write_text("{}", encoding = "utf-8")
-    os.chmod(staged, 0o600)  # what the clone / mkstemp hands over
+    os.chmod(staged, 0o600)
 
     calls = _drive_sh(
         tmp_path,
@@ -382,7 +364,7 @@ def test_a_brand_new_notebook_gets_the_destination_directorys_owner(tmp_path: Pa
     assert calls == [
         f"--reference={dest_dir} {staged}"
     ], f"a new notebook must take the owner of the directory it lands in: {calls}"
-    # 0666 & ~022, the mode a plain write would have produced.
+    # 0666 & ~022, the mode a plain write would produce.
     assert stat.S_IMODE(os.stat(staged).st_mode) == 0o644, oct(
         stat.S_IMODE(os.stat(staged).st_mode)
     )
@@ -429,17 +411,6 @@ def test_both_template_copies_hand_the_file_to_the_host_user():
         ), f"the copy at line {i + 1} publishes the template's root:root mode"
 
 
-# --- the notebook root itself ---------------------------------------------------
-# `mkdir -p "$DEST"` ran as root before any helper was involved, so on first boot
-# under a host-owned bind mount (UNSLOTH_NOTEBOOKS_DIR=/workspace/host/notebooks,
-# with -v $PWD:/workspace/host) the notebook root landed root:root. Every later
-# mkdir_keep_owner anchors on the NEAREST EXISTING ancestor and own_like_dir copies
-# the owner of the directory a file lands in, so that one root:root directory is
-# then inherited by every category folder and every notebook underneath it, and the
-# host user cannot edit or delete their own notebooks. unsloth_run.py's
-# _makedirs_as_host has always chowned the leaf it creates; the shell twin did not.
-
-
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 def test_the_notebook_root_is_created_with_its_ancestors_owner(tmp_path: Path):
     template = tmp_path / "template"
@@ -447,9 +418,9 @@ def test_the_notebook_root_is_created_with_its_ancestors_owner(tmp_path: Path):
     (template / REL).write_text(V1, encoding = "utf-8")
     (template / ".unsloth_template_commit").write_text("old\n", encoding = "utf-8")
 
-    host = tmp_path / "host"  # the bind mount, owned by the host user
+    host = tmp_path / "host"
     host.mkdir()
-    dest = host / "notebooks"  # first boot: does not exist yet
+    dest = host / "notebooks"
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

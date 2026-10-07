@@ -241,9 +241,7 @@ def test_register_models_registers_no_upstream_originals(registry_lifecycle):
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     out = result.stdout
-    # Every registered model is unsloth-org: no upstream "original" leaked.
     assert "ORGS ['unsloth']" in out, out + result.stderr
-    # Deepseek is still registered via the normal path, just without originals.
     deepseek_lines = [line for line in out.splitlines() if line.startswith("NUM_DEEPSEEK")]
     assert deepseek_lines and int(deepseek_lines[0].split()[1]) > 0, out + result.stderr
 

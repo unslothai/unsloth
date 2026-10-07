@@ -141,8 +141,7 @@ def saving(monkeypatch, tmp_path):
             records["uploads"].append({**kwargs, "files": files, "token": self.token})
             if records.get("fail_upload"):
                 raise OSError("upload failed")
-            # Overridable so a test can hand back a real-shaped CommitInfo, whose `pr_url` is
-            # the only place the pull request's own address exists.
+            # A real CommitInfo's `pr_url` is the only place the pull request's address exists.
             return records.get("commit_info", "commit-info")
 
     env = dict(
@@ -166,13 +165,11 @@ def saving(monkeypatch, tmp_path):
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
-        # A Mistral-format view (#12144) refuses merged saves; these fixtures are not one.
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
         logger = SimpleNamespace(warning_once = lambda *args: None),
-        # save_method="lora" leaves this module for the adapter save rather than the merge,
-        # so record the handover instead of re-implementing it.
+        # save_method="lora" hands off to the adapter save; record the handover.
         unsloth_save_model = lambda *args, **kwargs: (
             records["adapter_saves"].append({"args": args, "kwargs": kwargs}),
             (kwargs.get("save_directory"), None),
@@ -182,8 +179,7 @@ def saving(monkeypatch, tmp_path):
         "_push_merged_to_hub_revision",
         "unsloth_generic_save",
         "unsloth_generic_push_to_hub_merged",
-        # Real code, not stubs: these two decide what save_method="lora" and
-        # safe_serialization=None mean, which is what several tests below assert on.
+        # Real code, not stubs: tests below assert on what these two decide.
         "_normalize_safe_serialization",
         "_is_adapter_save_method",
         "_honours_safe_serialization",
@@ -193,8 +189,7 @@ def saving(monkeypatch, tmp_path):
     nodes = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
-            # _normalize_safe_serialization must be defined before the functions that call
-            # it, which the source order already gives; only the decorators go.
+            # Source order already defines _normalize_safe_serialization first; only decorators go.
             node.decorator_list = []
             nodes.append(node)
         elif isinstance(node, ast.Assign) and any(
@@ -594,13 +589,10 @@ def test_the_push_names_the_destination_and_not_the_staging_folder(saving, capsy
     "kwargs,expected",
     [
         ({}, "https://huggingface.co/owner/model"),
-        # A branch upload is not on the repository's default branch.
         ({"revision": "my-branch"}, "https://huggingface.co/owner/model/tree/my-branch"),
-        # An existing pull request, addressed the way the Hub spells it.
         ({"revision": "refs/pr/3"}, "https://huggingface.co/owner/model/discussions/3"),
         # A fresh pull request: the repository page can hold no model files at all.
         ({"create_pr": True}, "https://huggingface.co/owner/model/discussions"),
-        # `create_pr` wins over the branch it was opened against.
         (
             {"create_pr": True, "revision": "my-branch"},
             "https://huggingface.co/owner/model/discussions",
@@ -676,8 +668,6 @@ def test_a_pickle_request_this_transformers_cannot_honour_is_reported(saving):
         return [message for message in said if "not a pickle" in message]
 
     assert push(NoSafeSerialization(), safe_serialization = False)
-    # A transformers that still takes it, a patched model whose original does, and the default
-    # `True`, are all silent.
     assert push(HonoursIt(), safe_serialization = False) == []
     assert push(Patched(), safe_serialization = False) == []
     assert push(NoSafeSerialization()) == []

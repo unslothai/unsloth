@@ -134,7 +134,7 @@ class TestAmdBitsandbytesFloor:
         for spec in specs:
             requirement = spec.split(";", 1)[0].strip()
             allowed = SpecifierSet(requirement[len("bitsandbytes") :].strip())
-            # The whole broken range, not one release: `>=0.49.3` or `!=0.49.2` must fail too.
+            # The whole broken range: `>=0.49.3` or `!=0.49.2` must fail too.
             floors = [
                 Version(sp.version) for sp in allowed if sp.operator in (">=", ">", "==", "~=")
             ]
@@ -184,7 +184,7 @@ class TestSecurityAuditWorkflowStaysInSync:
             for node in ast.walk(tree):
                 if not _is_optional_dependencies_lookup(node):
                     continue
-                # Guarded means inside the try BODY (not else/finally) of a try whose handler catches KeyError.
+                # Guarded means inside the try body of a try whose handler catches KeyError.
                 guarded, child, parent = False, node, getattr(node, "parent", None)
                 while parent is not None:
                     if isinstance(parent, ast.Try) and any(

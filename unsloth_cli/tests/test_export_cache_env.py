@@ -20,8 +20,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Runs in its own interpreter: the seeding is process-global (os.environ plus a one-shot flag),
-# so an in-process assertion would depend on test ordering.
+# Own interpreter: the seeding is process-global, so in-process results depend on test order.
 PROBE = textwrap.dedent(
     """
     import json, os, sys, types
@@ -91,8 +90,7 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
 
     env = dict(os.environ)
     env.pop("UNSLOTH_COMPILE_LOCATION", None)
-    # Both outrank UNSLOTH_HOME in the resolver, and conftest.py sets a session-scoped
-    # UNSLOTH_STUDIO_HOME, so an inherited one would send the probe somewhere unnamed.
+    # Both outrank UNSLOTH_HOME, and conftest.py sets a session-scoped UNSLOTH_STUDIO_HOME.
     for key in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_PORTABLE"):
         env.pop(key, None)
     env.update(
@@ -115,7 +113,6 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
     assert recorded["exit_code"] == 0, recorded
     location = recorded["compile_location"]
     assert location, "UNSLOTH_COMPILE_LOCATION was unset when the export backend was imported"
-    # Absolute and inside the install root, not resolved against the CWD.
     assert Path(location).is_absolute()
     assert Path(location) == unsloth_home / "studio" / "compiled_cache"
     assert not (workdir / "unsloth_compiled_cache").exists()

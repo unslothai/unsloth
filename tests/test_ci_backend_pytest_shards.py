@@ -39,17 +39,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
 _BACKEND_TESTS = REPO_ROOT / "studio" / "backend" / "tests"
 
-# Named once so the tests can say "and only there", and so a rename fails here rather than
-# silently weakening them.
+# Named once so a rename fails here rather than silently weakening the tests.
 _CATCH_ALL = "rest"
 
-# The twelve files the parallel run ignores and the serial step reruns. Read out of the
-# workflow rather than listed here, so moving one between the two cannot make it look
-# dropped, as tests/test_ci_repo_cpu_shards.py does for its isolated paths.
+# Read from the workflow so moving a file between the parallel and serial steps is not a drop.
 _SERIAL_STEP = "Backend tests that cannot share a worker"
 
-# Files this job runs nowhere: a lost file would otherwise look like one of these. Only one,
-# predating the split -- the thirteenth --ignore on the parallel step, which no step reruns.
+# Files this job runs nowhere, so a lost file cannot hide among them.
 _NOT_IN_ANY_SHARD = {
     "tests/test_studio_api.py": (
         "end-to-end against a live model and a GGUF download, which a GPU-less runner "
@@ -167,7 +163,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
         dropped, doubled = [], []
         for path in _test_files():
             if path in serial or path in _NOT_IN_ANY_SHARD:
-                continue  # rerun by the serial step, or excluded from the job on purpose
+                continue
             claiming = _claiming_shards(path, shards)
             if not claiming:
                 dropped.append(path)
@@ -376,9 +372,7 @@ class TestTheGuardIsNotVacuous:
             "l-r": (["tests/"], [], ["tests/*/*", "tests/test_[a-k]*.py", "tests/test_[s-z]*.py"]),
             _CATCH_ALL: (["tests/"], [], ["tests/test_[a-r]*.py"]),
         }
-        # All three, in fact: a name outside a-z is outside every range, so the catch-all
-        # takes it as well and the ranged shards no longer exclude it. The names in a-z are
-        # still partitioned correctly, which is why this is the mistake that survives review.
+        # A name outside a-z falls into the catch-all as well, while a-z still partitions correctly.
         assert _claiming_shards("tests/test_Zebra.py", broken) == ["a-k", "l-r", _CATCH_ALL]
         assert _claiming_shards("tests/test_apple.py", broken) == ["a-k"]
         assert _claiming_shards("tests/test_monkey.py", broken) == ["l-r"]

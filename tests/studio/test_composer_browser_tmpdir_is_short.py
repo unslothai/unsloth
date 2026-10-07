@@ -25,10 +25,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "studio-composer-compatibility.yml"
-# sockaddr_un.sun_path less its terminating NUL, per hosted runner: 108 bytes on Linux, 104 on macOS.
+# sockaddr_un.sun_path less its NUL: 108 bytes on Linux, 104 on macOS.
 SUN_PATH_MAX = {"linux": 107, "macos": 103, "windows": 107}
-# What Chrome appends to TMPDIR, at its length.
-# What Chrome and Edge append to TMPDIR. Edge's is the longer one, so it is the one that must fit.
+# What Chrome and Edge append to TMPDIR. Edge's is longer, so it is the one that must fit.
 CHROME_SOCKET = "/com.google.Chrome.XXXXXX/SingletonSocket"
 EDGE_SOCKET = "/com.microsoft.Edge.XXXXXX/SingletonSocket"
 
@@ -54,7 +53,6 @@ def test_the_workflow_temp_dir_does_not_grow_with_the_checkout():
 
 
 def test_the_workflow_socket_path_fits_on_the_hosted_runners():
-    # RUNNER_TEMP on the hosted images: Linux, macOS and Windows (Git Bash spelling).
     for host, runner_temp in (
         ("linux", "/home/runner/work/_temp"),
         ("macos", "/Users/runner/work/_temp"),

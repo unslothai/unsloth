@@ -261,7 +261,7 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
         )
         async for got in stream:
             assert got is keepalive
-            break  # parked at a keepalive yield, read in flight
+            break
 
         errors = []
         if close_pump_first:
@@ -277,7 +277,6 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
             await stream.aclose()
         return errors
 
-    # Without the ordering, the iterator close lands on a running generator.
     unordered = asyncio.run(_run(close_pump_first = False))
     assert any("already running" in e for e in unordered), (
         "expected the unordered close to hit 'asynchronous generator is already "
@@ -321,10 +320,10 @@ def _load_env_accessors():
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        (None, 5.0),  # unset: pace like the header wait already does
-        ("", 5.0),  # blank: same as unset
-        ("0", None),  # documented off switch
-        ("-1", None),  # non-positive is also off
+        (None, 5.0),
+        ("", 5.0),
+        ("0", None),
+        ("-1", None),
         ("2.5", 2.5),
         ("garbage", 5.0),  # unparseable falls back, never crashes a stream
     ],
@@ -347,9 +346,7 @@ def test_keepalive_interval_env(monkeypatch, raw, expected):
         ("-5", 1200.0),
         ("garbage", 1200.0),
         ("2400", 2400.0),
-        # `inf` is positive, so a `value > 0` parser used to let it through and
-        # the deadline stopped existing. `1e309` is the same value written by a
-        # human who meant "very large".
+        # `inf` is positive, so a `value > 0` parser would let the deadline vanish.
         ("inf", 1200.0),
         ("Infinity", 1200.0),
         ("1e309", 1200.0),
@@ -549,7 +546,6 @@ def test_the_tick_is_a_whole_comment_frame_not_a_bare_line():
     emitters = SRC.count("yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE")
     assert emitters >= 4, f"expected at least the 4 tick emitters, found {emitters}"
 
-    # A frame-prefix reader, which is what curl and undici consumers do.
     def frame_prefix_reader(stream):
         text = []
         for frame in stream.split("\n\n"):

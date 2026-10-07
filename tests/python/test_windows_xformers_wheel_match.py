@@ -37,15 +37,8 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 WHEEL_INDEX_BASE = "https://download.pytorch.org/whl"
 
-# (CUDA family, torch release) -> xFormers version, i.e. the wheel that index
-# actually publishes for that torch. Every row was HEAD-verified as live on
-# download.pytorch.org, and the cu128/cu130 0.0.34 wheels were downloaded and
-# their xformers/cpp_lib.json read back:
-#     cu128 -> {"cuda": 1208, "torch": "2.10.0+cu128"}
-#     cu130 -> {"cuda": 1300, "torch": "2.10.0+cu130"}
-# Keep this in step with _XFORMERS_WHEEL_VERSIONS in
-# studio/backend/utils/wheel_utils.py and $script:XformersWheelVersions in
-# install.ps1 -- test_xformers_matrix_agrees_with_wheel_utils below enforces it.
+# (CUDA family, torch release) -> xFormers version published by that index.
+# Keep in step with wheel_utils._XFORMERS_WHEEL_VERSIONS and install.ps1 (enforced below).
 XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu126", "290"): "0.0.33.post1",
     ("cu128", "290"): "0.0.33.post1",
@@ -58,8 +51,7 @@ XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu130", "2100"): "0.0.34",
 }
 
-# Torch releases with no xFormers wheel on any index; naming one in an extra would resolve
-# a wheel built for a different torch. Empty: 0.0.35 is stable-ABI and loads under 2.11 up.
+# Empty: 0.0.35 is stable-ABI and loads under 2.11 and up.
 TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS: tuple[str, ...] = ()
 
 
@@ -116,9 +108,7 @@ def test_windows_resolves_a_cuda_matched_wheel(family: str, torch_tag: str):
         url = spec.split("@", 1)[1].strip()
         assert url == f"{WHEEL_INDEX_BASE}/{family}/xformers-{version}-cp39-abi3-win_amd64.whl"
     else:
-        # Version-pin form: the index is the install-time --index-url, so the version is
-        # the only half of the pairing this branch can carry. It still has to be the
-        # version that index publishes for this torch, which is what the matrix holds.
+        # The index is the install-time --index-url, so only the version can be carried here.
         assert (
             spec == f"xformers=={version}"
         ), f"{extra} must pin the {family} wheel version for torch {torch_tag}, got {spec!r}"
@@ -136,8 +126,7 @@ def test_aggregate_extra_pulls_in_the_matched_wheel(family: str, torch_tag: str)
 @pytest.mark.parametrize("torch_tag", TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS)
 def test_no_extras_invented_for_torch_without_xformers_wheels(torch_tag: str):
     extras = _extras()
-    # CUDA extras only -- the intel-gpu-torch2110 / intelgputorch2110 XPU extras carry
-    # no xformers row and are not affected.
+    # CUDA extras only; the XPU extras carry no xformers row.
     pattern = re.compile(rf"^cu\d+(?:only)?-?torch{torch_tag}$")
     offenders = [n for n in extras if pattern.match(n)]
     assert offenders == [], (

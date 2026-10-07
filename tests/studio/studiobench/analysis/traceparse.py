@@ -37,17 +37,12 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from . import CellFailure
 
-# Complete-duration events are the only phase that forms the task tree. Async (`b`/`e`/`n`), flow
-# (`s`/`t`/`f`), instant (`I`/`R`), sample (`P`), counter (`C`) and metadata (`M`) events are
-# carried alongside but never nested, since their timestamps do not describe a stack.
+# Only complete (`X`) events form the task tree; other phases are carried but never nested.
 _PHASE_COMPLETE = "X"
 _PHASE_BEGIN = "B"
 _PHASE_END = "E"
 
-# When two events share both `ts` and `dur` the trace gives no ordering. On the main thread the
-# devtools view (`RunTask`) is conceptually the outer frame and the scheduler view
-# (`ThreadControllerImpl::RunTask`) the inner one, so pin that order rather than letting dict
-# ordering decide.
+# Equal `ts` and `dur` give no ordering, so pin `RunTask` outside `ThreadControllerImpl::RunTask`.
 _OUTERMOST_FIRST = {
     "RunTask": 0,
     "ThreadControllerImpl::RunTask": 1,
@@ -105,7 +100,6 @@ class Thread:
     tid: int
     name: str
     roots: list[Task] = field(default_factory = list)
-    # Every event on this thread, including phases that do not nest.
     events: list[dict[str, Any]] = field(default_factory = list)
 
     def tasks_named(self, name: str) -> list[Task]:
@@ -136,8 +130,6 @@ class Trace:
                     self._thread_names[key] = name  # type: ignore[index]
         self._threads: dict[tuple[int, int], Thread] = {}
 
-    # loading
-
     @classmethod
     def from_json_text(cls, text: str) -> "Trace":
         """Load the exact wire format `Tracing` emits.
@@ -153,8 +145,7 @@ class Trace:
         try:
             doc = json.loads(text)
         except json.JSONDecodeError as exc:
-            # A truncated JSON document is the signature of a drained stream that was cut short: a failed cell,
-            # never a short trace.
+            # A truncated document is a cut-short stream: a failed cell, never a short trace.
             raise CellFailure(
                 "trace_truncated",
                 f"trace JSON did not parse ({exc}); {len(text)} bytes drained",
@@ -182,8 +173,6 @@ class Trace:
                 return cls.from_json_text(fh.read())
         with open(p, "r", encoding = "utf-8") as fh:
             return cls.from_json_text(fh.read())
-
-    # ---------------------------------------------------------------- threads
 
     def thread_name(self, pid: int, tid: int) -> str:
         return self._thread_names.get((pid, tid), "")
@@ -220,8 +209,6 @@ class Trace:
     def renderer_main(self) -> Thread:
         pid, tid = self.profiled_thread()
         return self.thread(pid, tid)
-
-    # ------------------------------------------------------------------ joins
 
     def run_tasks(self, thread: Thread | None = None) -> list[Task]:
         """Top-level `RunTask` events on a thread, outermost only."""
@@ -262,7 +249,6 @@ def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
         if ph == _PHASE_COMPLETE:
             dur = e.get("dur")
             if dur is None:
-                # A complete event without `dur` is a zero-width marker.
                 dur = 0
             complete.append(
                 Task(
@@ -302,9 +288,7 @@ def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
     for t in complete:
         while stack and t.ts >= stack[-1].end:
             stack.pop()
-        # An event that starts inside its would-be parent but ends after it is not nested; the trace is
-        # inconsistent there, so treat it as a sibling rather than corrupting self-time arithmetic for the
-        # whole subtree.
+        # An improperly nested event is treated as a sibling to keep self-time arithmetic sound.
         while stack and t.end > stack[-1].end:
             stack.pop()
         if stack:

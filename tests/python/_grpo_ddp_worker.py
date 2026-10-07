@@ -62,7 +62,7 @@ def run_rank(rank, port, queue):
             results[mode] = torch.cat(
                 [p.grad.reshape(-1) for p in ddp.module.parameters()]
             ).tolist()
-        # bucket_bytes=1: every gradient is larger than a bucket, so each one is reduced in place.
+        # bucket_bytes=1: every gradient exceeds a bucket, so each is reduced in place.
         ddp = torch.nn.parallel.DistributedDataParallel(LM())
         ddp.module(x).logsumexp(-1).mean().backward()
         rl._unsloth_average_gradients(ddp, bucket_bytes = 1)

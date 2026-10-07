@@ -21,7 +21,7 @@ def _should_use_mlx_backend_for_cli() -> bool:
 
 
 def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
-    # Activate before any transformers import: adapter model-type detection imports utils.models.
+    # Before any transformers import: adapter model-type detection imports utils.models.
     ensure_studio_backend_path()
     from filelock import FileLock
     from utils.paths.storage_roots import studio_root
@@ -41,7 +41,7 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
 def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
-        # MLX is torch-free: use the lightweight adapter, not trainer.py (imports torch/unsloth/trl at load).
+        # MLX is torch-free: use the lightweight adapter, not trainer.py.
         ensure_studio_backend_path()
         with studio_backend_imports("unsloth train"):
             from studio.backend.core.training.training import create_mlx_trainer_adapter
@@ -110,7 +110,7 @@ def train(
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
-    # CLI/env tokens take precedence; guard against unresolved typer.Option.
+    # Guard against an unresolved typer.Option.
     from typer.models import OptionInfo
 
     if isinstance(hf_token, OptionInfo):
@@ -125,8 +125,7 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
-        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
-        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        # This goes to stdout (CI logs, notebooks): mask set tokens, keep unset ones null.
         for name in ("hf_token", "wandb_token"):
             if data["logging"].get(name) is not None:
                 data["logging"][name] = "[redacted]"

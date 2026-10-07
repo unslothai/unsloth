@@ -36,7 +36,6 @@ def _load_helper():
     raise AssertionError("unsloth/save.py defines no _model_basename")
 
 
-# Ground truth: the platform behaviours the Linux simulation asserts.
 def test_join_really_discards_the_prefix_for_a_drive_bearing_component():
     """The mechanism behind #7897, on the real platform."""
     assert os.path.join(r"C:\exp\_gguf", r"D:\M\X.Q5_K_M.gguf") == r"D:\M\X.Q5_K_M.gguf"
@@ -58,11 +57,10 @@ def test_posix_basename_would_not_have_fixed_it():
     """os.path.basename is correct here but wrong on the Linux CI that tests it."""
     import posixpath
 
-    assert os.path.basename(r"D:\M\MyModel") == "MyModel"  # ntpath: fine
-    assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"  # posix: broken
+    assert os.path.basename(r"D:\M\MyModel") == "MyModel"
+    assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"
 
 
-# The fix, on real paths.
 @pytest.mark.parametrize(
     "base, expected",
     [
@@ -110,7 +108,6 @@ def test_real_second_drive_end_to_end():
         out = os.path.join(gguf_dir, f"{helper(base_dir)}.Q5_K_M.gguf")
         Path(out).write_bytes(b"GGUF")
 
-        # Nothing may be written beside the base model.
         strays = [
             os.path.join(root, f)
             for root, _d, files in os.walk(r"D:\Models")

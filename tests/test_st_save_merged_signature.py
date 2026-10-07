@@ -86,9 +86,6 @@ def test_the_reference_signature_is_what_we_matched():
     assert _params(node[0])[:4] == ["self", "save_directory", "tokenizer", "save_method"]
 
 
-# ---- save_method is honoured, not swallowed -------------------------------
-
-
 def test_merge_and_unload_path_refuses_an_unsupported_method():
     src = ST_PY.read_text(encoding = "utf-8")
     node = _defs("_save_pretrained_merged", ST_PY)[0]
@@ -112,9 +109,6 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
     body = ast.get_source_segment(src, _defs("_save_pretrained_merged", ST_PY)[i])
     assert "if tokenizer is None:" in body
     assert 'pop("tokenizer", None)' in body
-
-
-# ---- behavioural check with a stand-in ------------------------------------
 
 
 def _extract_helper(name):
@@ -163,7 +157,6 @@ def _probe_package():
     models = types.ModuleType(f"{_PROBE_PACKAGE}.models")
     models.__path__ = []
     save = types.ModuleType(f"{_PROBE_PACKAGE}.save")
-    # By source, not by import, for the same reason as everything else in this file.
     save_src = SAVE_PY.read_text(encoding = "utf-8")
     helper = [
         n
@@ -187,9 +180,7 @@ def _extract(i):
     _probe_package()
     branding = []
     ns = {
-        # The package coordinates of unsloth/models/sentence_transformer.py, mirrored onto the
-        # probe package: `from ..save import ...` in the body resolves one level up from
-        # `<probe>.models`, which is where the extracted helper was just installed.
+        # Mirror sentence_transformer.py's package so `from ..save import` resolves to the probe.
         "__name__": f"{_PROBE_PACKAGE}.models.sentence_transformer",
         "__package__": f"{_PROBE_PACKAGE}.models",
         "os": __import__("os"),
@@ -219,7 +210,6 @@ def test_the_deferred_import_binds_the_shipped_helper():
         assert helper(accepted), f"the shipped helper no longer accepts {accepted!r}"
     for refused in ("merged_16bit", "lora_adapter", None, 1):
         assert not helper(refused), f"the shipped helper now accepts {refused!r}"
-    # And it is the shipped source, not a copy that can drift from it.
     save_src = SAVE_PY.read_text(encoding = "utf-8")
     assert "def _is_adapter_save_method(save_method):" in save_src
 
@@ -322,9 +312,6 @@ def test_unsupported_save_method_raises_not_implemented(tmp_path):
     assert st.saved == [], "and before writing a half-finished directory"
 
 
-# ---- the no_modules fallback honours save_method too -----------------------
-
-
 def test_no_modules_fallback_refuses_an_unsupported_method(tmp_path):
     """That branch drops save_method and merges unconditionally, so "lora"
     would return full weights for a request to write adapters."""
@@ -364,15 +351,12 @@ def test_the_forwarding_path_refuses_lora_for_its_own_reason(tmp_path):
         fn(st, str(tmp_path), None, "lora")
 
     message = str(raised.value)
-    # Its own reason: no base weights for a loadable SentenceTransformer, plus the two ways
-    # out. Not the no_modules reason, which is about falling back to merge_and_unload.
     assert "adapter" in message
     assert "merged_16bit" in message
     assert "no modules.json was found" not in message, (
         "the no_modules refusal leaked into the branch that HAS modules.json; the two "
         "conditions are different and a user told the wrong one looks for the wrong file"
     )
-    # Refused before anything is touched, exactly as the no_modules branch is.
     assert not st.inner.merged, "must refuse BEFORE merging the adapters away"
     assert st.saved == [], "and before writing a half-finished directory"
     assert st.inner.forwarded is None, "and without forwarding the unsupported method on"
@@ -394,9 +378,6 @@ def test_the_two_lora_refusals_do_not_share_a_message(tmp_path):
         "both 'lora' refusals now say the same thing, so the message no longer tells the "
         "user whether modules.json was the problem"
     )
-
-
-# ---- spellings mean the same thing as in unsloth_save_model ----------------
 
 
 def test_the_reference_normalizes_before_validating():

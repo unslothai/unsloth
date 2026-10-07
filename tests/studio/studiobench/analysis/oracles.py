@@ -38,8 +38,7 @@ NEAR_MISS = "near_miss"
 UNEXPLAINED = "unexplained_hot_frame"
 NOT_MEASURED = "not_measured"
 
-# Integer ratios worth naming when a count is off by a clean factor. Each has a specific mechanical
-# meaning, so reporting the ratio hands over a hypothesis rather than a mystery.
+# Each ratio has a specific mechanical meaning, so naming it hands over a hypothesis.
 _KNOWN_RATIOS: dict[Fraction, str] = {
     Fraction(
         2, 1
@@ -175,7 +174,6 @@ def _ratio_note(measured: int, predicted: int) -> str | None:
         return f"exactly {fr.numerator}x predicted"
     if fr.numerator == 1 and 1 < fr.denominator <= 16:
         return f"exactly 1/{fr.denominator} of predicted"
-    # Off by one structural unit, e.g. counting a root alongside its children.
     if abs(measured - predicted) <= 2:
         return f"off by {measured - predicted:+d}, within one structural unit"
     return None
@@ -275,25 +273,13 @@ def predicted_next_rung(
     return quantity_fn(next_structural_input).value
 
 
-# M2 and M3: oracle shapes over PAGE-SIDE counters
-# M1 is settled with a call count from precise coverage, because the mechanism lives inside
-# react-dom where invocations can be counted. M2 and M3 do not work that way: their cost is in how
-# much text is rescanned and how much layout is forced, and those must be counted IN THE PAGE.
-# Layer 3 owns `instruments/layoutcost.js` and already counts `scrollHeight` reads, `scrollTop`
-# writes and MutationObserver callbacks. This section does NOT duplicate it: it fixes the KEY
-# NAMES that file should emit and supplies the oracles that consume them, so counting and
-# interpretation are owned separately.
-# ONE HONEST DIFFERENCE: the M1 oracle is an EXACT INTEGER MATCH that either holds or does not,
-# while the M2 oracle is a REGIME TEST, since SSE deltas do not arrive in equal sizes, so the
-# quadratic prediction is exact only for a uniform stream and must be compared as a ratio with a
-# refusal band. That is weaker evidence and is labelled as such everywhere it is emitted.
+# M2 and M3: oracles over page-side counters emitted by `instruments/layoutcost.js`. Unlike M1's
+# exact integer match, M2 is a regime test: SSE deltas are uneven, so it is weaker evidence.
 
 REGIME_QUADRATIC = "cumulative_reparse_quadratic"
 REGIME_LINEAR = "incremental_parse_linear"
 REGIME_UNDECIDED = "undecided"
 
-# The counters Layer 3's page-side instrument should emit, per streamed reply. Every one is an
-# integer; none is a duration.
 PAGE_COUNTER_CONTRACT: dict[str, dict[str, str]] = {
     "m2_reparse": {
         "parse_calls": "invocations of parseAssistantContent during the reply",
@@ -383,7 +369,6 @@ def reparse_regime(
             "refusal band. This reply is too short to distinguish the regimes; use a longer rung."
         )
         return out
-    # Closer in log space wins; the ratio is reported either way so a reader can see how decisive the call was.
     r_lin = chars_rescanned / lin
     r_quad = chars_rescanned / quad
     out["ratio_to_linear"] = round(r_lin, 3)

@@ -26,7 +26,6 @@ from pathlib import Path
 
 DRIVER = Path(__file__).resolve().parent / "playwright_data_settings.py"
 
-# `api.messages[locale]`, however it is spaced, and whatever is read off it.
 _CATALOG_READ = re.compile(r"api\.messages\[\s*locale\s*\]")
 _GUARD = re.compile(r"api\.messages\[\s*locale\s*\]\s*===\s*undefined")
 

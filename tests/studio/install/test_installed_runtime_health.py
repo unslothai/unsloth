@@ -174,7 +174,6 @@ def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
     root = _installed(tmp_path, binaries = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
     assert ILP.load_prebuilt_metadata(root) is None
-    # The payload is empty, so the tree is broken and must be offered for repair.
     assert ILP.installed_runtime_health(root) == (False, "llama_runtime_payload_incomplete")
 
 
@@ -524,8 +523,7 @@ def _macos_payload(runtime_dir: Path) -> None:
         (runtime_dir / f"{stem}.{version}.dylib").write_text("x", encoding = "utf-8")
         os.symlink(f"{stem}.{version}.dylib", runtime_dir / f"{stem}.0.dylib")
         os.symlink(f"{stem}.0.dylib", runtime_dir / f"{stem}.dylib")
-    # The entrypoint impl split, which the same bundle ships UNVERSIONED: plain files, no
-    # libX.0 chain. Listing it was incomplete before, not the bundle.
+    # The impl split ships UNVERSIONED plain files, no libX.0 chain.
     for stem in ("libllama-server-impl", "libllama-quantize-impl"):
         (runtime_dir / f"{stem}.dylib").write_text("x", encoding = "utf-8")
 
@@ -541,8 +539,6 @@ def _macos_tree(tmp_path: Path) -> Path:
     for name in ("server", "quantize"):
         binary = runtime_dir / f"llama-{name}"
         binary.write_text("x", encoding = "utf-8")
-        # An installed entrypoint is executable, and the probe now asks for that
-        # rather than for mere presence, the way _existing_install_runs does.
         os.chmod(binary, 0o755)
     _macos_payload(runtime_dir)
     return root
@@ -614,8 +610,6 @@ def test_losing_the_macos_install_name_link_is_caught(tmp_path):
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     (runtime_dir / "libggml.0.dylib").unlink()
-    # The terminal file is still there and still a real file, which is what made this
-    # read as healthy.
     assert (runtime_dir / "libggml.0.23.0.dylib").is_file()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (
         False,
@@ -722,8 +716,7 @@ def test_a_root_entrypoint_the_resolver_walks_past_is_not_damage(tmp_path, name)
     wrapper.mkdir()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
     wrapper.rmdir()
-    # The keep decision is deliberately not relaxed with it: replacing a rotten wrapper
-    # is the installer's business, and only the launch verdict must stay no stricter.
+    # The keep decision stays strict: replacing a rotten wrapper is the installer's job.
     wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
     os.chmod(wrapper, 0o644)
     assert ILP._damaged_entrypoint(root, _macos_host()) == wrapper
@@ -767,7 +760,6 @@ def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
         assert ILP._discovery_would_select(candidate, host) == _usable_binary(
             candidate, platform = platform
         ), mode
-    # Absent on both sides, whatever the platform.
     candidate.unlink()
     assert ILP._discovery_would_select(candidate, _macos_host()) is False
     assert _usable_binary(candidate, platform = "linux") is False

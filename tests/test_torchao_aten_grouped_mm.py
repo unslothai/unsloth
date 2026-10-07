@@ -43,9 +43,6 @@ import torch  # noqa: E402
 from unsloth import import_fixes as IF  # noqa: E402
 
 
-# ---- the guard ----------------------------------------------------------
-
-
 def test_a_present_op_is_reported_as_present():
     assert IF._torch_op_is_missing("aten", "mm") is False
 
@@ -94,7 +91,6 @@ def test_it_does_nothing_when_torch_already_has_the_op():
 def test_the_real_operator_still_works_afterwards():
     IF._ensure_aten_grouped_mm("detail")
     assert callable(torch.ops.aten._grouped_mm)
-    # The schema is torch's own, not a placeholder we substituted.
     assert "offs" in str(torch.ops.aten._grouped_mm.default._schema)
 
 
@@ -103,9 +99,6 @@ def test_it_never_registers_twice(monkeypatch):
     re-defining a schema raises, and the fix must not depend on that."""
     monkeypatch.setattr(IF, "_aten_grouped_mm_library", object())
     assert IF._ensure_aten_grouped_mm("detail") is False
-
-
-# ---- the schema ---------------------------------------------------------
 
 
 def test_the_placeholder_schema_matches_upstream():
@@ -155,9 +148,6 @@ def test_the_placeholder_refuses_to_compute_rather_than_guessing():
             torch.ops.unsloth_refuse_probe._grouped_mm(a, b)
     finally:
         del lib
-
-
-# ---- wiring -------------------------------------------------------------
 
 
 def test_the_subprocess_fix_covers_the_op_too():

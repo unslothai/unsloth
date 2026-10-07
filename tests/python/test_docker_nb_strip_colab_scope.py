@@ -86,14 +86,12 @@ def test_intro_inside_a_single_line_html_comment_is_stripped(strip):
 
 
 def test_multi_line_html_comment_is_left_alone(strip):
-    # half-removing a multi-line comment leaves a `<!--` that swallows the cell
     doc = nb(md("<!-- " + INTRO, "still inside the comment\n", "-->\n"), code("print(1)"))
     assert strip._strip_intro(doc) is False
     assert has_intro(doc)
 
 
 def test_strip_stops_at_the_first_code_cell(strip):
-    # a markdown cell AFTER code is prose, not the header block
     later = md("Explanation.\n", INTRO)
     doc = nb(md(BADGE), code("print(1)"), later)
     assert strip._strip_intro(doc) is False

@@ -57,9 +57,7 @@ class _Verdict:
 
 
 class _Bundle:
-    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta` records the
-    # engine and `requested_identity` resolves the same way, so a stub naming a fixed one would make a
-    # legitimate resume look like an engine change off Linux and macOS.
+    # Resolve the engine like browser.launch, or a fixed stub looks like an engine change off Linux/macOS.
     engine = browser_mod.default_engine()[0]
     engine_note = "stubbed for this test"
     browser = context = page = cdp = None
@@ -166,9 +164,6 @@ def _rows(state):
     return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line]
 
 
-# ── the sides a failed setup leaves behind ──────────────────────────────────────────────────
-
-
 def test_the_base_studio_is_stopped_when_the_treatment_install_fails(studio):
     """The reported leak: the base is up and serving while the treatment's clone and build run."""
 
@@ -242,9 +237,6 @@ def test_a_run_that_reaches_its_cells_stops_the_studios_once_at_the_end(studio):
     assert sb.run(args, ab_ref = "pr-9296") == 0
     assert studio["stopped_when_the_cells_ran"] == []
     assert [i.branch for i in studio["stopped"]] == ["main", "pr-9296"]
-
-
-# ── which server the treatment was ──────────────────────────────────────────────────────────
 
 
 def test_an_attached_ab_records_the_treatment_url_it_measured(studio):
@@ -354,9 +346,6 @@ def test_the_same_treatment_studio_still_resumes(studio):
     )
 
 
-# ── whether the probe ran before the film ───────────────────────────────────────────────────
-
-
 def test_a_run_records_whether_the_click_probe_ran(studio):
     """REGRESSION, and the recording half of the identity axis.
 
@@ -433,13 +422,7 @@ def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
     )
 
 
-# ── the external probe on the record ────────────────────────────────────────────────────────
-#
-# `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, not a flag, so it outlives the command
-# that wanted it: a resume under a shell that still has it set runs the rungs still owed with the
-# probe in the page and appends a probed `run_meta`, and `refuse_if_probed` reads every `run_meta`
-# in a file, so cells recorded cleanly before it stop being scorable too, permanently, because a
-# payload is append-only. So `run_meta` has to carry the probe and `--resume` has to compare it.
+# SBENCH_EXTRA_INIT_SCRIPT outlives the command, so run_meta records it and --resume compares it.
 
 
 class _ProbedBundle(_Bundle):
@@ -507,7 +490,6 @@ def test_an_unreadable_probe_is_refused_before_the_payload_is_archived(studio, m
 
     assert paths.payload_jsonl.read_text(encoding = "utf-8") == recorded
     assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
-    # The refusal is still ahead of everything it was ahead of before.
     assert studio["installed"] == ["main"]
 
 
@@ -548,7 +530,6 @@ def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(stud
         "the duplicate installed an Unsloth on a machine that was already measuring, which is the "
         "contention the guard exists to prevent, paid as the cost of refusing it"
     )
-    # And the directory is free again the moment the holder lets go.
     assert sb.run(_args(studio, "--branch", "main", "--resume")) == 0
 
 
@@ -594,15 +575,12 @@ def test_a_duplicate_is_still_refused_while_the_report_is_being_rendered(studio,
         seen["duplicate"], SystemExit
     ), "a second run was admitted to the output directory while the first was still reporting"
     assert "still running" in str(seen["duplicate"])
-    # Nothing of the first run's was moved, and nothing was installed on top of it.
     assert paths.payload_jsonl.exists(), "the duplicate archived the payload being reported on"
     assert paths.payload_jsonl.read_text(encoding = "utf-8") == seen["payload_before"]
     assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
     assert studio["installed"] == seen["installed_before"]
-    # The report is the first run's own, over its own rows.
     table = (paths.out / "ab.md").read_text(encoding = "utf-8")
     assert "main -> pr-9296" in table
-    # And the control: the directory is released once `run()` has actually finished with it.
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
 
@@ -645,8 +623,6 @@ def test_a_fresh_probe_run_replaces_the_summary_it_inherited(studio, monkeypatch
     assert "NO SUMMARY" in text
     assert script.name in text
     assert "studiobench summary" not in text
-    # The evidence itself is untouched: the refusal replaces the report, never the payload the summary
-    # described, which is still on disk under its archived name.
     assert len(list(Paths.under(studio["out"]).out.glob("payload-*.jsonl"))) == 1
 
 
@@ -674,7 +650,6 @@ def test_a_fresh_single_arm_probe_run_replaces_the_ab_table_it_inherited(
     script.write_text("window.__probe_ticks = 0;\n", encoding = "utf-8")
     monkeypatch.setattr(browser_mod, "launch", lambda *a, **k: _ProbedBundle())
     monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", str(script))
-    # No --ab, so _render_ab is never called and only this refusal can reach the file.
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
     text = table.read_text(encoding = "utf-8")
@@ -735,10 +710,8 @@ def test_a_clean_rerun_also_invalidates_the_summary_it_inherited(studio, monkeyp
     text = summary.read_text(encoding = "utf-8")
     assert "NO SUMMARY" in text
     assert "studiobench summary" not in text, "a summary of the archived payload survived a rerun"
-    # It names where the payload it described went, so the reader can still reach it.
     assert "payload-" in text
 
-    # And the legitimate `--report` path still scores the new payload rather than refusing it.
     assert sb.main(["--report", str(paths.payload_jsonl), "--tier", "quick", "--rungs", "1K"]) == 0
     assert "studiobench summary" in summary.read_text(encoding = "utf-8")
 
@@ -759,9 +732,6 @@ def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
         )
         is None
     )
-
-
-# ── one Unsloth, two sides: the attached null control ────────────────────────────────────────
 
 
 class _ProviderBackend:
@@ -843,15 +813,10 @@ def test_an_attached_null_control_registers_one_provider_for_the_one_studio(stud
     args = _args(studio, "--attach", url, "--attach-b", url, "--branch", "main", "--ab", "main")
     assert sb.run(args, ab_ref = "main") == 0
 
-    # THE SYMPTOM FIRST. Whatever the bookkeeping says, the failure a cell meets is a seed script that
-    # SELECTS a provider the backend no longer has, so that is what this pins: every id named by a
-    # script scoped to this origin is still live there, and no live id is unnamed. Asserting only
-    # 'nothing was deleted' would pass a fix that deleted and re-seeded both scripts with the
-    # survivor.
+    # Assert the symptom: every provider id a seed script selects must still be live on the backend.
     selected = _selected_provider_ids(scripts, url)
     assert selected == set(backend.live[url])
     assert selected, "the one Unsloth must still have a provider selected"
-    # And the registration itself: one backend, one registration, nothing destroyed.
     assert backend.deleted == []
     assert backend.registrations == [(url, "provider-1")]
 

@@ -27,9 +27,7 @@ CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
 EN_LOCALE_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
-# A className this reader cannot resolve. Distinct from None, which means the element carries
-# no className at all, because the two want opposite treatment: absent is a fact to assert on,
-# unreadable is a stale guard that must not quietly pass.
+# Distinct from None (no className): an unreadable className must not quietly pass.
 _UNREADABLE = "\x00unreadable"
 
 
@@ -49,15 +47,11 @@ def _class_list(source: str, marker: str) -> str | None:
     start = source.find(marker)
     if start == -1:
         return None
-    # Back up to the `<` that opens the element before reading forward. Scanning only the
-    # suffix after the marker misses `className` written BEFORE it, which is the same
-    # attribute-order assumption one level down.
+    # Back up to the opening `<`: className may be written before the marker.
     opens = source.rfind("<", 0, start + len(marker))
     if opens == -1:
         return None
-    # The first `>` is not the end of the tag. An expression prop can contain one, and an
-    # arrow function is the ordinary case: `onClick={() => ...}` ends the tag early and the
-    # class list disappears. Only a `>` outside the JSX expression braces closes it.
+    # Only a `>` outside JSX expression braces closes the tag (`onClick={() => ...}`).
     depth, end = 0, None
     for index in range(opens, len(source)):
         char = source[index]
@@ -71,32 +65,17 @@ def _class_list(source: str, marker: str) -> str | None:
     if end is None:
         return None
     opening = _without_comments(source[opens : end + 1])
-    # A spread can carry className, and nothing here can say what is in it. An element that
-    # spreads props is an element whose class list is unknown, which is not the same as one
-    # that states none: returning None would send the caller back to the base classes and
-    # let an override through.
-    #
-    # Only a spread AFTER the explicit attribute, though. JSX applies attributes in order, so
-    # `{...props} className="min-w-0"` ends with the explicit one whatever the spread holds,
-    # and refusing that shape would fail a safe refactor rather than catch anything.
+    # A spread after className makes the class list unknown; one before it is overridden.
     if _spread_overrides(opening, "className"):
         return _UNREADABLE
-    # On an attribute boundary, so that the name has to be the whole attribute. Unanchored,
-    # `data-className="flex min-w-0"` matched on its suffix and its tokens came back as the
-    # element's rendered classes, which the browser never applies.
+    # Anchored so `data-className=` does not match on its suffix.
     literal = re.search(r'(?:^|[\s{])className="([^"]*)"', opening)
     if literal:
         return literal.group(1)
-    # An expression-valued className, `className={cn(...)}` or `className={"min-w-max"}`.
-    # Its quoted pieces are what tailwind-merge sees, in this order; anything else in the
-    # expression is beyond a reader like this one. Returning None here would be worse than
-    # useless: the caller would fall back on the base classes and pass while the call site
-    # overrode them, so an expression with no readable piece has to say so instead.
+    # Returning None for an unreadable expression would make the caller pass on base classes.
     expression = re.search(r"(?:^|[\s{])className=\{", opening)
     if not expression:
         return None
-    # Only the className expression, closed by its own brace. Reading to the end of the tag
-    # swept up quoted strings belonging to later attributes and called them classes.
     depth, body = 1, None
     for index in range(expression.end(), len(opening)):
         if opening[index] == "{":
@@ -108,11 +87,7 @@ def _class_list(source: str, marker: str) -> str | None:
                 break
     if body is None:
         return _UNREADABLE
-    # Strip a single cn(...) wrapper, then require every argument to be a plain string
-    # literal. Anything else is a value this reader cannot evaluate: a conditional picks one
-    # branch and flattening both reads the wrong one, and a bare identifier could be
-    # anything at all. Either way the honest answer is that the class list is unknown, not
-    # that it is whatever literals happen to be lying around.
+    # Only plain string literals inside one cn(...): anything else makes the list unknown.
     body = body.strip()
     wrapper = re.fullmatch(r"cn\((.*)\)", body, re.S)
     if wrapper:
@@ -164,16 +139,11 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
     cannot quietly approve a layout nobody checked. Between a guard that is occasionally
     inconvenient and one that is occasionally wrong, this picks the first.
     """
-    # min-width is necessary but not sufficient. The trigger shrinks because it is a flex
-    # item that is allowed to: `shrink-0` or `flex-none` alongside `min-w-0` stops it
-    # shrinking inside the header and lets a long summary widen the thread, with every
-    # min-width check here still green. Refused rather than weighed, like the rest of this.
+    # min-w-0 is not enough: `shrink-0` or `flex-none` still stops the trigger shrinking.
     pinned = [
         token
         for token in tokens
-        # Only the ones that actually disable shrinking. `grow-0` sets flex-grow and leaves
-        # flex-shrink alone, so an element with min-w-0 still shrinks normally; refusing it
-        # would fail a correct flex-growth change for a defect it does not have.
+        # `grow-0` leaves flex-shrink alone, so it is not refused.
         if re.fullmatch(r"(?:\S*:)?!?(?:shrink-0|flex-none)!?", token)
     ]
     assert not pinned, (
@@ -185,8 +155,6 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
         f"{what} states no min-width at all, so whether it shrinks below its content is left "
         f"to whatever the element defaults to. {evidence}"
     )
-    # By distinct utility: the same class written on both the base and the call site is a
-    # duplicate, not a conflict, and tailwind-merge collapsing it changes nothing.
     assert set(widths) == {"min-w-0"}, (
         f"{what} carries min-width utilities this guard will not adjudicate between: "
         f"{sorted(set(widths))}. Which one wins is tailwind-merge's answer and then the cascade's, and "
@@ -196,20 +164,14 @@ def _assert_only_shrinks(tokens: list[str], what: str, evidence: str) -> None:
     )
 
 
-# `[min-width:max-content]` sets the same property by another spelling, and a guard that
-# only knows `min-w-*` reads a class list containing it as stating nothing. Splitting on the
-# LAST colon breaks it too, since the value contains one, so the arbitrary form is matched
-# before any variant is stripped.
+# `[min-width:...]` sets the same property; matched before variants are stripped.
 _ARBITRARY_MIN_WIDTH = re.compile(r"(?:^|:)!?\[min-width:[^\]]*\]!?$")
 
 
 def _is_min_width(token: str) -> bool:
     if _ARBITRARY_MIN_WIDTH.search(token.removeprefix("!")):
         return True
-    # Variants are separated by `:`, but an arbitrary value can hold one of its own:
-    # `min-w-[length:max-content]` compiles to `min-width: max-content` and drops an earlier
-    # `min-w-0` through tailwind-merge, while splitting on the last `:` left `max-content]`
-    # and this reader saw no min-width at all. Bracketed spans are masked before the split.
+    # Arbitrary values can contain `:`, so bracketed spans are masked before the variant split.
     masked = re.sub(r"\[[^\]]*\]", lambda found: "\x00" * len(found.group(0)), token)
     _, _, tail = masked.rpartition(":")
     utility = token[len(masked) - len(tail) :]
@@ -255,10 +217,7 @@ def _cn_literals(source: str, anchor: str) -> str | None:
             forwards = True
         else:
             return _UNREADABLE
-    # The caller's classes have to actually arrive. Without `className` among the arguments
-    # the component composes from its base alone, and the caller's contribution, which the
-    # test adds to the order afterwards, reaches nothing. Reading the base and crediting the
-    # call site anyway is how a trigger that stopped forwarding would keep passing.
+    # Without a forwarded className the call site's classes reach nothing.
     if not forwards:
         return _UNREADABLE
     return " ".join(pieces)
@@ -321,9 +280,7 @@ def _spread_overrides(tag: str, attribute: str) -> bool:
     A tag with no explicit attribute at all is unknown if it spreads anything, since the
     spread is then the only thing that could be supplying it.
     """
-    # At the tag's own attribute level only. An object spread inside another prop, such as
-    # `onClick={() => call({...payload})}`, cannot reach className, and treating it as if it
-    # could made this refuse a tag that is perfectly readable.
+    # Only spreads at the tag's own attribute level can reach className.
     spreads = []
     depth = 0
     for index, char in enumerate(tag):
@@ -365,7 +322,6 @@ def test_assistant_more_menu_exposes_response_details_action():
     """
     src = _without_block_comments(THREAD_TSX.read_text(encoding = "utf-8"))
     assert "MessageResponseDetailsSheet" in src
-    # The component inspected below is the one thread.tsx imports.
     assert re.search(
         r"""import\s*\{\s*MessageMenuTime\s*\}\s*from\s*["']@/components/assistant-ui/message-menu-time["']""",
         src,
@@ -387,10 +343,8 @@ def test_assistant_more_menu_exposes_response_details_action():
     assert item, "message-menu-time.tsx no longer renders a More-menu item"
     assert re.search(r'(?<![\w-])aria-label="See response details"', item), item
     assert re.search(r"(?<![\w-])onSelect=\{\s*onShowDetails\s*\}", item), item
-    # A later `{...props}` could replace either prop.
     assert not _spread_overrides(item, "aria-label"), item
     assert not _spread_overrides(item, "onSelect"), item
-    # A statically disabled item cannot be selected at all.
     disabled = re.search(r"(?<![\w-])disabled(?:=\{\s*([^{}]*?)\s*\})?(?=[\s/>])", item)
     assert disabled is None or disabled.group(1) == "false", item
 
@@ -460,8 +414,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "showResponseModel: boolean" in prefs_src
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
-    # The visible label lives in the locale file; the tab holds only the key that resolves to it.
-    # By key, not wording: #11924 dropped the leading "Show" from this and seven other labels.
+    # By key, not wording: the English label text has changed before.
     assert en_string("settings.chat.showResponseModel", EN_LOCALE_TS)
     assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
@@ -474,7 +427,6 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "after:top-full after:h-1" in details_src
     assert "hover:opacity-100" in details_src
     assert "group-hover/assistant-message:opacity-100" in details_src
-    # Pointer events gated behind hover/focus so the hidden badge stays inert when idle.
     assert "group-hover/assistant-message:pointer-events-auto" in details_src
     assert "group-focus-within/assistant-message:pointer-events-auto" in details_src
     assert thread_src.count("<MessageResponseModelBadge") == 1
@@ -482,27 +434,8 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "group/assistant-message aui-assistant-message-root" in thread_src
     assert "pointer-events-none relative h-0" in thread_src
     assert "MessageResponseModelBadge" not in reasoning_src
-    # The trigger has to be able to shrink below its content, or a long summary pushes the row
-    # wider than the thread. `min-w-0` grants that. It used to be written `min-w-0 flex-1` on
-    # one element; #11373 moved the filling to a header wrapper and left the shrinking on the
-    # trigger, so pinning the old pair asserted one commit's layout rather than the property.
-    #
-    # Where the utility is written is not the property either. It currently appears twice, in
-    # ReasoningTrigger's base classes and again on the call site, so demanding the call-site
-    # copy would fail a harmless deduplication while the trigger still shrank. Both are read
-    # and either satisfies it.
-    #
-    # Whole class tokens, not a substring: `\b` treats the colon in `md:min-w-0` as a
-    # boundary, so a variant-qualified utility would satisfy a loose match while leaving the
-    # trigger unable to shrink at every width it was not qualified for.
-    # The WHOLE composition inside the component, not its first quoted literal. A second
-    # literal appended after `className` would be effective and invisible to a first-match
-    # read, and an argument this cannot resolve means the composition is unknown.
-    # Bound to the element's className, not merely present in the file. The composition below
-    # is found by its first literal, and a literal says nothing about where it is applied:
-    # `data-className={cn(...)}` is valid JSX that renders none of these classes, so neither
-    # the base composition nor the call site's min-w-0 would reach the DOM while every check
-    # below went on describing them.
+    # Whole tokens on the element's className, base and call site both read: `md:min-w-0`
+    # or `data-className` would otherwise pass while the trigger cannot shrink.
     live = _without_block_comments(reasoning_src)
     base_tags = [
         tag for tag in _opening_tags(live, "<Trigger") if 'data-slot="reasoning-trigger"' in tag
@@ -528,18 +461,12 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "ReasoningTrigger composes its className from something this guard cannot resolve, "
         "so it cannot tell what the trigger ends up with. Widen the reader before trusting it"
     )
-    # That it is rendered at all, before reading what it is given. `_class_list` answers None
-    # both for a call site that passes no className and for one that is not there, and the
-    # component's own function can stay behind unused, so without this the header could stop
-    # rendering the trigger entirely and the checks below would go on describing base classes
-    # that reach nothing.
+    # _class_list returns None for an absent call site too, so check it renders at all.
     assert "<ReasoningTrigger" in _without_block_comments(reasoning_src), (
         "ReasoningTrigger is no longer rendered, so the shrinking this test is about belongs "
         "to an element that is not on the page"
     )
-    # An inline style beats every utility below it in the cascade, and none of them is read
-    # here. `style={{ minWidth: "max-content" }}` on the trigger leaves both min-w-0 checks
-    # green while long summaries widen the row again, which is the whole defect.
+    # An inline style beats every utility, so a `minWidth` style is refused.
     header_tags = [
         tag for tag in _opening_tags(live, "<div") if 'data-slot="reasoning-header"' in tag
     ]
@@ -547,16 +474,8 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         'reasoning.tsx no longer renders a div with data-slot="reasoning-header", so this '
         "guard cannot tell which element the trigger has to shrink inside"
     )
-    # The header is a plain div carrying data-slot, not a <ReasoningHeader> component. Naming
-    # the component matched nothing at all, so half of this check was vacuous and an inline
-    # width on the real header went straight through.
-    # The <Trigger> that ReasoningTrigger renders is where the base min-w-0 actually lives, so
-    # it belongs in this loop as much as the call site does: a style there overrides the very
-    # class this test reads, and checking only the call site and the header left it out.
-    # Spreads are refused on the call site and the header, not on the base Trigger: that one
-    # forwards `{...props}` by design, which is how a caller reaches it at all, and the values
-    # arriving through it are exactly what the call-site check above adjudicates. Refusing it
-    # here would fail the shipped component for doing the right thing.
+    # The header is a plain data-slot div. The base Trigger forwards `{...props}` by design,
+    # so spreads are refused only on the call site and header.
     for tag in [*_opening_tags(live, "<ReasoningTrigger"), *header_tags]:
         assert not _spread_overrides(tag, "style"), (
             f"an element the min-w-0 chain depends on takes a spread that may carry a style, "
@@ -574,9 +493,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         "cannot tell whether the base min-w-0 survives tailwind-merge. Widen the reader "
         "before trusting it"
     )
-    # In `cn(base, className)` order, and the LAST min-w-* wins: cn runs tailwind-merge, so a
-    # call site passing min-w-full or min-w-max drops the base min-w-0 and the trigger stops
-    # shrinking. A union of the two would still hold the base token and call that fine.
+    # cn runs tailwind-merge, so the LAST min-w-* wins.
     ordered = (base.split() if base else []) + (call_site.split() if call_site else [])
     assert ordered, (
         "neither ReasoningTrigger's base classes nor its call site carries a class list this "
@@ -597,8 +514,6 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
         f"the header row holding the trigger is no longer a flex row, so the trigger's own "
         f"shrinking is not what decides the layout any more: {header!r}"
     )
-    # Read the same way as the trigger: a header that shrinks everywhere except above one
-    # breakpoint puts the overflow back one level up at exactly those widths.
     _assert_only_shrinks(
         header.split(), "the header row holding the trigger", f"Classes: {header!r}"
     )
@@ -622,11 +537,7 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
     """
     src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
 
-    # Which state holds the manual answer is read, not assumed. The previous form of this test
-    # pinned `setManualOpen(false)`, and when #11433 replaced the `manualOpen` /
-    # `dismissedWhileStreaming` pair with one nullable override the rename read as the reset
-    # having been deleted. The override is identified the way the component itself identifies
-    # it: it is the value `resolveReasoningOpen` is given as its override.
+    # The override is identified as the value given to resolveReasoningOpen, not by name.
     opener = re.search(r"resolveReasoningOpen\(\{(.*?)\}\)", src, re.S)
     assert opener, (
         "reasoning.tsx no longer resolves its open state through resolveReasoningOpen, so "
@@ -640,8 +551,6 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         f"visibility setting and a hand toggle has nowhere to live: {opener.group(1)!r}"
     )
     held = field.group(1) or "override"
-    # The identifier holding the live streaming flag, read the same way, because the predicate
-    # below has to be handed it first.
     streaming_field = re.search(
         r"(?:^|,)\s*isStreaming\s*(?::\s*([A-Za-z_$][\w$]*))?\s*(?:,|$)", opener.group(1)
     )
@@ -657,8 +566,6 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
     )
     writes = setter.group(1)
 
-    # It is the hand toggle that writes it. Without this the override could be some derived
-    # value the reader never sets, and clearing it would say nothing about a pinned block.
     handler = re.search(
         r"const handleOpenChange = useCallback\(\s*\(open: boolean\) => \{(.*?)\n    \}",
         src[src.index("const [override,") :],
@@ -668,37 +575,21 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         1
     ), "the hand toggle must store the requested open state directly"
 
-    # And a new round clears it. Regenerate reuses this component instance, so without this a
-    # block opened by hand over the last answer stays pinned open over the next one.
+    # Regenerate reuses this component instance, so a new round must clear the override.
     round_at = src.find("startsNewReasoningRound(")
     assert round_at != -1, (
         "reasoning.tsx no longer asks whether a new reasoning round started, so nothing "
         "distinguishes a fresh stream from the end of the last one"
     )
-    # Used positively, and as the whole condition. Locating the call and then reading the block
-    # after it says nothing about the sense in which it was asked:
-    # `if (!startsNewReasoningRound(...)) { setOverride(null); }` clears the override on every
-    # transition EXCEPT a new round, which is the exact inverse of the contract, and it read as
-    # green. Requiring `if (` to sit immediately before the call rejects the negation and any
-    # other prefix; a condition that grows a second term has to teach this guard about it
-    # rather than slipping past.
+    # `if (` must sit right before the call, which rejects a negated condition.
     assert re.search(r"if\s*\(\s*$", src[:round_at]), (
         "the new reasoning round is not asked as `if (startsNewReasoningRound(...))`. Negated "
         "or combined with another term it can clear the override on the transitions that are "
         "not a new round, and leave the one that is untouched, which is the inverse of what "
         "this guards"
     )
-    # The brace has to be this condition's own. `_without_block_comments` strips the braces
-    # around a comment along with it, so a branch whose body is only a comment loses its `{}`
-    # entirely, and a scan for the next `{` then runs on into whatever block follows and reads
-    # that one instead. Found by sabotage: emptying the new-round branch left this guard
-    # reading the visibility-change branch, which clears the override too, so the guard passed
-    # while the reset it exists for was gone.
-    # In the order the predicate reads them. It is `isStreaming && !wasStreaming`, so swapping
-    # the two type-checks and inverts the meaning: it then fires when a round ENDS, leaving a
-    # hand-set override alive into the next one, which is the defect this whole test is about.
-    # The current flag is the one resolveReasoningOpen is given; the previous one is the state
-    # seeded from it.
+    # _without_block_comments drops braces around a comment-only body, so the brace is
+    # located exactly. Predicate is `isStreaming && !wasStreaming`; swapped, it inverts.
     previous = re.search(rf"const \[(\w+), set\w+\] = useState\({re.escape(held_streaming)}\)", src)
     assert previous, (
         f"reasoning.tsx no longer keeps the previous streaming value in a useState seeded "
@@ -714,9 +605,7 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
         f"It reads (current, previous) and returns true only when a round begins; the other "
         f"order type-checks and fires when one ends, leaving the override alive into the next"
     )
-    # Nothing between the call and the brace but the `)` that closes the `if`. That rejects the
-    # other way to invert it, `if (startsNewReasoningRound(...) === false) {`, which the older
-    # form of this check let through because it only refused a statement or block boundary.
+    # Only the closing `)` may sit between the call and the brace (rejects `=== false`).
     opened = src.find("{", round_at)
     assert opened != -1 and re.fullmatch(
         r"startsNewReasoningRound\([^()]*\)\s*\)\s*", src[round_at:opened]
@@ -735,9 +624,6 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
                 closed = index
                 break
     assert closed is not None, "the new-round branch in reasoning.tsx is unterminated"
-    # As a statement of the branch itself, not merely somewhere inside it. `if (false)
-    # setOverride(null)` and a nested block both satisfy a substring search while a
-    # hand-opened block stays pinned across a regenerate, which is the whole contract.
     statements = [piece.strip() for piece in src[opened + 1 : closed].split(";")]
     assert f"{writes}(null)" in statements, (
         f"a new reasoning round does not clear {held!r}. A block the reader opened by hand "
@@ -762,9 +648,7 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     builder_block = src[
         src.find("const buildResponseDetails") : src.find("const externalCapabilities")
     ]
-    # #11628: Code is recorded from the placement the request actually sends, a hosted sandbox or Studio's local
-    # python/terminal/edit_file, so an external connection without a sandbox still reports Code when it runs locally.
-    # Read inside the builder: the request payload further down tests studioLocalCodeTools too.
+    # Code is recorded from the placement the request sends; read inside the builder only.
     assert re.search(
         r"code:\s*hostedCodeToolsForThisTurn\.length > 0\s*\|\|\s*"
         r"\(\s*supportsStudioToolsForThisTurn\s*&&\s*studioLocalCodeTools\.length > 0\s*\)",

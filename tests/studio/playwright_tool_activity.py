@@ -63,13 +63,10 @@ ENGINE = os.environ.get("PW_ENGINE", "chromium")
 PORT = int(os.environ.get("SMOKE_PORT", "5219"))
 PREFERENCES_KEY = "unsloth_chat_preferences"
 
-# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the same window, so every reading is taken
-# well clear of both.
+# Radix animates for 200ms and the scroll lock holds as long.
 SETTLE_MS = 600
 
-# The tail of the command the approval card renders. Deliberately past the
-# 60-character slice the trigger shows, so "the user can read it" cannot be
-# satisfied by the trigger label alone.
+# Past the 60-character slice the trigger shows, so the trigger label alone cannot satisfy it.
 APPROVAL_TAIL = "--and-then-something-nobody-can-see"
 
 CARDS = ("controlled", "uncontrolled", "approval")
@@ -135,7 +132,6 @@ def open_page(
     try:
         page.wait_for_function("() => window.__probeReady", timeout = 30_000)
     except Exception:
-        # A page that never mounts looks exactly like a slow one. Say which.
         raise RuntimeError(
             f"the harness page never published __probeReady ({ENGINE}). Page errors:\n"
             + ("\n".join(errors) or "(none captured)")
@@ -161,8 +157,7 @@ def run(base_url: str, pw) -> dict:
     p = results["problems"]
     s = results["scenes"]
 
-    # `msedge` is a chromium CHANNEL, not an engine: the branded build, which
-    # trails Chromium by weeks, so a Chromium-first regression hides there.
+    # `msedge` is a Chromium channel that trails Chromium by weeks.
     if ENGINE == "msedge":
         browser = pw.chromium.launch(channel = "msedge")
     else:
@@ -268,7 +263,6 @@ def run(base_url: str, pw) -> dict:
         "chevron_answer_median": chevron_answer,
         "preference_answer_median": preference_answer,
     }
-    # A few pixels of slack for sub-pixel rounding; the two paths measure identical.
     if abs(preference_answer - chevron_answer) > 8:
         p.append(
             "6: a preference-driven close moves the page differently from a clicked close "
@@ -345,8 +339,7 @@ def run(base_url: str, pw) -> dict:
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
     # --- 12 storage denied -------------------------------------------------
-    # Safari private browsing and a cookies-blocked profile both surface as
-    # localStorage throwing rather than as an absent API.
+    # Safari private browsing and blocked cookies make localStorage throw.
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {
@@ -368,8 +361,7 @@ def run(base_url: str, pw) -> dict:
         scene["declared_default"] = denied_page.evaluate("() => window.__getDefaultPreference()")
         scene["page_errors"] = denied_errors
         s["12_storage_denied"] = scene
-        # Against the DECLARED default, not a hard-coded one: which default
-        # ships is a product decision, this scene is about failing safe.
+        # Against the declared default: which default ships is a product decision.
         if scene["preference"] is not scene["declared_default"]:
             p.append(
                 "12: a denied localStorage did not land on the declared default "
@@ -405,8 +397,7 @@ def run(base_url: str, pw) -> dict:
             if raw is None
             else '{"state":{"collapseToolActivityByDefault":' + raw + '},"version":0}'
         )
-        # add_init_script takes no arguments, so values are baked in;
-        # json.dumps also makes the corrupt-JSON case survive being a string literal.
+        # add_init_script takes no arguments, so values are baked in via json.dumps.
         seeded.add_init_script(
             f"window.localStorage.setItem({json.dumps(PREFERENCES_KEY)}, {json.dumps(blob)});"
         )
@@ -420,8 +411,7 @@ def run(base_url: str, pw) -> dict:
         seeded.close()
     s["13_malformed_record"] = malformed
 
-    # Reported, not asserted: `??` accepts any non-nullish JSON value, which is true of every boolean in this store and
-    # unreachable from Studio's own UI.
+    # Reported, not asserted: `??` accepts any non-nullish JSON value.
     results["console"] = console
     browser.close()
     return results

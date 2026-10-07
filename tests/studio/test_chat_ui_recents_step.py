@@ -90,8 +90,6 @@ def test_no_soft_fail_in_the_helper_is_swallowed_by_a_broad_except() -> None:
             )
 
 
-# --- behaviour, in a real browser ------------------------------------------------------------
-
 ORIGIN = "http://recents.test"
 
 PAGE = """<!doctype html><html><body>
@@ -143,7 +141,7 @@ def _load_helper(timeout_ms: int | None = None):
     assert len(keep) == 2, "the helper or its timeout constant moved"
     infos: list[str] = []
 
-    def soft_fail(message: str) -> None:  # STRICT, as in CI
+    def soft_fail(message: str) -> None:
         raise AssertionError(f"[ui] FAIL: {message}")
 
     scope = {
@@ -161,8 +159,7 @@ def _load_helper(timeout_ms: int | None = None):
 @pytest.fixture(scope = "module")
 def browser():
     sync_api = pytest.importorskip("playwright.sync_api")
-    # Without Playwright, test_heavy_thread_measurement_integrity.py leaves a stand-in
-    # playwright.sync_api in sys.modules whose every name raises RuntimeError. Same answer.
+    # Without Playwright, a stand-in playwright.sync_api raises RuntimeError on every name.
     try:
         manager = sync_api.sync_playwright()
     except RuntimeError as exc:
@@ -170,7 +167,7 @@ def browser():
     with manager as p:
         try:
             b = p.chromium.launch()
-        except Exception as exc:  # no browser build installed here
+        except Exception as exc:
             pytest.skip(f"chromium unavailable: {exc}")
         yield b
         b.close()
@@ -311,7 +308,6 @@ def test_our_turns_left_on_screen_do_not_pass_a_different_chat(browser) -> None:
         browser, [other, {**OURS, "title": "Rapid replies", "loadMs": 50}], keep_stale = True
     )
     try:
-        # Our thread is already on screen before the step runs.
         page.locator('[data-thread-id="t-ours"]').click()
         page.wait_for_selector('[data-role="user"]')
         helper(page, SENT, lambda name: None)

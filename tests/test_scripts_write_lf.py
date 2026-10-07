@@ -47,15 +47,8 @@ import pytest
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS = _ROOT / "scripts"
 
-#: The in-place rewriters this file covers, as (path, the function holding the write).
-#: Named on the real files so a rename fails here rather than silently dropping coverage. A pair,
-#: not a {script: func} mapping, because one script can hold more than one rewriter.
-#:
-#: The list is what it is because the rule is "rewrites a TRACKED file in place", not "uses
-#: os.fdopen": the last two write through plain open()/Path.write_text and have exactly the same
-#: default-newline defect. sync_allow_scripts_pins is the one that matters most -- it runs as a
-#: pre-commit hook with --fix over studio/frontend/package.json, which .gitattributes pins to
-#: eol=lf.
+#: (path, function holding the write); named on real files so a rename fails here.
+#: Rule is "rewrites a tracked file in place"; sync_allow_scripts_pins rewrites eol=lf files.
 _REWRITERS = (
     ("enforce_kwargs_spacing.py", "_atomic_write_text"),
     ("stamp_studio_release.py", "_atomic_write_text"),
@@ -74,9 +67,6 @@ def _load(name: str):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-# ── the durable half: the call sites name a newline ───────────────────────────────────────────
 
 
 def _text_write_calls(tree: ast.AST, func_name: str) -> list[ast.Call]:
@@ -114,12 +104,10 @@ def _text_write_calls(tree: ast.AST, func_name: str) -> list[ast.Call]:
             else ""
         )
         if named == "write_text":
-            # No mode argument to read: write_text is always a text-mode write.
             calls.append(node)
             continue
         if named not in ("fdopen", "open"):
             continue
-        # Mode is the second positional for both open() and os.fdopen().
         mode = next(
             (
                 arg.value
@@ -177,14 +165,10 @@ def test_the_repo_agrees_these_files_are_lf():
     )
 
 
-# ── the demonstration half: a CRLF file in, LF bytes out ──────────────────────────────────────
-
-
 def test_the_spacing_pass_writes_lf_for_a_crlf_source(tmp_path):
     """The headline path: what the pre-commit hook does to a contributor's file."""
     module = _load("enforce_kwargs_spacing.py")
     target = tmp_path / "sample.py"
-    # CRLF on disk, and something the pass will actually rewrite, so the write really happens.
     target.write_bytes(b"def f(a=1, b=2):\r\n    return a + b\r\n")
 
     module.process_file(target)
@@ -194,7 +178,7 @@ def test_the_spacing_pass_writes_lf_for_a_crlf_source(tmp_path):
         b"\r\n" not in written
     ), f"the spacing pass wrote CRLF into a file .gitattributes pins to LF: {written!r}"
     assert written.endswith(b"\n"), written
-    # Non-vacuous: it must actually have done its job, or "no CRLF" is just "no write".
+    # Non-vacuous: without a real write, "no CRLF" proves nothing.
     assert b"a = 1" in written, written
 
 
@@ -214,7 +198,6 @@ def test_the_requirements_fixer_writes_lf_and_utf8(tmp_path):
     """--fix rewrites tracked requirements files, and used to take the locale codec too."""
     module = _load("scan_packages.py")
     target = tmp_path / "reqs.txt"
-    # CRLF, plus a non-ASCII comment: the encoding half of the same call.
     target.write_bytes("requests==2.0.0  # naïve pin\r\nurllib3==1.0.0\r\n".encode("utf-8"))
 
     module.update_req_file(str(target), {2: "urllib3==2.0.0"})
@@ -246,5 +229,4 @@ def test_the_allow_scripts_pin_sync_writes_lf(tmp_path):
 
     written = (tmp_path / "package.json").read_bytes()
     assert b"\r\n" not in written, f"the allowScripts pin sync wrote CRLF: {written!r}"
-    # Non-vacuous: the re-pin must actually have happened, or "no CRLF" is just "no write".
     assert b'"esbuild@0.2.0"' in written, written

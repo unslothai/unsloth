@@ -54,9 +54,7 @@ def _smoke_tabs() -> list[str]:
 def _dialog_tabs() -> list[str]:
     """The tab ids the dialog renders, in declaration order."""
     text = DIALOG.read_text(encoding = "utf-8")
-    # Scope to the tab array first: `id:` appears on other objects in this file, and a bare scan would
-    # invent tabs. One-line and multi-line entries both live in here, so the id match does not anchor
-    # to the start of a line.
+    # Scope to the tab array first: `id:` appears on other objects in this file.
     block = re.search(r"SETTINGS_TABS[^=]*=\s*\[(.*?)^\]", text, re.S | re.M)
     region = block.group(1) if block else text
     return re.findall(r'\bid:\s*"([a-z0-9-]+)"', region)

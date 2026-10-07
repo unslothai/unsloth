@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 
-# Make `scripts/` importable so tests can grab scanner constants directly.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -92,17 +91,8 @@ def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent / "fixtures"
 
 
-# The wheel and sdist fixtures embed the May-12 IOC literal on purpose, so the scanner tests can
-# prove scan_packages.py trips on it. That makes them true positives for other vendors too: on
-# VirusTotal malicious_sdist.tar.gz scores 2/60 and malicious_wheel.whl 2/65 (Tencent, Rising),
-# and their presence is what makes Panda report Exploit/CVE-2014-6271 against GitHub's
-# unsloth-main.zip. unslothai/unsloth#10060 took the test tree out of the PyPI artifacts, but the
-# repository archive contains tests by construction, so committing the built archives kept the
-# detections alive there and users kept re-reporting them (discussion #9577).
-#
-# _build.py is deterministic (SOURCE_DATE_EPOCH = 0, and zip dates pinned to the 1980 DOS epoch),
-# so building at session start gives the same bytes the committed copies had. Nothing about what
-# the tests assert changes; the archives simply stop existing in git.
+# The fixtures embed the May-12 IOC on purpose, so committed archives trip AV on GitHub's zip.
+# _build.py is deterministic, so building at session start reproduces the same bytes.
 _GENERATED_ARCHIVES = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")
 
 

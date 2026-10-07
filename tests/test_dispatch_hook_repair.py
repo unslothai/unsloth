@@ -115,7 +115,7 @@ def test_a_module_that_already_has_a_hook_is_left_alone():
 
 
 def test_a_single_device_map_is_left_completely_alone():
-    # Entries that WOULD attach, so dropping the early return changes the count.
+    # Entries that would attach, so dropping the early return changes the count.
     model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": FAR})
     assert _repair()(model) == 0
     assert _hooked(model) == set(), "hooks were attached on a single-device load"
@@ -166,8 +166,7 @@ def _evaluate(expression, **names):
     import ast
 
     def _vllm_will_load_weights(fast_inference, num_labels = None):
-        # The real one probes the GPU and the vLLM install, neither of which a CPU runner has. Its
-        # one rule that matters here is asserted against the real function below.
+        # The real one probes the GPU and vLLM; its rule here is asserted against it below.
         return bool(fast_inference) and num_labels is None
 
     scope = dict(names)
@@ -186,8 +185,7 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
     from unsloth.models.llama import FastLlamaModel
 
-    # dedent, not lstrip: this one is a method, so every line is indented and lstrip would leave the body hanging off a
-    # stripped `def`.
+    # dedent, not lstrip: a method's body is indented throughout.
     tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
     calls = [
         node
@@ -198,8 +196,7 @@ def test_the_llama_loader_stands_aside_under_vllm():
 
     guarded = _guards_of(tree, "_repair_dispatch_hooks")
     assert guarded, "the repair is no longer behind a condition at all"
-    # Evaluated, not matched by name: the guard is allowed to ask a predicate rather than read the raw
-    # flag, and either spelling has to keep vLLM out.
+    # Evaluated, not matched by name: the guard may call a predicate instead of the flag.
     assert not any(_evaluate(guard, fast_inference = True, num_labels = None) for guard in guarded), (
         "the repair runs on a real vLLM load, so a vLLM load gets accelerate hooks "
         "on a module tree vLLM does not execute"
@@ -219,7 +216,6 @@ def test_a_num_labels_load_is_hooked_even_when_fast_inference_was_asked_for():
 
     from unsloth.models.llama import FastLlamaModel, _vllm_will_load_weights
 
-    # Ties the stub in _evaluate to the real predicate: vLLM never owns a num_labels load.
     assert _vllm_will_load_weights(True, 2) is False
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(FastLlamaModel.from_pretrained)))
@@ -359,7 +355,7 @@ def test_a_classification_load_is_never_vllms_on_any_machine(
     _host(monkeypatch, device_type, vllm_installed, capability)
     reached = _normalise(True, num_labels = 2)
     assert llama._vllm_will_load_weights(reached, 2) is False
-    # num_labels = 0 is a real (if odd) classification request; `is not None` is the rule, not truth.
+    # num_labels = 0 is a real classification request; `is not None` is the rule, not truth.
     assert llama._vllm_will_load_weights(reached, 0) is False
 
 

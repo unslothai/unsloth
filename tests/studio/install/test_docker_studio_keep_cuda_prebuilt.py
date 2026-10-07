@@ -70,9 +70,6 @@ BASH = _usable_bash()
 requires_bash = pytest.mark.skipif(BASH is None, reason = "a working bash is required")
 
 
-# ── part one: why the CUDA bundle is replaced, on both arches ──
-
-
 def _host(machine):
     return HostInfo(
         system = "Linux",
@@ -117,7 +114,6 @@ def _release(artifacts):
     )
 
 
-# (arch, the CUDA bundle the base image bakes, the CPU bundle detection lands on)
 _ARCH_CASES = [
     (
         "aarch64",
@@ -165,8 +161,6 @@ def test_a_gpuless_build_host_resolves_the_cpu_bundle(machine, cuda_artifact, cp
     assert [choice.name for choice in attempts] == [cpu_artifact.asset_name]
     assert [choice.install_kind for choice in attempts] == [cpu_artifact.install_kind]
 
-
-# ── part two: the fix, driven out of setup.sh ──
 
 _BASE_IMAGE_MARKER = {
     "upstream_tag": RELEASE_TAG,
@@ -336,7 +330,6 @@ def _run_keep_decision(
 
 ON = {"UNSLOTH_LLAMA_KEEP_PREBUILT": "1"}
 
-# (id, marker, llama-server present, requested tag, extra env, expected verdict)
 _KEEP_CASES = [
     ("base_image_cuda_marker_pinned_tag", _BASE_IMAGE_MARKER, True, RELEASE_TAG, ON, "KEEP"),
     ("base_image_cuda_marker_base_build", _BASE_IMAGE_MARKER, True, LLAMA_TAG, ON, "KEEP"),
@@ -351,7 +344,6 @@ _KEEP_CASES = [
         "KEEP",
     ),
     ("rocm_bundle", _marker(platform = "linux-rocm"), True, RELEASE_TAG, ON, "KEEP"),
-    # a full mix pin names one bundle: only that exact mix may be kept
     ("full_mix_pin_exact_match", _BASE_IMAGE_MARKER, True, RELEASE_TAG, ON, "KEEP"),
     ("full_mix_pin_other_mix_same_base", _BASE_IMAGE_MARKER, True, OTHER_MIX, ON, "REPLACE"),
     (
@@ -362,7 +354,6 @@ _KEEP_CASES = [
         ON,
         "REPLACE",
     ),
-    # a bare base build pin still accepts any mix cut from that build
     (
         "bare_base_pin_accepts_any_mix",
         _marker(release_tag = OTHER_MIX, upstream_tag = OTHER_MIX),
@@ -371,7 +362,6 @@ _KEEP_CASES = [
         ON,
         "KEEP",
     ),
-    # UNSLOTH_LLAMA_RELEASE_TAG is checked against the marker's release_tag on its own
     (
         "release_tag_pin_match",
         _BASE_IMAGE_MARKER,
@@ -396,7 +386,6 @@ _KEEP_CASES = [
         {**ON, "UNSLOTH_LLAMA_RELEASE_TAG": RELEASE_TAG},
         "REPLACE",
     ),
-    # the shipped defect: a CPU bundle must still be replaced
     ("shipped_cpu_marker", _SHIPPED_CPU_MARKER, True, RELEASE_TAG, ON, "REPLACE"),
     (
         "cpu_platform_no_backend_key",
@@ -407,7 +396,6 @@ _KEEP_CASES = [
         "REPLACE",
     ),
     ("deliberate_force_cpu", _marker(force_cpu = True), True, RELEASE_TAG, ON, "REPLACE"),
-    # stale trees must still be replaced
     (
         "stale_release_tag",
         _marker(tag = "b10700", release_tag = "b10700-mix-aaaaaaa", upstream_tag = "b10700-mix-aaaaaaa"),
@@ -427,7 +415,6 @@ _KEEP_CASES = [
     ("no_marker_at_all", None, True, RELEASE_TAG, ON, "REPLACE"),
     ("marker_is_not_json", "not json", True, RELEASE_TAG, ON, "REPLACE"),
     ("no_llama_server_binary", _BASE_IMAGE_MARKER, False, RELEASE_TAG, ON, "REPLACE"),
-    # the knob is opt-in, and an explicit backend request still wins
     ("knob_unset", _BASE_IMAGE_MARKER, True, RELEASE_TAG, {}, "REPLACE"),
     (
         "knob_zero",
@@ -464,9 +451,6 @@ def test_keep_decision(tmp_path, marker, server, requested_tag, env, expected):
         tmp_path, marker = marker, server = server, requested_tag = requested_tag, env = env
     )
     assert verdict == expected
-
-
-# ── part three: the wiring that turns the knob on ──
 
 
 def test_setup_sh_keeps_the_bundle_instead_of_installing_a_prebuilt():

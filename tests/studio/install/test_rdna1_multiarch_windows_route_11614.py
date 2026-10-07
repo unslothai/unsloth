@@ -281,8 +281,7 @@ class TestTheWindowsRepairSiteRunsForRdna1:
     def test_a_per_family_rocm_torch_without_the_device_pack_is_replaced(
         self, pack_missing, installs, monkeypatch
     ):
-        # Standalone `studio update` after the GPU became RDNA 1: a gfx103X ROCm build is
-        # importable but has no gfx1010 kernels, and the per-family check has no RDNA 1 key.
+        # A gfx103X ROCm build imports but has no gfx1010 kernels; the per-family check has no RDNA 1 key.
         from unittest.mock import MagicMock, patch
 
         _mark = stack_mod._TORCH_PROBE_MARKER
@@ -319,8 +318,7 @@ class TestTheWindowsRepairSiteRunsForRdna1:
     def test_a_build_with_broken_fused_attention_is_replaced(
         self, installed, installs, monkeypatch
     ):
-        # Standalone `studio update` on a venv from the old rocm7.14.1 pin: the device packs are
-        # there, so only the build tag says it must move to the current pin.
+        # Device packs are present, so only the build tag says it must move to the current pin.
         from unittest.mock import MagicMock, patch
 
         _mark = stack_mod._TORCH_PROBE_MARKER

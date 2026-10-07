@@ -19,14 +19,12 @@ STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
-# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the presentation
-# attribute at render time.
+# Raw fontSize props are allowed only where a scaled .recharts-text rule overrides them.
 FONTSIZE_PROP_ALLOWED_DIRS = (
     "features/studio/sections/charts",
     "features/studio/sections/training-section.tsx",
 )
 
-# Non-visible typography that intentionally stays fixed.
 FONTSIZE_STYLE_ALLOWLIST = {
     # Offscreen textarea; 12pt+ suppresses the iOS focus zoom. Never rendered.
     "lib/copy-to-clipboard.ts",
@@ -53,7 +51,6 @@ def _rel(path):
 def test_preference_writes_a_scale_not_the_root_font_size():
     assert 'setVar("--ui-font-scale"' in STORE
     assert 'el.setAttribute("data-ui-font-size"' in STORE
-    # Older builds set an inline root font-size; the applier must clear it.
     assert 'style.removeProperty("font-size")' in STORE
     assert "style.fontSize" not in STORE
 
@@ -71,12 +68,11 @@ def test_css_default_scale_matches_the_store_default():
     assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
     assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
     scale = int(rng.group(3)) / int(base.group(1))
-    # Since #11648 the store writes --ui-font-size-scale and index.css derives --ui-font-scale from it and the
-    # browser-only interface scale, so the default lives in the fallback of that derivation.
+    # The default lives in index.css's fallback for --ui-font-scale, derived from the stored scale.
     assert (
         f"--ui-font-scale: calc(var(--ui-font-size-scale, {scale:g}) * var(--ui-interface-scale, 1));"
     ) in INDEX_CSS
-    # One setter call: the default branch's `setVar("--ui-font-size-scale", null)` must not stand in for it.
+    # One setter call: the default branch's `setVar("--ui-font-size-scale", null)` does not count.
     assert re.search(
         r'setVar\(\s*"--ui-font-size-scale",\s*String\(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE\),?\s*\)',
         STORE,
@@ -146,10 +142,8 @@ def test_icons_follow_the_ui_font_size_itself():
     assert "& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }" in INDEX_CSS
     assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
     assert "font-size: calc(12px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
-    # Menu rules that outrank the scoped block must carry the token too, without flattening the smaller thinking ticks.
     assert "width: var(--ui-icon-size) !important;" in INDEX_CSS
     assert "svg:not(.unsloth-tick) {" in INDEX_CSS
-    # Oversized art glyphs stay proportional instead of uniform.
     assert "& svg.size-6 { width: calc(1.5rem * var(--ui-font-scale, 1));" in INDEX_CSS
     for scope in (
         "[data-slot='dropdown-menu-content']",
@@ -183,7 +177,7 @@ def test_css_font_sizes_reference_the_scale():
         for m in re.finditer(r"(font-size|line-height):[^;{}]*;", text):
             decl = m.group(0)
             if re.search(r"[0-9.]+(px|rem)", decl) is None:
-                continue  # unitless ratios and vars scale naturally
+                continue
             if "--ui-font-scale" in decl:
                 continue
             if "1px" in decl:

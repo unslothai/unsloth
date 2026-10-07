@@ -95,9 +95,6 @@ def _window(
     }
 
 
-# ── the ratio ───────────────────────────────────────────────────────
-
-
 def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     cell_id = "r10K.base.rep0"
     records = [
@@ -108,7 +105,6 @@ def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     ]
     reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 17.0
-    # The 100 ms gap is out of the pooled distribution too, not just out of the maximum.
     assert (
         reading["jank_index"].value
         == readings_by_arm([records[2], records[3]], session_id = NOW)["base"][(10_000, 0)][
@@ -128,9 +124,6 @@ def test_two_windows_of_the_same_attempt_are_still_pooled():
     ]
     reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 100.0
-
-
-# ── the score ───────────────────────────────────────────────────────
 
 
 def _payload(directory, rows):
@@ -176,7 +169,6 @@ def test_a_resumed_cell_scores_as_if_the_crash_had_not_happened(tmp_path):
     assert rung.complete is True
     assert rung.incomplete_reason is None
     assert rung.score > 0
-    # Not merely "not zero": the superseded attempt must not move the number at all.
     assert rung.to_json() == clean.rungs[0].to_json()
     assert resumed.aggregate == clean.aggregate
 

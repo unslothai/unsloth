@@ -24,9 +24,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-# The shared runner, not a direct subprocess call: a direct one shares a single
-# $XDG_CACHE_HOME/powershell startup cache with every other xdist worker, and an interpreter that
-# dies at startup then renders as this test failing rather than as the crash it was.
+# The shared runner, not a direct subprocess: xdist workers share one pwsh startup cache,
+# so a startup crash would show up as this test failing.
 # tests/studio/test_pwsh_calls_use_the_shared_runner.py enforces this.
 from unsloth_pwsh_runner import run_pwsh
 
@@ -34,8 +33,7 @@ from unsloth_pwsh_runner import run_pwsh
 REPO = Path(__file__).resolve().parents[2]
 FORM = REPO / ".github" / "ISSUE_TEMPLATE" / "install-blocked-windows.yml"
 
-# The three things a false-positive submission cannot be made without, plus the error id that says
-# which mechanism blocked it.
+# Fields a false-positive report cannot be made without, plus the blocking-mechanism error id.
 REQUIRED_FIELD_IDS = ("av-product", "detection-name", "error-text", "probe")
 
 
@@ -91,7 +89,6 @@ def test_the_collection_script_survived_the_yaml() -> None:
         "literal block scalar (`|`), not a folded one (`>`): folding joins the lines and destroys "
         "every newline in the code block."
     )
-    # Each section the triage actually reads. Losing one silently narrows what a report can answer.
     for marker in (
         "SecurityCenter2",
         "AMSI\\Providers",
@@ -116,8 +113,7 @@ def test_the_collection_script_parses() -> None:
         "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }; "
         'Write-Output "OK $($tokens.Count)"'
     )
-    # Through a file and an environment variable, so nothing about the snippet's own quoting can
-    # change how it is handed to the parser.
+    # Passed via a file and env var so the snippet's own quoting cannot change parsing.
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -380,10 +376,7 @@ def test_every_field_that_asks_for_a_path_says_the_issue_is_public() -> None:
         assert (
             "public" in text.lower()
         ), f"the {name} field asks for a filesystem path without saying the issue is public"
-    # The probe is exempt from this second one: `Hide-Personal` substitutes the profile and user
-    # name before anything is written, so there is nothing for the reporter to rewrite by hand.
-    # These two are pasted unaided, and a warning with no worked replacement tends to be answered by
-    # dropping the field rather than by editing it.
+    # The probe is exempt: Hide-Personal already redacts it before anything is written.
     for name in ("error-text", "file-path"):
         description = fields[name]["attributes"].get("description", "")
         assert (
@@ -409,18 +402,15 @@ def _hide_personal_source() -> str:
 @pytest.mark.parametrize(
     ("username", "line", "expected"),
     [
-        # The two corruptions a bare substring replace causes. Both rewrite the exact evidence the
-        # form exists to collect, and both look like a clean report to the person pasting it.
+        # The two corruptions a bare substring replace causes; both rewrite the evidence.
         (
             "win",
             "Windows Defender Antivirus 4.18.24090.11",
             "Windows Defender Antivirus 4.18.24090.11",
         ),
         ("cat", "Trojan:Script/Wacatac.B!ml", "Trojan:Script/Wacatac.B!ml"),
-        # Still redacted where it is genuinely the account.
         ("alice", r"C:\Users\alice\Downloads\x.ps1", r"C:\Users\<user>\Downloads\x.ps1"),
         ("alice", r"CORP\alice", r"CORP\<user>"),
-        # A longer account name that merely starts with the same letters must not be half-eaten.
         ("al", r"C:\Users\alice\x.ps1", r"C:\Users\alice\x.ps1"),
     ],
 )

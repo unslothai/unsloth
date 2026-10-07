@@ -57,7 +57,6 @@ def _aborted_payload(tmp_path: Path) -> list[dict]:
     runner.log = lambda *_a, **_k: None
     runner.paths = type("P", (), {"logs": tmp_path})()
 
-    # The film gets some way in and writes its windows, exactly as the real one does.
     for i in range(7):
         rec.emit(
             {

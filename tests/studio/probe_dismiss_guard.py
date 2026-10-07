@@ -183,12 +183,10 @@ FOCUS_FACTS_JS = """
 }
 """
 
-# Simulate main-thread work between pointerdown and the synthesized click.
 BLOCK_JS = """
 (ms) => { const end = Date.now() + ms; while (Date.now() < end) {} }
 """
 
-# Watch clicks that must still land.
 WATCH_ITEM_JS = """
 () => {
   // The first item forks into a new chat, so a fast runner can navigate before this probe reads
@@ -354,11 +352,9 @@ async def one_case(
     elif case == "busy":
         await page.mouse.move(x, y)
         await page.mouse.down()
-        # Keep the press normal-length while blocking the page.
         await page.evaluate(BLOCK_JS, HOLD_MS)
         await page.mouse.up()
     elif case == "held_modifier":
-        # Modifiers may be pressed during a held gesture.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -367,7 +363,6 @@ async def one_case(
         await page.mouse.up()
         await page.keyboard.up("Shift")
     elif case == "held_enter":
-        # Enter activates the focused button while the pointer remains down.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -385,7 +380,6 @@ async def one_case(
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
     elif case == "held_space_then_space":
-        # Ensure the swallowed press does not leave the button focused.
         await page.mouse.move(x, y)
         await page.mouse.down()
         await page.wait_for_timeout(120)
@@ -419,7 +413,6 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
-        # Dismissing into the composer must preserve its caret.
         spot = await page.evaluate(
             "() => { const c = window.__heavyThread.composer(); if (!c) return null;"
             "const r = c.getBoundingClientRect();"
@@ -445,7 +438,6 @@ async def one_case(
     elif case == "touch":
         await page.touchscreen.tap(x, y)
     elif case in ("touch_hold_second_pointer", "touch_hold_second_pointer_grace"):
-        # Hold touch while a mouse interacts with the open menu.
         if engine != "chromium" or context is None:
             return {
                 "case": case,
@@ -503,7 +495,6 @@ async def one_case(
             "clicksDelivered": state["delivered"],
         }
     elif case == "select":
-        # Selection inside the menu must reach its item.
         spot = await page.evaluate(WATCH_ITEM_JS)
         if not spot:
             return {"case": case, "error": "no menu item to select"}
@@ -531,7 +522,6 @@ async def one_case(
             "fired": after["targetClicks"] > before["targetClicks"],
         }
     elif case == "touch_trigger":
-        # Tapping the trigger must still close the menu.
         trigger = await page.evaluate(
             "() => { const t = window.__heavyThread.actionButton('More');"
             "if (!t) return null; const r = t.getBoundingClientRect();"
@@ -552,7 +542,6 @@ async def one_case(
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
         if case == "rightclick_then_click":
-            # Prevent browser chrome from consuming the next automated click.
             await page.evaluate(
                 """() => document.addEventListener(
                     "contextmenu", (event) => event.preventDefault(),
@@ -565,10 +554,7 @@ async def one_case(
             await page.mouse.down()
             await page.mouse.move(4, 4)
             await page.mouse.up()
-        # INSIDE the release-anchored grace window on purpose. Waiting it out was the first
-        # version of this case and it passed on a tree that was still eating the click, because
-        # it only ever asked whether the bound existed, not whether the guard should have armed
-        # for a gesture that cannot produce a click at all.
+        # Inside the grace window on purpose: waiting it out passed on a tree that still ate the click.
         await page.wait_for_timeout(150)
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(600)
@@ -597,7 +583,6 @@ async def one_case(
             "swallowedLaterClick": clicks == 0,
         }
     elif case == "second_click":
-        # Only the dismissing click may be swallowed.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -658,7 +643,7 @@ async def run(engine: str, cases: list[str]) -> dict:
             )
             try:
                 out["cases"].append(await one_case(page, case, engine, context))
-            except Exception as exc:  # a failed case is a result, not a crash
+            except Exception as exc:
                 out["cases"].append({"case": case, "error": repr(exc)})
             await context.close()
         await browser.close()

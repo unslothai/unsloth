@@ -199,8 +199,6 @@ def test_the_heartbeat_includes_a_poll_no_preference_can_switch_off():
     has no document.hidden check either, so a minimised window keeps it going.
     """
     assert freeze.INTERFACE.findall('127.0.0.1 "GET /api/export/status" 200')
-    # The preference-gated polls still count when they are running: a hit from any of them
-    # is equally good proof that the webview is alive. Only their absence means nothing.
     optional = (
         '127.0.0.1 "GET /api/inference/monitor" 200\n'
         '127.0.0.1 "GET /api/inference/status" 200\n'
@@ -209,11 +207,8 @@ def test_the_heartbeat_includes_a_poll_no_preference_can_switch_off():
         '127.0.0.1 "GET /api/inference/audio/stt/status" 200\n'
     )
     assert len(freeze.INTERFACE.findall(optional)) == 5
-    # /api/auth/status is navigation-driven with a 30s TTL (app/auth-guards.ts), never a timer.
-    # Scoring it flatlines the moment the reporter stops clicking, which is the false FROZE this test exists to keep
-    # out.
+    # auth/status is navigation-driven, not a timer; scoring it would flatline and read FROZE.
     assert not freeze.INTERFACE.findall('"GET /api/auth/status" 200')
-    # The watchdog stays its own signal; it must not be swept into the interface count.
     assert not freeze.INTERFACE.findall('"GET /api/liveness" 200')
 
 
@@ -225,7 +220,6 @@ def test_the_run_widens_the_access_log_so_the_heartbeat_is_written_down():
     env = freeze.candidate_env({"PATH": "/usr/bin"}, {})
     assert env["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] == "0"
     assert env["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] == "0"
-    # It is a logging window, not a rendering setting: it must not vary by candidate.
     for _, extra, _ in freeze.CANDIDATES:
         assert freeze.candidate_env({}, extra)["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] == "0"
 
@@ -252,7 +246,6 @@ def test_control_is_not_pinned_by_an_override_the_candidates_never_name():
         if name != "PATH":
             assert name not in control, f"{name} still pins the control"
     assert control["PATH"] == "/usr/bin"
-    # A candidate still gets its own value, and still sheds everything else.
     shm = freeze.candidate_env(base, {"WEBKIT_DISABLE_COMPOSITING_MODE": "1"})
     assert shm["WEBKIT_DISABLE_COMPOSITING_MODE"] == "1"
     assert "WEBKIT_DMABUF_RENDERER_FORCE_SHM" not in shm
@@ -366,8 +359,7 @@ def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tm
     app.write_text("#!/bin/sh\n")
     app.chmod(0o755)
     monkeypatch.setattr(freeze.sys, "argv", ["unsloth_freeze_report.py", str(app)])
-    # main() writes its report to the working directory. Without this, a regression that walks past the gate drops a
-    # report file into the repository instead of failing here.
+    # main() writes its report to the working directory.
     monkeypatch.chdir(tmp_path)
     assert freeze.main() == 2
     assert launched == []
@@ -415,8 +407,7 @@ def test_the_gate_and_the_cleanup_share_one_attribution_rule():
     import inspect
 
     assert "studio_backend_pids()" in inspect.getsource(freeze.stop_leftover_backend)
-    # And the rule itself is the command line, not /proc/<pid>/exe: the backend runs from
-    # a venv whose python is a symlink, so exe resolves to the system interpreter.
+    # The backend's venv python is a symlink, so /proc/<pid>/exe resolves to the system one.
     source = inspect.getsource(freeze.studio_backend_pids)
     assert "/cmdline" in source
     assert "{pid}/exe" not in source
@@ -482,8 +473,6 @@ def test_discovery_prefers_an_appimage_that_can_actually_be_started(monkeypatch,
     if Path("/usr/bin/unsloth-studio").is_file() or Path("/opt/Unsloth/unsloth-studio").is_file():
         pytest.skip("a system-wide Unsloth Desktop outranks the discovery being tested")
     assert freeze.find_desktop_app() == [str(runnable)]
-    # With nothing runnable at all it still names the file, so the caller can say which one needs chmod rather than
-    # claiming Unsloth Desktop is not installed.
     runnable.chmod(0o644)
     assert freeze.find_desktop_app() == [str(downloaded)]
 
@@ -506,7 +495,7 @@ def test_one_flat_interval_that_recovers_is_not_a_freeze():
         (30, 6, 6),
         (45, 9, 9),
         (60, 12, 12),
-        (75, 12, 15),  # the gap: interface flat, watchdog carries on
+        (75, 12, 15),
         (90, 15, 18),
         (105, 18, 21),
         (120, 21, 24),
@@ -522,7 +511,7 @@ def test_an_interface_that_stops_and_stays_stopped_is_still_a_freeze():
         (15, 3, 3),
         (30, 6, 6),
         (45, 9, 9),
-        (60, 9, 12),  # stops here
+        (60, 9, 12),
         (75, 9, 15),
         (90, 9, 18),
         (105, 9, 21),
@@ -547,12 +536,10 @@ def test_a_stall_that_only_starts_as_the_window_closes_is_not_called_a_freeze():
         (45, 9, 9),
         (60, 12, 12),
         (75, 15, 15),
-        (90, 15, 18),  # flat for the first time, and the window ends here
+        (90, 15, 18),
     ]
     got = verdict(samples, warmup = 0)
     assert not got.startswith("FROZE"), got
-    # And it must not be waved through as healthy either: something was seen, it just was not watched for long enough to
-    # name.
     assert not got.startswith("OK"), got
     assert got.startswith("SUSPECT"), got
     assert "90s" in got
@@ -634,7 +621,7 @@ def _drive_candidate(
     than an argument list a test made up.
     """
     proc = _FakeApp(dies_after)
-    # Before anything else: the cleanup SIGTERMs proc.pid's process group, and a fake pid is a real pid to the kernel.
+    # Before anything else: cleanup SIGTERMs the fake pid's process group, which is real.
     signalled = []
     monkeypatch.setattr(freeze.os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(freeze.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)))
@@ -681,8 +668,6 @@ def test_an_exit_seen_only_by_the_cleanup_poll_is_still_recorded(monkeypatch, tm
     None, so the classifier skipped both exit branches and judged the samples on their own,
     and the crash came back as "OK: the interface kept polling for the whole run".
     """
-    # A log growing at a healthy rate throughout, so nothing in the samples hints at the crash and the verdict has to
-    # come from the exit itself.
     healthy = [_log(3 * n, 3 * n) for n in range(1, 5)]
     result = _drive_candidate(monkeypatch, tmp_path, healthy, dies_after = 4)
     assert result["samples"], "the loop must have run, or this proves nothing"
@@ -741,8 +726,6 @@ def test_sign_in_traffic_from_before_the_stall_does_not_clear_a_freeze():
     ]
     got = verdict(samples, warmup = 0, session_at = 30)
     assert got.startswith("FROZE"), got
-    # And a session cleared without any request reaching the backend is still indistinguishable from a freeze, which is
-    # what the absence of evidence is allowed to mean.
     assert verdict(samples, warmup = 0, session_at = None).startswith("FROZE")
 
 
@@ -755,16 +738,12 @@ def test_the_session_signal_is_the_webview_talking_not_the_shell():
     assert freeze.SESSION.findall('127.0.0.1 "GET /api/auth/status" 200')
     assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/login" 200')
     assert not freeze.SESSION.findall('127.0.0.1 "POST /api/auth/desktop-login" 200')
-    # And it is not a heartbeat: it must not be swept into the interface count, or a run sitting on the login screen
-    # would count as an interface that was polling.
     assert not freeze.INTERFACE.findall('127.0.0.1 "GET /api/auth/status" 200')
 
 
 def test_the_run_records_when_the_session_was_last_asked_about(monkeypatch, tmp_path):
     """The classifier cannot use a signal the run does not collect. This is the loop and the
     handoff to classify() as written, not an argument list invented by a test."""
-    # Heartbeat for the first four samples, then a sign-out at 75s and silence after it, while the watchdog keeps going
-    # to the end.
     scripted = [
         _log(3, 3),
         _log(6, 6),
@@ -856,10 +835,8 @@ def test_a_launch_that_fails_at_execve_does_not_end_the_whole_run(monkeypatch, t
     import json as _json
 
     results = _json.loads(written[0].read_text(encoding = "utf-8"))["results"]
-    # Every candidate is still attempted and still accounted for.
     assert len(results) == len(freeze.CANDIDATES)
     for r in results:
         assert r["verdict"].startswith("CANNOT RUN"), r["verdict"]
         assert "Exec format error" in r["verdict"]
-        # The report's own schema is unchanged, so a reader (and the summary) can treat this result like any other.
         assert r["samples"] == [] and r["interface_polls"] == 0

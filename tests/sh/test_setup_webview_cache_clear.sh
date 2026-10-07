@@ -1,15 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Unit tests for _clear_webview_caches() from studio/setup.sh.
-#
-# WebView caches keyed by the bundle id (ai.unsloth.studio) hold copies of the
-# previous frontend, so an install/update must clear them or the app keeps
-# rendering old styles. Cache-only: LocalStorage, IndexedDB, app data and
-# unrelated apps' caches stay intact.
-#
-# Follows the extract-via-sed pattern of test_uninstall_shared_icon.sh; uname
-# is overridden per test with a shell function to select the OS branch.
+# Unit tests for _clear_webview_caches() from studio/setup.sh: cache-only, storage stays intact.
 # shellcheck disable=SC2329  # uname stubs are invoked inside the extracted function
 set -e
 
@@ -22,24 +14,20 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# -e || -L, matching the production guard: -e alone is false for a dangling
-# symlink, so assert_gone would pass on one that was never removed.
+# -e is false for a dangling symlink, so also test -L like the production guard.
 assert_gone()    { _l="$1"; if [ -e "$2" ] || [ -L "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
 assert_present() { _l="$1"; if [ -e "$2" ] || [ -L "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
 
-# Explicit template: -p is GNU-only (BSD got it in macOS 14) and a bare
-# mktemp -d implies -t, landing outside _TMP_ROOT on macOS.
+# Explicit template: -p is GNU-only and bare mktemp -d lands outside _TMP_ROOT on macOS.
 new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
 
-# Extract just the function definition (top-level, closes at column 0).
 FUNC_FILE=$(mktemp "$_TMP_ROOT/fn.XXXXXX")
 sed -n '/^_clear_webview_caches() {/,/^}/p' "$SETUP_SH" > "$FUNC_FILE"
 # shellcheck disable=SC1090
 . "$FUNC_FILE"
-substep() { :; }  # stub the setup.sh logger
+substep() { :; }
 
-# ── 1. macOS: cache-typed stores hang off Library/Caches/<bid>/WebKit;
-# Library/WebKit/<bid> is user storage only ──
+# ── 1. macOS: caches under Library/Caches/<bid>/WebKit; Library/WebKit/<bid> is storage ──
 H=$(new_home)
 mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache/Version 17" \
          "$H/Library/Caches/$BID/WebKit/CacheStorage" \
@@ -58,8 +46,7 @@ assert_present "macOS: IndexedDB kept"                   "$H/Library/WebKit/$BID
 assert_present "macOS: Application Support kept"         "$H/Library/Application Support/$BID"
 assert_present "macOS: unrelated app cache kept"         "$H/Library/Caches/com.other.app"
 
-# ── 2. Linux: wry points the base-cache dir at the app data dir, so caches
-# sit beside user storage under ~/.local/share/<bid> ──
+# ── 2. Linux: wry puts caches beside user storage under ~/.local/share/<bid> ──
 H=$(new_home)
 D="$H/.local/share/$BID"
 mkdir -p "$D/WebKitCache" "$D/CacheStorage" "$D/serviceworkers" \
@@ -87,9 +74,7 @@ assert_gone    "linux: XDG_DATA_HOME WebKitCache removed"    "$XDG/data/$BID/Web
 assert_present "linux: XDG_DATA_HOME localstorage kept"      "$XDG/data/$BID/localstorage"
 assert_present "linux: default data dir kept under override" "$H/.local/share/$BID/WebKitCache"
 
-# ── 3a. A relative XDG_DATA_HOME is invalid per the XDG spec, so dirs (and Tauri)
-# ignores it. Following it would rm -rf under the installer's cwd and leave the
-# cache Tauri actually uses in place ──
+# ── 3a. A relative XDG_DATA_HOME is invalid per spec and ignored by Tauri ──
 H=$(new_home)
 W=$(mktemp -d "$_TMP_ROOT/work.XXXXXX")
 mkdir -p "$W/reldata/$BID/WebKitCache" "$H/.local/share/$BID/WebKitCache"
@@ -121,11 +106,9 @@ uname() { echo SunOS; }
 HOME="$H" _clear_webview_caches
 assert_present "unknown OS: nothing removed" "$H/Library/Caches/$BID"
 
-# ── 6. No HOME is a no-op, not a delete under /Library or /.cache. Unset, not empty:
-# `set -u` fires on unset only, and the empty case passes even without the guard ──
+# ── 6. No HOME is a no-op. Unset, not empty: `set -u` fires on unset only ──
 uname() { echo Darwin; }
 _wvc_rc=0
-# `|| _wvc_rc=$?` keeps the abort we are testing for off `set -e`'s exit path.
 _wvc_out=$( set -u; unset HOME; _clear_webview_caches 2>&1 ) || _wvc_rc=$?
 if [ "$_wvc_rc" = 0 ] && [ -z "$_wvc_out" ]; then
     echo "  PASS: unset HOME -> silent no-op"; PASS=$((PASS+1))
@@ -133,11 +116,7 @@ else
     echo "  FAIL: unset HOME -> rc=$_wvc_rc out=$_wvc_out"; FAIL=$((FAIL+1))
 fi
 
-# ── 6b. The clear must invalidate the app's version stamp. ──
-# The app skips its own clear whenever .webview-cache-cleared matches the running
-# version (main.rs), and that clear is the retry for an rm here that failed. A repair
-# or a local rebuild leaves the version unchanged, so a surviving stamp suppresses the
-# retry and the cache we could not remove stays forever.
+# ── 6b. The clear must remove the app's version stamp, or the app skips its own retry clear ──
 _st_home=$(new_home)
 _st_data="$_st_home/.local/share/$BID"
 mkdir -p "$_st_data/WebKitCache"
@@ -148,8 +127,6 @@ uname() { echo Linux; }
 assert_gone "linux: version stamp invalidated so the app retries" \
     "$_st_data/.webview-cache-cleared"
 
-# The stamp must go even when nothing was removable, which is the case that matters:
-# an unremovable cache plus a surviving stamp is what makes the staleness permanent.
 _st_home=$(new_home)
 _st_data="$_st_home/.local/share/$BID"
 mkdir -p "$_st_data"
@@ -177,8 +154,7 @@ else
     echo "  FAIL: setup.sh never calls _clear_webview_caches"; FAIL=$((FAIL+1))
 fi
 
-# ── 7b. setup.ps1 is not driven here, so assert on source order: the call must come
-# after the override validation, or a mistyped override wipes the cache and then aborts ──
+# ── 7b. setup.ps1: the call must come after override validation ──
 SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
 if [ ! -f "$SETUP_PS1" ]; then
     echo "  FAIL: setup.ps1 not found"; FAIL=$((FAIL+1))
@@ -197,15 +173,12 @@ else
     fi
 fi
 
-# ── 7c. An override that exists and is writable but holds no Unsloth install: setup
-# aborts later at the venv check, so clearing first would cost the cache for nothing ──
+# ── 7c. An override with no Unsloth install aborts at the venv check, so do not clear first ──
 _novenv_home=$(new_home)
 _novenv_root="$_TMP_ROOT/exists-but-empty.$$"
 mkdir -p "$_novenv_root"
 mkdir -p "$_novenv_home/.local/share/$BID/WebKitCache"
 : > "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
-# Stub node/npm as failing and opt out of the isolated install so setup.sh reaches the
-# venv check without provisioning Node or building the frontend.
 _novenv_bin="$_TMP_ROOT/no-node.$$"
 mkdir -p "$_novenv_bin"
 for _stub in node npm; do
@@ -224,7 +197,6 @@ if [ "$_novenv_rc" = 0 ]; then
 else
     echo "  PASS: override without a venv aborts (rc=$_novenv_rc)"; PASS=$((PASS+1))
 fi
-# Or the cache survived for an unrelated reason.
 case "$_novenv_out" in
     *"venv not found at"*) echo "  PASS: the abort is the venv check"; PASS=$((PASS+1)) ;;
     *) echo "  FAIL: aborted before the venv check"; FAIL=$((FAIL+1)) ;;
@@ -236,10 +208,7 @@ esac
 assert_present "existing-but-empty override leaves the cache alone" \
     "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
 
-# ── 8. a bad override must not cost the user their cache ──
-# The cases above extract the function, so none sees where the call sits; driven in situ.
-# Under `set -euo pipefail` with no trap, clearing before the UNSLOTH_STUDIO_HOME
-# validation turns a typo into cache loss plus the same abort.
+# ── 8. A bad override must not cost the user their cache (driven in situ) ──
 _ord_home=$(new_home)
 mkdir -p "$_ord_home/.local/share/$BID/WebKitCache" "$_ord_home/.local/share/$BID/CacheStorage"
 : > "$_ord_home/.local/share/$BID/WebKitCache/asset.js"

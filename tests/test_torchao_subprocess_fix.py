@@ -44,9 +44,6 @@ sys.path.insert(0, str(ROOT))
 from unsloth import import_fixes as IF  # noqa: E402
 
 
-# ---- the generated sitecustomize -----------------------------------------
-
-
 def test_it_is_valid_python():
     """A syntax error breaks every subprocess on the machine, which is far
     worse than the bug being fixed."""
@@ -111,9 +108,6 @@ def test_it_only_imports_the_stdlib_and_torch():
             assert node.module in allowed, f"unexpected import: {node.module}"
 
 
-# ---- staging ---------------------------------------------------------------
-
-
 @pytest.fixture(autouse = True)
 def _restore_pythonpath():
     before = os.environ.get("PYTHONPATH")
@@ -134,9 +128,7 @@ def _torchao_is_broken_here() -> bool:
         return False
     import torch.nn.functional as F
 
-    # `_torch_really_has`, not `hasattr`: conftest.py imports unsloth, so on a
-    # broken environment the placeholders are already on F and hasattr would
-    # read it as healthy.
+    # Not hasattr: conftest imports unsloth, so placeholders may already be on F.
     return not all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS)
 
 
@@ -184,9 +176,6 @@ def test_it_is_idempotent_on_pythonpath():
     import inspect
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
     assert "if directory not in parts:" in src
-
-
-# ---- the directory it writes into -----------------------------------------
 
 
 def test_the_directory_is_private_to_this_user():
@@ -266,9 +255,6 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
     i = src.index("_subprocess_fix_directory()")
     assert "try:" in src[:i]
     assert "except Exception as exception:" in src[i:]
-
-
-# ---- behaviour, with real interpreters ------------------------------------
 
 
 @pytest.fixture
@@ -501,9 +487,6 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-# ---- the in-process fix must not disable this one -------------------------
-
-
 def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
     """_gpu_init.py runs fix_torchao_torch_symbol_skew() before
     this one, so a gate asking only `hasattr` would read its placeholders as a
@@ -514,8 +497,7 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
 
-    # conftest.py imports unsloth, so on an affected environment the placeholders are already installed and the call
-    # below would return False. _gpu_init sees a fresh interpreter; reproduce that.
+    # conftest imports unsloth, so remove placeholders to mimic _gpu_init's fresh interpreter.
     for name in IF._TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
             delattr(F, name)
@@ -549,9 +531,6 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
         IF._torch_really_has(type("_F", (), {"ScalingType": placeholder}), "ScalingType") is False
     )
     assert IF._torch_really_has(type("_F", (), {}), "ScalingType") is False
-
-
-# ---- a hook file planted before the directory was tightened ---------------
 
 
 def _plant(directory, kind, source):
@@ -641,7 +620,6 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
         assert not _stat.S_IMODE(info.st_mode) & 0o022, oct(info.st_mode)
         assert target.read_text(encoding = "utf-8") == IF._subprocess_sitecustomize_source()
         if kind == "symlink":
-            # Rewriting the planted file must no longer reach any child.
             planted.write_text("raise SystemExit('hijacked')\n", encoding = "utf-8")
             assert target.read_text(encoding = "utf-8") != planted.read_text(encoding = "utf-8")
     finally:
@@ -686,7 +664,6 @@ def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
         assert _stat.S_ISREG(info.st_mode), "installed the planted symlink as the hook"
         assert not _stat.S_IMODE(info.st_mode) & 0o022, oct(info.st_mode)
         assert target.read_text(encoding = "utf-8") == IF._subprocess_sitecustomize_source()
-        # Their file was never opened, so rewriting it reaches nothing.
         assert theirs.read_text(encoding = "utf-8") == "# theirs\n"
     finally:
         for name in IF._TORCHAO_TORCH_SYMBOLS:
@@ -704,9 +681,6 @@ def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
     if hasattr(os, "getuid"):
         import stat as _stat
         assert oct(_stat.S_IMODE(os.lstat(target).st_mode)) == oct(0o600)
-
-
-# ---- the chained sitecustomize keeps its own name -------------------------
 
 
 def test_a_chained_package_stays_importable(staged, tmp_path):
@@ -765,8 +739,6 @@ def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
     assert "MARK <<none>>" in p.stdout, p.stdout + p.stderr
 
-
-# ---- a second spelling of our own directory on sys.path -------------------
 
 _COUNT_HOOKS = (
     "import sys;"

@@ -27,7 +27,7 @@ if torch.cuda.is_available():
     from unsloth.kernels import utils as U
 
 DTYPES = [torch.bfloat16, torch.float16, torch.float32]
-# _eligible rejects HIP: tests of the override's own numerics or routing would assert it ran.
+# _eligible rejects HIP, so tests asserting the override ran skip on ROCm.
 needs_override = pytest.mark.skipif(
     torch.version.hip is not None, reason = "the override never runs on ROCm"
 )
@@ -35,9 +35,8 @@ needs_override = pytest.mark.skipif(
 
 @pytest.fixture(autouse = True)
 def _installed(monkeypatch):
-    monkeypatch.setattr(
-        O, "_LINEAR", "1"
-    )  # numerics hold on every GPU; the default gate is tested apart
+    # Forced on: numerics hold on every GPU; the default gate is tested apart.
+    monkeypatch.setattr(O, "_LINEAR", "1")
     O.uninstall_bnb_nf4_override()
     assert O.install_bnb_nf4_override()
     monkeypatch.setattr(O, "_BNB_FUSED", False)
@@ -101,7 +100,7 @@ def _count_fallback(monkeypatch):
 @pytest.mark.parametrize("bias", [False, True])
 def test_train_forward_backward_bit_exact(dtype, nested, bias, monkeypatch):
     lin = _layer(1000, 576, dtype, nested = nested, bias = bias)
-    # M = 2 * 1025 > 1536 is past every bitsandbytes fused-kernel range: bnb is dequantize + F.linear.
+    # M = 2 * 1025 > 1536 is past every bitsandbytes fused-kernel range.
     x0 = torch.randn(2, 1025, 576, device = "cuda", dtype = dtype)
     dy = torch.randn(2, 1025, 1000, device = "cuda", dtype = dtype)
     _call(lin, x0[:, :8], False)  # bitsandbytes sets the compute dtype on the first call
@@ -119,7 +118,6 @@ def test_train_forward_backward_bit_exact(dtype, nested, bias, monkeypatch):
     assert outs[1].dtype is outs[0].dtype
     assert _bits(outs[1], outs[0]), "forward differs from bitsandbytes"
     assert _bits(xs[1], xs[0]), "dX differs from bitsandbytes"
-    # And equal to bitsandbytes' own dequantize + F.linear at shapes its fused kernel may take.
     x = x0[:1, :9]
     W = bnb_f.dequantize_4bit(lin.weight.data, lin.weight.quant_state).to(dtype)
     b = None if lin.bias is None else lin.bias.to(dtype)
@@ -150,13 +148,12 @@ def test_decode_gemv_accuracy(dtype):
 
 
 def test_mixed_dtype_input_casts_like_bitsandbytes():
-    # fp32 activations: bnb switches compute dtype to fp32, which no longer matches the quant state.
+    # fp32 activations: bnb switches compute dtype to fp32, mismatching the quant state.
     lin = _layer(256, 128, torch.bfloat16)
     x = torch.randn(4, 9, 128, device = "cuda", dtype = torch.float32)
     a = _call(lin, x, False)
     b = _call(lin, x, True)
     assert b.dtype is torch.float32 and _bits(a, b)
-    # bf16 layer fed fp16 activations: compute dtype stays bf16, output comes back as fp16.
     lin = _layer(256, 128, torch.bfloat16, seed = 1)
     x = torch.randn(4, 400, 128, device = "cuda", dtype = torch.float16)
     a = _call(lin, x, False)
@@ -248,8 +245,8 @@ def test_compiled_no_breaks_bit_exact(dtype):
     assert int(sum(du.counters["graph_break"].values())) == 0, dict(du.counters["graph_break"])
     ref = res[0]
     if dtype is torch.float32:
-        # Inductor splits fp32 addmm with pointwise users into mm + bias add (unfuse_bias_add_to_pointwise),
-        # which rounds unlike cuBLAS' bias epilogue on some GPUs: compare to compiled plain F.linear.
+        # Inductor splits fp32 addmm into mm + bias add, which rounds unlike cuBLAS; compare to
+        # compiled plain F.linear.
         W = bnb_f.dequantize_4bit(lin.weight.data, lin.weight.quant_state).to(dtype)
 
         def stock(x):
@@ -268,7 +265,7 @@ def test_compiled_no_breaks_bit_exact(dtype):
     assert _bits(res[1][0], ref[0]) and _bits(res[1][1], ref[1])
     assert _bits(res[2][0], ref_ng)
     if dtype is not torch.float32:
-        # Compiled GEMV is the same Triton kernel; Inductor may fuse its epilogue, so compare by error.
+        # Inductor may fuse the GEMV epilogue, so compare by error.
         assert (res[3][0].float() - ref_dec.float()).abs().max().item() <= 4 * torch.finfo(
             dtype
         ).eps * ref_dec.abs().max().item()
@@ -293,12 +290,11 @@ def test_default_gate():
         [(8, 0), (7, 5)],
     ):
         assert O._default_on(caps, False, False), caps
-    # bitsandbytes >= 0.50: only where every GPU is sm100 / sm120 (measured without a regressed shape).
+    # bitsandbytes >= 0.50: only where every GPU is sm100 / sm120.
     for caps in ([(10, 0)], [(10, 3)], [(12, 0)], [(12, 1)], [(10, 0), (12, 0)]):
         assert O._default_on(caps, True, False), caps
     for caps in ([(7, 5)], [(8, 0)], [(8, 6)], [(8, 9)], [(9, 0)], [(10, 0), (8, 0)]):
         assert not O._default_on(caps, True, False), caps
-    # Never on ROCm, without a GPU, or below sm75.
     assert not O._default_on([(9, 4)], False, True)
     assert not O._default_on([(10, 0)], True, True)
     assert not O._default_on([], False, False)
@@ -335,9 +331,7 @@ def test_fused_bnb_keeps_its_fused_shapes(rows, pick, to_bnb, monkeypatch):
     if asked:
         assert asked[-1] == (rows, 256, 128)
     if to_bnb or rows > 1536:
-        assert _bits(
-            y, ref
-        )  # bitsandbytes itself, or past its fused range the same dequantize + F.linear
+        assert _bits(y, ref)
     x = x.clone().requires_grad_()
     calls.clear()
     _call(lin, x, True).sum().backward()
@@ -422,7 +416,7 @@ def _breaks(fn, *args):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_untraced_torch_defers_to_bitsandbytes_when_compiled(dtype, monkeypatch):
-    # Before torch 2.11 compiled code keeps bitsandbytes' traceable forward; eager uses the kernels.
+    # Before torch 2.11 compiled code keeps bitsandbytes' traceable forward.
     if not O._BNB_OPS:
         pytest.skip("bitsandbytes without registered ops (0.45.5) runs one opaque call instead")
     if dtype is torch.bfloat16 and torch.cuda.get_device_capability()[0] < 8:

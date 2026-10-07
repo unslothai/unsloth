@@ -28,9 +28,7 @@ _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
 
 _THRESHOLD = 52428800  # 50 MiB, the shipped default in both installers.
 
-# Shaped like real `uv pip install` output, but the two nvidia sizes are picked to bracket
-# _THRESHOLD rather than to match those wheels, so moving the default in either direction changes
-# what is marked. transformers lands unannounced.
+# The two nvidia sizes bracket _THRESHOLD, so moving the default either way changes the result.
 _UV_OUTPUT = """Resolved 38 packages in 2.60s
 Downloading torch (2.4GiB)
 Downloading nvidia-cudnn-cu12 (674.0MiB)
@@ -47,8 +45,6 @@ Installed 38 packages in 9.20s
 + torch==2.10.0+cu126
 """
 
-# uv does not repeat a completion, but a repeat must not close a download twice: the app would see
-# an end for something it never saw start.
 _UV_REPEATED_COMPLETION = """Downloading torch (2.4GiB)
  Downloaded torch
  Downloaded torch
@@ -74,7 +70,6 @@ def _extract(name: str) -> str:
     return match.group(0)
 
 
-# run_install_cmd's collaborators, stubbed so the real function can run here.
 _STUBS = """
 _is_verbose() { [ -n "${VERBOSE_MODE:-}" ]; }
 step() { :; }; substep() { :; }; tauri_stream_log() { :; }; tauri_clear_install_error() { :; }
@@ -118,7 +113,7 @@ def _run(
     env = dict(_ENV, UV_OUTPUT = output)
     if path:
         env["PATH"] = path
-    # Left unset by default so install.sh's own shipped threshold is what runs.
+    # Unset by default so install.sh's own shipped threshold runs.
     if min_bytes:
         env["UNSLOTH_DL_MARKER_MIN_BYTES"] = min_bytes
     if tauri:
@@ -136,7 +131,6 @@ def _run(
     # Markers ride stderr so the verbose path's block-buffering redactor cannot delay them.
     markers = [line for line in done.stderr.splitlines() if line.startswith("[TAURI:")]
     rc = next(line for line in done.stdout.splitlines() if line.startswith("RC="))
-    # Both streams: the quiet arm prints the log to stderr, the verbose arm pipes to stdout.
     shown = "\n".join(
         [l for l in done.stdout.splitlines() if not l.startswith("RC=")]
         + [l for l in done.stderr.splitlines() if not l.startswith("[TAURI:")]
@@ -149,7 +143,6 @@ def _run(
     [
         ({}, _MARKED + _LANDED),
         ({"min_bytes": "1000000000"}, ["torch 2.4GiB", "DONE torch"]),
-        # The verbose arm pipes output instead of logging it, and marks just the same.
         ({"verbose": True}, _MARKED + _LANDED),
         ({"tauri": False}, []),
         ({"output": _UV_REPEATED_COMPLETION}, ["torch 2.4GiB", "DONE torch"]),
@@ -161,7 +154,6 @@ def test_only_downloads_worth_waiting_for_become_markers(options, expected):
 
 
 def test_a_failure_still_shows_the_childs_whole_output():
-    # The added pipe must not cost the failure path the log it exists to print.
     _, rc, shown = _run(exit_code = 42)
     assert rc == "42"
     assert _UV_OUTPUT.strip() in shown
@@ -175,9 +167,7 @@ def test_the_exit_code_survives_the_added_pipe(exit_code):
 
 @pytest.mark.parametrize("verbose", [False, True])
 def test_a_host_without_awk_still_installs(verbose):
-    # install.sh supports minimal images that ship no awk, and this pipe now carries every install
-    # command, so losing awk must cost the markers and nothing else. Without the fallback the pipeline
-    # closes and the child dies of SIGPIPE, reporting exit 141.
+    # Without awk the pipeline would close and the child die of SIGPIPE (exit 141).
     with tempfile.TemporaryDirectory() as tmp:
         stub = Path(tmp) / "bin"
         stub.mkdir()
@@ -191,14 +181,11 @@ def test_a_host_without_awk_still_installs(verbose):
     assert (ok_rc, rc) == ("0", "42"), "a missing awk turned into SIGPIPE"
     assert markers == [] and ok_markers == [], "markers cannot be produced without awk"
     assert _UV_OUTPUT.strip() in shown, "the failure path lost the child's output"
-    # The sink still has to differ by arm: quiet holds output in the log until something fails, verbose
-    # passes it straight through.
     assert (_UV_OUTPUT.strip() in ok_shown) is verbose
 
 
 def test_a_marker_arrives_while_its_download_is_still_running():
-    # Every other test reads output after the child exits, so a buffered marker still shows up, just
-    # too late. Verbose is the arm with the block-buffering redactor.
+    # Other tests read output after exit, so only this catches a buffered marker.
     proc = subprocess.Popen(
         ["/bin/sh", "-c", _sh_harness('printf "Downloading torch (2.4GiB)\\n"; sleep 30')],
         stdout = subprocess.DEVNULL,
@@ -250,7 +237,7 @@ def _run_ps1(
         f"{markers}\n{invoke}\n"
         f"Invoke-InstallCommand -Command {{ @({lines}) | Write-Output }} -Label 'install PyTorch'\n"
     )
-    # Not os.environ: an ambient UNSLOTH_DL_MARKER_MIN_BYTES would override the default.
+    # An ambient UNSLOTH_DL_MARKER_MIN_BYTES would override the default.
     env = dict(_ENV)
     if min_bytes:
         env["UNSLOTH_DL_MARKER_MIN_BYTES"] = min_bytes
@@ -280,14 +267,12 @@ def _run_ps1(
     ],
 )
 def test_both_installers_emit_the_same_markers(options):
-    # The sh expectations are pinned above, so agreeing with sh pins PowerShell too.
     expected, _, _ = _run(**options)
     assert _run_ps1(**options) == expected
 
 
 def test_both_installers_ship_the_same_threshold():
-    # Execution only brackets the default between two fixture sizes; the literal pins it exactly, and
-    # pins the two installers to each other so they cannot drift apart.
+    # The literal pins the default exactly and keeps the two installers in sync.
     assert _extract_default() == f': "${{UNSLOTH_DL_MARKER_MIN_BYTES:={_THRESHOLD}}}"'
     ps1 = _INSTALL_PS1.read_text(encoding = "utf-8")
     assert f"$script:UvDownloadMarkerMinBytes = {_THRESHOLD}" in ps1

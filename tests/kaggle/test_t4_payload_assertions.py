@@ -60,9 +60,6 @@ NAN = float("nan")
 INF = float("inf")
 
 
-# ------------------------------------------------------- determinism.py
-
-
 def test_a_field_logged_by_only_one_run_is_a_difference():
     """grad_norm in cycle 0 and not in cycle 1 is nondeterminism, not a skip.
 
@@ -136,9 +133,6 @@ def test_an_infinity_only_one_run_logged_is_still_a_difference(norm_a, norm_b):
     assert compare_metrics(a, b)["identical"] is False
 
 
-# -------------------------------------------------- run_t4_smoke.py: canary
-
-
 def test_the_canary_must_be_the_whole_answer():
     from run_t4_smoke import CANARY, canary_failures
 
@@ -164,9 +158,6 @@ def test_the_canary_can_be_downgraded_to_a_warning():
     assert canary_failures({"run_index": 1, "generated": "nope"}, require = False) == []
 
 
-# -------------------------------------- run_t4_smoke.py: optimisation checks
-
-
 def test_an_infinite_gradient_norm_is_not_an_applied_update():
     """fp16 overflow reports the norm as inf as readily as NaN.
 
@@ -188,9 +179,6 @@ def test_one_finite_gradient_norm_is_enough():
         {"step": 3, "loss": 1.0, "grad_norm": 11.2},
     ]
     assert optimisation_failures(metrics) == []
-
-
-# ------------------------------------------- run_t4_smoke.py: saved adapter
 
 
 def _adapter_state(**over) -> dict:
@@ -439,8 +427,6 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     failures = saved_adapter_failures(state)
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
-    # The same file with a B matrix an optimizer moved, the only difference between an adapter that carries training and
-    # one that does not.
     save_file(
         {
             "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
@@ -524,9 +510,6 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
     assert saved_adapter_failures(good) == []
 
 
-# ------------------------------------------ run_t4_smoke.py: the reference
-
-
 def _write_reference(
     path: Path,
     *,
@@ -582,14 +565,12 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
         environment = {"gpu_name": "Tesla P100-PCIE-16GB", "gpu_capability": "sm_60"},
     )
     assert verdict["status"] == "hardware_mismatch", verdict
-    # Refused BEFORE any number is compared: the metrics here are identical to
-    # the reference, so a pass would look like a healthy run on the wrong card.
+    # Metrics match the reference, so only the card check can refuse.
     assert verdict["deviations"] == []
     failures = reference_failures(verdict, 0.10)
     assert failures and "not for this run" in failures[0]
     assert "Tesla P100-PCIE-16GB" in failures[0]
 
-    # Same reference, the card it was captured on: compared normally.
     same = check_reference(
         observed,
         ref,
@@ -696,8 +677,6 @@ def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
 
 REFERENCE_CONFIG = {
     "max_steps": 3,
-    # The rows, not the path: what trained is part of which experiment the trace is a trace of, and the payload records
-    # a digest of them.
     "dataset_digest": "d" * 64,
     "init_loss_scale": 0.0,
     "batch_size": 2,
@@ -766,8 +745,7 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
-    # `model` too: the helper's reference names one and this call observed none, and a pin present on one side only did
-    # not run, so it is recorded rather than skipped in silence.
+    # A pin present on one side only is recorded as unchecked.
     assert verdict["config_unchecked"] == ["gradient_checkpointing", "model"]
 
 
@@ -850,8 +828,7 @@ def test_a_repo_id_that_differs_only_in_case_is_the_same_reference(tmp_path):
     assert recased["status"] == "ok", recased
     assert not reference_failures(recased, 0.10)
 
-    # Case is the only thing forgiven: another checkpoint, or a revision with different
-    # capitals, is still a different experiment.
+    # Only case is forgiven; a different revision is still a different experiment.
     other = check_reference(
         observed,
         ref,
@@ -895,7 +872,7 @@ def test_a_local_checkpoint_path_keeps_its_case(tmp_path):
     assert verdict["status"] == "config_mismatch", verdict
     assert reference_failures(verdict, 0.10)
 
-    # A relative "owner/name" that exists here is a directory too, not a repo id.
+    # A relative "owner/name" that exists locally is a directory, not a repo id.
     rel_upper = tmp_path / "Owner" / "Model"
     rel_lower = tmp_path / "owner" / "model"
     rel_upper.mkdir(parents = True)
@@ -996,9 +973,6 @@ def _batch_record(**over):
     return base
 
 
-# -------------------------------------------- run_t4_smoke.py: main() paths
-
-
 def _cycle(index: int, losses: list[float]) -> dict:
     return {
         "run_index": index,
@@ -1007,12 +981,7 @@ def _cycle(index: int, losses: list[float]) -> dict:
         ],
         "generated": "__UNSLOTH__!!!",
         "canary_found": True,
-        # A simulated HEALTHY cycle has to look healthy in every respect a real
-        # one is judged on, this record included. Leaving it out made
-        # `--check-batched-generation` (on by default, because a leg that
-        # quietly skips it stops covering #3699/#1066/#1456/#2138) fail every
-        # simulated run with "batched generation was never run" -- which is the
-        # rule working, on a fixture that had not kept up.
+        # A healthy simulated cycle needs this record: batched generation is checked by default.
         "batched_generation": _batch_record(),
         "adapter_files": ["adapter_config.json", "adapter_model.safetensors"],
         "saved_adapter": _adapter_state(),
@@ -1100,9 +1069,6 @@ def test_a_failed_cycle_still_reports_its_environment(monkeypatch, tmp_path):
     assert report["label"] == "t4-smoke"
 
 
-# ------------------------------------------------------- run_gptoss_t4.py
-
-
 def _gptoss_args(**over):
     base = {"max_steps": 3, "require_compile": True}
     base.update(over)
@@ -1121,8 +1087,6 @@ def _gptoss_result(**over) -> dict:
             "custom_dtype_env": "down_projs;mlp.router",
         },
         "environment": {"bf16_supported": False, "gpu_name": "Tesla T4"},
-        # What the feasibility probe measured: every parameter on the one
-        # visible T4 and no accelerate dispatch at all.
         "placement_after_load": {
             "parameters_by_device": {"cuda:0": 20_900_000_000},
             "hf_device_map_devices": None,
@@ -1423,9 +1387,6 @@ def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
     assert failures_for(result, _grpo_args()) == []
 
 
-# ------------------------------------------------- training_evidence.py
-
-
 class _Tensor:
     """The two calls adapter_fingerprint makes on a parameter, and no more."""
 
@@ -1518,7 +1479,6 @@ def test_the_zero_initialised_b_matrices_are_what_make_the_comparison_safe():
 
     before = adapter_fingerprint(_Adapter(0.0))
     assert before == {"ok": True, "tensors": 2, "abs_sum": 4.0, "b_abs_sum": 0.0}
-    # A B matrix that moved while the total happened to come out the same.
     after = adapter_fingerprint(_Adapter(0.0))
     after["b_abs_sum"] = 0.5
     assert adapter_update(before, after)["changed"] is True
@@ -1557,7 +1517,6 @@ def test_a_non_finite_lora_weight_is_not_read_as_a_successful_update(bad):
     assert update["ok"] is False
     assert update["non_finite"] is True
 
-    # And it beats a healthy grad_norm, which says nothing about weights that went non-finite two steps later.
     healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
     assert update_verdict(healthy, update)["verdict"] == "non_finite"
     assert update_verdict([], update)["verdict"] == "non_finite"
@@ -1620,9 +1579,6 @@ def test_two_fingerprints_over_different_tensor_counts_are_not_compared():
     verdict = adapter_update(before, after)
     assert verdict["ok"] is False
     assert "not comparable" in verdict["error"]
-
-
-# --------------------------------------------------------- run_grpo_t4.py
 
 
 def _grpo_args(**over):
@@ -1722,9 +1678,6 @@ def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
     assert run_grpo_t4.main() == 1
     report = json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding = "utf-8"))
     assert report["engine_built"] is False
-
-
-# ------------------------------------------------------- references/README
 
 
 def test_the_recapture_recipe_selects_the_control_report_by_label():
@@ -1909,14 +1862,12 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
             padding = False,
         ):
             texts = [text] if isinstance(text, str) else list(text)
-            # One token per character, so a length spread in the prompts is a
-            # length spread in the ids and the padding is real.
+            # One token per character, so prompt length spread is real padding.
             ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
             if return_tensors is None:
                 return {"input_ids": ids[0] if isinstance(text, str) else ids}
             width = max(len(i) for i in ids)
-            # LEFT padding, which is what the function asks for and what the
-            # padded-width slice below depends on.
+            # Left padding, which the padded-width slice depends on.
             padded = [[0] * (width - len(i)) + i for i in ids]
             return _Enc(
                 input_ids = torch.tensor(padded),
@@ -1940,8 +1891,7 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
             max_new_tokens = 8,
             **_kw,
         ):
-            # Append the same continuation to every row, derived from that
-            # row's own unpadded content, so batching cannot change it.
+            # The continuation depends only on the row's unpadded content.
             outs = []
             for row in input_ids:
                 real = [int(v) for v in row if int(v) != 0]
@@ -1949,9 +1899,7 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
                 outs.append([int(v) for v in row] + tail)
             return torch.tensor(outs)
 
-    # Eight, because BATCH_SIZES tops out at 8 and the rule rejects a record
-    # whose largest batch could never have been formed. Lengths 1..8 so every
-    # batch pads and the padded-width slice is exercised rather than skipped.
+    # Eight prompts of lengths 1..8, matching the largest batch size, so every batch pads.
     prompts = ["abcdefgh"[:n] * 1 for n in range(1, 9)]
     record = batched_generation(_Model(), _Tok(), prompts, max_new_tokens = 4)
 
@@ -2141,9 +2089,6 @@ def test_a_missing_batched_record_is_a_failure_not_a_pass():
     assert batched_generation_failures(None) == ["batched generation was never run"]
 
 
-# ------------------------------------------------- run_grpo_t4.py: the reward
-
-
 def _completions(*lengths):
     """GRPO hands reward functions a list of message lists."""
     return [[{"role": "assistant", "content": "x" * n}] for n in lengths]
@@ -2195,9 +2140,6 @@ def test_two_identical_completions_still_tie_because_that_is_real():
 
     scores = reward_length(_completions(2534, 2534))
     assert scores[0] == scores[1]
-
-
-# --------------------------------------------------- gguf_export.py
 
 
 def _gguf_record(**over):
@@ -2291,7 +2233,6 @@ def test_a_model_allowed_to_override_the_quantization_still_passes():
         ]
     )
     assert export_failures(record, accept_quantizations = ("mxfp4",)) == []
-    # ... and a leg that does NOT accept it still says so.
     failures = export_failures(record, accept_quantizations = ("q8_0",))
     assert failures and "accepted quantization" in failures[0]
 
@@ -2370,12 +2311,7 @@ def test_a_source_build_is_visible_even_though_it_succeeds():
     assert "cmake" in facts["source_build_markers"]
 
 
-# ------------------------------- run_t4_smoke.py: parent -> child argv
-
-
-# Options the PARENT alone acts on, so their absence from the child command is
-# correct rather than a leak. Each is here for a stated reason; an entry added
-# without one is how this guard stops working.
+# Options only the parent acts on; each entry needs a stated reason.
 PARENT_ONLY_DESTS = {
     "outdir",  # the parent gives each cycle its own subdirectory
     "cycle",  # set by the parent per child, never forwarded verbatim
@@ -2386,22 +2322,14 @@ PARENT_ONLY_DESTS = {
     "require_canary",  # evaluated by the parent's failure collector
     "check_batched_generation",
     "export_gguf",  # forwarded as a bare flag, asserted separately below
-    # The pin check reads the report the cycles produced, in the parent
-    # (run_t4_smoke.py:1741), so the children have nothing to do with it.
+    # The pin check runs in the parent over the cycles' reports.
     "pins",
-    # The plain-TRL control arm is spawned BY the parent, after the cycles, and
-    # ruled on there. A cycle child neither runs it nor judges it.
+    # Spawned and judged by the parent after the cycles.
     "compare_naive_trl",
     "control_oom_is_ok",
-    # Kernel provenance IS collected in the child (it needs the loaded model),
-    # but the flag reaches it through the bare-flag block rather than the
-    # name/value pairs this check walks; asserted separately in
-    # test_kernel_provenance.py.
+    # Collected in the child, but the flag goes via the bare-flag block; see test_kernel_provenance.py.
     "kernel_provenance",
-    # The vision run is spawned BY the parent, after the cycles and in a
-    # process of its own: it loads a second model, and two 4bit models resident
-    # at once on a 14.56GB T4 is how a leg becomes an OOM blamed on the thing
-    # it was testing.
+    # Spawned by the parent in its own process: two 4bit models on a 14.56GB T4 would OOM.
     "vision_run",
 }
 
@@ -2438,8 +2366,7 @@ def test_every_option_the_child_needs_actually_reaches_the_child():
     sys.path.insert(0, str(SMOKE_DIR))
     module = importlib.import_module("run_t4_smoke")
 
-    # Build the parser the same way main() does, by calling it with a sentinel
-    # that makes it return rather than run.
+    # Build the parser as main() does, using a sentinel that makes it return.
     parser = argparse.ArgumentParser()
     source = _smoke_source()
     dests = set(re.findall(r'dest\s*=\s*"([a-z_0-9]+)"', source))
@@ -2495,7 +2422,6 @@ def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source
     ), "an install that printed nothing must not claim a source build"
     assert quiet["source_build_markers"] == []
 
-    # And the two real answers are unchanged.
     assert (
         llama_cpp_facts(
             "Unsloth: Installing prebuilt llama.cpp b10472 - skipping compilation.", ()

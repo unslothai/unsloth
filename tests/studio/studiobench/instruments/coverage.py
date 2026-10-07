@@ -76,7 +76,6 @@ class CoverageSnapshot:
 
     functions: list[FunctionCount] = field(default_factory = list)
     script_urls: dict[str, str] = field(default_factory = dict)
-    # Set when this snapshot is a difference of two absolute snapshots.
     is_delta: bool = False
 
     def by_key(self) -> dict[tuple[str, int, int], FunctionCount]:
@@ -121,8 +120,7 @@ def _parse(result: dict[str, Any]) -> CoverageSnapshot:
             ranges = fn.get("ranges") or []
             if not ranges:
                 continue
-            # With `detailed: false` there is one range per function spanning the function; even with block
-            # coverage the FIRST range is the function-level one, so this stays correct either way.
+            # The first range is function-level with or without block coverage.
             head = ranges[0]
             snap.functions.append(
                 FunctionCount(
@@ -288,12 +286,7 @@ def ambiguity(snapshot: CoverageSnapshot, name: str) -> int:
 
 
 # Harness adapter (INTERFACES.md section 3)
-# Level 3, and every window this instrument touches is TIMING-VOID by construction: precise
-# coverage keeps count-collecting bytecode alive, which disables TurboFan and Maglev for the whole
-# isolate, so the durations `tracing` reports in the same cell describe a program nobody ships.
-# The payload therefore carries `timings_void: true` at both window and cell level, so the report
-# layer can refuse to quote a duration from this cell without knowing why. Only integers cross the
-# boundary, enforced by `assert_integers_only`.
+# Precise coverage disables TurboFan/Maglev, so timings in this cell are void (`timings_void`).
 
 import time  # noqa: E402
 
@@ -330,9 +323,7 @@ class CoverageInstrument:
             return
         t0 = time.perf_counter()
         try:
-            # Started ONCE per cell, never per window: restarting coverage re-runs V8's DeoptimizeAll, which
-            # changes what gets compiled and therefore counted, so per-window restarts would make the counts
-            # depend on the window boundaries.
+            # Started once per cell: restarting re-runs DeoptimizeAll and changes what gets counted.
             self.cov = PreciseCoverage(self.cdp)
             self.cov.start()
         except Exception as exc:  # noqa: BLE001
@@ -385,8 +376,6 @@ class CoverageInstrument:
                     ),
                 },
             )
-            # The boundary guard. A float here would be a category error, not a rounding problem, so it raises
-            # rather than warns.
             assert_integers_only(
                 {
                     k: v

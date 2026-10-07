@@ -55,8 +55,7 @@ def _block_network(monkeypatch):
     def _guard(*args, **kwargs):
         raise OSError("network blocked for offline integration test")
 
-    # Patch the method, not the class: replacing socket.socket itself breaks any
-    # isinstance(x, socket.socket) in the stack under test.
+    # Patch the method, not the class: replacing socket.socket breaks isinstance checks.
     monkeypatch.setattr(socket.socket, "connect", _guard)
     monkeypatch.setattr(socket, "create_connection", _guard)
     monkeypatch.setattr(socket, "getaddrinfo", _guard)
@@ -100,7 +99,6 @@ def test_real_cached_tokenizer_loads_from_snapshot_not_repo_id(monkeypatch):
         cache_dir = str(CACHE_ROOT / "hub"),
     )
     assert tok.vocab_size > 0
-    # A repo id here means the Hub metadata probe was reached, which is the bug.
     assert tok.name_or_path != REPO
     assert Path(tok.name_or_path).is_dir()
 

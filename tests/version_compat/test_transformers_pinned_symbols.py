@@ -30,7 +30,7 @@ from tests.version_compat._fetch import (
 )
 
 
-# Read from pyproject: a hardcoded floor went stale and silently dropped 4.52-4.56.
+# Read from pyproject: a hardcoded floor went stale.
 _FLOOR_RE = re.compile(r"^\s*\"transformers[^\"]*?>=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 _FLOOR_FALLBACK = (4, 52, 4)
 
@@ -55,7 +55,6 @@ _ALWAYS = ("v4.57.6", "v5.5.0", "v5.16.0", "v5.10.1", "v5.15.1")
 
 # Exact pins notebooks use; one-tag-per-minor would evict them.
 
-# pyproject's cap, so a later patch cannot evict the declared maximum.
 _CAP = re.compile(r"^\s*\"transformers[^\"]*?<=\s*([0-9]+(?:\.[0-9]+)*)", re.M)
 
 
@@ -69,14 +68,13 @@ def _declared_ceiling_tag() -> tuple[str, ...]:
     if not found:
         return ()
     ceiling = max(found, key = lambda v: tuple(int(p) for p in v.split(".")))
-    # Through the override table: some PyPI versions have no matching tag.
     return (_TAG_OVERRIDES.get(ceiling, "v" + ceiling),)
 
 
-# PyPI version -> tag where upstream disagrees (5.10.4 is tagged v5.10.3; 4.54.1 is v4.54-release).
+# PyPI version -> tag where upstream disagrees.
 _TAG_OVERRIDES = {"5.10.4": "v5.10.3", "4.54.1": "v4.54-release"}
 
-# Outage fallback; must start at the declared floor (test_the_outage_fallback_reaches_the_declared_floor).
+# Outage fallback; must start at the declared floor.
 _TAGS_FALLBACK = (
     "v4.52.4",
     "v4.53.3",
@@ -106,8 +104,7 @@ _TAGS_FALLBACK = (
 )
 
 
-# Shared across xdist workers so all collect identical parameters
-# (https://pytest-xdist.readthedocs.io/en/stable/known-limitations.html).
+# Shared across xdist workers so all collect identical parameters.
 _MATRIX_CACHE_ENV = "PYTEST_TRANSFORMERS_MATRIX_FILE"
 
 
@@ -217,11 +214,9 @@ def _sort_key(tag: str) -> tuple[int, ...]:
 
 TRANSFORMERS_TAGS = _resolved_tags() + ["main"]
 
-# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 
 
-# Trainer surface: unsloth/models/_utils.py rewrites Trainer.{__init__, training_step, get_batch_samples, compute_loss}.
 def test_trainer_class_importable_path(tag: str):
     """transformers.Trainer must remain at trainer.py or trainer/__init__.py."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -258,7 +253,6 @@ def test_trainer_training_step_grad_accum_pattern(tag: str):
         "self.accelerator.backward(loss",
     )
     missing = [s for s in needed if s not in src]
-    # Hard-fail only when ALL substrings missing; partial drift is informational.
     if len(missing) == len(needed):
         pytest.fail(
             f"{tag}: Trainer.training_step has none of the grad-accum "
@@ -288,7 +282,6 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     _, src = hit
     has_inplace = "self._tr_loss +=" in src
     has_outplace = "tr_loss = tr_loss + tr_loss_step" in src
-    # Assert ONE form is present so a refactor dropping both is caught.
     assert has_inplace or has_outplace, (
         f"{tag}: Trainer._inner_training_loop has neither "
         f"`tr_loss = tr_loss + tr_loss_step` nor `self._tr_loss +=`; "
@@ -296,13 +289,11 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     )
 
 
-# modeling_utils: checkpoint, PushToHubMixin, ALL_ATTENTION_FUNCTIONS.
 def test_modeling_utils_exposes_checkpoint(tag: str):
     """unsloth-zoo#549: transformers 5.2+ uses modeling_utils.checkpoint; patch must replace it, not just torch's."""
     src = fetch_text("huggingface/transformers", tag, "src/transformers/modeling_utils.py")
     if src is None:
         pytest.skip(f"{tag}: modeling_utils.py missing")
-    # Either a direct import or local rebinding.
     has_import = bool(
         re.search(
             r"^from\s+torch\.utils\.checkpoint\s+import\s+checkpoint",
@@ -327,7 +318,6 @@ def test_pushtohubmixin_create_repo_status(tag: str):
     _ = has_create
 
 
-# integrations.bitsandbytes: _replace_with_bnb_linear vs new path.
 def test_integrations_bitsandbytes_module_present(tag: str):
     src = fetch_text(
         "huggingface/transformers", tag, "src/transformers/integrations/bitsandbytes.py"
@@ -354,7 +344,6 @@ def test_quantizers_should_convert_module_signature(tag: str):
     _ = has_dot_form
 
 
-# integrations.finegrained_fp8.FP8Linear: bias/has_bias rename in v5.
 def test_fp8linear_init_param_names(tag: str):
     """unsloth-zoo#572: transformers 5.x renamed FP8Linear.__init__ `bias` -> `has_bias`."""
     src = fetch_text(
@@ -399,7 +388,6 @@ MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
         path = "src/transformers/models/llama/modeling_llama.py",
         classes = ("LlamaAttention", "LlamaDecoderLayer", "LlamaModel", "LlamaForCausalLM"),
         rope_name = "LlamaRotaryEmbedding",
-        # LlamaLinearScalingRotaryEmbedding is Unsloth's own shim, not an upstream rebind.
         patch_site = "unsloth/models/llama.py:FastLlamaModel.pre_patch",
     ),
     ModelingContract(
@@ -500,7 +488,7 @@ MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
         extra_bindings = ("FalconH1RMSNorm",),
         patch_site = "unsloth/models/falcon_h1.py:FastFalconH1Model.pre_patch",
     ),
-    # glm4_moe omitted: upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts; add with the Unsloth-side fix.
+    # glm4_moe omitted: upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts.
 )
 
 
@@ -520,9 +508,6 @@ def test_modeling_contract(tag: str, contract: ModelingContract):
         )
     for n in contract.extra_bindings:
         assert is_bound(src, n), f"{tag}/{contract.name}: {n} missing: {contract.patch_site}"
-
-
-# auto_factory: unsloth#5155 _LazyAutoMapping private API.
 
 
 def test_auto_factory_lazy_mapping_private_api(tag: str):
@@ -564,7 +549,6 @@ def test_configuration_utils_alias(tag: str):
     )
 
 
-# tokenization: apply_chat_template return_dict default flip in v5.
 def test_apply_chat_template_signature_present(tag: str):
     """unsloth-zoo#572: apply_chat_template `return_dict` default flipped False -> True in transformers 5.x."""
     src = fetch_text(
@@ -579,7 +563,6 @@ def test_apply_chat_template_signature_present(tag: str):
     ), f"{tag}: apply_chat_template missing in tokenization_utils_base.py"
 
 
-# Generic-importability sweep: every transformers symbol unsloth/zoo imports must stay reachable.
 def test_modeling_attn_mask_utils_symbols(tag: str):
     """_prepare_4d_attention_mask_for_sdpa is imported by unsloth/models/llama.py + sentence_transformer.py."""
     src = fetch_text(
@@ -595,7 +578,6 @@ def test_modeling_attn_mask_utils_symbols(tag: str):
     ), f"{tag}: _prepare_4d_attention_mask_for_sdpa missing"
 
 
-# Generic-importability sweep:
 def test_cache_utils_classes(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/cache_utils.py")
     if src is None:

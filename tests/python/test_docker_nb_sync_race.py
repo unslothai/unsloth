@@ -29,7 +29,6 @@ def sync() -> str:
 
 
 def test_the_refresh_is_still_detached(sync: str):
-    # a synchronous refresh would pass every other test here and regress boot time
     assert re.search(
         r'UNSLOTH_NB_REFRESH_CHILD=1 "\$0" >/dev/null 2>&1 &', sync
     ), "the GitHub refresh must stay a detached child"
@@ -125,9 +124,7 @@ def test_the_lock_lives_beside_the_state_it_protects(sync: str):
     )
 
 
-# entrypoint.sh runs `sync_notebooks` then `exec "$@"`, so the child is still copying
-# while JupyterLab serves the same tree, and `cp -a` writes THROUGH the destination
-# inode: half-written JSON to a reader, and a save after the hash check destroyed.
+# The refresh runs while JupyterLab serves the tree, and cp -a writes through the inode.
 
 
 def test_the_refresh_publishes_each_notebook_atomically(sync: str):
@@ -167,7 +164,6 @@ def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
     block = sync[sync.index('if [ ! -f "$STATE" ] || [ -f "$PARTIAL" ]; then') :]
     block = block[: block.index('mv "$STATE.tmp" "$STATE"')]
     assert "kept existing user file" in block
-    # RECORDED, not copied: cp -a would stamp root:root onto the host user's file
     same = block.index("kept existing user file")
     tail = block[same:]
     assert tail.index("$STATE.tmp") < tail.index('cp -a "$TEMPLATE/$rel"'), (
@@ -177,7 +173,6 @@ def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
 
 
 def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
-    # rename(2) is atomic, but a hash taken AFTER it is a second unprotected read
     block = sync[sync.index("while IFS= read -r -d '' f; do") :]
     block = block[: block.index("done < <(find")]
     assert re.search(
@@ -188,8 +183,6 @@ def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
     ), "the staged hash must be taken BEFORE the rename that publishes it"
     publish = block.index('mv -f "$new" "$dst"')
     tail = block[publish:]
-    # the append goes through record_tmpstate now, which checks the write; what this
-    # test guards is unchanged, that the value recorded is $staged and not a re-read
     assert re.search(
         r"(printf '%s  %s\\n'|record_tmpstate) \"\$staged\" \"\$rel\"", tail
     ), "the state line must record the staged hash, not a re-read of $dst"
@@ -198,9 +191,6 @@ def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
         "window as the pristine version"
     )
 
-
-# the same race end to end, with an `mv` shim that renames for real and then writes
-# the user's bytes: the Ctrl+S that lands inside the window
 
 import hashlib  # noqa: E402
 import os  # noqa: E402

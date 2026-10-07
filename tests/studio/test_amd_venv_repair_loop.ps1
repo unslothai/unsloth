@@ -2,33 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # A single-AMD-GPU host must not install itself into a loop (#8335).
-#
-# Two defects met there. WMI found exactly one Radeon, the if-expression holding it unrolled to a
-# scalar, that scalar's .Count read $null under Windows PowerShell 5.1, so setup reported "gpu
-# none" and judged the installed ROCm venv stale against a required "cpu". The stale branch under
-# install.ps1 then aborted, install.ps1's failure path restored the previous environment, and the
-# next run reached the same verdict -- which is why that abort has been reported from four
-# unrelated triggers (#5942, #7275, #8335, and a driver crash on Discord).
-#
-# Read this before adding a case, because the obvious repro does not work. It is NOT true that "a
-# scalar's .Count is $null on 5.1": a String or an Int32 answers 1 there exactly as on 7, so
-# anyone checking the claim that way concludes there is no bug. $null comes back only for objects
-# whose PSObject carries no Count of its own -- [pscustomobject], which Microsoft documents, and
-# CimInstance, which it does not, and the WMI fallback assigns the second kind. Measured on
-# windows-latest, PowerShell 5.1.26100.33158 (Desktop) against a real Get-CimInstance result, with
-# pwsh 7.6.4 on the same runner:
-#
-#   value                       5.1 .Count   7 .Count
-#   'a'                         1            1
-#   [pscustomobject]@{...}      $null        1
-#   CimInstance (one instance)  $null        1
-#   @(if (...) { ... })         1            1
-#
-# So this file adapts to the host: under 5.1 it reproduces #8335 for real on any Windows machine
-# with no AMD GPU required, and under pwsh 7 (including the Linux pwsh most contributors run) the
-# unroll still happens but the consequence does not, so those cases assert the source shape. Every
-# check states which it is.
-#
+# Under Windows PowerShell 5.1, .Count on a lone CimInstance or [pscustomobject] is $null
+# (strings and ints still answer 1), so setup saw "gpu none" and judged the ROCm venv stale.
+# Under 5.1 this reproduces it for real; under pwsh 7 the cases assert the source shape.
 # Run: pwsh -NoProfile -File tests/studio/test_amd_venv_repair_loop.ps1
 #  or: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1   (5.1, Windows)
 
@@ -42,8 +18,7 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Source text of each named function, Invoke-Expression'd at script scope by the caller (inside a
-# function the helpers would be lost on return). Recursive, so it reaches install.ps1's copies too.
+# Source text of each named function, to be Invoke-Expression'd at script scope by the caller.
 function Get-HelperSources($path, $names) {
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
@@ -59,18 +34,15 @@ function Get-HelperSources($path, $names) {
     return $out
 }
 
-# Stubs for the installers' printers. Both use Write-Host, so neither pollutes a return value.
 function substep { param([string]$Message, [string]$Color = "DarkGray") }
 function Write-StudioStdoutMirror { param([string]$Line) }
 
-# ---------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== the unroll, and what this host does with it ==="
 $psMajor = $PSVersionTable.PSVersion.Major
 $is51 = ($psMajor -lt 6)
 Write-Host "  host: PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
 
-# The unroll itself is not version-specific and happens everywhere, so it is asserted flat.
 $oneGpu = @("AMD Radeon PRO W7900")
 $unwrapped = if ($oneGpu.Count -gt 0) { $oneGpu } else { @() }
 $wrapped = @(if ($oneGpu.Count -gt 0) { $oneGpu } else { @() })
@@ -78,13 +50,11 @@ Check "an if-expression unrolls a one-element array" (-not ($unwrapped -is [arra
 Check "the @() wrap keeps it an array"               ($wrapped -is [array])
 Check "the wrapped value still counts one GPU"       ($wrapped.Count -eq 1)
 
-# The consequence IS version-specific, and only for some types. Pinning the String case stops this
-# being read as "5.1 returns $null for scalars", which is what makes the defect easy to dismiss.
+# Only some types return $null on 5.1; pinning the String case documents that.
 Check "a String scalar answers 1 on every PowerShell" ((("x")).Count -eq 1)
 Check "so does the unrolled string array"             ($unwrapped.Count -eq 1)
 
-# The type that bites. [pscustomobject] is the portable CimInstance stand-in: same split, and
-# available on the Linux pwsh where most of this suite runs.
+# [pscustomobject] stands in for CimInstance and is available on Linux pwsh.
 $_countless = ([pscustomobject]@{ Name = "AMD Radeon PRO W7900" }).Count
 if ($is51) {
     Check "5.1: a Count-less scalar answers `$null"   ($null -eq $_countless)
@@ -92,25 +62,19 @@ if ($is51) {
     Check "7: a Count-less scalar answers 1"          ($_countless -eq 1)
 }
 
-# ---------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== #8335 itself, against a real CIM instance ==="
-# Windows only, because Get-CimInstance is. Win32_OperatingSystem always returns exactly one
-# instance, so it reproduces "exactly one AMD GPU" on any Windows host without one -- which is why
-# this defect never showed up in CI. On 5.1 it is a real repro of #8335 and a real regression test
-# for the @() wrap. $IsWindows does not exist on 5.1, where the answer is Windows by construction.
+# Windows only: Win32_OperatingSystem always returns one instance, reproducing one GPU.
+# $IsWindows does not exist on 5.1, which is Windows by construction.
 if ($is51 -or $IsWindows) {
     $_cim = @(Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
     Check "exactly one CIM instance to work with" ($_cim.Count -eq 1)
     if ($_cim.Count -eq 1) {
-        # Byte-for-byte the shape of the WMI fallback, old form and new.
         $_old = if ($_cim.Count -gt 0) { $_cim } else { @() }
         $_new = @(if ($_cim.Count -gt 0) { $_cim } else { @() })
         Check "the unwrapped form is a bare CimInstance" (
             $_old -is [Microsoft.Management.Infrastructure.CimInstance])
         Check "the @() wrapped form stays an array"      ($_new -is [array])
-        # `if ($wmiGpus.Count -gt 0)` is the line that gates $script:ROCmGpuLabels: the bug and
-        # the fix, stated as the guard actually reads.
         Check "the @() wrap makes the GPU-label branch fire" ($_new.Count -gt 0)
         if ($is51) {
             Check "5.1: the OLD form loses the only adapter (#8335)" (-not ($_old.Count -gt 0))
@@ -122,21 +86,16 @@ if ($is51 -or $IsWindows) {
     Write-Host "  SKIP  not Windows, Get-CimInstance unavailable (source shapes below still run)"
 }
 
-# ---------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Test-VenvTorchIsRocm reads the wheel off disk ==="
-# The AMD counterpart of Test-VenvTorchIsXpu, so a faulted HIP runtime -- an `import torch` that
-# raises at the DLL load or never returns -- is not answered by deleting a good ROCm environment.
-# Free by design: no interpreter is launched, so a CPU-only host pays nothing on every update.
+# AMD counterpart of Test-VenvTorchIsXpu: reads files only, launching no interpreter.
 foreach ($srcText in (Get-HelperSources $setup @("Test-VenvTorchIsRocm"))) { Invoke-Expression $srcText }
-# @() around the call, then [0]: a one-name request returns a one-element array that unrolls to a
-# String on the way out, and [0] on a String is its first character. The same unroll, one file over.
+# @() then [0]: a one-element result unrolls to a String, and [0] would take its first char.
 $isRocmFn = @(Get-HelperSources $setup @("Test-VenvTorchIsRocm"))[0]
-# An empty or wrong extraction would make every case below pass vacuously.
+# An empty extraction would make every case below pass vacuously.
 Check "extraction kept the version file" ($isRocmFn -match 'version\.py')
 
-# Runs on Linux CI too, so the filesystem cmdlets are shadowed: the helper builds a Windows path
-# and this asserts the CONTENT it read, not what the OS resolves.
+# Filesystem cmdlets are shadowed so this runs on Linux CI and checks the content read.
 function Invoke-IsRocm {
     param([string] $VenvPath, [string] $VersionPyBody, [switch] $Missing, [switch] $Throws)
     $sb = [scriptblock]::Create(@"
@@ -165,43 +124,34 @@ Test-VenvTorchIsRocm -VenvPath '$VenvPath'
 $XPU  = "__version__ = '2.9.1+xpu'`ndebug = False"
 $CU   = "__version__ = '2.9.1+cu128'`ncuda: Optional[str] = '12.8'"
 $BARE = "__version__ = '2.9.1'"
-# Read off the indexes, not assumed. repo.amd.com/rocm/whl/<arch>/torch/ -- the only place Windows
-# ROCm wheels exist -- publishes a THREE-component label with the arch in the URL, not the version
-# (torch-2.11.0+rocm7.13.0-cp312-cp312-win_amd64.whl, what the #8335 reporter ended up on);
-# download.pytorch.org/whl/rocm6.4 publishes the two-component 2.8.0+rocm6.4, Linux only. So
-# "+rocm" is the label that matters and the "+gfx" arm is defensive, asserted here to stay so.
+# Windows ROCm wheels use a three-part label (2.11.0+rocm7.13.0); Linux uses 2.8.0+rocm6.4.
+# "+rocm" is what matters; the "+gfx" arm is defensive.
 Check "rocm6.4 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.8.0+rocm6.4'")
 Check "rocm7.0 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+rocm7.0'")
-# Three-part, so also the case a two-part `+rocm\d+\.\d+$` anchor would miss.
 Check "rocm7.13.0 wheel (#8335)" (Invoke-IsRocm "C:\v" "__version__ = '2.11.0+rocm7.13.0'")
 Check "gfx1151 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+gfx1151'")
 Check "gfx110X-all wheel"    (Invoke-IsRocm "C:\v" "__version__ = '2.7.1+gfx110X.all'")
-# A dev/nightly release segment sits before the local label, so it must not shift the match.
+# A dev/nightly segment precedes the local label.
 Check "nightly rocm wheel"   (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+rocm7.2'")
 Check "nightly cuda wheel"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+cu130'"))
-# A source build carries a git hash where the flavour would be, and is not a ROCm wheel.
 Check "source build"         (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'"))
 Check "cuda wheel"           (-not (Invoke-IsRocm "C:\v" $CU))
 Check "xpu wheel"            (-not (Invoke-IsRocm "C:\v" $XPU))
 Check "untagged wheel"       (-not (Invoke-IsRocm "C:\v" $BARE))
 Check "cpu wheel"            (-not (Invoke-IsRocm "C:\v" "__version__ = '2.10.0+cpu'"))
-# git_version is a real line in torch/version.py and can name a branch. Only __version__ decides.
+# Only __version__ decides; git_version can name a branch.
 Check "gfx in git_version"   (-not (Invoke-IsRocm "C:\v" ($CU + "`ngit_version = 'rocm-branch-gfx1100'")))
-# A CUDA build's version.py carries `hip: Optional[str] = None` and ROCm builds carry a `gfx` line,
-# so only the local label on __version__ decides, or a CUDA venv would be kept as ROCm forever.
+# CUDA builds carry a `hip` attribute too, so only the __version__ label decides.
 Check "hip attr but cuda wheel"  (-not (Invoke-IsRocm "C:\v" ($CU + "`nhip: Optional[str] = None")))
 Check "gfx attr but cuda wheel"  (-not (Invoke-IsRocm "C:\v" ($CU + "`ngfx = 'gfx1100'")))
 Check "no torch installed"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.8.0+rocm6.4'" -Missing))
 Check "unreadable file"      (-not (Invoke-IsRocm "C:\v" "__version__ = '2.8.0+rocm6.4'" -Throws))
 Check "no venv path"         (-not (Invoke-IsRocm "" "__version__ = '2.8.0+rocm6.4'"))
 
-# ---------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Invoke-BoundedPythonProbe keeps the reason it failed ==="
-# Both installers carry a copy, so both are driven. The probe drained stderr and threw it away, so
-# "the HIP DLLs will not load", "torch is not installed" and "the import never came back" arrived
-# at the caller as one silent False -- and the caller deletes the environment over that answer.
-# The bounding and the async drain must survive intact, so a real child process is launched.
+# Both installers carry a copy. The probe must keep stderr, stay bounded and drain async, so a
+# real child process is launched.
 $py = (Get-Command python3 -ErrorAction SilentlyContinue)
 if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue) }
 Check "an interpreter is available to probe" ($null -ne $py)
@@ -217,136 +167,106 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         Check "a good probe still answers"        ($ok.Ok -and $ok.Output.Trim() -eq "2")
         Check "a good probe reports no error"     ([string]::IsNullOrWhiteSpace($ok.Error))
 
-        # The shape of a driver fault: torch imports, the HIP DLLs do not load, python exits
-        # nonzero with the real cause on stderr and nothing on stdout.
         $bad = Invoke-BoundedPythonProbe -PythonExe $py.Source -Code 'import sys; sys.stderr.write(chr(91) + chr(87) + chr(105) + chr(110) + chr(69) + chr(114) + chr(114) + chr(111) + chr(114) + chr(32) + chr(49) + chr(50) + chr(54) + chr(93)); sys.exit(1)'
         Check "a failed probe still reads as not Ok" (-not $bad.Ok)
         Check "the stderr text survives"             ($bad.Error -match 'WinError 126')
-        # Keeping stderr must not have changed which stream is which.
         Check "stderr does not leak into Output"     (-not ($bad.Output -match 'WinError'))
 
-        # The case the helper exists for: still bounded, and now says so.
         $slow = Invoke-BoundedPythonProbe -PythonExe $py.Source -Code 'import time; time.sleep(45)' -TimeoutSec 1
         Check "a hung probe is still bounded"        (-not $slow.Ok)
         Check "a hung probe says it timed out"       ($slow.Error -match 'did not answer within')
 
         Check "an empty code string is refused"      (-not (Invoke-BoundedPythonProbe -PythonExe $py.Source -Code '').Ok)
     }
-    # No interpreter at that path: Process.Start throws, and its text is all there is to report.
+    # No interpreter: Process.Start throws, and its text is all there is to report.
     $gone = Invoke-BoundedPythonProbe -PythonExe (Join-Path $root "no-such-python-XYZ") -Code 'print(1)'
     Check "a missing interpreter reads as not Ok"    (-not $gone.Ok)
     Check "a missing interpreter reports why"        (-not [string]::IsNullOrWhiteSpace($gone.Error))
 }
 
-# ---------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== source shapes ==="
-# Normalised to LF once rather than per pattern: on a CRLF checkout every \n-anchored pattern below
-# matches nothing and the -not checks over an empty region pass vacuously. A real incident, not a
-# hypothetical (see test_setup_xpu_runtime_prereport.ps1).
+# Normalised to LF once, or \n-anchored patterns match nothing and -not checks pass vacuously.
 $setupText = (Get-Content -Raw $setup) -replace "`r`n", "`n"
 
 Write-Host "the AMD WMI fallback survives a single-GPU host"
-# The trailing `\n` is what makes the CRLF check below bite: on a CRLF checkout the line ends
-# `\r\n`, so the pattern fails rather than matching a silently empty region. `[^\r\n]*` absorbs
-# whatever guards the assignment (#8577 wrapped it in `if (-not $HasROCm) { ... }`) WITHOUT
-# absorbing the `\r`, which would hand the CRLF check a match and retire it silently.
+# The trailing `\n` makes the CRLF check bite; `[^\r\n]*` absorbs any guard without the `\r`.
 $_wmiPat = '(?s)(\$amdGpus = @\(Get-CimInstance Win32_VideoController.*?\$ROCmGpuLabel = \$script:ROCmGpuLabels\[0\][^\r\n]*\n)'
 $_wmi = if ($setupText -match $_wmiPat) { $Matches[1] } else { "" }
 Check "the WMI fallback was found"        ($_wmi -ne "")
 Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`n") -match $_wmiPat))
-# This is the #8335 assertion. It is a shape, not a behaviour: see the header.
+# The #8335 assertion: a shape, not a behaviour (see header).
 Check "the healthy/all choice is @() wrapped" (
     $_wmi -match '\$wmiGpus = @\(if \(\$healthyGpus\.Count -gt 0\) \{ \$healthyGpus \} else \{ \$amdGpus \}\)')
 Check "the unwrapped form is gone"        (-not ($_wmi -match '\$wmiGpus = if \('))
-# Same reason for the two lists it chooses between: Where-Object also returns a scalar on one match.
+# Where-Object also returns a scalar on one match.
 Check "the adapter list is @() wrapped"   ($_wmi -match '\$amdGpus = @\(Get-CimInstance')
 Check "the healthy list is @() wrapped"   ($_wmi -match '\$healthyGpus = @\(\$amdGpus \| Where-Object')
 
 Write-Host "a driver fault does not delete a ROCm venv"
-# Ends on `\{\n`, not on the comment text, for the same CRLF reason as above.
+# Ends on `\{\n` for the same CRLF reason.
 $_rescuePat = '(?s)(\$_verProbe = Invoke-BoundedPythonProbe.*?\} else \{\n        # Missing python\.exe means)'
 $_rescue = if ($setupText -match $_rescuePat) { $Matches[1] } else { "" }
 Check "the probe chain was found"          ($_rescue -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_rescuePat))
 Check "an unreadable flavour is rescued off disk" ($_rescue -match 'elseif \(Test-VenvTorchIsRocm -VenvPath \$VenvDir\)')
 Check "the rescue classifies it as rocm"   ($_rescue -match '(?s)elseif \(Test-VenvTorchIsRocm.*?\$installedTorchTag = "rocm"')
-# It must NOT set the rebuild flag, or the whole point is lost.
 Check "the rescue never sets shouldRebuild" (-not ($_rescue -match '(?s)elseif \(Test-VenvTorchIsRocm[^}]*\$shouldRebuild = \$true'))
-# The disk read is the point: a second interpreter after the first hung is what it avoids.
+# Avoids launching a second interpreter after the first hung.
 Check "the rescue launches no interpreter" (-not ($_rescue -match '(?s)elseif \(Test-VenvTorchIsRocm.*?Invoke-BoundedPythonProbe'))
-# Matched on the substep ARGUMENT, not the region: the comment above the branch names the driver
-# too, so a loose match stays green with the message itself deleted.
+# Matched on the substep argument, since the comment above the branch names the driver too.
 Check "the rescue names the driver fix"    ($_rescue -match 'substep "[^"]*Adrenalin')
-# Non-AMD, non-Intel families must still rebuild on an unreadable flavour, exactly as before.
 Check "other families still rebuild"       ($_rescue -match '(?s)\} else \{\s*\$shouldRebuild = \$true')
-# The XPU rescue this one is modelled on has to stay, and ahead of it: an Arc box names a
-# different driver.
+# The XPU rescue must stay ahead of it: an Arc box names a different driver.
 Check "the XPU rescue is untouched"        ($_rescue -match 'elseif \(Test-VenvTorchIsXpu -VenvPath \$VenvDir\)')
 Check "XPU is judged before ROCm"          (
     $_rescue.IndexOf('Test-VenvTorchIsXpu -VenvPath') -ge 0 -and
     $_rescue.IndexOf('Test-VenvTorchIsXpu -VenvPath') -lt $_rescue.IndexOf('Test-VenvTorchIsRocm -VenvPath'))
 
 Write-Host "the stale-venv decision has no dead end left in it"
-# Starts on `\$null\n`, so a CRLF checkout fails the match instead of returning an empty region.
+# Starts on `\$null\n` so a CRLF checkout fails the match.
 $_repairPat = '(?s)(\$reason = \$null\n.*?Rename-Item -LiteralPath \$VenvDir)'
 $_repair = if ($setupText -match $_repairPat) { $Matches[1] } else { "" }
 Check "the stale-venv decision was found"  ($_repair -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_repairPat))
-# The abort itself. install.ps1 is the caller under $InstallerManagedSetup, it moved the previous
-# environment aside earlier in the same run and its failure path moves it straight back, so exiting
-# here landed on the byte-identical starting state and nothing in that cycle can converge. Bounded
-# to the branch: the delete below has two legitimate Exit-SetupFailure calls of its own.
+# install.ps1 restores the previous env on failure, so aborting here can never converge.
+# Bounded to the branch: the delete below has its own Exit-SetupFailure calls.
 $_managedPat = '(?s)(if \(\$shouldRebuild -and \$InstallerManagedSetup\) \{.*?\n    \}\n)'
 $_managed = if ($_repair -match $_managedPat) { $Matches[1] } else { "" }
 Check "the installer-managed branch was found" ($_managed -ne "")
 Check "an installer-managed run does not abort" (-not ($_managed -match 'Exit-SetupFailure'))
-# Matched on the Write-StudioLine ARGUMENT, so the comment above the branch, which quotes the old
-# advice to explain why it went, cannot keep this green.
+# Matched on the argument, since the comment above quotes the old advice.
 Check "the advice that pointed at itself is gone" (
     -not ($setupText -match 'Write-StudioLine "\s*Re-run install\.ps1'))
 Check "the abort message is gone too"      (-not ($setupText -match 'The existing Unsloth environment needs repair'))
-# What replaces it: the in-place repair an index-pin change already takes, honoured by every arm.
 Check "an installer-managed run repairs in place" ($_managed -match '\$script:PinChangedForceReinstall = \$true')
 Check "and clears the rebuild flag"        ($_managed -match '\$shouldRebuild = \$false')
-# Deleting was never available here: install.ps1 runs setup through the venv's own unsloth.exe.
+# install.ps1 runs setup through the venv's own unsloth.exe, so deleting was never possible.
 Check "it does not try to wipe the venv it runs from" (-not ($_managed -match 'Remove-Item'))
-# A direct `unsloth studio update` keeps its own self-repair, and the custom-home guard stays in
-# front of the delete.
 Check "a direct update still rebuilds"     ($_repair -match 'Stale venv detected \(\$reason\) -- rebuilding')
-# ...unless it is running from the venv's own python.exe, which `unsloth studio update` always is
-# on Windows: a running image cannot be deleted, so that run repairs in place like install.ps1.
+# A running image cannot be deleted, so an update from the venv's python repairs in place.
 Check "a direct update from inside the venv repairs in place" (
     $_repair -match '(?s)\$_hostPy = Get-SetupHostInterpreterInVenv -VenvDir \$VenvDir.*?\$script:PinChangedForceReinstall = \$true.*?\$shouldRebuild = \$false')
-# And when it does rebuild, the old tree is moved aside first: a rename fails whole where a
-# recursive delete stops at the first locked file and leaves a venv nothing can start.
+# A rename fails whole; a recursive delete can stop at a locked file and leave a broken venv.
 Check "the rebuild moves the venv aside before deleting" (
     $_repair -match 'Rename-Item -LiteralPath \$VenvDir' -and -not ($_repair -match 'Remove-Item -LiteralPath \$VenvDir'))
 Check "the custom-home guard still gates the wipe" ($_repair -match '\$StudioHomeIsCustom')
-# The sweep next to the venv deletes on every qualifying run, including one that rebuilds nothing,
-# and it runs ahead of that guard. So it asks the same ownership question the guard asks, and it
-# requires the directory to look like an environment this script moved rather than trusting a name.
+# The sweep runs ahead of the guard on every run, so it asks the same ownership question.
 Check "the sweep reads the same ownership guard" ($_repair -match '\$_studioRootIsOurs')
 Check "the sweep wants more than a matching name" (
     $_repair -match 'foreach \(\$_sign in @\("pyvenv\.cfg", \$StudioOwnedMarker, \$StudioStaleMarker\)\)')
-# A taken destination takes a suffix instead of failing the rename, as install.sh already does.
 Check "a taken stale name takes a suffix"        ($_repair -match '\$_staleTry -lt 64')
 Check "the sweep recognises that suffix"         ($_repair -match '\(\?:-\[0-9\]\+\)\?\$')
-# Why it failed, not just that it failed: this line separates a faulted GPU driver from a missing
-# wheel, and the user is about to be told what happened to their environment.
+# Distinguishes a faulted GPU driver from a missing wheel for the user.
 Check "the swallowed probe error is surfaced" ($_repair -match '\$_verProbe\.Error')
 Check "the probe handle is declared up front" ($setupText -match '(?m)^\s*\$_verProbe = \$null')
-# Read by four install arms and raised by the repair above, but assigned only inside the
-# venv-exists block, so on a fresh install every one of those reads is of a variable that was never
-# created: harmless bare (falsy is the wanted answer), fatal under a caller's Set-StrictMode.
+# Assigned only inside the venv-exists block, so fresh installs would fail under Set-StrictMode.
 Check "the force-reinstall flag is declared outside the venv block" (
     $setupText -match '(?m)^\$script:PinChangedForceReinstall = \$false$')
 
 Write-Host "the surfaced probe error survives a stderr that is only whitespace"
-# The guard is `-and $_verProbe.Error`, and a stderr of blank lines passes it while Where-Object
-# drops every one, so [0] into what is left is fatal under a caller's Set-StrictMode -- and
-# studio/setup.bat launches setup WITHOUT -NoProfile, so a profile can set one. Driven for real
-# rather than asserted as a shape, with the replaced form as a control.
+# Blank-line stderr passes the guard but leaves nothing for [0], fatal under Set-StrictMode
+# (setup.bat runs without -NoProfile). Driven for real with the old form as a control.
 $_strictNewOk = $true
 try {
     & {
@@ -368,24 +288,18 @@ try {
         $null = @($probe.Error -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)[0]
     }
 } catch { $script:_strictOldThrew = $true }
-# Without this the check above would pass on any rewrite, including one that never had the bug.
+# Without this the check above would pass on any rewrite.
 Check "the @(...)[0] form it replaced really did throw" $_strictOldThrew
 Check "setup.ps1 no longer indexes that pipeline" (
     -not ($setupText -match 'Select-Object -Last 1\)\[0\]'))
-# A real one-line stderr must still be picked up, or the whole point of keeping it is lost.
 $_realErr = "Traceback (most recent call last):`r`nOSError: [WinError 126] The specified module could not be found"
 $_realLine = $_realErr -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1
 Check "a real stderr still yields its last line" ($_realLine -match 'WinError 126')
 
 Write-Host ""
 Write-Host "=== an interpreter-less venv is not repaired in place, it is refused ==="
-# The one state the in-place repair made WORSE than the abort it replaced. A venv directory with no
-# Scripts\python.exe is incomplete, not stale -- no interpreter to force-reinstall torch through --
-# and the abort used to catch it by accident, because it caught every stale verdict. Without a
-# guard it now reaches the activation, a dot-source of a path that does not exist, which is NOT a
-# terminating error at the "Continue" the pip section runs at: setup prints one red line and keeps
-# going, every `python` / `uv pip` after it resolves against whatever is on PATH, the whole stack
-# lands outside the venv and the run can still exit 0. Prove the hazard before asserting the guard.
+# A venv dir with no python.exe is incomplete, not stale. Dot-sourcing a missing Activate is
+# non-terminating at "Continue", so pip installs outside the venv and exits 0. Prove it first.
 $_dotSourceKeptGoing = $false
 & {
     $ErrorActionPreference = "Continue"
@@ -394,60 +308,46 @@ $_dotSourceKeptGoing = $false
 } 2>$null
 Check "dot-sourcing a missing script does not stop the script" $_dotSourceKeptGoing
 
-# Bounded to the reuse branch: the "not found" branch above has an Exit-SetupFailure of its own,
-# and matching the whole region would pass on that one. Both ends sit immediately after a
-# non-newline token, so a CRLF checkout fails the match instead of yielding an empty region.
+# Bounded to the reuse branch (the not-found branch has its own Exit-SetupFailure); ends after a
+# non-newline token so CRLF fails the match.
 $_reusePat = '(?s)(substep "reusing existing virtual environment at \$VenvDir"\n.*?Exit-SetupFailure "No interpreter at [^\n]*\n)'
 $_reuse = if ($setupText -match $_reusePat) { $Matches[1] } else { "" }
 Check "the reuse branch was found"         ($_reuse -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_reusePat))
 Check "it refuses a venv with no interpreter" ($_reuse -match '(?s)\} else \{.*?Exit-SetupFailure "No interpreter at')
-# It must fail BEFORE the dot-source, or the hazard proven above is still live.
 Check "the refusal precedes the activation" (
     $setupText.IndexOf('Exit-SetupFailure "No interpreter at') -lt
     $setupText.IndexOf('$ActivateScript = Join-Path $VenvDir'))
-# Not a wipe: this venv may be the only place the previous one's contents still are.
+# Not a wipe: this venv may hold the only copy of the previous one's contents.
 Check "it does not delete the venv"        (-not ($_reuse -match 'Remove-Item'))
-# The message has to say incomplete, not stale, or it reads as the loop-causing advice again.
 Check "it says incomplete, not out of date" ($_reuse -match 'incomplete rather than out of date')
-# A healthy venv must be untouched by all of this.
 Check "a venv with an interpreter still just prints its version" (
     $_reuse -match '(?s)if \(Test-Path -LiteralPath \$_venvPyExe\) \{.*?--version')
 
-# The interpreter is not the only file that has to be there. Everything after this reaches the venv
-# through the dot-sourced Activate.ps1 and a bare `python` (Fast-Install resolves its target with
-# (Get-Command python).Source), and install.ps1 leaves the venv's Scripts directory off PATH on
-# purpose, so a venv that kept python.exe but lost Activate.ps1 hits the SAME hazard proven above,
-# one file over. Newly reachable, because a stale verdict now repairs where it used to abort.
+# Activate.ps1 must exist too: install.ps1 leaves Scripts off PATH, so a missing one hits the
+# same hazard.
 Check "it refuses a venv with no activation script" (
     $_reuse -match 'Exit-SetupFailure "No activation script at')
 Check "the activation script path is built next to the interpreter" (
     $_reuse -match '\$_venvActivate = Join-Path \$VenvDir "Scripts\\Activate\.ps1"')
-# The -ge 0 is not decoration: IndexOf answers -1 when the refusal is not there, and -1 is less
-# than every other offset, so the ordering alone passes on a tree that never grew it.
+# IndexOf returns -1 when absent, which would pass the ordering check alone.
 Check "that refusal also precedes the activation" (
     $setupText.IndexOf('Exit-SetupFailure "No activation script at') -ge 0 -and
     $setupText.IndexOf('Exit-SetupFailure "No activation script at') -lt
     $setupText.IndexOf('$ActivateScript = Join-Path $VenvDir'))
-# Checked on the arm where the interpreter EXISTS, or it never fires on its own.
 Check "the check sits inside the interpreter-present arm" (
     $_reuse -match '(?s)if \(Test-Path -LiteralPath \$_venvPyExe\) \{.*?Exit-SetupFailure "No activation script at.*?\} else \{')
 Check "it does not delete that venv either" (-not ($_reuse -match 'Remove-Item'))
 
 Write-Host ""
 Write-Host "=== a present activation script is not the same as an activated venv ==="
-# Both refusals above check that a FILE is there; neither can tell whether dot-sourcing it took
-# effect. Activate.ps1 prepends the venv to PATH in its very last statement, 28 lines after it sets
-# $env:VIRTUAL_ENV, so a copy truncated by an interrupted `python -m venv` runs to its last
-# complete statement and returns having changed nothing that matters, and an unparseable one is a
-# ParserError, non-terminating at the "Continue" the pip section runs at. Prove both hazards live
-# before asserting the guard, exactly as the missing-script case above is proven.
+# Activate.ps1 updates PATH in its last statement, so a truncated copy silently does nothing and
+# an unparseable one is non-terminating. Prove both hazards before asserting the guard.
 $_actRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-activate-" + [guid]::NewGuid().ToString("N"))
 try {
     New-Item -ItemType Directory -Path $_actRoot -Force | Out-Null
 
     $_truncated = Join-Path $_actRoot "truncated.ps1"
-    # Everything Activate.ps1 does BEFORE its final PATH line, and nothing after it.
     Set-Content -LiteralPath $_truncated -Value '$env:UNSLOTH_ACTIVATE_PROBE = "reached"'
     $_corrupt = Join-Path $_actRoot "corrupt.ps1"
     Set-Content -LiteralPath $_corrupt -Value @('$env:UNSLOTH_ACTIVATE_PROBE = "reached"', 'if ( { unclosed')
@@ -462,19 +362,14 @@ try {
         $script:_truncKeptGoing = $true
     } 2>$null
     Check "a truncated activation script does not stop the script" $_truncKeptGoing
-    # The worst part of this one: there is no red line to notice, unlike the missing-file case.
     Check "and raises no error at all" ($Error.Count -eq 0)
     Check "and leaves PATH exactly as it found it" ($env:PATH -eq $_pathBefore)
-    # It still set the state a VIRTUAL_ENV check would have trusted, which is why the guard looks
-    # at the resolved interpreter instead.
+    # It still set VIRTUAL_ENV-like state, which is why the guard checks the resolved interpreter.
     Check "while still setting the state that precedes the PATH line" ($env:UNSLOTH_ACTIVATE_PROBE -eq "reached")
 
     $env:UNSLOTH_ACTIVATE_PROBE = $null
 
-    # The unparseable case has to run in a child host, in setup.ps1's actual shape: script-scope
-    # "Continue" and no enclosing try. A ParserError is non-terminating there, but inside a try
-    # under this file's "Stop" it converts and unwinds, proving the opposite. setup.ps1 is itself
-    # launched as a fresh host process, so the child is the faithful reproduction, not a dodge.
+    # Runs in a child host to match setup.ps1: script-scope "Continue", no enclosing try.
     $_hostExe = try { [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $null }
     Check "the host executable is known" ($_hostExe -and (Test-Path -LiteralPath $_hostExe))
     $_child = Join-Path $_actRoot "child.ps1"
@@ -485,12 +380,8 @@ try {
         'if ($env:PATH -eq $before) { Write-Output "PATH-UNTOUCHED" }',
         'Write-Output "SURVIVED"',
         'exit 0')
-    # The corrupt script writes its parse error to stderr, and Windows PowerShell 5.1 wraps a
-    # native command's stderr in a NativeCommandError and applies $ErrorActionPreference to it,
-    # so the "Stop" set at the top of this file would end the run here. 7.1 stopped applying the
-    # preference to native stderr, which is why this passes under pwsh and only fails on the 5.1
-    # leg. Scope the preference to the call; the exit code is what this actually judges, and it is
-    # read on the next line.
+    # 5.1 applies $ErrorActionPreference to native stderr (7.1+ does not), so scope "Stop" off for
+    # this call; the exit code is what is judged.
     $_childOut = & {
         $ErrorActionPreference = "Continue"
         & $_hostExe -NoProfile -File $_child 2>$null
@@ -498,21 +389,16 @@ try {
     $_childRc = $LASTEXITCODE
     Check "an unparseable activation script does not stop the script either" ($_childOut -match 'SURVIVED')
     Check "and it leaves PATH untouched too" ($_childOut -match 'PATH-UNTOUCHED')
-    # The whole point: the run can still report success over an environment it never entered.
     Check "and the run still exits 0" ($_childRc -eq 0)
 
-    # ── the guard itself, executed ──
-    # Caught rather than thrown, so a tree without the guard reports every check below as FAIL
-    # instead of unwinding at the first one and hiding the rest.
+    # Caught rather than thrown, so a tree without the guard reports every check as FAIL.
     $_assertFn = try { @(Get-HelperSources $setup @("Assert-VenvActivated"))[0] } catch { "" }
-    # An empty or wrong extraction would make every case below pass vacuously.
+    # An empty extraction would make every case below pass vacuously.
     Check "extraction kept the interpreter lookup" ($_assertFn -match 'Get-Command python')
-    # A VIRTUAL_ENV check is the tempting wrong answer, and the truncation above is why it fails.
-    # The -ne "" is the anti-vacuity half: -not on an empty region passes against no guard at all.
+    # A VIRTUAL_ENV check is the wrong answer (see truncation above); -ne "" is the anti-vacuity half.
     Check "the guard does not settle for VIRTUAL_ENV" (($_assertFn -ne "") -and -not ($_assertFn -match 'VIRTUAL_ENV'))
 
-    # Real directories rather than a Get-Item stub: separators, trailing separators and case
-    # folding are the whole risk, and a stub would just re-implement the bug.
+    # Real directories: separators and case folding are the whole risk.
     $_venvOk = Join-Path $_actRoot "venv"
     $_venvOkPy = Join-Path (Join-Path $_venvOk "Scripts") "python.exe"
     New-Item -ItemType File -Path $_venvOkPy -Force | Out-Null
@@ -544,7 +430,6 @@ Assert-VenvActivated -VenvDir `$Venv
 
     Check "an activated venv is accepted" (
         $null -eq (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_venvOkPy))
-    # The state this section exists for: activation no-opped, so `python` is still the ambient one.
     Check "an ambient interpreter is refused" (
         (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_ambientPy) -match 'did not put its interpreter on PATH')
     Check "and the refusal names where python actually resolved" (
@@ -555,122 +440,80 @@ Assert-VenvActivated -VenvDir `$Venv
     Check "a sibling venv is not mistaken for this one" (
         (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_venvSiblingPy) -match 'did not put its interpreter on PATH')
 
-    # ── the false-positive side, which matters more than the true-positive side ──
-    # A guard that refuses a working install is worse than the bug it closes.
+    # False positives matter more: refusing a working install is worse than the bug.
     Check "a trailing separator on the venv path still passes" (
         $null -eq (Invoke-AssertVenv -VenvDir ($_venvOk + [System.IO.Path]::DirectorySeparatorChar) -PythonSource $_venvOkPy))
-    # Windows paths are case-insensitive, and the two sides can disagree on case.
     Check "a differently cased venv path still passes" (
         $null -eq (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource ($_venvOkPy.ToUpperInvariant())))
-    # An alias or function named python carries no Source, so nothing can be proven about it.
+    # An alias or function named python has no Source, so nothing can be proven.
     Check "a non-application python is left alone" (
         $null -eq (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_ambientPy -CommandType 'Function'))
-    # An unresolvable venv root leaves the guard nothing to stand on, and the two refusals above
-    # already cover a venv that is not there.
     Check "an unresolvable venv path is left alone" (
         $null -eq (Invoke-AssertVenv -VenvDir (Join-Path $_actRoot "no-such-venv") -PythonSource $_ambientPy))
 } finally {
     Remove-Item -LiteralPath $_actRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# ── where it is wired in ──
-# Both ends sit immediately after a non-newline token, so a CRLF checkout fails the match rather
-# than yielding an empty region every -not check would pass against. The dot-source is reached
-# through Enter-StudioVenv, which picks it or the staged-root PATH activation, so the region
-# spans that helper rather than requiring the dot-source on the very next line.
+# Ends after a non-newline token so CRLF fails the match. The dot-source is reached through
+# Enter-StudioVenv, so the region spans that helper.
 $_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n.*?\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
 $_act = if ($setupText -match $_actPat) { $Matches[1] } else { "" }
 Check "the activation block was found"     ($_act -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_actPat))
-# A post-condition, so it has to come AFTER the dot-source, not alongside the two pre-conditions.
 Check "the assertion follows the dot-source" (
     $setupText.IndexOf('. $ActivateScript') -ge 0 -and
     $setupText.IndexOf('. $ActivateScript') -lt
     $setupText.IndexOf('Assert-VenvActivated -VenvDir $VenvDir'))
-# Nothing between here and Fast-Install re-checks, and Fast-Install is where a wrong interpreter
-# starts receiving the stack.
+# Fast-Install is where a wrong interpreter starts receiving the stack.
 Check "it lands before Fast-Install resolves python" (
     $setupText.IndexOf('Assert-VenvActivated -VenvDir $VenvDir') -ge 0 -and
     $setupText.IndexOf('Assert-VenvActivated -VenvDir $VenvDir') -lt
     $setupText.IndexOf('function Fast-Install'))
-# The re-activation after Refresh-Environment sits inside a catch that swallows everything, so
-# the second call site is not a duplicate of the first.
+# The re-activation after Refresh-Environment is in a catch that swallows everything.
 Check "the re-activation is covered as well" (
     ([regex]::Matches($setupText, [regex]::Escape('Assert-VenvActivated -VenvDir $VenvDir'))).Count -ge 2)
 Check "and that one is outside the swallowing catch" (
     $setupText.IndexOf('} catch { }') -ge 0 -and
     $setupText.IndexOf('} catch { }') -lt
     $setupText.LastIndexOf('Assert-VenvActivated -VenvDir $VenvDir'))
-# It refuses; it does not repair, and it does not wipe a venv install.ps1 may still restore from.
-# Env: is exempt: the staged branch clears PYTHONHOME the way Activate.ps1 does, and that removes
-# a variable, not a file.
+# It refuses only. Env: is exempt: the staged branch clears PYTHONHOME like Activate.ps1 does.
 Check "the guard does not delete anything" (
     ($_act -ne "") -and -not ($_act -match 'Remove-Item(?!\s+Env:)'))
 
 Write-Host ""
 Write-Host "=== an installer-managed repair never moves a GPU wheel to another family ==="
-# install.ps1 resolves the index and installs the torch trio ITSELF, minutes before it invokes
-# setup, which then probes the hardware again from scratch. When that second probe fails (a
-# Get-CimInstance that throws, an nvidia-smi that does not answer, the single-Radeon unroll at the
-# top of this file) setup lands somewhere else, reads the +cu / +rocm / +xpu wheel install.ps1 just
-# placed as stale, and the in-place repair --force-reinstalls the other family over it. Then setup
-# exits 0, install.ps1 counts the run a success and drops the rollback copy: the abort this repair
-# replaced at least failed loudly, and committing a wrong install silently is a worse trade.
-#
-# "cpu" was only the first direction. The same disagreement runs GPU-to-GPU on any box holding two
-# vendors' cards, where one scan answers in install.ps1 and the other in setup: +rocm read as
-# cu128, +cu128 read as rocm, +xpu read as either. install.ps1 has already reconciled the venv
-# against the index it chose, so a GPU wheel sitting here IS its answer.
+# setup re-probes hardware after install.ps1 installed torch; a disagreeing probe (cpu or another
+# GPU vendor) must not force-reinstall over install.ps1's chosen wheel and then exit 0.
 $_guardPat = '(?s)(if \(\$shouldRebuild -and \$InstallerManagedSetup -and\n.*?\n    \}\n)'
 $_guard = if ($setupText -match $_guardPat) { $Matches[1] } else { "" }
 Check "the downgrade guard was found"       ($_guard -ne "")
 Check "CRLF is normalised, not tolerated"   (-not (($setupText -replace "`n", "`r`n") -match $_guardPat))
-# The exact condition, because each term is load-bearing.
 Check "it only fires under the installer"   ($_guard -match '\$InstallerManagedSetup')
 Check "it only fires on a GPU wheel"        ($_guard -match '\$installedTorchTag -and \$installedTorchTag -ne "cpu"')
-# NOT narrowed to a cpu rescan: that spelling left every GPU-to-GPU direction running straight
-# into the in-place repair below.
+# Not narrowed to a cpu rescan: GPU-to-GPU disagreements must be covered too.
 Check "it is not narrowed to a cpu rescan"  (-not ($_guard -match '\$expectedTorchTag -eq "cpu"'))
-# $expectedTorchTag is assigned only inside the `if (-not $shouldRebuild)` block above, so on a
-# venv whose torch would not import it was never created and reading it in the CONDITION would be
-# fatal under a caller's Set-StrictMode. In the body it is reached only after $installedTorchTag
-# has answered, which is what makes the message safe.
+# $expectedTorchTag may be unassigned when torch fails to import; reading it in the condition
+# is fatal under Set-StrictMode.
 Check "the condition never reads the expected tag" (
     -not (($_guard -split '\{', 2)[0] -match '\$expectedTorchTag'))
 Check "it clears the rebuild flag"          ($_guard -match '\$shouldRebuild = \$false')
-# No --force-reinstall is raised, so the arm below leaves the GPU wheel in place (a +cu / +rocm /
-# +xpu build already satisfies a bare torch>= range).
 Check "it does not raise force-reinstall"   (-not ($_guard -match 'PinChangedForceReinstall = \$true'))
 Check "it does not wipe the venv"           (-not ($_guard -match 'Remove-Item'))
-# A kept xpu venv needs the same index lock the direct-update escape takes, or triton-windows
-# lands over torch's XPU triton with nothing to swap it back.
+# A kept xpu venv needs the xpu index lock, or triton-windows lands over torch's XPU triton.
 Check "a kept xpu venv still locks the xpu index" (
     $_guard -match 'if \(\$installedTorchTag -eq "xpu"\) \{ \$script:PreservedXpuVenv = \$true \}')
-# Keeping the wheel is not enough on its own: two install arms a thousand lines below force torch
-# back regardless of $script:PinChangedForceReinstall, so the kept family has to reach the index
-# selection. Same treatment as $script:PreservedXpuVenv, declaration outside the venv block
-# included.
+# Two install arms force torch back regardless of PinChangedForceReinstall, so the kept family
+# must reach index selection, declared outside the venv block.
 
-# ── the half of the guard that keeps it from preserving a wheel nobody chose ──
-# "There is a GPU wheel in the venv" is not evidence that THIS install run put it there:
-# install.ps1's migrated-venv arm installs unsloth alone and never touches torch, and its flavor
-# repair no-ops whenever its own expected tag is 'cpu' or unrecognised, so an ordinary upgrade off
-# the legacy ~/.unsloth/studio/.venv layout hands setup whatever wheel the previous install left,
-# on whatever hardware that was. Preserving THAT is a permanently wrong environment setup then
-# refuses to repair, and on a mapped AMD host the kept cu* tag also blocks the ROCm reroute (it
-# needs $CuTag -eq "cpu"). So install.ps1 says which family it settled on, and only a wheel
-# matching it counts as its answer.
+# A GPU wheel in the venv is not proof this run chose it (legacy-layout migration leaves old
+# wheels), so install.ps1 reports its family and only a matching wheel is preserved.
 $installText = (Get-Content -Raw (Join-Path $root "install.ps1")) -replace "`r`n", "`n"
 Check "install.ps1 reports the family it settled on" (
     $installText -match '\$env:UNSLOTH_INSTALLER_TORCH_TAG = if \(\$SkipTorch\) \{ "" \} else \{')
 Check "it reports the resolved flavor, not the raw index URL" (
     $installText -match '\[string\]\(Get-ExpectedTorchFlavorTag -TorchIndexUrl \$TorchIndexUrl -ROCmIndexUrl \$ROCmIndexUrl\)')
-# Unconditional, like $env:UNSLOTH_NO_TORCH next to it: a second install in the same PowerShell
-# session must not inherit the first one's answer. Assigning "" clears it on every edition (7.5+
-# keeps a present blank value, 5.1 and 7.0-7.4 remove the variable) and setup reads both as
-# unknown. The -match half is the anti-vacuity half: a bare -notmatch passes against a tree that
-# never grew the assignment at all. The finally that puts the caller's own value back is a
-# conditional assignment too, and is not the report; only its $previous* form is allowed.
+# Assigned unconditionally so a second install in the same session does not inherit it; ""
+# clears it on every edition. The -match half is the anti-vacuity half.
 Check "the report is assigned on every run, not only when known" (
     ($installText -match '(?m)^\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = ') -and
     ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = (?!\$previous)'))
@@ -678,9 +521,7 @@ Check "it is handed over before setup is invoked" (
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -ge 0 -and
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -lt
     $installText.IndexOf('$studioArgs = @(''studio'', ''setup'')'))
-# setup.ps1 ships in the pip package and install.ps1 is fetched from unsloth.ai, so the two can be
-# different ages. An absent variable therefore means "unknown", not "mismatch", or a cached older
-# installer would force-reinstall over its own correct choice. Blank counts as absent on 7.5+.
+# setup.ps1 and install.ps1 ship separately, so absent or blank means unknown, not mismatch.
 Check "setup.ps1 reads the reported family"  (
     $setupText -match '(?m)^\$InstallerTorchTag = if \(\[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_INSTALLER_TORCH_TAG\)\) \{ \$null \}')
 Check "an absent report is unknown, not a mismatch" (
@@ -698,31 +539,23 @@ Check "the declaration precedes the stale check" (
     $setupText.IndexOf('$script:PreservedInstallerTorchTag = $null') -ge 0 -and
     $setupText.IndexOf('$script:PreservedInstallerTorchTag = $null') -lt
     $setupText.IndexOf('$script:PreservedInstallerTorchTag = $installedTorchTag'))
-# ...and it has to run BEFORE the repair, or the repair has already fired.
 Check "the guard precedes the in-place repair" (
     $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup -and') -ge 0 -and
     $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup -and') -lt
     $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup) {'))
 Write-Host ""
 Write-Host "--- driven end to end, over setup.ps1's own source"
-# A hand-copied simulation drifts and keeps passing after the file it claims to test changed,
-# which is exactly how the cpu-only spelling survived review. So the WHOLE decision -- pin escape,
-# cu*-to-cu* escape, direct-update xpu escape, this guard, the in-place repair -- is lifted out of
-# setup.ps1 verbatim and executed, as is the index selection. Nothing below is retyped.
+# The whole decision cascade is lifted from setup.ps1 verbatim and executed, never retyped.
 $_cascadePat = '(?s)(    if \(\$shouldRebuild -and \$_pinnedIdx -and \$installedTorchTag\) \{.*?\n    if \(\$shouldRebuild -and \$InstallerManagedSetup\) \{.*?\n    \}\n)'
 $_cascade = if ($setupText -match $_cascadePat) { $Matches[1] } else { "" }
 Check "the decision cascade was found"     ($_cascade -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_cascadePat))
-# Ends on the `else { $CuTag = "cpu" }` brace, so a truncated match cannot leave a region that
-# still assigns $CuTag.
+# Ends on the `else { $CuTag = "cpu" }` brace so a truncated match cannot still assign it.
 $_cuTagPat = '(?s)(if \(\$PinnedTorchIndexUrl\) \{\n    \$CuTag = Get-TorchIndexLeaf.*?\n\} else \{\n    \$CuTag = "cpu"\n\}\n)'
 $_cuTag = if ($setupText -match $_cuTagPat) { $Matches[1] } else { "" }
 Check "the index selection was found"      ($_cuTag -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_cuTagPat))
-# The two install arms that force torch back on their own. Their CONDITIONS are extracted and
-# evaluated below, so "the kept wheel survives" is answered by the shipped gates. Both arms key
-# --force-reinstall off the installed tag; the AMD arm used to force unconditionally, which made
-# every update re-resolve the trio against the ROCm index.
+# These arms force torch back on their own; their extracted conditions are evaluated below.
 Check "the AMD arm forces on any non-rocm tag" (
     $setupText -match 'if \(\$installedTorchTag -ne "rocm"\) \{ \$rocmForce = @\("--force-reinstall"\) \}')
 Check "the AMD arm no longer forces unconditionally" (
@@ -734,70 +567,50 @@ $_xpuGate = if ($setupText -match '(?m)^if \((-not \$ROCmIndexUrl -and \$CuTag -
 Check "the AMD reroute gate was found"     ($_amdGate -ne "")
 Check "the XPU arm gate was found"         ($_xpuGate -ne "")
 
-# The real Test-CudaFamilyLeaf, because the index selection calls it on the preserved tag.
 foreach ($srcText in (Get-HelperSources $setup @("Test-CudaFamilyLeaf"))) { Invoke-Expression $srcText }
 Check "Test-CudaFamilyLeaf came across"    ((Test-CudaFamilyLeaf "cu128") -and -not (Test-CudaFamilyLeaf "rocm"))
 function Get-PytorchCudaTag { return "cu128" }
 
-# One case = one host. Installed is what setup found in the venv; InstallerTag is the family
-# install.ps1 reported ("" is the installer with no answer, $null an installer too old to say);
-# Expected is what setup's rescan concluded, and the Has* values are that same rescan, so they have
-# to agree with it. Run at script scope (Invoke-Expression inside a function would put the
-# extracted `$script:` writes and the reads in different scopes).
+# One case = one host. InstallerTag "" is no answer, $null an installer too old to say; Has*
+# must agree with Expected. Runs at script scope so `$script:` writes and reads share scope.
 $_cases = @(
-    # +rocm venv, rescan found the GeForce in the same box and not the Radeon.
     @{ Name = "rocm wheel the installer chose, rescan says cu128"; Installed = "rocm"; InstallerTag = "rocm"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
-    # +cu128 venv, nvidia-smi did not answer this time and the Radeon did.
     @{ Name = "cu128 wheel the installer chose, rescan says rocm";  Installed = "cu128"; InstallerTag = "cu128"; Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
        Keep = $true;  CuTag = "cu128"; Amd = $false; XpuArm = $false }
-    # +xpu venv on an Arc + GeForce box: the promotion above is gated on -not $HasNvidiaSmi.
+    # The xpu promotion is gated on -not $HasNvidiaSmi.
     @{ Name = "xpu wheel the installer chose, rescan says cu128";   Installed = "xpu";   InstallerTag = "xpu"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "xpu";   Amd = $false; XpuArm = $true }
-    # The direction round one closed, kept as a regression: no GPU found at all.
     @{ Name = "rocm wheel the installer chose, rescan says cpu";    Installed = "rocm";  InstallerTag = "rocm"; Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
     @{ Name = "cu128 wheel the installer chose, rescan says cpu";   Installed = "cu128"; InstallerTag = "cu128"; Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cu128"; Amd = $false; XpuArm = $false }
-    # An installer too old to carry the variable at all -- a normal pairing, since the two ship
-    # separately. Unknown has to keep preserving or an older installer loses its own choice.
+    # An installer too old to set the variable must keep preserving its choice.
     @{ Name = "rocm wheel, installer did not say, rescan says cu128"; Installed = "rocm"; InstallerTag = $null; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
-    # ── the wheels the installer did NOT choose ──
-    # An upgrade off the legacy layout: install.ps1's migrated arm installs unsloth alone and never
-    # touches torch, and its flavor repair no-ops when its own expected tag is 'cpu', so a +cu118
-    # wheel from a previous install on different hardware arrives untouched. Both scans agree there
-    # is no NVIDIA GPU; preserving it would pin the dependency pass onto a cu118 index regardless.
+    # Wheels the installer did NOT choose: a stale cu118 from a legacy-layout upgrade.
     @{ Name = "stale cu118 wheel the installer did not choose, rescan says cpu"; Installed = "cu118"; InstallerTag = "cpu"; Expected = "cpu"; Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cpu";   Amd = $false; XpuArm = $false }
-    # The same stale wheel on a mapped AMD host, the costliest case: preserving it would ALSO set
-    # $CuTag to cu118, and the ROCm reroute below needs $CuTag -eq "cpu", so the Radeon would never
-    # get a ROCm wheel and setup would still exit 0.
+    # Keeping cu118 would also block the ROCm reroute, which needs $CuTag -eq "cpu".
     @{ Name = "stale cu118 wheel the installer did not choose, rescan says rocm"; Installed = "cu118"; InstallerTag = "cpu"; Expected = "rocm"; Nvidia = $false; Xpu = $false; Rocm = $true; Gfx = "gfx1151"
        Keep = $false; CuTag = "cpu";   Amd = $true;  XpuArm = $false }
-    # Mirror image: a stale +rocm wheel left by an old Radeon install, on a box that is now
-    # NVIDIA and that the installer resolved as CPU (its own ROCm scan found nothing to map).
     @{ Name = "stale rocm wheel the installer did not choose, rescan says cu128"; Installed = "rocm"; InstallerTag = "cpu"; Expected = "cu128"; Nvidia = $true; Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
-    # The installer ran but had no answer (a custom index whose leaf names no flavor): blank is
-    # unknown, exactly like absent, so this preserves.
+    # Blank is unknown, like absent, so this preserves.
     @{ Name = "rocm wheel, installer reported blank, rescan says cu128"; Installed = "rocm"; InstallerTag = ""; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
-    # ...and the repairs that MUST still happen, or this guard has reintroduced the loop.
+    # Repairs that must still happen, or the loop is back.
     @{ Name = "cpu wheel on a ROCm host";       Installed = "cpu";   InstallerTag = "rocm"; Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
        Keep = $false; CuTag = "cpu";   Amd = $true;  XpuArm = $false }
     @{ Name = "cpu wheel on a CUDA host";       Installed = "cpu";   InstallerTag = "cu128"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
-    # A cu* family move is a repair, not a family change, and escapes before the guard.
+    # A cu* move is a repair and escapes before the guard.
     @{ Name = "cu126 wheel on a cu128 host";    Installed = "cu126"; InstallerTag = "cu128"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
-    # Torch does not import at all: the venv is broken, not a family disagreement.
     @{ Name = "torch that will not import";     Installed = $null;   InstallerTag = "cu128"; Expected = $null;   Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
 )
-# Normalised by setup.ps1's own line, lifted out and executed rather than retyped, so the
-# empty-string case is answered by the shipped code on whichever edition is running (7.5+ keeps a
-# blank value, 5.1 and 7.0-7.4 remove the variable on that assignment).
+# Executed from setup.ps1 so the blank-value behaviour matches the running edition.
 $_tagReadPat = '(?m)^(\$InstallerTorchTag = if \(\[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_INSTALLER_TORCH_TAG\)\) \{ \$null \}\n\s+else \{[^\n]*\}\n)'
 $_tagRead = if ($setupText -match $_tagReadPat) { $Matches[1] } else { "" }
 Check "the installer-report read was found" ($_tagRead -ne "")
@@ -805,16 +618,13 @@ Check "the installer-report read was found" ($_tagRead -ne "")
 foreach ($case in $_cases) {
     if ($null -eq $case.InstallerTag) { Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue }
     else { $env:UNSLOTH_INSTALLER_TORCH_TAG = $case.InstallerTag }
-    # Guarded, not bare: Invoke-Expression on an empty string is a terminating error at this file's
-    # script-scope "Stop", so a tree whose read line is missing would unwind here and leave every
-    # behavioural case below unreported rather than FAIL.
+    # Guarded: Invoke-Expression "" is terminating under "Stop" and would hide every case below.
     if ($_tagRead) { Invoke-Expression $_tagRead }
     else { Remove-Variable -Name InstallerTorchTag -Scope Script -ErrorAction SilentlyContinue }
     $script:shouldRebuild = $true
     $script:InstallerManagedSetup = $true
     $script:installedTorchTag = $case.Installed
-    # Left UNASSIGNED when the probe failed, exactly as setup.ps1 leaves it, so a condition reading
-    # it before $installedTorchTag has answered is caught here rather than on a user's box.
+    # Left unassigned when the probe failed, as setup.ps1 does.
     if ($null -ne $case.Expected) { $script:expectedTorchTag = $case.Expected }
     else { Remove-Variable -Name expectedTorchTag -Scope Script -ErrorAction SilentlyContinue }
     $script:_pinnedIdx = $null
@@ -834,10 +644,8 @@ foreach ($case in $_cases) {
     Invoke-Expression $_cuTag
     $script:ROCmIndexUrl = $null
     $_amdRuns = [bool](Invoke-Expression $_amdGate)
-    # The AMD arm sets $ROCmIndexUrl, and the XPU gate reads it.
     if ($_amdRuns) { $script:ROCmIndexUrl = "https://repo.amd.com/rocm/whl/gfx1151/" }
     $_xpuRuns = [bool](Invoke-Expression $_xpuGate)
-    # The three arms' force decisions, as the file spells them.
     $_forced = $script:PinChangedForceReinstall -or $_amdRuns -or ($_xpuRuns -and $installedTorchTag -ne "xpu")
 
     Write-Host "  case: $($case.Name)"
@@ -846,19 +654,14 @@ foreach ($case in $_cases) {
     Check "    index family = $($case.CuTag)"   ($script:CuTag -eq $case.CuTag)
     Check "    AMD arm runs = $($case.Amd)"     ($_amdRuns -eq $case.Amd)
     Check "    XPU arm runs = $($case.XpuArm)"  ($_xpuRuns -eq $case.XpuArm)
-    # The claim the whole guard rests on: no arm re-lands torch over the kept wheel.
     Check "    torch is force-reinstalled = $(-not $case.Keep)" ($_forced -eq (-not $case.Keep))
-    # Only when the wheel was actually kept, or a repaired case drags the old family through the
-    # install arms below.
+    # Only when the wheel was kept, or a repaired case drags the old family into the install arms.
     Check "    kept family recorded = $($case.Keep)" (
         [bool]$script:PreservedInstallerTorchTag -eq $case.Keep)
 }
 Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue
 
-# The guard must not read $expectedTorchTag before $installedTorchTag has answered, and the cases
-# above prove the cascade survives it. The hazard itself, rather than taken on trust: under a
-# caller's Set-StrictMode -- studio/setup.bat launches setup WITHOUT -NoProfile, so a profile can
-# set one -- reading a variable that was never assigned throws.
+# Prove the hazard: reading an unassigned variable throws under Set-StrictMode.
 $_strictUnassignedThrew = $false
 try {
     & {
@@ -871,12 +674,8 @@ Check "reading the unassigned expected tag really does throw" $_strictUnassigned
 
 Write-Host ""
 Write-Host "=== the AMD fast-path probe is bounded too ==="
-# The disk-based rescue above KEEPS a venv whose `import torch` never came back, and on a direct
-# update that venv reaches the AMD fast-path check, where an unbounded call waits forever: setup
-# would hang instead of finishing, on precisely the host the rescue was added for. Before the
-# rescue this could not happen, because the same venv was deleted. The leading \n and indent
-# matter: `elseif ($script:ROCmGfxArch) {` ENDS in that same text and there are two of those
-# higher up, so a bare anchor starts the region 1700 lines early and every -not check goes green.
+# The rescue keeps a venv whose import hung, so the AMD fast path must be bounded. The leading
+# \n and indent matter: two earlier `elseif ($script:ROCmGfxArch) {` would match otherwise.
 $_amdFastPat = '(?s)(\n        if \(\$script:ROCmGfxArch\) \{\n.*?reinstalling ROCm PyTorch[^\n]*\n)'
 $_amdFast = if ($setupText -match $_amdFastPat) { $Matches[1] } else { "" }
 Check "the AMD fast-path escape was found"  ($_amdFast -ne "")
@@ -884,8 +683,7 @@ Check "CRLF is normalised, not tolerated"   (-not (($setupText -replace "`n", "`
 Check "no bare interpreter call is left"    (-not ($_amdFast -match '&\s*python -c'))
 Check "it goes through the bounded probe"   ($_amdFast -match 'Invoke-BoundedPythonProbe -PythonExe "python"')
 Check "it still asks torch.cuda.is_available" ($_amdFast -match 'torch\.cuda\.is_available')
-# A probe that does not answer must keep reading as CPU: one dependency pass is the safe direction,
-# and reading a timeout as "the GPU is fine" would fast-path past the ROCm install.
+# A timed-out probe must read as CPU, the safe direction.
 Check "an unanswered probe still reads as CPU" ($_amdFast -match '\$_torchIsCpu = -not \$_rocmTorchProbe\.Ok')
 
 Write-Host ""

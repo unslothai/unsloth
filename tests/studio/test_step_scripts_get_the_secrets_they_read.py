@@ -54,7 +54,6 @@ def _reads(script: str, name: str) -> bool:
         re.search(rf"os\.environ\[\s*['\"]{n}['\"]\s*\]", script)
         or re.search(rf"os\.(?:environ\.get|getenv)\(\s*['\"]{n}['\"]", script)
         or re.search(rf"\$\{{?{n}(?![A-Za-z0-9_])", script)
-        # PowerShell and cmd, for the Windows steps.
         or re.search(rf"\$env:{n}(?![A-Za-z0-9_])", script, re.I)
         or re.search(rf"\$\{{env:{n}\}}", script, re.I)
         or re.search(rf"%{n}%", script)
@@ -75,12 +74,8 @@ def _env_blocks(doc: dict):
             yield step.get("env") or {}
 
 
-# The secret each env key is supplied from, as every workflow maps it today. GitHub expands an
-# unknown `secrets.*` name to an empty string without complaint, and CI cannot list the
-# repository's secret names to check against, so a typo (`secrets.DOCKER_API_KE`) or a mapping to
-# the wrong existing secret reads as a valid expression everywhere except the privileged run that
-# needs it. Pinning the pairs turns both into a failure here. A genuinely new secret goes in this
-# table in the same change that adds it, once it is confirmed to exist.
+# GitHub expands an unknown `secrets.*` name to an empty string, so the pairs are pinned here.
+# A new secret goes in this table in the same change that adds it.
 _SECRET_FOR = {
     "APPLE_CERTIFICATE": "APPLE_CERTIFICATE",
     "APPLE_CERTIFICATE_PASSWORD": "APPLE_CERTIFICATE_PASSWORD",
@@ -104,14 +99,11 @@ _SECRET_FOR = {
     "VT_API_KEY": "VIRUS_TOTAL_API_TOKEN",
 }
 
-# Indexed lookups, `${{ secrets[matrix.secret_name] }}`: the Kaggle jobs pick an account at run
-# time, so the name is a matrix value. Each key pins the one index expression it may use and the
-# secrets that index may resolve to; a static matrix is checked value by value.
+# Kaggle jobs pick an account at run time; each key pins its index expression and secrets.
 _INDEXED_FOR = {
     "KAGGLE_API_TOKEN": ("matrix.secret_name", {"KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"}),
 }
-# Known secret keys a step empties on purpose. The Tauri smoke build blanks the signing key so
-# tauri never signs a debug build; that is a statement, not a lost mapping.
+# The Tauri smoke build blanks the signing key on purpose so debug builds are never signed.
 _DELIBERATELY_BLANK = {
     ("studio-tauri-smoke.yml", "TAURI_SIGNING_PRIVATE_KEY"),
 }
@@ -126,15 +118,12 @@ def _secret_backed_names() -> frozenset[str]:
     workflow that has lost its only mapping of it, which is exactly the file a per-file scan
     would call clean.
     """
-    # Seeded from the reviewed table, so a name whose only reference was the mapping that got
-    # deleted is still tracked.
     names = set(_SECRET_FOR) | set(_SECRET_FOR.values())
     for allowed in _INDEXED_FOR.values():
         names |= allowed[1]
     for path in WORKFLOWS:
         doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
-        # From parsed values, not the raw text: a comment that explains `secrets.A || secrets.B`
-        # would otherwise make B a secret.
+        # Parsed values, not raw text: a comment mentioning `secrets.A || secrets.B` is not a secret.
         for value in _strings(doc):
             for expression in _EXPRESSION.findall(value):
                 names.update(_SECRET.findall(expression))
@@ -210,21 +199,16 @@ def test_the_reader_sees_every_spelling_the_workflows_use():
     assert _reads("[Environment]::GetEnvironmentVariable('K')", "K")
     assert not _reads("Write-Host $env:K_OTHER", "K")
     assert _reads('for v in J K L; do [ -z "${!v:-}" ] && exit 1; done', "K")
-    # A plain loop over the names, with no indirect read, reads none of them.
     assert not _reads("for v in J K L; do echo $v; done", "K")
-    # A longer name that starts with K is not K, and an expression is not an env read.
     assert not _reads('echo "$K_OTHER"', "K")
     assert not _reads("echo ${{ secrets.K }}", "K")
 
 
 def test_an_aliased_secret_is_tracked_under_the_name_the_script_reads():
-    # The repository secret is VIRUS_TOTAL_API_TOKEN and the scripts read VT_API_KEY.
     assert "VT_API_KEY" in SECRET_BACKED
     assert "VIRUS_TOTAL_API_TOKEN" in SECRET_BACKED
-    # kaggle-t4-notebook-ci.yml explains `secrets.A || secrets.B` in a comment; neither is real.
     assert "A" not in SECRET_BACKED and "B" not in SECRET_BACKED
-    # GitHub does not export the run token to the environment by itself; a script reading
-    # $GITHUB_TOKEN needs the mapping like any other secret.
+    # GitHub does not export the run token to the environment by itself.
     assert "GITHUB_TOKEN" in SECRET_BACKED
 
 
@@ -309,8 +293,7 @@ def _check_mapping(key, value, job, name, wrong):
     _check_source(key, value, job, name, wrong)
     known = key in _SECRET_FOR or key in _INDEXED_FOR
     if len(wrong) == before and known and isinstance(value, str) and _EXPRESSION.search(value):
-        # The whole value, not an expression found inside it: `junk-${{ secrets.X }}` or a block
-        # scalar's trailing newline exports an altered credential.
+        # The whole value must be the expression: `junk-${{ secrets.X }}` alters the credential.
         whole = _WHOLE_EXPRESSION.fullmatch(value)
         shape = " ".join(whole.group(1).split()) if whole else None
         if shape is None:
@@ -323,8 +306,6 @@ def _check_mapping(key, value, job, name, wrong):
 
 def _check_source(key, value, job, name, wrong):
     if not isinstance(value, str):
-        # YAML reads `false` or `1` as a non-string; for a known secret key that is still a
-        # value that supplies nothing, and a `uses:` step has no script for _unmapped to read.
         if key in _SECRET_FOR or key in _INDEXED_FOR:
             wrong.append(f"{name}: {key} is mapped to {value!r}, which supplies no secret")
         return
@@ -332,9 +313,7 @@ def _check_source(key, value, job, name, wrong):
     drawn = {n for e in expressions for n in _SECRET.findall(e)}
     indexed = [x for e in expressions for x in _INDEXED.findall(e)]
     if not drawn and not indexed:
-        # A key this table knows is a secret must still get one: `${{ vars.HF_TOKEN }}` or a
-        # plain string is a valid expression that hands the step nothing, and a script the step
-        # only invokes (mlx-ci.yml's smoke runner reads HF_TOKEN) is out of _unmapped's sight.
+        # `${{ vars.HF_TOKEN }}` or a plain string hands the step nothing for a known secret key.
         known = key in _SECRET_FOR or key in _INDEXED_FOR
         deliberate = value == "" and (name, key) in _DELIBERATELY_BLANK
         if known and not deliberate and not _supplies_a_secret(value, key):
@@ -412,7 +391,6 @@ def test_a_step_reading_the_run_token_must_map_it(tmp_path):
 
 
 def test_a_deleted_only_mapping_is_still_tracked():
-    # APPLE_CERTIFICATE has one reference in the whole repository, the mapping itself.
     assert {"APPLE_CERTIFICATE", "KAGGLE_API_TOKEN_2"} <= SECRET_BACKED
 
 
@@ -448,7 +426,6 @@ def test_a_known_key_mapped_to_a_non_secret_is_caught():
         "w: HF_TOKEN is mapped to '${{ vars.HF_TOKEN }}', which supplies no secret"
     ]
     assert _misdrawn(doc(""), "w") == ["w: HF_TOKEN is mapped to '', which supplies no secret"]
-    # An unknown key with a plain value is not a secret mapping at all.
     plain = {"jobs": {"j": {"steps": [{"env": {"NIGHTLY_KEEP_DAYS": "60"}, "run": "true"}]}}}
     assert _misdrawn(plain, "w") == []
 

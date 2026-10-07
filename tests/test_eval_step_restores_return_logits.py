@@ -72,7 +72,6 @@ def test_a_failed_eval_step_restores_the_callers_setting(monkeypatch, before):
         _prediction_step()(trainer, trainer.model, {"labels": torch.zeros(1)}, True, None)
 
     assert seen == ["1"], "the step no longer forces logits on while it runs"
-    # An unset variable comes back as "0", the value the step treats as the default.
     assert os.environ.get("UNSLOTH_RETURN_LOGITS") == (before or "0")
 
 

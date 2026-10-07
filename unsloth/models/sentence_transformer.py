@@ -44,8 +44,8 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
-# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
+# Deferred: a module-scope bind from `unsloth.save` closes an import cycle
+# (tests/test_cold_import_order.py).
 
 
 def unsloth_save_pretrained_torchao(*args, **kwargs):
@@ -79,9 +79,8 @@ def _ensure_sentence_attention_masks(model):
         getattr(config, "_attn_implementation", "")
     ):
         return False
-    # Zoo's Gemma3 attention preserves FP32 Q/K but consumes SDPA masks. With
-    # a Flash backend, Transformers omits those masks and ST can flatten rows;
-    # that implementation does not consume the resulting sequence boundaries.
+    # Zoo's Gemma3 attention keeps FP32 Q/K but needs SDPA masks; with Flash, Transformers omits
+    # them and ST's flattened rows lose their sequence boundaries.
     patched = any(
         getattr(module.forward, "__module__", "").startswith("unsloth_zoo.temporary_patches.gemma")
         for module in model.modules()
@@ -243,7 +242,7 @@ def _save_pretrained_torchao(
             token = token,
         )
 
-    # Avoid `0_Transformer-torchao`; it was either this or fix modules.json.
+    # Avoid `0_Transformer-torchao`.
     torchao_dir = transformer_dir + "-torchao"
     if os.path.exists(torchao_dir):
         if not os.path.exists(transformer_dir):
@@ -259,7 +258,6 @@ def _save_pretrained_torchao(
 
         shutil.rmtree(torchao_dir)
 
-        # remove conflicting safetensors if we brought in bin
         if os.path.exists(os.path.join(transformer_dir, "pytorch_model.bin")):
             safetensors_path = os.path.join(transformer_dir, "model.safetensors")
             if os.path.exists(safetensors_path):
@@ -291,7 +289,6 @@ def _save_pretrained_gguf(
     """Saves the SentenceTransformer model to GGUF format by saving the inner transformer model, converting it, and placing the resulting GGUF files in the save directory."""
     self.save_pretrained(save_directory)
 
-    # Extract the inner transformer model; PEFT merge is handled by the gguf saver.
     inner_model = self[0].auto_model
     if hasattr(inner_model, "_orig_mod"):
         inner_model = inner_model._orig_mod
@@ -309,14 +306,14 @@ def _save_pretrained_gguf(
         except:
             pass
 
-    # Unsloth saves and converts here; absolute for the later commonpath comparison.
+    # Absolute for the later commonpath comparison.
     transformer_dir = os.path.join(save_directory, transformer_path)
     transformer_dir = os.path.abspath(transformer_dir)
 
     if tokenizer is None:
         tokenizer = self.tokenizer
 
-    # No rmtree guard here: the merge cleanup that deletes save_directory is gated on push_to_hub, which is forced False below.
+    # No rmtree guard: the merge cleanup is gated on push_to_hub, forced False below.
     result = unsloth_save_pretrained_gguf(
         inner_model,
         save_directory = transformer_dir,
@@ -328,7 +325,7 @@ def _save_pretrained_gguf(
         max_shard_size = max_shard_size,
         temporary_location = temporary_location,
         maximum_memory_usage = maximum_memory_usage,
-        # transformer_dir is the ST's own 0_Transformer module, not a throwaway: reclaiming it would hand back a folder that no longer loads as a SentenceTransformer, so a short disk fails loudly.
+        # transformer_dir is the ST's own module, never reclaim it.
         merge_is_disposable = False,
         imatrix_file = imatrix_file,
     )
@@ -739,7 +736,7 @@ class FastSentenceTransformer(FastModel):
 
         modeling_mpnet.MPNetModel._set_gradient_checkpointing = _set_gradient_checkpointing
 
-        # Patch MPNetEncoder.forward for checkpointing; based on transformers v4.57.3 models/mpnet/modeling_mpnet.py#L321 and models/distilbert/modeling_distilbert.py#L666.
+        # Based on transformers v4.57.3 modeling_mpnet.py#L321 and modeling_distilbert.py#L666.
         def forward(
             self,
             hidden_states: torch.Tensor,
@@ -823,7 +820,7 @@ class FastSentenceTransformer(FastModel):
 
         modeling_mpnet.MPNetModel._set_gradient_checkpointing = _set_gradient_checkpointing
 
-        # Patch MPNetEncoder.forward for checkpointing; based on transformers v5.0.0rc1 models/mpnet/modeling_mpnet.py#L284.
+        # Based on transformers v5.0.0rc1 modeling_mpnet.py#L284.
         def forward(
             self,
             hidden_states: torch.Tensor,
@@ -887,7 +884,7 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _patch_distilbert_v4():
-        # Change kwargs to positional args to be compatible with peft_utils; based on transformers v4.57.3 models/distilbert/modeling_distilbert.py#L666.
+        # Based on transformers v4.57.3 modeling_distilbert.py#L666.
         """Patch DistilBertModel.forward to use positional args (transformers 4)."""
 
         def forward(
@@ -931,7 +928,7 @@ class FastSentenceTransformer(FastModel):
             head_mask_is_none = head_mask is None
             head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
-            embeddings = self.embeddings(input_ids, inputs_embeds)  # (bs, seq_length, dim)
+            embeddings = self.embeddings(input_ids, inputs_embeds)
 
             if self.config._attn_implementation == "flash_attention_2":
                 attention_mask = (
@@ -939,7 +936,7 @@ class FastSentenceTransformer(FastModel):
                 )
             else:
                 if attention_mask is None:
-                    attention_mask = torch.ones(input_shape, device = device)  # (bs, seq_length)
+                    attention_mask = torch.ones(input_shape, device = device)
 
                 if (
                     self.config._attn_implementation == "sdpa"
@@ -949,7 +946,7 @@ class FastSentenceTransformer(FastModel):
                     attention_mask = _prepare_4d_attention_mask_for_sdpa(
                         attention_mask, embeddings.dtype, tgt_len = input_shape[1]
                     )
-            # patch here: unsloth gradient checkpointing hook needs positional arguments
+            # unsloth gradient checkpointing hook needs positional arguments
             return self.transformer(
                 embeddings,
                 attention_mask,
@@ -1050,7 +1047,6 @@ class FastSentenceTransformer(FastModel):
         if "---\ntags:\n" in content:
             content = content.replace("---\ntags:\n", "---\ntags:\n- unsloth\n")
         else:
-            # Tags exist but not at the start: append via regex.
             pattern = r"(^tags:\s*\n)"
             if re.search(pattern, content, re.MULTILINE):
                 content = re.sub(pattern, r"\1- unsloth\n", content, count = 1, flags = re.MULTILINE)
@@ -1110,7 +1106,7 @@ class FastSentenceTransformer(FastModel):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
-        # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so Transformer.__init__ picks up our pre-fixed tokenizer.
+        # Redirect AutoProcessor/AutoTokenizer so Transformer.__init__ uses our tokenizer, no second load.
         from transformers import AutoProcessor, AutoTokenizer
 
         def is_requested_model_name(args, kwargs):
@@ -1188,7 +1184,8 @@ class FastSentenceTransformer(FastModel):
                 elif "tokenizer_args" in transformer_init_params:
                     transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
 
-                # Build via Transformer.load so the saved modality_config is honored: a plain Transformer(...) makes ST 5.x infer a "message" modality for chat-template models, chat-wrapping inputs and degrading embeddings (#6881). Only use .load for a Hub id; ST 3.x/4.x load() is local-only.
+                # Transformer.load honours the saved modality_config; ST 5.x otherwise infers "message" (#6881).
+                # Only for a Hub id: ST 3.x/4.x load() is local-only.
                 transformer_module = None
                 transformer_load = getattr(Transformer, "load", None)
                 has_modules_json = (
@@ -1213,7 +1210,6 @@ class FastSentenceTransformer(FastModel):
                             "trust_remote_code": trust_remote_code,
                             **transformer_kwargs,
                         }
-                        # Resolve config/tokenizer from the module's saved subfolder (modules.json "path"), like stock ST; "" (root) is a no-op.
                         if module_subfolder:
                             load_kwargs["subfolder"] = module_subfolder
                         if not accepts_var_kw:
@@ -1226,7 +1222,7 @@ class FastSentenceTransformer(FastModel):
                 AutoProcessor.from_pretrained = original_processor_from_pretrained
                 AutoTokenizer.from_pretrained = original_tokenizer_from_pretrained
 
-        # On sentence-transformers >= 5.4 `tokenizer` is a read-only property backed by self.processor; on older versions it is a regular attribute and this assignment is required.
+        # On sentence-transformers >= 5.4 `tokenizer` is a read-only property.
         if not isinstance(getattr(type(transformer_module), "tokenizer", None), property):
             transformer_module.tokenizer = tokenizer
         transformer_module.do_lower_case = getattr(tokenizer, "do_lower_case", False)
@@ -1302,7 +1298,7 @@ class FastSentenceTransformer(FastModel):
             )
 
         if not trust_remote_code:
-            # Not transformers' resolve_trust_remote_code: it appends a hf.co URL that is bogus for local dirs.
+            # Not transformers' resolve_trust_remote_code: it appends a bogus hf.co URL for local dirs.
             is_local_dir = isinstance(model_name, (str, os.PathLike)) and os.path.isdir(model_name)
             location = (
                 os.path.abspath(model_name) if is_local_dir else f"https://hf.co/{model_name}"
@@ -1314,7 +1310,7 @@ class FastSentenceTransformer(FastModel):
                 f"Please pass the argument `trust_remote_code=True` to allow custom code to be run."
             )
 
-        # Consented: prefer the repo's own modeling file over a same-named installed package, like stock ST >= 6.
+        # Consented: prefer the repo's own modeling file, like stock ST >= 6.
         try:
             from sentence_transformers.util import import_module_class
         except ImportError:
@@ -1373,26 +1369,8 @@ class FastSentenceTransformer(FastModel):
             "sentence_transformers.base.modules.transformer.Transformer",
         }
 
-    # Which config key each loader resolves as a dotted import path, keyed by the class
-    # that resolves it. Dense imports AND CALLS config["activation_function"],
-    # WordEmbeddings imports config["tokenizer_class"], Router and Asym import every
-    # config["types"] value, all ungated on some versions, so an allowed in-namespace
-    # "type" reaches them. The prefixes are upstream's own rules and are applied on every
-    # version: util.import_module_class is not a version test, since 5.5 exports it while
-    # its WordEmbeddings.load still calls import_from_string on tokenizer_class.
-    #
-    # By class and not by key name: SpladePooling lists
-    # activation_function in its own config_keys too, but the value there is the literal
-    # "relu" or "log1p_relu" and it is compared, never imported (SpladePooling.py:
-    # `if self.activation_function == "log1p_relu"`). Matching on the key name alone
-    # refused every SPLADE sparse model for naming a value that no loader imports.
-    #
-    # Complete for the module path as of 5.1: the only config-driven import_from_string
-    # calls in the package are Dense.load on activation_function, WordEmbeddings.load on
-    # tokenizer_class, Router.load on types, and SentenceTransformer's own modules.json
-    # type, which _resolve_module_class covers. Asym is an alias of Router from 5.0
-    # (`Asym = Router`), so it arrives here as Router; the entry is kept for versions
-    # where it is its own class.
+    # Config keys each loader class imports as a dotted path (by class, not key name: SpladePooling's
+    # activation_function is a literal, never imported). Asym is Router from 5.0.
     _MODULE_CONFIG_CLASS_REFS = {
         "Dense": (("activation_function", "torch."),),
         "WordEmbeddings": (("tokenizer_class", "sentence_transformers."),),
@@ -1428,17 +1406,11 @@ class FastSentenceTransformer(FastModel):
         if trust_remote_code:
             return
 
-        # Nothing to check unless this class is one that resolves a dotted path out of its
-        # own config. Every other module reads plain values, so looking for these keys in
-        # its config found a name nobody imports and refused a load that works.
         rules = FastSentenceTransformer._class_ref_rules(module_class)
         if not rules:
             return
 
-        # Read what the loader will read: each module names its own file (Router
-        # "router_config.json", WordEmbeddings "wordembedding_config.json"), and Router falls back to
-        # "config.json", which is also Module's default and so Dense's. Hard-coding "config.json"
-        # would skip exactly the two modules this check exists for.
+        # Read the file the loader will read; hard-coding config.json would skip Router and WordEmbeddings.
         config_names = []
         config_file_name = getattr(module_class, "config_file_name", None)
         if isinstance(config_file_name, str):
@@ -1459,12 +1431,7 @@ class FastSentenceTransformer(FastModel):
                 with open(config_path, encoding = "utf8") as f:
                     config = json.load(f)
             except (OSError, ValueError) as exception:
-                # The file is there and cannot be read, which is not the same as not being
-                # there: the loader opens this same path next and its read may succeed, so
-                # skipping here meant a Dense activation, a WordEmbeddings tokenizer or a
-                # Router type could be imported with nothing having checked it. The
-                # refusal the caller's message promised was only ever about the fetch;
-                # this is the read.
+                # Present but unreadable is not absent: the loader may read it next, so refuse.
                 import sentence_transformers
 
                 if Version(sentence_transformers.__version__).major < 6:
@@ -1487,7 +1454,6 @@ class FastSentenceTransformer(FastModel):
 
             for key, prefix in rules:
                 if key == "types":
-                    # Router keeps a mapping of route name to class, not a single ref.
                     types = config.get("types")
                     if isinstance(types, dict):
                         refs += [
@@ -1498,11 +1464,7 @@ class FastSentenceTransformer(FastModel):
                 elif isinstance(config.get(key), str):
                     refs.append((key, config[key], prefix))
 
-            # Upstream reads its own file and only falls back when the parsed content is
-            # falsey (Router.py: `if not config:`), so once a real config has been read
-            # there is no second file the loader will look at. Reading both and taking the
-            # union refused a repository whose router_config.json is clean because an
-            # unrelated config.json sat beside it, which is a load upstream completes.
+            # Upstream falls back only when its own file parses falsey, so never union both files.
             if config:
                 break
 
@@ -1585,11 +1547,7 @@ class FastSentenceTransformer(FastModel):
         )
         if path:
             if resolved is not None:
-                # _module_path resolves through hf_hub_download, so online this is the
-                # commit the branch points at right now and offline it is the cached
-                # snapshot, which is the only thing the load could use either. Both are
-                # the snapshot the load would reach on its own, so recording it here
-                # pins the load to what was checked without asking the hub again.
+                # Pin the load to the snapshot that was checked.
                 resolved["revision"] = FastSentenceTransformer._snapshot_revision(path)
             return path
 
@@ -1605,11 +1563,7 @@ class FastSentenceTransformer(FastModel):
         def _cached_answer():
             """What the local cache already knows, or None if it knows nothing."""
             try:
-                # No default of our own: HUGGINGFACE_HUB_CACHE is the legacy constant and
-                # does not follow HF_HUB_CACHE, so naming it searched a different cache
-                # from the one hf_hub_download writes, and a recorded absence there was
-                # missed. Passing None lets the hub apply the same default it applies to
-                # the download below.
+                # None: HUGGINGFACE_HUB_CACHE is legacy and does not follow HF_HUB_CACHE.
                 return try_to_load_from_cache(
                     model_name,
                     "modules.json",
@@ -1619,14 +1573,8 @@ class FastSentenceTransformer(FastModel):
             except Exception:
                 return None
 
-        # Deliberately not consulted before the download. A recorded absence is keyed to
-        # whatever commit the local refs file points at, which for a branch is a stale
-        # pointer, so answering "this repo has no modules.json" from it decided a security
-        # question against a snapshot nobody had checked was current, and reported no
-        # commit, which left the load unpinned. A branch that gains a modules.json between
-        # the two then loads an unchecked module type. The cache is still the answer when
-        # the hub cannot be reached, which is what the LocalEntryNotFoundError handler
-        # below uses it for, so an offline load behaves as it did.
+        # Not consulted before the download: a cached absence is keyed to a possibly stale branch ref.
+        # Still used offline (LocalEntryNotFoundError below).
         try:
             downloaded = hf_hub_download(
                 model_name,
@@ -1639,26 +1587,15 @@ class FastSentenceTransformer(FastModel):
                 resolved["revision"] = FastSentenceTransformer._snapshot_revision(downloaded)
             return downloaded
         except LocalEntryNotFoundError as exception:
-            # Checked before EntryNotFoundError, which it subclasses: not reachable is not the same
-            # answer as not present, and catching it there read one as the other.
+            # Before EntryNotFoundError, which it subclasses: unreachable is not absent.
             cached = _cached_answer()
             if isinstance(cached, str):
                 if resolved is not None:
                     resolved["revision"] = FastSentenceTransformer._snapshot_revision(cached)
                 return cached
             if cached is not None:
-                # Unreachable, and the cache already recorded that this repo has no
-                # modules.json. "The load can only use the cache too" was the reasoning
-                # here and it is wrong: this request failed, not every request, so the
-                # delegated load can recover and fetch the current branch, which may have
-                # gained a module type since the cached answer. Returning success with no
-                # pin let exactly that through.
-                #
-                # So the load is pinned to the commit the cache holds for this revision,
-                # recovered from a file that lives in the same snapshot. That is the
-                # snapshot whose absence was recorded, which makes the load consistent
-                # with what was checked, and offline it is what would have been served
-                # anyway.
+                # Unreachable with a cached absence: pin the load to the cached snapshot's commit, since the load
+                # itself may reach a newer branch.
                 snapshot_commit = ""
                 for probe in (
                     "config.json",
@@ -1683,9 +1620,7 @@ class FastSentenceTransformer(FastModel):
                     if resolved is not None:
                         resolved["revision"] = snapshot_commit
                     return None
-                # No commit to pin to, so there is no way to make the load match what was
-                # checked. Fail closed below 6.0, the same rule as every other branch that
-                # could not establish an answer.
+                # No commit to pin: fail closed below 6.0.
                 import sentence_transformers
 
                 if Version(sentence_transformers.__version__).major >= 6:
@@ -1709,31 +1644,15 @@ class FastSentenceTransformer(FastModel):
                 ) from exception
             unverifiable = exception
         except EntryNotFoundError as exception:
-            # The repo really has no modules.json at this revision. Pin anyway: absence is
-            # the thing being validated, and a branch that gains one before the load would
-            # otherwise bring in an unchecked module type.
-            #
-            # The commit comes off the 404 itself, not from a second lookup. Resolving the
-            # branch again could answer with a newer commit than the one that established
-            # the absence, which would pin the load to a snapshot nothing had checked: the
-            # same inversion as validating one commit and loading another, moved one step
-            # along. The hub returns x-repo-commit on the 404, so the response names
-            # exactly the commit whose answer was "no modules.json", and it costs nothing.
+            # A genuine absence is pinned too, using x-repo-commit from the 404 itself, not a second lookup.
             if resolved is not None:
                 sha = FastSentenceTransformer._commit_of_response(exception)
                 if not sha and FastSentenceTransformer._is_commit(revision):
-                    # The caller already named an immutable commit, so the 404 was
-                    # answered at it and there is nothing for a second resolution to
-                    # disagree with. No header needed.
                     sha = revision.lower()
                 if sha:
                     resolved["revision"] = sha
                 else:
-                    # No commit from the response and none from the caller, so there is no
-                    # way to make the load match the absence that was just established:
-                    # the delegated request resolves the branch again and can get one that
-                    # has since gained a modules.json. Fail closed below 6.0, the same
-                    # rule as every other branch that cannot establish an answer.
+                    # No commit to pin: fail closed below 6.0.
                     import sentence_transformers
                     if Version(sentence_transformers.__version__).major < 6:
                         raise ValueError(
@@ -1797,26 +1716,18 @@ class FastSentenceTransformer(FastModel):
         immutable commit, and whenever there was no modules.json to read, and the caller
         then loads exactly as it did before.
         """
-        # Consent means the code may run, so there is nothing to gate and nothing to import here.
-        # Resolving anyway would also break a repo-local class: below 6 the delegated loader fetches
-        # it with get_class_from_dynamic_module, where this helper's fallback cannot.
+        # Consent means the code may run; resolving would also break a repo-local class below 6.
         if trust_remote_code:
             return ""
 
-        # The delegated loads honour SENTENCE_TRANSFORMERS_HOME, and hf_hub_download does not, so
-        # resolve it here too: otherwise _module_path looks in the wrong cache, swallows the miss,
-        # and the gate passes on a modules.json it never read.
+        # Delegated loads honour SENTENCE_TRANSFORMERS_HOME but hf_hub_download does not.
         cache_dir = cache_dir or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         resolved = {}
         modules_json_path = FastSentenceTransformer._modules_json_for_gating(
             model_name, token, cache_dir = cache_dir, revision = revision, resolved = resolved
         )
         validated = resolved.get("revision", "")
-        # Everything below this point reads from the snapshot modules.json came out of, not
-        # from the caller's revision. Passing the original through meant modules.json could
-        # resolve commit A while each module config resolved commit B, and since the caller
-        # pins the load to A, a clean config in B was validated while A's unchecked value
-        # was the one that ran. That inverts the race rather than closing it.
+        # Read module configs from the snapshot modules.json came from, not the caller's revision.
         config_revision = validated or revision
         if not modules_json_path:
             return validated
@@ -1824,12 +1735,7 @@ class FastSentenceTransformer(FastModel):
             with open(modules_json_path, encoding = "utf8") as f:
                 modules_config = json.load(f)
         except (OSError, ValueError) as exception:
-            # Fail closed, for the same reason the fetch error does. The file is in hand
-            # and still unreadable, and the delegated loader opens the very same path
-            # straight afterwards: a transient read error or a retry that succeeds there
-            # would import a type nothing ever looked at. "Could not check" is not
-            # "nothing to check". Only worth refusing over below 6.0, where
-            # sentence-transformers does not gate the type itself.
+            # Fail closed: unreadable now, the loader opens the same path next. Only below 6.0.
             import sentence_transformers
             if Version(sentence_transformers.__version__).major >= 6:
                 logging.debug(
@@ -1849,8 +1755,7 @@ class FastSentenceTransformer(FastModel):
                 f"`trust_remote_code=True` to allow custom code to be run."
             ) from exception
         if not isinstance(modules_config, list):
-            # Not a refusal: a modules.json that is not a list names no modules at all,
-            # and the loader iterates it, so it cannot build a module from this either.
+            # Not a refusal: a non-list modules.json names no modules, so the loader builds none either.
             return validated
 
         for module_config in modules_config:
@@ -1879,10 +1784,7 @@ class FastSentenceTransformer(FastModel):
 
         return validated
 
-    # The module classes whose own loader resolves a dotted path out of their config: Dense
-    # reads activation_function, WordEmbeddings reads tokenizer_class, Router and Asym read
-    # types. Every other shipped class reads plain values only, so an ordinary embedder
-    # (Transformer, Pooling, Normalize) costs no extra request below.
+    # Classes whose loader imports a dotted path from their config.
     _CONFIG_REF_MODULE_CLASSES = frozenset({"Asym", "Dense", "Router", "WordEmbeddings"})
 
     @staticmethod
@@ -1914,18 +1816,14 @@ class FastSentenceTransformer(FastModel):
         import sentence_transformers
 
         if Version(sentence_transformers.__version__).major >= 6:
-            # Upstream resolves these through its own gate from 6.0, so there is nothing
-            # to add and no reason to spend a request. Deliberately the version and not
-            # hasattr(import_module_class): 5.5 exports that helper while its module
-            # loaders still resolve the name ungated.
+            # The version, not hasattr(import_module_class): 5.5 exports it while still resolving ungated.
             return
 
         folder = module_config.get("path")
         if not isinstance(folder, str):
             return
-        # An empty path is the repository root, which sentence-transformers accepts and
-        # loads the root config.json from. Skipping it left the whole check bypassable by
-        # declaring Dense with "path": "".
+        # An empty path is the repo root, which sentence-transformers accepts; skipping it would let
+        # Dense with "path": "" bypass the check.
         folder = folder.strip("/")
 
         config_names = []
@@ -1933,21 +1831,14 @@ class FastSentenceTransformer(FastModel):
         if isinstance(config_file_name, str):
             config_names.append(config_file_name)
         else:
-            # config_file_name only exists from 5, so on 3.x and 4.x a WordEmbeddings has
-            # no such attribute while its loader still opens wordembedding_config.json.
-            # Asking only for config.json got a 404, left nothing to check, and passed,
-            # after which the loader read the legacy file and imported its tokenizer_class
-            # ungated. The local checker already consults this table; so does this now.
+            # 3.x/4.x WordEmbeddings opens wordembedding_config.json without config_file_name.
             legacy = FastSentenceTransformer._LEGACY_MODULE_CONFIG_FILES.get(
                 getattr(module_class, "__name__", "")
             )
             if legacy is not None:
                 config_names.append(legacy)
             config_names.append("config.json")
-        # Only Router and Asym fall back to config.json when their own file is absent.
-        # The others open exactly one file, and requesting a second one the loader never
-        # reads can fail on a cache that is complete for the load but carries no recorded
-        # 404 for the unused name, turning a loadable offline model into a refusal.
+        # Only Router and Asym fall back to config.json; asking for unused files can fail offline.
         if (
             getattr(module_class, "__name__", "") in ("Asym", "Router")
             and "config.json" not in config_names
@@ -1974,8 +1865,7 @@ class FastSentenceTransformer(FastModel):
                         revision = revision,
                     )
                 except LocalEntryNotFoundError as exception:
-                    # Checked first: it subclasses EntryNotFoundError, so catching the parent
-                    # above it would read "could not reach" as "not present".
+                    # Checked first: it subclasses EntryNotFoundError.
                     raise ValueError(
                         f"Unsloth: Could not read {config_name} of the module {class_ref} in "
                         f"{model_name} to check the class it names "
@@ -1985,8 +1875,6 @@ class FastSentenceTransformer(FastModel):
                         f"`trust_remote_code=True` to allow custom code to be run."
                     ) from exception
                 except EntryNotFoundError:
-                    # A genuine 404: this module ships no such config, so there is no class
-                    # ref in it to check.
                     continue
                 except Exception as exception:
                     raise ValueError(
@@ -1998,18 +1886,13 @@ class FastSentenceTransformer(FastModel):
                         f"`trust_remote_code=True` to allow custom code to be run."
                     ) from exception
                 folders.append(os.path.dirname(downloaded))
-                # Router.load falls back to config.json when the parsed content is falsey,
-                # not merely when its own file is absent (Router.py: `if not config:`).
-                # Stopping at the first file that downloaded therefore validated an empty
-                # router_config.json and never fetched the fallback, so the `types` the
-                # loader does resolve went unchecked. A real config is a non-empty dict and
-                # still stops here, so a working model asks for nothing extra.
+                # Router.load falls back to config.json when the parsed content is falsey (`if not config:`),
+                # so an empty router_config.json must not stop the walk.
                 try:
                     with open(downloaded, encoding = "utf8") as handle:
                         content = json.load(handle)
                 except (OSError, ValueError):
-                    # Unreadable is not "checked": let the fallback be fetched too, and
-                    # leave the refusal to the reader below, which sees both files.
+                    # Unreadable is not "checked": fetch the fallback too and let the reader below refuse.
                     content = None
                 if content:
                     break
@@ -2048,9 +1931,7 @@ class FastSentenceTransformer(FastModel):
                 class_ref = module_config["type"]
                 name = module_config.get("name", str(module_config.get("idx", len(modules))))
 
-                # Gate before any download: a refused type must fail the load outright, not fall
-                # through the "could not download" skip below. Resolved once, since a consented
-                # repo-local ref costs a Hub round trip.
+                # Gate before any download: a refused type must fail the load, not hit the download skip below.
                 module_class = None
                 if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                     is_transformer_module = True
@@ -2135,7 +2016,6 @@ class FastSentenceTransformer(FastModel):
 
         return modules, True
 
-    # Encoder model types that benefit from native torch.compile instead of Unsloth patching.
     ENCODER_MODEL_TYPES = {
         "mpnet",
         "bert",
@@ -2160,7 +2040,7 @@ class FastSentenceTransformer(FastModel):
                 inner = model[0].auto_model
                 params = sum(p.numel() for p in inner.parameters())
             except:
-                params = 100_000_000  # Default to 100M if can't determine
+                params = 100_000_000
         else:
             params = sum(p.numel() for p in model.parameters())
 
@@ -2175,7 +2055,7 @@ class FastSentenceTransformer(FastModel):
 
         params_m = params / 1e6
 
-        # Empirical formula from benchmarks with batch_size=2, grad_accum=4: small models carry high fixed overhead and a lower speedup, large models scale warmup but gain significantly.
+        # Empirical (batch_size=2, grad_accum=4): small models have high fixed overhead, large ones gain more.
         if params_m < 50:
             estimated_warmup = 35 + params_m * 0.3
             base_speedup = 1.35
@@ -2197,7 +2077,6 @@ class FastSentenceTransformer(FastModel):
 
         threshold = breakeven * 1.2
 
-        # Optional adjustment based on expected work per step, using only pre-run information (batch size, grad accum, seq length).
         generic_scale = 1.0
         fast_scale = 1.0
         if batch_size is not None or grad_accum is not None or max_seq_length is not None:
@@ -2237,11 +2116,9 @@ class FastSentenceTransformer(FastModel):
         else:
             final_threshold = generic_threshold
 
-        # Reduce mpnet overestimation slightly.
         if model_type == "mpnet":
             final_threshold *= 0.7
 
-        # Lower bound to avoid compiling on extremely short runs.
         return int(max(20, final_threshold))
 
     @staticmethod
@@ -2268,7 +2145,7 @@ class FastSentenceTransformer(FastModel):
                 model[0].model = compiled
             else:
                 model[0].auto_model = compiled
-            # Works around an accelerate unwrap_model bug: with a compiled inner model accelerate sees has_compiled_regions() True and then fails on model.__dict__["_orig_mod"], so set it.
+            # accelerate unwrap_model bug: a compiled inner model needs model.__dict__["_orig_mod"].
             model.__dict__["_orig_mod"] = model
         else:
             model = torch.compile(model, mode = mode)
@@ -2279,16 +2156,16 @@ class FastSentenceTransformer(FastModel):
         model_name,
         max_seq_length = None,
         dtype = None,
-        load_in_4bit = False,  # Changed default: 4-bit is slow for encoders
+        load_in_4bit = False,  # 4-bit is slow for encoders
         load_in_8bit = False,
-        load_in_16bit = True,  # Changed default: 16-bit is optimal for encoders
+        load_in_16bit = True,
         full_finetuning = False,
         token = None,
         device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,
         fix_tokenizer = True,
         trust_remote_code = False,
-        use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
+        use_gradient_checkpointing = False,  # conflicts with torch.compile
         resize_model_vocab = None,
         revision = None,
         use_exact_model_name = False,
@@ -2303,8 +2180,7 @@ class FastSentenceTransformer(FastModel):
         use_unpadding = False,
         **kwargs,
     ):
-        # use_unpadding: "auto" packs eligible training batches with >= 8192 padded slots,
-        # True packs every eligible batch (saves memory, can cost speed).
+        # "auto" packs eligible batches with >= 8192 padded slots; True packs every eligible batch.
         if use_unpadding not in (False, True, "auto") or type(use_unpadding) not in (bool, str):
             raise ValueError('use_unpadding must be "auto", True, or False')
         try:
@@ -2316,7 +2192,6 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # Remote-class probes must use this load's trust, revision and hub options.
         _remote_class_probe_kwargs = dict(
             trust_remote_code = trust_remote_code,
             revision = revision,
@@ -2326,9 +2201,11 @@ class FastSentenceTransformer(FastModel):
             proxies = kwargs.get("proxies", None),
         )
 
-        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one declines. st_device below hands device_map to SentenceTransformer(device=), which ends in self.to(device): the sentinel raises there, and that same .to() would pull a split model back onto one card. The env-var opt-in is resolved too, or UNSLOTH_AUTO_DEVICE_MAP=1 asks for a plan without naming the sentinel.
+        # Decline the "unsloth" sentinel: SentenceTransformer(device=) ends in .to(device), which raises on
+        # it and would pull a split model back onto one card.
         device_map = requested_device_map(device_map)
-        # Always "sequential", never the asked-for name's own declined value: the st_device blocks normalise only dicts, "auto" and "sequential", so "balanced" would reach .to("balanced"). isinstance first, since a caller's explicit dict is unhashable and `in` alone raises.
+        # Always "sequential": st_device normalises only dicts, "auto" and "sequential". isinstance first:
+        # a dict is unhashable.
         if isinstance(device_map, str) and device_map in _PLANNED_DEVICE_MAPS:
             print(
                 "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
@@ -2336,9 +2213,8 @@ class FastSentenceTransformer(FastModel):
             )
             device_map = "sequential"
 
-        # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights; guarded on not for_inference, since that branch never used these flags.
+        # Validate before the prefetch so a bad config fails without downloading weights.
         if not for_inference:
-            # sanity check, thanks Etherl:
             if full_finetuning and (load_in_4bit or load_in_8bit):
                 print(
                     "Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA."
@@ -2356,7 +2232,7 @@ class FastSentenceTransformer(FastModel):
                     "If you want 8bit finetuning, set both `load_in_16bit = False` and `load_in_8bit = True`"
                 )
 
-        # Prefetch so the ST load below is a cache hit. weights_at_root stays False, since ST component weights live in per-module subfolders.
+        # ST component weights live in per-module subfolders, so weights_at_root stays False.
         _st_prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -2365,13 +2241,13 @@ class FastSentenceTransformer(FastModel):
             or kwargs.get("cache_folder")
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             local_files_only = kwargs.get("local_files_only", False),
-            # Forward force_download so the refresh happens in the killable child, then clear it so the in-process ST load reuses the warm cache instead of re-downloading over unguarded Xet.
+            # Refresh in the killable child, then clear it so the in-process load reuses the warm cache.
             force_download = kwargs.get("force_download", False),
         )
         if _st_prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # With for_inference == True, skip Unsloth optimizations to avoid torch compile issues.
+        # for_inference skips Unsloth optimizations to avoid torch compile issues.
         if for_inference:
             st_device = device_map
             if isinstance(st_device, dict) or (
@@ -2401,7 +2277,7 @@ class FastSentenceTransformer(FastModel):
                 if k in kwargs:
                     st_kwargs[k] = kwargs[k]
 
-            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm cache (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
+            # ST takes cache_folder, not cache_dir (None lets ST honour SENTENCE_TRANSFORMERS_HOME).
             _st_cache = kwargs.get("cache_dir") or kwargs.get("cache_folder")
             if _st_cache is not None:
                 st_kwargs["cache_folder"] = _st_cache
@@ -2460,11 +2336,12 @@ class FastSentenceTransformer(FastModel):
             if config_kwargs and config is not None:
                 kwargs["config"] = config
 
-        # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. Set UNSLOTH_COMPILE_DISABLE=1 for the old path.
+        # Encoders use native torch.compile: the auto-compiler's @torch.compiler.disable errors on
+        # torch 2.9+. UNSLOTH_COMPILE_DISABLE=1 restores the old path.
         is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
         use_fast_encoder = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1"
         if use_fast_encoder and is_encoder_model:
-            # torch.compile mode "default" is safest for PEFT/LoRA training; "reduce-overhead" uses CUDA Graphs, which are incompatible with PEFT.
+            # "reduce-overhead" uses CUDA Graphs, which are incompatible with PEFT.
             compile_mode = "default"
 
             if dtype is None:
@@ -2505,7 +2382,7 @@ class FastSentenceTransformer(FastModel):
                     f"Unsloth: Using fast encoder path for {model_type} (torch.compile{sdpa_str})"
                 )
 
-            # Handle 4-bit quantization via BitsAndBytesConfig; when quantizing, device must be handled by accelerate.
+            # When quantizing, device must be handled by accelerate.
             if load_in_4bit:
                 from transformers import BitsAndBytesConfig
 
@@ -2518,7 +2395,6 @@ class FastSentenceTransformer(FastModel):
                 model_kwargs["quantization_config"] = bnb_config
                 st_device = None
 
-            # Gradient checkpointing conflicts with torch.compile, so warn the user.
             _use_gc = use_gradient_checkpointing
             if _use_gc and _use_gc != False:
                 print("Unsloth Warning: Gradient checkpointing is incompatible with torch.compile.")
@@ -2532,7 +2408,6 @@ class FastSentenceTransformer(FastModel):
                 elif is_mpnet:
                     FastSentenceTransformer._patch_mpnet_v5()
 
-            # ST takes cache_folder, not cache_dir: map cache_dir onto it so this load hits the warm cache (None lets ST honor SENTENCE_TRANSFORMERS_HOME, matching the prefetch).
             _validated = FastSentenceTransformer._check_modules_json_types(
                 model_name,
                 token,
@@ -2571,10 +2446,10 @@ class FastSentenceTransformer(FastModel):
                 save_method = "merged_16bit",
                 **save_kwargs,
             ):
-                # tokenizer and save_method are positional to match FastLanguageModel.save_pretrained_merged(dir, tokenizer, save_method = ...), which is how the docs and notebooks call it; keyword callers are unaffected.
+                # Positional to match FastLanguageModel.save_pretrained_merged(dir, tokenizer, save_method = ...).
                 save_method = _normalize_save_method(save_method)
                 if save_method not in ("merged_16bit", None):
-                    # Refused before anything is written: this path merges and unloads unconditionally, so accepting "lora" would write full weights for a request to write adapters.
+                    # This path always merges, so "lora" would write full weights instead of adapters.
                     raise NotImplementedError(
                         f"Unsloth: save_method = {save_method!r} is not "
                         f"supported for this SentenceTransformer; only "
@@ -2635,7 +2510,6 @@ class FastSentenceTransformer(FastModel):
             st_model._unsloth_trust_remote_code = trust_remote_code
             return st_model
 
-        # Warn if using 4-bit with an encoder: it is slow due to dequantization overhead.
         if is_encoder_model and load_in_4bit:
             print("Unsloth Warning: 4-bit quantization adds ~2.3x overhead for encoder models.")
             print("Consider using load_in_16bit=True for better performance.")
@@ -2647,13 +2521,12 @@ class FastSentenceTransformer(FastModel):
             if supported:
                 kwargs["add_pooling_layer"] = False
 
-        # fp8 is not supported, so force it off.
         fp8 = kwargs.pop("load_in_fp8", None)
         if fp8:
             logging.info("Unsloth: Disabling fp8 for model")
         load_in_fp8 = False
 
-        # Fix for Snowflake/snowflake-arctic-embed-l-v2.0: it has pooler weights irrelevant to training, but unsloth throws when UNSLOTH_WARN_UNINITIALIZED == 1 and it sees unused weights.
+        # Snowflake/snowflake-arctic-embed-l-v2.0 has unused pooler weights that trip UNSLOTH_WARN_UNINITIALIZED.
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
@@ -2669,7 +2542,8 @@ class FastSentenceTransformer(FastModel):
         elif is_mpnet:
             FastSentenceTransformer._patch_mpnet_v5()
 
-        # No modules.json means forcing 16-bit: saving is custom for these models and 4-bit would need dequant in save_pretrained_merged. Resolve the warmed cache: hf_hub_download ignores SENTENCE_TRANSFORMERS_HOME, so pass it as cache_dir.
+        # No modules.json forces 16-bit: custom saving would need dequant. hf_hub_download ignores
+        # SENTENCE_TRANSFORMERS_HOME, so pass it as cache_dir.
         has_modules_json = (
             FastSentenceTransformer._module_path(
                 model_name,
@@ -2677,7 +2551,6 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = kwargs.get("cache_dir")
                 or kwargs.get("cache_folder")
                 or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
-                # Same revision as the weight load so modules hit the warm (None = default branch).
                 revision = revision,
             )
             is not None
@@ -2691,12 +2564,13 @@ class FastSentenceTransformer(FastModel):
             load_in_4bit = False
             load_in_16bit = True
 
-        # The fallback FastModel load reads HF cache_dir, not ST's cache_folder/SENTENCE_TRANSFORMERS_HOME, so point it at the warmed cache, but only when no explicit cache_dir was passed.
+        # The fallback FastModel load reads HF cache_dir, so point it at the warmed ST cache.
         _st_cache_dir = kwargs.get("cache_folder") or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
-        # The decline above only spends the sentinel on our copy: strip the marker before the nested load, or FastModel reads it as "nobody chose this" and re-upgrades it under UNSLOTH_AUTO_DEVICE_MAP. A plain value rather than pinning the env var, since os.environ is process-wide.
+        # Strip the sentinel marker before the nested load, or FastModel re-upgrades it under
+        # UNSLOTH_AUTO_DEVICE_MAP.
         device_map = unmarked_device_map(device_map)
         try:
             model, tokenizer = FastModel.from_pretrained(
@@ -2741,7 +2615,6 @@ class FastSentenceTransformer(FastModel):
             max_seq_length,
             pooling_mode,
             trust_remote_code = trust_remote_code,
-            # Same resolved cache as above so the fallback module loads hit the warm cache, not Xet, and the same revision as the weight load (None = default branch).
             cache_dir = kwargs.get("cache_dir")
             or kwargs.get("cache_folder")
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
@@ -2793,30 +2666,23 @@ class FastSentenceTransformer(FastModel):
             save_method = "merged_16bit",
             **kwargs,
         ):
-            # Positional to match FastLanguageModel.save_pretrained_merged; see the note on the other definition above. This path forwards to that merge, which understands every save_method.
+            # Positional to match FastLanguageModel.save_pretrained_merged.
             save_method = _normalize_save_method(save_method)
             if self.no_modules and save_method not in ("merged_16bit", None):
-                # The no_modules branch below merges and unloads unconditionally and drops save_method, so accepting "lora" here would return full weights for a request to write adapters.
+                # The no_modules branch always merges, so "lora" would write full weights.
                 raise NotImplementedError(
                     f"Unsloth: save_method = {save_method!r} is not supported "
                     f"for this SentenceTransformer: no modules.json was found, "
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
                 )
-            # Imported here rather than at module scope: a module-scope bind out of
-            # unsloth.save closes an import cycle, which is why the two shims above are
-            # deferred too. See tests/test_cold_import_order.py.
+            # Imported here: a module-scope bind out of unsloth.save closes an import cycle
+            # (tests/test_cold_import_order.py).
             from ..save import _is_adapter_save_method
 
             if _is_adapter_save_method(save_method):
-                # Refused because nothing here writes base weights: self.save_pretrained writes the
-                # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the
-                # lines below then delete that adapter and hand the transformer module to
-                # save_pretrained_merged, leaving modules.json and an adapter with no config.json
-                # and no weights, which SentenceTransformer cannot load. Before unsloth#11067
-                # "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit
-                # merge, which happened to write something loadable; an error is the honest
-                # replacement. Save the adapter with self[0].auto_model.save_pretrained(...).
+                # Nothing here writes base weights: the result would be modules.json plus an orphan adapter.
+                # Save the adapter with self[0].auto_model.save_pretrained(...).
                 raise NotImplementedError(
                     f"Unsloth: save_method = {save_method!r} is not supported for a "
                     f"SentenceTransformer: `save_pretrained_merged` writes a loadable "
@@ -2832,10 +2698,9 @@ class FastSentenceTransformer(FastModel):
                 f for f in adapter_files if os.path.exists(os.path.join(save_directory, f))
             }
 
-            # sentence-transformers config and modules are only saved if save_pretrained is called.
             self.save_pretrained(save_directory)
 
-            # Remove LoRA adapters only if they were created by save_pretrained, not pre-existing.
+            # Remove LoRA adapters only if save_pretrained created them.
             for file in adapter_files:
                 if file not in existing_before:
                     try:
@@ -2933,7 +2798,7 @@ class FastSentenceTransformer(FastModel):
         bias = "none",
         layers_to_transform = None,
         layers_pattern = None,
-        use_gradient_checkpointing = False,  # Changed default: conflicts with torch.compile
+        use_gradient_checkpointing = False,  # conflicts with torch.compile
         random_state = 3407,
         max_seq_length = 2048,
         use_rslora = False,
@@ -2964,7 +2829,6 @@ class FastSentenceTransformer(FastModel):
 
                 gc_enabled = False
 
-                # Needed when from_pretrained was called without gradient checkpointing but get_peft_model requests it.
                 if use_gradient_checkpointing and use_gradient_checkpointing != False:
                     import transformers
                     from packaging.version import Version
@@ -2991,7 +2855,6 @@ class FastSentenceTransformer(FastModel):
                         gc_enabled = bool(_gc_for_kbit)
                     except ValueError as e:
                         if "does not support gradient checkpointing" in str(e):
-                            # The model does not support gradient checkpointing, so disable it.
                             print(
                                 f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping."
                             )
@@ -3005,7 +2868,7 @@ class FastSentenceTransformer(FastModel):
                         else:
                             raise
 
-                # Enable gradient checkpointing if requested, only for non-quantized models, since prepare_model handles the rest.
+                # Only for non-quantized models: prepare_model handles the rest.
                 elif use_gradient_checkpointing and use_gradient_checkpointing != False:
                     if hasattr(inner_model, "gradient_checkpointing_enable"):
                         try:
@@ -3035,7 +2898,6 @@ class FastSentenceTransformer(FastModel):
                     from ._utils import _prepare_model_for_qat
                     peft_model = _prepare_model_for_qat(peft_model, qat_scheme)
 
-                # Determine the compile mode, only if not using gradient checkpointing, and re-enable torch.compile when gradient checkpointing was requested but could not be enabled.
                 compile_mode = getattr(model, "_compile_mode", "default")
                 if compile_mode is None and not gc_enabled:
                     compile_mode = "default"
@@ -3043,7 +2905,7 @@ class FastSentenceTransformer(FastModel):
                         "Unsloth: Re-enabling torch.compile since gradient checkpointing is not supported"
                     )
 
-                # Re-assign the peft model back to the transformer module; on sentence-transformers >= 5.4 auto_model is a read-only property backed by self.model, so write to the backing attribute there.
+                # On sentence-transformers >= 5.4 auto_model is a read-only property backed by self.model.
                 if isinstance(getattr(type(transformer_module), "auto_model", None), property):
                     transformer_module.model = peft_model
                 else:
@@ -3100,7 +2962,7 @@ class FastSentenceTransformer(FastModel):
                 **kwargs,
             )
 
-            # Re-assign the peft model back to the transformer module; on sentence-transformers >= 5.4 auto_model is a read-only property backed by self.model, so write to the backing attribute there.
+            # On sentence-transformers >= 5.4 auto_model is a read-only property backed by self.model.
             if isinstance(getattr(type(transformer_module), "auto_model", None), property):
                 transformer_module.model = peft_model
             else:
@@ -3136,10 +2998,10 @@ def _patch_sentence_transformer_trainer():
     try:
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
-        return  # sentence_transformers not installed
+        return
 
     if getattr(SentenceTransformerTrainer, "_unsloth_auto_compile_patched", False):
-        return  # Already patched
+        return
 
     from functools import wraps
 
@@ -3211,7 +3073,7 @@ def _patch_sentence_transformer_trainer():
 
 
 def _patch_st_trainer_load_from_checkpoint():
-    # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration; route through the SentenceTransformer's device property instead.
+    # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration.
     try:
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
@@ -3309,21 +3171,19 @@ def _patch_st_trainer_load_from_checkpoint():
                 raise RuntimeError(f"Unsloth: Bad checkpoint module path for index {idx}.")
             if not hasattr(module_cls, "load"):
                 raise RuntimeError(f"Unsloth: Module {idx} cannot be reloaded.")
-            # The class is trusted, coming from the live model, but load() reads the checkpoint's
-            # own configs and some versions import dotted paths out of them.
+            # load() reads the checkpoint's configs, and some versions import dotted paths out of them.
             FastSentenceTransformer._check_module_config_class_refs(
                 module_dir,
                 saved_type or module_cls.__name__,
                 root,
-                # The consent the model was loaded with. Hard-coding False would make a resume
-                # impossible for a model that legitimately needed it, with no way to say so here.
+                # The consent the model was loaded with.
                 getattr(self.model, "_unsloth_trust_remote_code", False),
                 module_cls,
             )
             fresh = module_cls.load(module_dir)
             if not isinstance(fresh, module_cls):
                 raise RuntimeError(f"Unsloth: Module {idx} reload returned wrong type.")
-            # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration, so route through the SentenceTransformer's device property instead.
+            # Parameterless modules (Pooling, Normalize) make next(module.parameters()) raise StopIteration.
             try:
                 fresh.to(self.model.device)
             except AttributeError:

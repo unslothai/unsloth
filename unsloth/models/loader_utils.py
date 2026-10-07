@@ -32,7 +32,8 @@ from .mapper import (
     _add_lower_only,
 )
 
-# The alias helpers a fetched mapper.py may call, resolved to the INSTALLED implementations: _get_new_mapper reads such calls as data, taking the table and the two literal strings out of the AST, so the fetched text never supplies behaviour.
+# Helpers a fetched mapper.py may call, resolved to the INSTALLED implementations: the fetched
+# text is read as data from the AST and never supplies behaviour.
 _MAPPER_HELPERS = {
     "_add_with_lower": _add_with_lower,
     "_add_lower_only": _add_lower_only,
@@ -49,15 +50,15 @@ SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 
 LOCAL_RANK_KEYS = ("LOCAL_RANK", "RANK")
 WORLD_SIZE_KEYS = ("WORLD_SIZE",)
-# Only the node-local one. torchrun documents RANK as "The global rank" and LOCAL_RANK as "The local rank", and torch.distributed.get_rank() is global too, so neither of those may index a device.
+# RANK is global (torchrun), so only LOCAL_RANK may index a device.
 LOCAL_RANK_ONLY_KEYS = ("LOCAL_RANK",)
 
 BAD_MAPPINGS = {
-    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",  # 32B dynamic quant is way too big
-    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
-    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",
+    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",
+    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",
+    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",
+    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",
 }
 
 
@@ -148,7 +149,6 @@ def fsdp_will_wrap():
         pass
     if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
         return True
-    # "0" is how an accelerate config says "not FSDP".
     if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
         return True
     return False
@@ -176,11 +176,11 @@ def prepare_device_map():
 
 UNSLOTH_DEVICE_MAP = "unsloth"
 
-# Same planner, different answer when it declines: every veto path ends in "sequential", which fills the first device to its whole free budget, wrong for a caller that picked several cards.
+# Every planner veto ends in "sequential", wrong for a caller that picked several cards.
 UNSLOTH_BALANCED_DEVICE_MAP = "unsloth_balanced"
 _PLANNED_DEVICE_MAPS = {UNSLOTH_DEVICE_MAP: "sequential", UNSLOTH_BALANCED_DEVICE_MAP: "balanced"}
 
-# A string, not None, so an explicit False stays distinguishable from "unset".
+# A string, not None, so an explicit False stays distinguishable from unset.
 OFFLOAD_EMBEDDING_AUTO = "auto"
 
 
@@ -201,7 +201,7 @@ def planner_hub_kwargs(loader_kwargs):
         hub["cache_dir"] = loader_kwargs["cache_dir"]
     if _get_effective_local_files_only(loader_kwargs):
         hub["local_files_only"] = True
-    # Resolving a remote class is a third lookup, and the planner honours code_revision for it; left out, the plan is built from the default revision's code and can name a tree the model lacks.
+    # The planner honours code_revision when resolving a remote class; omit it and it plans the wrong tree.
     if loader_kwargs.get("code_revision") is not None:
         hub["code_revision"] = loader_kwargs["code_revision"]
     return hub
@@ -235,7 +235,7 @@ def requested_device_map(device_map):
     return device_map
 
 
-# transformers routes exactly these four through infer_auto_device_map; every other string becomes `{"": torch.device(value)}` (modeling_utils.from_pretrained), i.e. a device the caller named.
+# transformers plans only these four; any other string is a device the caller named.
 TRANSFORMERS_PLACEMENT_STRATEGIES = frozenset({"auto", "balanced", "balanced_low_0", "sequential"})
 
 AUTOMATIC_DEVICE_MAPS = TRANSFORMERS_PLACEMENT_STRATEGIES | {
@@ -278,7 +278,7 @@ def planner_quantization_kwargs(
         try:
             from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
         except Exception:
-            # Built on every quantized load, planning or not, so an older unsloth_zoo must not turn a 4bit load into an ImportError. One without the shared list predates the planner that consumes it, so this plan was going to decline anyway.
+            # Runs on every quantized load: an older unsloth_zoo must not turn a 4bit load into an ImportError.
             return kwargs
         kwargs["llm_int8_skip_modules"] = SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
     return kwargs
@@ -293,7 +293,7 @@ def _single_device_index(device_map):
     if isinstance(device_map, torch.device):
         if device_map.type != "cuda":
             return None
-        # An unindexed torch.device means the current device (set_device(local_rank)), not 0.
+        # An unindexed torch.device means the current device, not 0.
         return device_map.index if device_map.index is not None else torch.cuda.current_device()
     if not isinstance(device_map, str):
         return None
@@ -303,7 +303,7 @@ def _single_device_index(device_map):
         except ValueError:
             return None
     if device_map == "cuda":
-        # transformers maps a bare "cuda" to cuda:{LOCAL_RANK}, one device on any host.
+        # transformers maps a bare "cuda" to cuda:{LOCAL_RANK}.
         try:
             return int(os.environ.get("LOCAL_RANK", 0))
         except ValueError:
@@ -487,7 +487,6 @@ def planner_model_class(config, trust_remote_code = False):
         auto_class = _auto_class_for(config, trust_remote_code = trust_remote_code)
         return resolve_model_class(auto_class, config, trust_remote_code = trust_remote_code)
     except Exception:
-        # Unknown, not mismatched: an unsloth_zoo without this has no planner to feed.
         return None
 
 
@@ -498,7 +497,7 @@ def planner_class_mismatch_reason(loaded_class, planned_class):
     return f"the load builds {loaded_class.__name__}, not the planned {planned_class.__name__}"
 
 
-# accelerate's max_memory spellings, in the order it tries them: GiB/MiB/KiB are binary, GB/MB/KB decimal, and a lowercase trailing `b` on a decimal unit means bits.
+# accelerate's max_memory units: GiB/MiB/KiB binary, GB/MB/KB decimal, lowercase trailing b = bits.
 _SIZE_UNITS = (
     ("GIB", 2**30, False),
     ("MIB", 2**20, False),
@@ -525,7 +524,6 @@ def _as_bytes(size):
             amount = int(float(size[: -len(unit)]) * scale)
         except ValueError:
             return None
-        # Bits, if they spelled the unit "Gb" rather than "GB"; binary units have no such form.
         if has_bit_form and size.endswith("b"):
             amount //= 8
         return amount if amount >= 0 else None
@@ -545,7 +543,7 @@ def resolve_unsloth_device_map(
     **config_kwargs,
 ):
     """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is. Opt-in only, so nothing an existing caller passes changes meaning, and the plan is built on the meta device: no GPU memory, no weight download. Falls back to "sequential" wherever a plan cannot apply, since a model that loads the old way beats one that refuses to load at all; `DeviceMapInfeasible` is the exception, raised rather than spilling a bitsandbytes model to CPU, and swallowing it would hand the user an OOM instead of a diagnosis. `skip_reason` is the caller's veto, for when only the caller can tell the planner would describe a different model than the load builds."""
-    # isinstance first: a caller's explicit dict is unhashable, so `in` alone raises.
+    # isinstance first: a dict device_map is unhashable.
     if not isinstance(device_map, str) or device_map not in _PLANNED_DEVICE_MAPS:
         return device_map
     _declined = _PLANNED_DEVICE_MAPS[device_map]
@@ -561,7 +559,6 @@ def resolve_unsloth_device_map(
     if full_finetuning:
         return _fallback("full finetuning does not use the quantized planner")
     if is_distributed():
-        # Every rank already owns the whole model on its own card; splitting on top of that puts every rank on every card, a different execution model.
         return _fallback("each rank of a distributed launch owns its own device")
     if DEVICE_TYPE_TORCH != "cuda":
         return _fallback(f"the planner has no memory budgets for {DEVICE_TYPE_TORCH}")
@@ -570,12 +567,13 @@ def resolve_unsloth_device_map(
     except Exception as error:
         return _fallback(f"the devices could not be counted ({error})")
 
-    # Popped, not forwarded: max_memory is a named parameter of the planner, so a copy left in planner_kwargs raises TypeError, which the handler below turns into a silent "sequential". A caller's mapping replaces the measured one rather than editing it: its keys are the devices they will let the load use, as accelerate reads it too, so {0: ..., 1: ...} on a four-GPU host means GPUs 2 and 3 are somebody else's.
+    # Popped: a copy left in planner_kwargs raises TypeError, silently falling back to "sequential".
+    # A caller's mapping replaces the measured one: its keys are the only devices the load may use.
     planner_kwargs = dict(planner_kwargs or {})
     requested_memory = planner_kwargs.pop("max_memory", None)
     requested_memory = dict(requested_memory) if requested_memory else None
 
-    # Read before probing: mem_get_info initialises a CUDA context on each device it touches, and a withheld card is likely busy with the workload it was withheld for. One that refuses (ECC error, MIG parent, Exclusive_Process) would also drop the plan to "sequential" over a device this load was never going to use.
+    # Read before probing: mem_get_info creates a CUDA context on every device it touches.
     if requested_memory is None:
         probe = list(range(device_count))
     else:
@@ -609,7 +607,7 @@ def resolve_unsloth_device_map(
     if "config" in config_kwargs:
         planner_kwargs.pop("config", None)
 
-    # Free, not total: this process's context and anything else resident make total an overcommit. Guarded, because a card can still refuse mid-probe.
+    # Free, not total: total overcommits. Guarded, since a card can refuse mid-probe.
     try:
         max_memory = {index: torch.cuda.mem_get_info(index)[0] for index in probe}
     except Exception as error:
@@ -621,10 +619,9 @@ def resolve_unsloth_device_map(
             measured = max_memory.get(device)
             budget = _as_bytes(written)
             if budget is None:
-                # Nothing to compare against: what we measured, or for a device we never measured (cpu, disk) their value untouched for the planner to read.
                 budgets[device] = measured if measured is not None else written
             else:
-                # Under what is actually free: they may know of reservations we cannot measure, but planning above free is how a plan OOMs on dispatch.
+                # Never plan above measured free memory, or the plan OOMs on dispatch.
                 budgets[device] = budget if measured is None else min(measured, budget)
         max_memory = budgets
 
@@ -780,14 +777,13 @@ def __get_model_name(
     if load_in_fp8 != False:
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
-                # Faster row scaling only works if FBGEMM works; otherwise use the slower blockwise type.
                 return FLOAT_TO_FP8_ROW_MAPPER[lower_model_name]
             elif lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
         else:
             if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
-        # No pre-quantized model found. vllm >= 0.12.0 quantizes to FP8 on the fly (returning the original name); older vllm falls through to offline quant.
+        # vllm >= 0.12.0 quantizes to FP8 on the fly; older vllm falls through to offline quant.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
             if Version(vllm.__version__) >= Version("0.12.0"):
@@ -814,7 +810,6 @@ def __get_model_name(
         return new_model_name
 
     elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
-        # Keep an explicit -bnb-4bit name; otherwise map to the dynamic version.
         if lower_model_name.endswith("-bnb-4bit"):
             return model_name
 
@@ -832,7 +827,7 @@ def _get_new_mapper():
         new_mapper = (
             "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
         )
-        # Capped WHILE reading, since requests.get buffers the whole body first, and the deadline is total because timeout is per-read.
+        # Capped while reading (requests.get buffers the body), with a total deadline (timeout is per read).
         byte_cap = 1_000_000
         deadline = time.monotonic() + 10
         chunks, total = [], 0
@@ -850,7 +845,7 @@ def _get_new_mapper():
                     if time.monotonic() > deadline:
                         return {}, {}, {}, {}, {}
                 else:
-                    # read1: the timeout is per SOCKET READ, so a trickling peer resets it forever and the deadline is never reached. requests only decompresses inside iter_content.
+                    # read1: timeout is per socket read, so a trickling peer could reset it forever.
                     raw = response.raw
                     try:
                         raw.decode_content = True
@@ -863,7 +858,6 @@ def _get_new_mapper():
                         if read_once is not None:
                             chunk = read_once(65_536)
                         else:
-                            # Older urllib3 has no read1; one byte returns as promptly.
                             chunk = raw.read(1)
                         if not chunk:
                             break
@@ -878,12 +872,11 @@ def _get_new_mapper():
         else:
             return {}, {}, {}, {}, {}
         new_mapper = b"".join(chunks).decode(encoding, errors = "replace")
-        # Never exec the response: that is arbitrary code execution inside every from_pretrained that hits an unmapped name.
+        # Never exec the response: that is arbitrary code execution in every from_pretrained.
         import ast
 
-        # ast.parse builds the whole tree before any literal-only check runs, so this is no defence against exhaustion (python/cpython#95588); the byte cap above is.
+        # ast.parse is no defence against exhaustion (python/cpython#95588); the byte cap above is.
         tree = ast.parse(new_mapper)
-        # Every module-level literal dict, in source order; chosen below.
         literal_bindings = []
         for index, node in enumerate(tree.body):
             # AnnAssign too, or an annotation upstream turns the probe off silently.
@@ -914,7 +907,8 @@ def _get_new_mapper():
                     found = literal
             return found
 
-        # Statements that really RUN at import: ast.walk reaches into function bodies and dead branches, which would fabricate a mapping. Local, because the tests run this body in a bare namespace.
+        # Only statements that really run at import: ast.walk also reaches function bodies and dead branches.
+        # Local, because the tests run this body in a bare namespace.
         def _constant_truth(test):
             """True/False for a statically decidable condition, else None. `not True` is a UnaryOp, so it fell through and its body was read as run."""
             if isinstance(test, ast.Constant):
@@ -930,12 +924,10 @@ def _get_new_mapper():
             if isinstance(iterable, ast.Dict):
                 return not iterable.keys
             if isinstance(iterable, ast.Constant):
-                # An empty literal iterates nothing; a nonempty one keeps its body.
                 return isinstance(iterable.value, (str, bytes)) and not iterable.value
             return False
 
         def _class_bound(statement):
-            # A class binding makes every LATER mutation a class attribute.
             targets = []
             if isinstance(statement, ast.Assign):
                 targets = statement.targets
@@ -948,7 +940,7 @@ def _get_new_mapper():
             shadowed = frozenset(),
             class_body = False,
         ):
-            # What ENDED the suite: "return" leaves the function, True the suite, and only the statements ABOVE it still see the module global.
+            # Returns what ended the suite: "return" leaves the function, True the suite.
             for statement in body:
                 if class_body:
                     shadowed = shadowed | _class_bound(statement)
@@ -957,7 +949,7 @@ def _get_new_mapper():
                 if isinstance(statement, (ast.Break, ast.Continue, ast.Return)):
                     return "return" if isinstance(statement, ast.Return) else True
                 if isinstance(statement, ast.ClassDef):
-                    # A class body, unlike a function body, RUNS at import.
+                    # A class body, unlike a function body, runs at import.
                     yield from _executed_nodes(statement.body, shadowed, class_body = True)
                     continue
                 if isinstance(statement, ast.If) and _constant_truth(statement.test) is not None:
@@ -987,7 +979,6 @@ def _get_new_mapper():
                         yield from _executed_nodes(children, shadowed)
                 for handler in getattr(statement, "handlers", []) or []:
                     yield from _executed_nodes(handler.body, shadowed)
-                # Only the non-suite parts; a Lambda is excluded at the seed too.
                 pending = [
                     child
                     for child in ast.iter_child_nodes(statement)
@@ -1022,7 +1013,6 @@ def _get_new_mapper():
                             continue
                         pending.append(child)
 
-        # The aliases a newer mapper.py adds live inside build_mappers, which the installed builder cannot know.
         def _calls_the_builder(node):
             """Whether this executed node IS the `build_mappers(...)` call. The node itself, not `ast.walk` over it: walking the parent statement descended back into the deferred children the yield had excluded, so `unused = lambda: build_mappers(...)` counted as a call."""
             return (
@@ -1032,7 +1022,7 @@ def _get_new_mapper():
             )
 
         builder_body = []
-        # From the EXECUTED nodes, with the statement each runs in: a source table rebound after the call is not what the module exports.
+        # From the executed nodes: a source table rebound after the call is not what the module exports.
         exported_names = (
             "INT_TO_FLOAT_MAPPER",
             "FLOAT_TO_INT_MAPPER",
@@ -1062,7 +1052,6 @@ def _get_new_mapper():
         builder_call = None
         builder_index = None
         first_call = None
-        # A call that ASSIGNS the exports replaces all five; the fallback binds nothing.
         builder_rebinds = False
         for index, statement in enumerate(tree.body):
             calls = [
@@ -1072,7 +1061,7 @@ def _get_new_mapper():
                 continue
             if first_call is None:
                 first_call = (calls[0], index)
-            # The LAST call that BINDS the exports; a validation call may run first.
+            # The last call that binds the exports; a validation call may run first.
             if _binds_the_exports(statement):
                 builder_call, builder_index = calls[0], index
                 builder_rebinds = True
@@ -1085,7 +1074,6 @@ def _get_new_mapper():
                     builder_body = statement.body
                     break
 
-        # The table the builder was HANDED, read where the call runs.
         source_name = "__INT_TO_FLOAT_MAPPER"
         source_table = None
         if builder_call is not None:
@@ -1111,7 +1099,6 @@ def _get_new_mapper():
             """The source table as the builder receives it, mutations included. `.update({...})` and subscript assignment are ordinary ways to extend it before it is handed over; the mutation pass below reads only the EXPORTED tables. In execution order, and only up to the call."""
             current = None
             for node, _shadowed in _executed_nodes(tree.body):
-                # The SELECTED call, by identity, so two alike calls are told apart.
                 if node is builder_call or (builder_call is None and _calls_the_builder(node)):
                     break
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -1176,10 +1163,8 @@ def _get_new_mapper():
         if source_table is None:
             source_table = _binding_at(source_name, builder_index)
 
-        # Not the end of the probe: a row-only FP8 repo cannot be expressed through the source table at all, so a body that adds nothing is reported so at the end.
         empty_base = not source_table
         tables = build_mappers(source_table or {})
-        # Restored at the call below, which REPLACES all five tables.
         built = [dict(table) for table in tables]
 
         by_name = {
@@ -1190,7 +1175,7 @@ def _get_new_mapper():
             "FLOAT_TO_FP8_ROW_MAPPER": tables[4],
         }
 
-        # Only the helper CALLS: the builder binds its own INT_TO_FLOAT_MAPPER = {}, which the whole-name rule below would read as a clear.
+        # Only helper calls: the builder's own INT_TO_FLOAT_MAPPER = {} would read as a clear.
         builder_additions = [
             (node, shadowed)
             for node, shadowed in _executed_nodes(builder_body)
@@ -1198,7 +1183,7 @@ def _get_new_mapper():
             and isinstance(node.func, ast.Name)
             and node.func.id in _MAPPER_HELPERS
         ]
-        # In EXECUTION order, so a rebind after the call still empties the table; `rebuilt` stands where the build assigns the exports, matched by identity.
+        # In execution order, so a rebind after the call still empties the table.
         rebuilt = object()
         ordered = []
         for node, shadowed in _executed_nodes(tree.body):
@@ -1215,7 +1200,6 @@ def _get_new_mapper():
                     table.clear()
                     table.update(original)
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-                # An annotated subscript assigns as the plain form does; a bare one binds nothing.
                 if isinstance(node, ast.AnnAssign):
                     if node.value is None:
                         continue
@@ -1224,7 +1208,6 @@ def _get_new_mapper():
                     targets = node.targets
                 for target in targets:
                     if isinstance(target, ast.Name):
-                        # A whole-name assignment REPLACES the exported table.
                         table = by_name.get(target.id)
                         if table is None or target.id in shadowed:
                             continue
@@ -1234,7 +1217,7 @@ def _get_new_mapper():
                             continue
                         if isinstance(replacement, dict):
                             if not replacement and not builder_called:
-                                # An INITIALISER, not a clear: a mapper.py with no build_mappers writes X = {} and fills all five from a module-scope loop the installed builder reproduces, so reading it as a clear emptied every table and stopped the upgrade notice firing.
+                                # An initialiser, not a clear: mapper.py without build_mappers writes X = {} then fills it in a loop.
                                 continue
                             table.clear()
                             table.update(replacement)
@@ -1278,7 +1261,7 @@ def _get_new_mapper():
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "update"
             ):
-                # Only a named receiver and a literal mapping; the keyword form cannot express keys with a slash.
+                # The keyword form cannot express keys with a slash.
                 if not isinstance(node.func.value, ast.Name):
                     continue
                 if node.func.value.id in shadowed:
@@ -1293,7 +1276,6 @@ def _get_new_mapper():
                 if isinstance(additions, dict):
                     table.update(additions)
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                # An alias not derivable from the source table, applied with the INSTALLED helper from literal arguments only.
                 helper = _MAPPER_HELPERS.get(node.func.id)
                 if helper is None:
                     continue
@@ -1324,7 +1306,6 @@ def _get_new_mapper():
             pass
         pass
         if empty_base and tables == build_mappers({}):
-            # Nothing on top of the empty base, so the body carried no mapping at all.
             return {}, {}, {}, {}, {}
         return tables
     except:
@@ -1341,7 +1322,6 @@ def _resolve_with_mappers(
     fp8_block = None,
     fp8_row = None,
 ):
-    # The probe passes the FETCHED fp8 tables, without rebinding the installed ones.
     return __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
@@ -1425,14 +1405,14 @@ def get_model_name(
     ):
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
     elif new_model_name is None and model_name.lower() in BAD_MAPPINGS:
-        # Some bad names (the -unsloth-bnb-4bit dynamic quants) are keys of the mappers, not values, so the resolver returns None and the remap above is skipped; remap the input name directly.
+        # Dynamic -unsloth-bnb-4bit names are mapper keys, not values, so the resolver returns None.
         new_model_name = BAD_MAPPINGS[model_name.lower()]
 
     if (
         new_model_name is None
         and model_name.count("/") == 1
         and model_name[0].isalnum()
-        and not _env_says_offline()  # offline: skip the remote (raw GitHub) mapper refresh
+        and not _env_says_offline()
     ):
         (
             NEW_INT_TO_FLOAT_MAPPER,
@@ -1448,7 +1428,7 @@ def get_model_name(
             int_to_float = NEW_INT_TO_FLOAT_MAPPER,
             float_to_int = NEW_FLOAT_TO_INT_MAPPER,
             map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
-            # The fp8 probe has to look at the FETCHED tables too, or a new fp8 repo would miss both here and in the installed tables and skip the upgrade message.
+            # Probe the fetched tables too, or a new fp8 repo misses both and skips the upgrade message.
             fp8_block = NEW_FP8_BLOCK_MAPPER,
             fp8_row = NEW_FP8_ROW_MAPPER,
         )
@@ -1463,8 +1443,7 @@ def get_model_name(
     if new_model_name is None:
         new_model_name = model_name
     else:
-        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
-        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        # Also when equal to the input: main returned it lowercased. A real remap drops the revision.
         same_repo = new_model_name.lower() == str(model_name).lower()
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name, local_files_only, cache_dir, revision if same_repo else None
@@ -1496,7 +1475,7 @@ def _offline_quantize_to_fp8(
         for x in (getattr(config, "architectures", None) or [])
     )
     is_vlm = is_vlm or hasattr(config, "vision_config")
-    # Decide text-only before the cache name so the fp8 artifact and its path stay in sync (#5816).
+    # Decide text-only first so the fp8 artifact and its cache path stay in sync.
     text_config = None
     if text_only and hasattr(config, "vision_config"):
         from ._utils import (
@@ -1515,10 +1494,9 @@ def _offline_quantize_to_fp8(
             is_vlm = False
 
     temp_dir = tempfile.gettempdir()
-    # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     if revision is not None:
-        # Sanitizing is lossy (release/v1 and release.v1 collapse), so a digest of the raw ref rides along and two refs never share an artifact.
+        # Sanitizing is lossy (release/v1 vs release.v1), so a digest of the raw ref is appended.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
         readable = re.sub(r"[^0-9A-Za-z_-]", "_", revision)[:40]
         cache_name += "-rev-" + readable + "-" + digest
@@ -1639,7 +1617,6 @@ def _load_fp8_weight_map(
     if is_local and os.path.exists(_local_path(index_file)):
         index_path = _local_path(index_file)
     elif not is_local:
-        # Errors after this point are per-tensor: warn and continue, never abort or hide them.
         try:
             index_path = _remote_path(index_file)
         except Exception:
@@ -1700,7 +1677,7 @@ def _match_fp8_module(module_by_name, base):
         return module_by_name[base]
     candidates = []
     if "language_model." in base:
-        candidates.append(base.replace("language_model.", "", 1))  # text-only: drop wrapper
+        candidates.append(base.replace("language_model.", "", 1))
     if "language_model.model." in base:
         candidates.append(base.replace("language_model.model.", "model.language_model.", 1))
     if base.startswith("language_model."):
@@ -1756,7 +1733,6 @@ def _compressed_tensors_fp8_block_size(module, weights):
 
 
 def _save_compressed_tensors_scale_shape(module, state_dict, prefix, local_metadata):
-    # Saved checkpoints keep the config's scale shape; a per-tensor scale was broadcast per row.
     key = prefix + "weight_scale"
     shape = getattr(module, "_unsloth_ct_scale_shape", None)
     scale = state_dict.get(key)
@@ -1812,7 +1788,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4, where the
+    # Opt-in for FP8 (on-the-fly dequant trains slower than bf16); default beside NVFP4, where
     # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
@@ -1820,7 +1796,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
         return 0
     if not _zoo_peft_forward_keeps_fp8_inputs():
         return 0
-    # The fused CE loss multiplies lm_head.weight directly, so a quantized lm_head is decompressed, never routed.
+    # The fused CE loss multiplies lm_head.weight directly, so a quantized lm_head is decompressed.
     get_output_embeddings = getattr(model, "get_output_embeddings", None)
     lm_head = get_output_embeddings() if callable(get_output_embeddings) else None
     routable, decompress = [], []
@@ -1911,7 +1887,7 @@ def _nvfp4_scheme_supported(scheme):
         and getattr(weights, "group_size", None) == 16
         and enum(getattr(weights, "strategy", None)) == "tensor_group"
         and not getattr(weights, "dynamic", False)
-        # "static" is an alias of "weight": calibration order only, columns stored in place (no g_idx).
+        # "static" is an alias of "weight": calibration order only, no g_idx.
         and enum(getattr(weights, "actorder", None)) in (None, "weight", "static")
         and fmt in (None, "nvfp4-pack-quantized")
     )
@@ -1973,8 +1949,7 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
         fn,
         recurse = True,
     ):
-        # model.to(dtype) / .half() may move the packed weight and its scales but never cast them: an fp16 global
-        # scale overflows past 65504 and dequantizes the layer to zeros.
+        # model.to(dtype) must never cast the packed weight or scales: an fp16 global scale overflows.
         quant = {}
         for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
             param = self._parameters.get(name)
@@ -1988,7 +1963,6 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
                 if param.device != device:
                     param = torch.nn.Parameter(param.data.to(device), requires_grad = False)
                 self._parameters[name] = param
-        # The compute dtype follows the cast (model.half() dequantizes to fp16 from then on).
         dtype = getattr(self, "_unsloth_nvfp4_dtype", torch.bfloat16)
         self._unsloth_nvfp4_dtype = fn(torch.empty(0, dtype = dtype)).dtype
         return self
@@ -2111,7 +2085,7 @@ def _patch_peft_for_routed_compressed_tensors():
 
         patched_merge._unsloth_routed = True
         lora_layer.Linear.merge = patched_merge
-    # PiSSA / OLoRA / CorDA / LoftQ / orthogonal / LoRA-GA read or rewrite the dense base weight (or its dtype).
+    # These inits read or rewrite the dense base weight (or its dtype).
     for init in (
         "pissa_init",
         "olora_init",
@@ -2176,7 +2150,7 @@ def _patch_peft_for_routed_compressed_tensors():
 
         @functools.wraps(update_layer)
         def patched_update_layer(self, *, base_layer, lora_A, lora_B, **kwargs):
-            # PEFT has cast new adapters to an FP8 base's float8 dtype; DoRA multiplies them right away.
+            # PEFT has cast new adapters to the FP8 base's float8 dtype; DoRA multiplies them right away.
             for p in (lora_A, lora_B):
                 if isinstance(p, torch.Tensor) and p.dtype in _FP8_DTYPES:
                     p.data = p.data.to(torch.float32)
@@ -2196,7 +2170,7 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
         from compressed_tensors.compressors import decompress_module
     except Exception:
         decompress_module = None
-    # The fused CE loss and decode read lm_head.weight directly, so an NVFP4 lm_head is decompressed too.
+    # The fused CE loss and decode read lm_head.weight directly, so an NVFP4 lm_head is decompressed.
     get_output_embeddings = getattr(model, "get_output_embeddings", None)
     lm_head = get_output_embeddings() if callable(get_output_embeddings) else None
     nvfp4, others = [], []
@@ -2222,7 +2196,7 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
         )
         return 0
     compute_dtype = _fp8_dequant_target_dtype(model)
-    # The FP8 kernels dequantize to bf16, so an fp16 model keeps its FP8 layers decompressed by default.
+    # The FP8 kernels dequantize to bf16, so an fp16 model keeps its FP8 layers decompressed.
     fp8_routed = (
         _route_compressed_tensors_fp8_to_unsloth(
             model, skip = set(nvfp4), default = "1" if compute_dtype == torch.bfloat16 else "0"
@@ -2345,7 +2319,7 @@ def _offload_store_set(store, key, value):
         and key in index
         and not (isinstance(state_dict, dict) and key in state_dict)
     ):
-        # Disk-offloaded: write a new .dat (the index entry may point at the read-only checkpoint), never RAM.
+        # Write a new .dat: the index entry may point at the read-only checkpoint.
         from accelerate.utils import offload_weight
         offload_weight(value.detach().cpu(), key, save_folder, index = index)
         return
@@ -2375,10 +2349,10 @@ def _restore_dropped_fp8_scales(
         block = _fp8_block_size_from_config(model)
         if block is None or not _FP8_DTYPES:
             return (0, 0)
-        # A variant load reads variant-named files; skip to avoid applying default scales to them.
+        # Variant files would get the default variant's scales applied.
         if variant:
             return (0, 0)
-        # No fp8 params means the checkpoint was dequantized on purpose (load_in_16bit), and re-applying a scale would corrupt those already-correct 16bit weights.
+        # No fp8 params means a deliberate 16bit load; re-applying a scale would corrupt it.
         if not any(p.dtype in _FP8_DTYPES for p in model.parameters()):
             return (0, 0)
         weight_map = _load_fp8_weight_map(
@@ -2422,7 +2396,6 @@ def _restore_dropped_fp8_scales(
                     continue
             orphan_fp8 = weight.dtype in _FP8_DTYPES
 
-            # Errors after this point are per-tensor: warn and continue, never abort or hide them.
             try:
                 if shard not in shard_cache:
                     from safetensors import safe_open
@@ -2444,10 +2417,8 @@ def _restore_dropped_fp8_scales(
                 if tuple(scale.shape) == (out_blocks, in_blocks):
                     pass
                 elif tuple(scale.shape) == (in_blocks, out_blocks) and out_blocks != in_blocks:
-                    # Transposed block layout: same handling as the fp8 forward path.
                     scale = scale.t().contiguous()
                 else:
-                    # Shape does not match the block grid: skip rather than apply a wrong scale.
                     continue
                 stored = None
                 if store_key is not None:
@@ -2524,7 +2495,7 @@ def _checkpointed_layer_forward(original):
         if not args and "hidden_states" in kwargs:
             # A reentrant checkpoint only tracks gradients through positional tensors.
             args = (kwargs.pop("hidden_states"),)
-        # Grad-requiring kwargs (Kimi-K3 block_residual) go positional: a closure ties recompute to earlier layers.
+        # Grad-requiring kwargs go positional: a closure would tie recompute to earlier layers.
         grad_keys = [k for k, v in kwargs.items() if torch.is_tensor(v) and v.requires_grad]
         n_args = len(args)
         grad_values = tuple(kwargs.pop(k) for k in grad_keys)
@@ -2650,7 +2621,7 @@ def _decompress_compressed_tensors_model(model):
         method = getattr(quant_config, "quant_method", None)
     if getattr(method, "value", method) != "compressed-tensors":
         return False
-    # MXFP4 kept packed on purpose (all-or-nothing plan): decompress_model would drop weight_packed.
+    # MXFP4 kept packed on purpose: decompress_model would drop weight_packed.
     if any(getattr(module, "_unsloth_mxfp4_packed_linear", False) for module in model.modules()):
         return False
     if not any(
@@ -2666,7 +2637,7 @@ def _decompress_compressed_tensors_model(model):
         with torch.inference_mode(False), torch.no_grad():
             compressor.decompress_model(module)
         _remove_same_device_compressed_tensors_offload(module)
-        # Some compressed-tensors releases (0.19.0) leave the hook in place: drop it, also after a retry.
+        # Some compressed-tensors releases (0.19.0) leave the hook in place.
         hook = getattr(model, "ct_decompress_hook", None)
         if hook is not None:
             hook.remove()
@@ -2740,7 +2711,7 @@ def _fp8_scale_grid_dequant(
     block_size = None,
 ):
     """Returns None when the scale grid does not tile the weight."""
-    # MXFP8 stores E8M0 exponents as uint8: the scale is 2 ** (byte - 127).
+    # MXFP8 stores E8M0 exponents as uint8: scale is 2 ** (byte - 127).
     if scale.dtype == torch.uint8:
         scale = (scale.to(torch.float32) - 127.0).exp2()
     else:
@@ -2863,7 +2834,6 @@ def _dequantize_leftover_fp8_params(
             for suffix in _FP8_SCALE_SUFFIXES:
                 if key.endswith(suffix):
                     weight_key = key[: -len(suffix)]
-                    # `layer.weight_scale_inv` belongs to `layer.weight`, not to `layer`.
                     if suffix.startswith(".weight"):
                         weight_key += ".weight"
                     scale_by_weight_key[weight_key] = (key, shard)
@@ -2913,7 +2883,6 @@ def _dequantize_leftover_fp8_params(
             return shard_cache[shard].get_tensor(scale_key).to(device)
 
         def _is_oom(error):
-            # Some backends raise a plain RuntimeError for OOM.
             return (
                 hasattr(torch, "OutOfMemoryError") and isinstance(error, torch.OutOfMemoryError)
             ) or (isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
@@ -2925,7 +2894,6 @@ def _dequantize_leftover_fp8_params(
             if not isinstance(param, torch.Tensor) or param.dtype not in _FP8_DTYPES:
                 continue
             trainable = bool(getattr(param, "requires_grad", False))
-            # A module with its own scale runs the fp8 forward.
             if any(
                 isinstance(getattr(module, s, None), torch.Tensor)
                 for s in (attr + "_scale_inv", attr + "_scale", "weight_scale_inv", "weight_scale")
@@ -3077,7 +3045,6 @@ def warn_if_bitsandbytes_quantized_nothing(
         for module in model.modules():
             if type(module).__name__ in _BNB_QUANTIZED_TYPES:
                 return False
-            # compressed-tensors INT4 kept packed (compressed_tensors_int4.py) is 4-bit too.
             if getattr(module, "_unsloth_int4_packed_linear", False):
                 return False
             for param in module.parameters(recurse = False):
@@ -3128,7 +3095,6 @@ def check_and_disable_bitsandbytes_loading(
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
         install_compressed_tensors_keep_packed()
 
-    # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
         requantize_packed
         and load_in_4bit
@@ -3140,7 +3106,6 @@ def check_and_disable_bitsandbytes_loading(
             return True, False, None
 
     if str(quant_method).lower() == "modelopt":
-        # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
         from .modelopt_fp8 import enable_modelopt_merged_save
         enable_modelopt_merged_save(model_config)
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
@@ -3148,13 +3113,12 @@ def check_and_disable_bitsandbytes_loading(
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
             quant_method = "fp8"
 
-    # An explicit 4bit request on a block-fp8 checkpoint: dequantize each fp8 tensor and quantize it to NF4 while loading.
     if allow_fp8_to_nf4 and str(quant_method).lower() == "fp8":
         from .fp8_to_nf4 import maybe_arm_fp8_to_nf4
         if maybe_arm_fp8_to_nf4(model_config, load_in_4bit, load_in_8bit, verbose = verbose):
             return load_in_4bit, load_in_8bit, None
 
-    # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
+    # A non-bitsandbytes quantization config conflicts with both bitsandbytes flags.
     if load_in_4bit or load_in_8bit:
         if verbose:
             print(
@@ -3191,9 +3155,8 @@ def quantization_config_selects_bnb_4bit(quantization_config):
     else:
         get = lambda key, default = None: getattr(quantization_config, key, default)
     method = get("quant_method", "") or ""
-    # BitsAndBytesConfig stores a QuantizationMethod enum, whose str() is the member name on some Pythons.
+    # QuantizationMethod enum's str() is the member name on some Pythons.
     method = str(getattr(method, "value", method)).lower()
-    # The dict shorthand {"load_in_4bit": True} has no quant_method; transformers reads it as bitsandbytes.
     if not method and isinstance(quantization_config, dict):
         method = "bitsandbytes"
     if "bitsandbytes" not in method:
@@ -3228,7 +3191,7 @@ def _get_fp8_mode_and_check_settings(
     """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires H100+, torchao 0.15.0+, torch 2.9.0+, and fbgemm_gpu_genai 1.4.1+ if installed."""
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
-        fp8_mode = "row"  # default
+        fp8_mode = "row"
     else:
         fp8_mode = load_in_fp8
 
@@ -3255,7 +3218,7 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead."
         )
 
-    # Check if torchao has pytorch/ao#3158, released in 0.15.0.
+    # torchao needs pytorch/ao#3158, released in 0.15.0.
     if importlib.util.find_spec("torchao") is None:
         raise ValueError(
             "Unsloth: Please install torchao for on the fly float8 to work! Try `unsloth/Qwen3-8B` instead."
@@ -3270,7 +3233,6 @@ def _get_fp8_mode_and_check_settings(
     if Version(torchao.__version__) < Version("0.15.0"):
         raise ValueError(error_message)
 
-    # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton kernels instead.
     if (
         importlib.util.find_spec("fbgemm_gpu") is not None
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
@@ -3286,7 +3248,8 @@ def _get_fp8_mode_and_check_settings(
     return fp8_mode
 
 
-# Rotary inv_freq buffers are deliberately kept on CPU: Unsloth pre-builds a cos/sin cache per GPU instead (LlamaRotaryEmbedding.multi_gpu_cos_cached). DistributedDataParallel ignores device when it broadcasts buffers across ranks, so a CPU buffer crashes NCCL's _broadcast_coalesced with "No backend type associated with device type cpu"; telling DDP to skip these buffers avoids that without moving inv_freq to GPU. Re-run after wrapping with PEFT, since the fully qualified names change under a PeftModel (#6656).
+# Rotary inv_freq buffers stay on CPU (cos/sin caches are per GPU); DDP broadcasting them crashes
+# NCCL, so DDP skips them. Re-run after PEFT wrapping: the qualified names change (#6656).
 _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 
@@ -3303,12 +3266,12 @@ def _exclude_rope_inv_freq_from_ddp(model):
             from torch.nn.parallel import DistributedDataParallel
             DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
         except Exception:
-            # Private PyTorch API: fall back to setting the attribute DDP reads directly if it ever moves or changes signature.
+            # Private PyTorch API: fall back to the attribute DDP reads directly.
             model._ddp_params_and_buffers_to_ignore = ignored
     return model
 
 
-# Offline loading, shared by vision.py, loader.py and the Unsloth exporter: decide offline ONCE at the load boundary and force it ONCE around the whole load, so nested HF calls inherit it.
+# Decide offline once at the load boundary and force it around the whole load.
 
 
 _OFFLINE_ENV_VALUES = {"1", "true", "yes", "on"}
@@ -3329,7 +3292,8 @@ def _get_effective_local_files_only(kwargs):
     return _env_says_offline()
 
 
-# Stamped on a tokenizer/processor loaded local-only so a later save still knows: transformers takes local_files_only as an explicit from_pretrained parameter and never copies it into tokenizer.init_kwargs (#7481). The load's cache_dir and ref travel with it, since saving otherwise derives a cache from HF_HUB_CACHE and drops the branch from name_or_path.
+# transformers never copies local_files_only into tokenizer.init_kwargs (#7481), so stamp it
+# (with cache_dir and ref) for a later save.
 _LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
 _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
 _LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
@@ -3340,7 +3304,6 @@ def _mark_loaded_revision(result, revision):
     if revision is None:
         return result
     for obj in result if isinstance(result, (tuple, list)) else (result,):
-        # Objects that reject new attributes (__slots__) are skipped.
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
         except Exception:
@@ -3365,7 +3328,7 @@ def _mark_loaded_local_files_only(result, cache_dir = None):
     """Stamp a load's local-only mode and cache_dir onto the returned objects."""
     for obj in result if isinstance(result, (tuple, list)) else (result,):
         try:
-            # A processor keeps the tokenizer that _has_tokenizer_model unwraps to, so stamp both; a wrapped model can raise from its own __getattr__.
+            # A processor keeps a tokenizer too, so stamp both; a wrapped model can raise from __getattr__.
             targets = (obj, getattr(obj, "tokenizer", None))
         except Exception:
             targets = (obj,)
@@ -3406,7 +3369,7 @@ def _is_offline_related_error(exc):
     # Match network failures by type (locale independent), not just message wording.
     _net_types = [ConnectionError, TimeoutError, socket.gaierror, urllib.error.URLError]
     _offline_fnf_types = ()  # FileNotFoundError subclasses that count as offline
-    # urllib HTTPError is a URLError subclass, so judge by status (5xx offline, 4xx propagates). TLS/cert failures are security-sensitive (MITM, expired CA) and are never offline-retried.
+    # HTTPError is a URLError: judge by status (5xx offline, 4xx propagates). TLS failures never retry.
     _http_types = (urllib.error.HTTPError,)
     _ssl_types = [ssl.SSLError]
     try:
@@ -3438,7 +3401,7 @@ def _is_offline_related_error(exc):
         if code is None:
             code = getattr(e, "status_code", None)
         if code is None:
-            code = getattr(e, "code", None)  # urllib.error.HTTPError uses .code
+            code = getattr(e, "code", None)
         try:
             return int(code)
         except (TypeError, ValueError):
@@ -3463,7 +3426,6 @@ def _is_offline_related_error(exc):
         "connection refused",
         "we couldn't connect to",
         "proxyerror",
-        # Raw socket.gaierror DNS wording (Linux / macOS).
         "name or service not known",
         "temporary failure in name resolution",
         "nodename nor servname provided",
@@ -3472,12 +3434,12 @@ def _is_offline_related_error(exc):
     cur = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        # TLS/cert failure (corporate MITM, expired CA): security-sensitive, never retry from cache. Skip this node; a deeper cause in the chain may still be a genuine outage.
+        # TLS/cert failure is security-sensitive: never retry from cache, but a deeper cause may be an outage.
         if isinstance(cur, _ssl_types) or isinstance(getattr(cur, "reason", None), _ssl_types):
             cur = cur.__cause__ or cur.__context__
             continue
         is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
-        # urllib HTTPError is a URLError (net type) but must be judged by status code below, unlike LocalEntryNotFoundError, an HfHubHTTPError that is always offline.
+        # HTTPError is a URLError but is judged by status; LocalEntryNotFoundError is always offline.
         if (
             isinstance(cur, _net_types)
             and not is_fnf
@@ -3488,10 +3450,8 @@ def _is_offline_related_error(exc):
             code = _http_status(cur)
             if code is not None and 500 <= code < 600:
                 return True
-            # No status, so fall back to wording; a coded 4xx was already decided above.
             if code is None and not is_fnf and any(w in str(cur).lower() for w in _wording):
                 return True
-        # OSError wording fallback; the HTTP status was already decided above.
         elif isinstance(cur, OSError) and not is_fnf:
             if any(w in str(cur).lower() for w in _wording):
                 return True
@@ -3499,7 +3459,7 @@ def _is_offline_related_error(exc):
     return False
 
 
-# Process-wide HF offline state; the depth counter lets nested windows share one flip (first entrant saves originals, last exit restores). Lock guards flip/restore.
+# Process-wide HF offline state: first entrant saves originals, last exit restores.
 _force_offline_lock = _threading.RLock()
 _force_offline_depth = 0
 _force_offline_saved = []
@@ -3508,7 +3468,7 @@ _force_offline_saved_env = {}
 
 def _reset_hf_sessions():
     """Clear hub's per-thread cached Sessions so the next rebuilds against the current offline flag. On hub 0.x the offline adapter is baked in at Session creation. Best-effort."""
-    # Snapshot in-process constants BEFORE forcing the env: a module first imported here would otherwise initialize its constant from the just-set "1" and we would save (then restore) True, pinning the process offline after the window.
+    # Snapshot constants before forcing the env, or a first import here would pin the process offline.
     try:
         from huggingface_hub.utils._http import reset_sessions
     except Exception:
@@ -3553,7 +3513,6 @@ def _force_hf_offline():
                     pass
             _force_offline_saved = saved
             _force_offline_saved_env = saved_env
-            # Drop offline-mounted sessions so later online calls rebuild for the network.
             _reset_hf_sessions()
         _force_offline_depth += 1
     try:
@@ -3596,7 +3555,8 @@ def _restore_progress_bars(were_disabled):
             pass
 
 
-# Every way a cache miss reaches the caller once offline mode has skipped Transformers' own "does not appear to have a file named" raise: the resolved path stays None and the next line dereferences it, so the message names the None and never the cache. Same set the Unsloth training worker matches (studio/backend/core/training/worker.py, #7845): weights come out as `endswith`, tokenizers/processors as any of the other four.
+# How a cache miss surfaces once offline mode skips Transformers' own raise. Keep in sync with
+# studio/backend/core/training/worker.py.
 _EMPTY_CACHE_ARTIFACTS = (
     "'nonetype' object has no attribute 'endswith'",
     "'nonetype' object has no attribute 'readlines'",
@@ -3613,7 +3573,7 @@ def _empty_cache_artifact(exc):
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
         text = str(exc).lower()
-        # Gate on the None: the same TypeError wording about a real path (`not 'int'`) is a caller bug, not an empty cache.
+        # Gate on the None: the same TypeError about a real path is a caller bug.
         if ("nonetype" in text or "path 'none'" in text) and any(
             artifact in text for artifact in _EMPTY_CACHE_ARTIFACTS
         ):
@@ -3627,7 +3587,6 @@ def _release_traceback_locals(error):
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
-        # The frame we are running in cannot be cleared; clear_frames skips it for us.
         _traceback.clear_frames(error.__traceback__)
         error = error.__cause__ or error.__context__
 
@@ -3656,50 +3615,46 @@ def _offline_aware_load(fn):
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
-                # Stamp inside the window: the env vars are restored on exit, so the request has to travel on the objects themselves to reach saving.
+                # Stamp inside the window: the env vars are restored on exit.
                 return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
         _pb_were_disabled = _progress_bars_were_disabled()
         try:
             return fn(*args, **kwargs)
         except Exception as e:
-            # Skip if not network-related, or already retried by a nested decorator (else outer layers reload the whole model again).
+            # Skip if not network-related, or already retried by a nested decorator.
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
                 raise
-            # Holding `e` holds its frames, and those frames hold the half-built model, so the collect below could not free it and a large VLM OOMed on the reload the retry exists to make. A wrapper's cause/context carries tracebacks over the SAME frames, so the whole chain has to be released, not just the top.
+            # The error's frames hold the half-built model; release the whole chain or the retry can OOM.
             online_error = e
             _release_traceback_locals(online_error)
-        # Retry OUTSIDE the except so the failed attempt's traceback (a partial model) is freed before reallocating, else a large VLM can OOM on the second load.
+        # Retry outside the except so the failed attempt's traceback is freed first.
         try:
             gc.collect()
             clean_gpu_cache()
         except Exception:
             pass
-        # A failed attempt may have left HF progress bars disabled; restore before retry.
         _restore_progress_bars(_pb_were_disabled)
         kwargs["local_files_only"] = True
         try:
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
-            # A real retry failure (corrupt checkpoint, OOM) is news and goes out as itself; only the empty-cache artifact is worth replacing.
             if not _empty_cache_artifact(e):
-                # Tag so an enclosing _offline_aware_load skips its own redundant retry.
                 try:
                     e._unsloth_offline_retried = True
                 except Exception:
                     pass
                 raise
-            # The retry can load a whole cached model and only then trip over a missing tokenizer file, and this error outlives the call on the online one, so its frames would keep that model resident for as long as the caller holds it.
+            # This error outlives the call; its frames could keep a whole cached model resident.
             _release_traceback_locals(e)
             retry_error = e
-        # Report the ONLINE error: this retry only runs because of it, and its own failure names an empty cache badly (offline mode skips Transformers' "does not appear to have a file named" raise, so the user saw `AttributeError: 'NoneType' ... 'endswith'`).
+        # Report the ONLINE error: the retry's own failure is an unhelpful NoneType error.
         try:
             online_error._unsloth_offline_retried = True
         except Exception:
             pass
-        # Raise OUTSIDE the handler above: inside it, Python would overwrite `__context__` with the cache miss, and that chain is often the only thing that still makes the online error classifiable as network-related.
+        # Raise outside the handler, or Python overwrites __context__ and loses the network chain.
         if online_error.__cause__ is None and online_error.__context__ is None:
-            # No chain to lose, so chain the retry on where it also prints.
             raise online_error from retry_error
         _note_offline_retry(online_error, retry_error)
         raise online_error
@@ -3734,7 +3689,7 @@ def _resolve_hub_repo_local_dir(
     token = None,
     cache_dir = None,
     revision = None,
-    # Default closed: a "resolve local dir" helper must not download. False here means five filenames each retried with backoff before it gives up.
+    # Default closed: a "resolve local dir" helper must not download.
     local_files_only = True,
     filenames = (
         "tokenizer_config.json",

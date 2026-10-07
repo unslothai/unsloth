@@ -115,7 +115,7 @@ def test_block_sequence_ids_are_honoured_not_dropped(unpatched):
         "past_key_values": None,
         "position_ids": torch.arange(length)[None],
     }
-    # Older chunked masks lack allow_is_causal_skip; eager never skips, so it always materialises.
+    # Older chunked masks lack allow_is_causal_skip; eager never skips.
     if "allow_is_causal_skip" in inspect.signature(unpatched).parameters:
         config._attn_implementation = "sdpa"
         kwargs["allow_is_causal_skip"] = False
@@ -133,7 +133,6 @@ def test_block_sequence_ids_are_honoured_not_dropped(unpatched):
     )
     all_text = allowed(block_sequence_ids = torch.full((1, length), -1))
     assert torch.equal(all_text, plain)
-    # Media block spanning the chunk boundary at 8: 6..9 must see each other both ways.
     ids = torch.full((1, length), -1)
     ids[0, 6:10] = 0
     blocked = allowed(block_sequence_ids = ids)[0, 0]

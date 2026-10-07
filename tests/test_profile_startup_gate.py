@@ -22,13 +22,11 @@ SCRIPT = REPO_ROOT / "scripts" / "profile_startup.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "startup-profile-ci.yml"
 PROCESS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs"
 
-# Checkout files that build the venv the workflow profiles.
 INSTALLER_INPUTS = (
     "studio/setup.sh",
     "studio/setup.ps1",
     "studio/install_python_stack.py",
 )
-# Checkout file that defines the argv the profiler reproduces.
 LAUNCH_INPUTS = ("studio/src-tauri/src/process.rs",)
 
 
@@ -40,7 +38,6 @@ def _load():
 
 
 def _no_subprocesses(mod, monkeypatch):
-    # Keep the gate tests off the real interpreter and CLI.
     monkeypatch.setattr(mod, "find_bin", lambda: None)
     monkeypatch.setattr(mod, "profile_imports", lambda python, top = 15: {"ok": False, "error": ""})
     monkeypatch.setattr(mod, "python_version_of", lambda python: "3.13.0")
@@ -67,7 +64,7 @@ def _nt(mod, monkeypatch, returncode):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, returncode, "", "")
 
-    # Patch the module's own references, not the real os/subprocess the session shares.
+    # Patch the module's own references, not the real os/subprocess.
     monkeypatch.setattr(mod, "os", SimpleNamespace(name = "nt"))
     monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run = _run))
     return calls
@@ -112,7 +109,7 @@ def test_budget_still_passes_when_a_launch_was_measured(monkeypatch):
     assert mod.main(["--max-healthz-seconds", "1"]) == 1
 
 
-# "=" form for -inf: a bare "-inf" is an option token to argparse, not a value.
+# "=" form for -inf: a bare "-inf" is an option token to argparse.
 @pytest.mark.parametrize(
     "bad", ["--max-healthz-seconds=nan", "--max-healthz-seconds=inf", "--max-healthz-seconds=-inf"]
 )
@@ -241,11 +238,6 @@ def test_terminate_tree_posix_uses_terminate():
     proc = _Proc()
     mod._terminate_tree(proc)
     assert proc.terminated
-
-
-# ---------------------------------------------------------------------------
-# The budget is only a gate if the workflow asks for it and can see it fail
-# ---------------------------------------------------------------------------
 
 
 def _profile_job() -> dict:

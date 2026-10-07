@@ -39,15 +39,13 @@ ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests" / "kaggle"
 WORKFLOW = ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml"
 
-# Import name -> the distribution that provides it, for the ones that differ.
-# Anything not listed is assumed to install under its own name.
+# Import name -> distribution name, only where they differ.
 DISTRIBUTION = {
     "PIL": "pillow",
     "yaml": "pyyaml",
 }
 
-# Directories whose module names are importable because the suite puts them on
-# sys.path, so they are not third-party however they are spelled.
+# Directories the suite puts on sys.path, so their modules are not third-party.
 LOCAL_DIRS = (
     TESTS,
     TESTS / "t4_smoke",
@@ -78,8 +76,7 @@ def _imported_third_party() -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for path in sorted(TESTS.glob("test_*.py")):
         tree = ast.parse(path.read_text(encoding = "utf-8"))
-        # `pytest.importorskip("x")` is the suite's own way of saying a module
-        # is optional, so it is not a claim on the install line.
+        # importorskip marks a module optional, so it is not an install requirement.
         guarded = {
             node.args[0].value.split(".")[0]
             for node in ast.walk(tree)

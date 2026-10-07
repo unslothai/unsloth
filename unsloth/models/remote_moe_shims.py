@@ -119,7 +119,7 @@ def _forward_has_no_training_branch(cls) -> bool:
 
 
 def is_remote_deepseek_moe(module) -> bool:
-    # Structural match: derived code renames the block (sarvam's `SarvamMLAMoE`).
+    # Structural match: derived code renames the block.
     cls = type(module)
     experts = getattr(module, "experts", None)
     return (
@@ -189,7 +189,7 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
 
 
 def _moe_forward_with_training_path(original):
-    # Reuse the port's forward (eval flags, swapped moe_infer): rebuilding it would skip Kimi-K3's latent projections.
+    # Reuse the port's forward: rebuilding it would skip Kimi-K3's latent projections.
     @functools.wraps(original)
     def forward(self, hidden_states):
         if getattr(self, "ep_size", 1) > 1:
@@ -223,7 +223,7 @@ def _moe_forward_with_training_path(original):
 
 
 def _rebind_accelerate_hook(module):
-    # device_map hooks keep the bound original in `_old_forward`, bypassing class patches (multi-GPU Kimi hit the assert).
+    # device_map hooks keep the bound original in `_old_forward`, bypassing class patches.
     if "_old_forward" not in vars(module):
         return False
     import types

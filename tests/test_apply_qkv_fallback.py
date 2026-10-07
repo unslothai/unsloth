@@ -39,9 +39,8 @@ import unsloth  # noqa: F401
 from real_accelerator import has_real_cuda
 from unsloth.models import llama as llama_module
 
-# Every model file whose patched attention forward calls apply_qkv / apply_o. gemma.py,
-# qwen2.py and the vision/MoE loaders reuse LlamaAttention_fast_forward itself, so they
-# resolve the fallback out of llama.py's own globals and are covered by the llama row.
+# gemma.py, qwen2.py and the vision/MoE loaders reuse LlamaAttention_fast_forward, so the
+# llama row covers them.
 ATTENTION_FILES = (
     "llama.py",
     "cohere.py",
@@ -52,7 +51,6 @@ ATTENTION_FILES = (
     "qwen3.py",
 )
 
-# The six that get the fallback by import rather than by definition.
 SIBLING_FILES = tuple(f for f in ATTENTION_FILES if f != "llama.py")
 
 FALLBACKS = (("apply_qkv", "original_apply_qkv"), ("apply_o", "original_apply_o"))
@@ -205,7 +203,6 @@ def test_instance_attribute_still_wins_over_the_fallback():
     assert getattr(attention, "apply_qkv", llama_module.original_apply_qkv) is apply_lora_qkv
     assert getattr(attention, "apply_o", llama_module.original_apply_o) is apply_lora_o
 
-    # And the loader's own attach step keeps working.
     attention.apply_qkv = llama_module.original_apply_qkv
     attention.apply_o = llama_module.original_apply_o
     assert getattr(attention, "apply_qkv", None) is llama_module.original_apply_qkv
@@ -231,13 +228,8 @@ def _plain_model_dtype() -> "torch.dtype":
         return torch.float16
 
 
-# has_real_cuda(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches
-# the latter True process-wide and never puts it back, and a skipif is evaluated at import, so
-# sharing a session with tests/version_compat or tests/vllm_compat would un-skip this on a
-# CPU-only box. tests/_shared/real_accelerator.py records the answer before any spoof can run.
-# The narrow probe rather than has_real_accelerator() because the body allocates on "cuda"
-# by name, and the broad one is also true on an XPU-only or Ascend NPU-only host.
-# Both halves are enforced by tests/python/test_accelerator_skip_guards.py.
+# has_real_cuda(), not torch.cuda.is_available(): the zoo CUDA spoof patches the latter True
+# process-wide. Enforced by tests/python/test_accelerator_skip_guards.py.
 @pytest.mark.gpu
 @pytest.mark.skipif(
     not has_real_cuda(),
@@ -261,13 +253,8 @@ def test_apply_qkv_fallback_end_to_end():
     config = AutoConfig.from_pretrained(model_name)
     config.num_hidden_layers = 1
 
-    # The checkpoint is bfloat16, which pre-Ampere cards cannot assemble, so pick the
-    # widest dtype the device really has. Set the config attributes as well as the
-    # keyword: the patched forward casts activations to the config dtype
-    # (`dtype_from_config(self.config)` in llama.py), and on transformers 4.57.6 the
-    # keyword casts the weights but leaves `config.dtype` at the checkpoint value, so
-    # the two would disagree and the kernel would be handed a bfloat16 activation with
-    # float16 weights.
+    # Pre-Ampere cards cannot run bf16. Set config dtype too: on transformers 4.57.6 the keyword
+    # leaves config.dtype at the checkpoint value, mismatching activations and weights.
     dtype = _plain_model_dtype()
     for attribute in ("torch_dtype", "dtype"):
         try:
@@ -288,7 +275,6 @@ def test_apply_qkv_fallback_end_to_end():
         out = plain(input_ids = torch.randint(0, 128, (1, 8), device = "cuda"))
     assert out.logits.shape == (1, 8, config.vocab_size)
 
-    # The fused kernels must still win on the unsloth-loaded model.
     from unsloth.kernels import apply_lora_o, apply_lora_qkv
 
     model = FastLanguageModel.get_peft_model(

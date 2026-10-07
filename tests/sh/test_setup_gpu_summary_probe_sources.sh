@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Drive studio/setup.sh's AMD detection and selection with stub rocminfo and amd-smi.
-#
-# install.sh's value is a display label; this one is not. $_setup_gfx is forwarded as
-# --rocm-gfx to install_llama_prebuilt.py and the whisper installer, so a wrong ordinal
-# picks the wrong binary. Drives the real block, not the parser alone.
+# $_setup_gfx is forwarded as --rocm-gfx to the llama and whisper installers, so a wrong
+# ordinal picks the wrong binary. Drives the real block.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,13 +14,8 @@ SKIP=0
 
 
 {
-    # A helper the sed lines above never pulled in is not a missing binary, it is an
-    # extraction that fell behind studio/setup.sh. #11437 added _amd_prefer_discrete_gfx
-    # to the selection block and nothing extracted it, so 29 cases each died on a bare
-    # "command not found" and none of them named the cause. Say it once, plainly, the
-    # first time such a call is actually reached. Reached, not merely present: setup.sh
-    # arms this test never takes call helpers it never extracts (the NVIDIA banner, the
-    # step/substep printers), and those are not defects to fail on.
+    # Name an extraction that fell behind setup.sh the first time a missing helper is actually
+    # reached; helpers on arms this test never takes are not defects.
     cat <<'GUARD'
 command_not_found_handle() {
     printf '%s\n' "FATAL: the extracted block called '$1', which studio/setup.sh defines" >&2
@@ -36,17 +28,12 @@ GUARD
     sed -n '/^_setup_rocminfo_gpu_records()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_amd_smi_gpu_records()/,/^}/p'  "$SETUP_SH"
     sed -n '/^_setup_amd_smi_hip_order()/,/^}/p'  "$SETUP_SH"
-    # Called from the selection block below, so they have to come with it: without them
-    # the block runs with the helpers undefined and every case that reaches a
-    # discrete-vs-iGPU choice dies on "command not found" rather than answering.
+    # Called from the selection block below, so they must come with it.
     sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
     sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
-    # The real initialiser group, not a restated one. Seeding these here would hide the
-    # thing that matters under `set -u`: a variable the selection block reads but no arm
-    # assigns aborts `unsloth studio update` outright.
+    # The real initialiser group: under set -u a variable no arm assigns aborts the update.
     sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH"
-    # Detection through selection. NVIDIA is pinned false: this is about which AMD
-    # device gets picked, not about vendor priority.
+    # NVIDIA is pinned false: this is about which AMD device gets picked.
     awk '/^if \[ "\$_setup_nvidia_usable" != true \]; then/ {on=1}
          on && /UNSLOTH_ROCM_GFX_ARCH env override/ {exit}
          on {print}' "$SETUP_SH"
@@ -65,16 +52,9 @@ grep -q '^_amd_gfx_is_shadowing_integrated()' "$WORK/block.sh" || {
     exit 1; }
 bash -n "$WORK/block.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
 
-# The same two halves, split, for the arms that reach selection without probing anything.
 sed -n '/^_setup_amd_detected=false$/,/^_setup_amd_records=""$/p' "$SETUP_SH" > "$WORK/init.sh"
 {
-    # A helper the sed lines above never pulled in is not a missing binary, it is an
-    # extraction that fell behind studio/setup.sh. #11437 added _amd_prefer_discrete_gfx
-    # to the selection block and nothing extracted it, so 29 cases each died on a bare
-    # "command not found" and none of them named the cause. Say it once, plainly, the
-    # first time such a call is actually reached. Reached, not merely present: setup.sh
-    # arms this test never takes call helpers it never extracts (the NVIDIA banner, the
-    # step/substep printers), and those are not defects to fail on.
+    # Same missing-helper guard as above, for the split halves.
     cat <<'GUARD'
 command_not_found_handle() {
     printf '%s\n' "FATAL: the extracted block called '$1', which studio/setup.sh defines" >&2
@@ -83,7 +63,6 @@ command_not_found_handle() {
     exit 127
 }
 GUARD
-    # The same helpers, for the same reason: this half holds the selection too.
     sed -n '/^_amd_gfx_is_shadowing_integrated()/,/^}/p'  "$SETUP_SH"
     sed -n '/^_amd_prefer_discrete_gfx()/,/^}/p'  "$SETUP_SH"
     awk '/^if \[ "\$_setup_nvidia_usable" = true \]; then/ {on=1}
@@ -100,7 +79,7 @@ grep -q '^_amd_prefer_discrete_gfx()' "$WORK/select.sh" || {
 bash -n "$WORK/init.sh" && bash -n "$WORK/select.sh" || {
     echo "FATAL: extracted halves do not parse" >&2; exit 1; }
 
-# PATH from scratch: the host running this may itself have a real rocminfo/amd-smi.
+# PATH from scratch: the host may have a real rocminfo/amd-smi.
 mkdir -p "$WORK/base" "$WORK/roc" "$WORK/smi"
 for _tool in awk grep sed cat tr timeout sort wc head tail; do
     _p=$(command -v "$_tool") || { echo "FATAL: $_tool not found" >&2; exit 1; }
@@ -112,9 +91,8 @@ echo "rocminfo" >> "$PROBE_LOG"
 [ -s "$STUB_ROCMINFO" ] || exit 1
 cat "$STUB_ROCMINFO"
 STUB
-# `amd-smi list` carries no gfx token; keeping the subcommands distinct tests that.
-# `list -e` is a third answer again: it carries HIP_ID and nothing else of interest, and
-# an older CLI rejects the flag outright, which is the STUB_AMDSMI_E="" case.
+# `amd-smi list` has no gfx token. `list -e` carries HIP_ID; an older CLI rejects -e
+# (STUB_AMDSMI_E="").
 cat > "$WORK/smi/amd-smi" <<'STUB'
 #!/bin/sh
 echo "amd-smi $*" >> "$PROBE_LOG"
@@ -128,14 +106,13 @@ esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
 
-# $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 visible-device mask.
-# Prints "gfx|name". The probe log is left in $WORK/probes for the call-count asserts.
+# $1 rocminfo fixture ("-" = not installed), $2 amd-smi fixture, $3 mask. Prints "gfx|name";
+# the probe log stays in $WORK/probes.
 summary() {
     _path="${PREPATH:+$PREPATH:}$WORK/base"
     [ "$1" != "-" ] && _path="$WORK/roc:$_path"
     [ "$2" != "-" ] && _path="$WORK/smi:$_path"
     : > "$WORK/probes"
-    # setup.sh runs under `set -euo pipefail`; match it.
     env -i PATH="$_path" PROBE_LOG="$WORK/probes" \
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
         ${STUB_AMDSMI_MUTE_STATIC:+STUB_AMDSMI_MUTE_STATIC=1} \
@@ -148,9 +125,8 @@ summary() {
         _ "$WORK/block.sh"
 }
 
-# The KFD sysfs arm sets _setup_amd_detected=true and nothing else, so it reaches the
-# selection block with no records and no gfx list. That arm needs a real /dev/kfd, so
-# drive the selection block directly from the same starting state.
+# The KFD sysfs arm needs a real /dev/kfd and sets only _setup_amd_detected, so drive the
+# selection block directly from that state.
 kfd_shape_summary() {
     env -i PATH="$WORK/base" \
         /bin/bash -c 'set -euo pipefail
@@ -161,8 +137,7 @@ kfd_shape_summary() {
                       printf "%s|%s\n" "$_setup_gfx" "$_setup_mkt"' \
         _ "$WORK/init.sh" "$WORK/select.sh" 2>&1
 }
-# grep -c prints 0 and exits 1 when there is no match, so the status is discarded.
-# Anchored at both ends: `amd-smi list` must not also count `amd-smi list -e`.
+# grep -c exits 1 on no match. Anchored so `amd-smi list` does not count `list -e`.
 probe_count() { _n=$(grep -c "^$1\$" "$WORK/probes" 2>/dev/null) || true; echo "${_n:-0}"; }
 probe_prefix_count() { _n=$(grep -c "^$1" "$WORK/probes" 2>/dev/null) || true; echo "${_n:-0}"; }
 
@@ -206,7 +181,7 @@ Agent 4
   Marketing Name:          AMD Radeon PRO W7900
   Device Type:             GPU
 EOF
-# The #7307 reporter's shape: a Ryzen iGPU plus two IDENTICAL R9700s.
+# Ryzen iGPU plus two identical R9700s.
 cat > "$WORK/roc_twins" <<'EOF'
 Agent 1
 *******
@@ -258,7 +233,6 @@ GPU: 0
         MARKET_NAME: AMD Radeon RX 7900 XTX
         TARGET_GRAPHICS_VERSION: gfx1100
 EOF
-# Three adapters: the arch followed the mask, the name was always adapter 0's.
 cat > "$WORK/smi_three" <<'EOF'
 GPU: 0
     ASIC:
@@ -280,8 +254,6 @@ GPU: 0
 GPU: 1
     HIP_ID: 1
 EOF
-# Two of the same card on an amd-smi with no TARGET_GRAPHICS_VERSION: the names match, so
-# whichever ordinal wins infers the same arch. Not ambiguous, so not declined.
 cat > "$WORK/smi_two_same_nogfx" <<'EOF'
 GPU: 0
     ASIC:
@@ -313,24 +285,19 @@ assert_eq "device 0" \
     "gfx90a|AMD Instinct MI210" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 0)"
 assert_eq "device 1" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
-# The ordinal that decides --rocm-gfx: collapsing the gfx1100 slots sends it to device 0.
 assert_eq "device 2, past a duplicated arch, keeps its own arch and name" \
     "gfx1100|AMD Radeon PRO W7900" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 2)"
 assert_eq "an out-of-range mask falls back to device 0" \
     "gfx90a|AMD Instinct MI210" "$(summary "$WORK/roc_three_dup" "$WORK/empty" 9)"
-# Byte-identical records: folding them resolves device 2 to the iGPU, so --rocm-gfx
-# carries gfx1036 on a host whose selected card is gfx1201.
+# Folding byte-identical records sends device 2 to the iGPU's gfx1036.
 assert_eq "two identical cards are still two devices" \
     "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/roc_twins" "$WORK/empty" 2)"
 
 echo "=== rocminfo names something but enumerates no device ==="
-# amd-smi owns the device list here, so the leftover CPU-only record must be dropped
-# rather than win the selection and discard amd-smi's arch.
+# amd-smi owns the device list, so the CPU-only rocminfo record must be dropped.
 assert_eq "amd-smi supplies both the arch and the name" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/roc_cpu_only" "$WORK/smi_fixture")"
-# `list` runs twice (detect, then look for a gfx token it does not carry); one
-# `static --asic` parse yields both fields. Pinned: the counts move if an arm is
-# reordered or the parse is split again.
+# Probe counts are pinned: they move if an arm is reordered or the parse split.
 assert_eq "list is asked first, and carries no gfx" 2 "$(probe_count 'amd-smi list')"
 assert_eq "and list -e is asked once, for the HIP mapping" \
     1 "$(probe_count 'amd-smi list -e')"
@@ -342,8 +309,6 @@ assert_eq "keeps its arch and stays unnamed" \
     "gfx1030|" "$(summary "$WORK/roc_blank_name" "$WORK/smi_fixture")"
 
 # amd-smi discovery order is not HIP order; `amd-smi list -e` publishes HIP_ID as the map.
-# On this host discovery 0/1/2 is HIP 2/1/0, so an untranslated mask picks the wrong arch,
-# and _setup_gfx is what becomes --rocm-gfx.
 cat > "$WORK/smi_e_reversed" <<'EOF'
 GPU: 0
     HIP_ID: 2
@@ -360,8 +325,7 @@ GPU: 1
 GPU: 2
     HIP_ID: 2
 EOF
-# hip_id reads N/A when the library cannot reach a device's KFD node. A partial map is
-# not a mapping, so discovery order is kept rather than half-translated.
+# hip_id reads N/A when a KFD node is unreachable; a partial map keeps discovery order.
 cat > "$WORK/smi_e_partial" <<'EOF'
 GPU: 0
     HIP_ID: 2
@@ -370,7 +334,6 @@ GPU: 1
 GPU: 2
     HIP_ID: 0
 EOF
-# Two devices claiming one HIP id describe something other than a 1:1 device mapping.
 cat > "$WORK/smi_e_collide" <<'EOF'
 GPU: 0
     HIP_ID: 1
@@ -380,8 +343,6 @@ GPU: 2
     HIP_ID: 0
 EOF
 
-# Two of the same card. Discovery order and HIP order may disagree here too, but every
-# ordinal yields the same arch either way, so there is nothing to decline.
 cat > "$WORK/smi_two_same" <<'EOF'
 GPU: 0
     ASIC:
@@ -394,7 +355,6 @@ GPU: 1
 EOF
 
 echo "=== amd-smi owns the device list ==="
-# With the map present each adapter is announced with its own name.
 assert_eq "each adapter is announced with its own name, device 0" \
     "gfx90a|AMD Instinct MI210" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 0)"
@@ -405,8 +365,7 @@ assert_eq "device 2" "gfx1201|AMD Radeon AI PRO R9700" \
 assert_eq "an out-of-range mask falls back to adapter 0" \
     "gfx90a|AMD Instinct MI210" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 9)"
-# With no gfx token the name is what --rocm-gfx comes from, so it must be the selected
-# adapter's. With the map present that is answerable; without it, it is not.
+# With no gfx token the name feeds --rocm-gfx, so it must be the selected adapter's.
 assert_eq "a nameless-arch build still names the selected adapter" \
     "|AMD Radeon AI PRO R9700" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_two_identity" summary "$WORK/empty" "$WORK/smi_two_nogfx" 1)"
@@ -416,7 +375,7 @@ assert_eq "two archless adapters of the same model are not ambiguous" \
     "|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same_nogfx" 1)"
 
 echo "=== neither tool reports a device ==="
-# The KFD arm below would fire on a host that really has an AMD GPU.
+# The KFD arm would fire on a host with a real AMD GPU.
 if [ -e /dev/kfd ]; then
     echo "  SKIP: /dev/kfd exists on this host, so the KFD arm is reachable"; SKIP=$((SKIP + 1))
 else
@@ -433,27 +392,24 @@ assert_eq "the middle device is unmoved" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/empty" "$WORK/smi_three" 1)"
 assert_eq "an identity map changes nothing" "gfx90a|AMD Instinct MI210" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three" 0)"
-# No usable map and the adapters disagree on arch: any ordinal would be a guess, and the
-# guess becomes --rocm-gfx, so nothing is reported rather than the wrong thing.
+# No usable map and unlike adapters: any ordinal would be a guess, so report nothing.
 assert_eq "an older CLI that rejects -e declines on unlike adapters" "|" \
     "$(summary "$WORK/empty" "$WORK/smi_three" 0)"
 assert_eq "a partial map is declined, not half-applied" "|" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_partial" summary "$WORK/empty" "$WORK/smi_three" 0)"
 assert_eq "colliding hip ids are declined" "|" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_collide" summary "$WORK/empty" "$WORK/smi_three" 0)"
-# Identical adapters are not ambiguous, so the absent map costs nothing.
 assert_eq "identical adapters still resolve without a map, device 0" \
     "gfx942|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same" 0)"
 assert_eq "and device 1" \
     "gfx942|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same" 1)"
-# A single adapter can never be ambiguous either.
 assert_eq "one adapter resolves without a map" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_fixture" 0)"
 # rocminfo is an HSA client, so its agent list is already in ROCr order.
 assert_eq "the rocminfo path is not reordered by a HIP map" "gfx1100|AMD Radeon RX 7900 XTX" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_reversed" summary "$WORK/roc_three_dup" "$WORK/empty" 1)"
 
-# Post-ROCR_VISIBLE_DEVICES rocminfo lists: ROCr already filtered and renumbered them.
+# ROCr already filtered and renumbered these.
 cat > "$WORK/roc_rocr_1_0" <<'EOF'
 Agent 1
 *******
@@ -525,8 +481,7 @@ assert_eq "amd-smi: a UUID in ROCR over unlike adapters declines instead of gues
     "$(STUB_ROCR=GPU-4b2c1a9f8d3e6f7a,1 STUB_AMDSMI_E="$WORK/smi_e_identity" summary "$WORK/empty" "$WORK/smi_three")"
 
 echo "=== detected, but no arm produced a record ==="
-# Under `set -euo pipefail` an unassigned variable is not an empty string, it is a fatal
-# error: `unsloth studio update` dies here instead of falling through to a source build.
+# Under set -u an unassigned variable is fatal, killing `unsloth studio update`.
 assert_eq "the KFD-shaped path reaches the end instead of aborting on set -u" \
     "|" "$(kfd_shape_summary)"
 assert_eq "every variable the selection block reads is initialised up front" \

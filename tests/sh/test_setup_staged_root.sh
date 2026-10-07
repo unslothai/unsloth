@@ -1,14 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# UNSLOTH_STUDIO_STAGE_ROOT redirects a background update into a copy of the
-# environment, and the whole point is that the live install keeps running and
-# keeps working if the staged one is never activated. Anything the setup scripts
-# write outside the stage root breaks that, so the two paths that delete under
-# $STUDIO_HOME have to be gated on the override.
-#
-# Source-shape assertions: driving either script to those lines needs a real
-# managed venv. Both are checked, because the failure is per-platform.
+# A staged update must write nothing outside the stage root, so deletes under $STUDIO_HOME
+# are gated on the override. Source-shape asserts: driving the scripts needs a real venv.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,7 +18,6 @@ check() {
 
 has() { grep -qF "$2" "$1" && echo 0 || echo 1; }
 
-# ── the runtime root itself ──
 check "setup.sh reads the stage override" \
     "$(has "$SETUP_SH" 'STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"')"
 check "setup.sh falls back to STUDIO_HOME" \
@@ -34,8 +27,7 @@ check "setup.ps1 reads the stage override" \
 check "setup.ps1 falls back to StudioHome" \
     "$(has "$SETUP_PS1" '$RuntimeRoot = if ($StageRoot) { $StageRoot } else { $StudioHome }')"
 
-# Every venv the update writes has to follow the override, or a staged run
-# installs straight into the environment the app is running from.
+# Every venv must follow the override, or a staged run installs into the live environment.
 for v in VENV_DIR VENV_T5_530_DIR VENV_T5_550_DIR VENV_T5_510_DIR; do
     check "setup.sh points $v at RUNTIME_ROOT" \
         "$(grep -qE "^${v}=\"\\\$RUNTIME_ROOT/" "$SETUP_SH" && echo 0 || echo 1)"
@@ -45,13 +37,8 @@ for v in VenvDir VenvT5_530Dir VenvT5_550Dir VenvT5_510Dir; do
         "$(grep -qE "^\\\$${v} = Join-Path \\\$RuntimeRoot " "$SETUP_PS1" && echo 0 || echo 1)"
 done
 
-# ── the two deletes under the live $STUDIO_HOME ──
-# The legacy single sidecar. Its tiered replacements land under the stage root and
-# may never be activated, so removing this during a staged run leaves the running
-# install with no sidecar at all.
-# The offline fast path took the plain `if` for itself, so the migration branch that
-# these two assertions are about is the `elif`. Both anchors are asserted non-empty:
-# a reshape that stops matching must fail here, not silently grep an empty string.
+# The migration branch is the `elif` (the offline fast path owns the `if`). Anchors are
+# asserted non-empty so a reshape fails here instead of grepping an empty string.
 _sh_legacy=$(sed -n '/^elif \[ -d "\$STUDIO_HOME\/\.venv_t5" \]; then$/,/^fi$/p' "$SETUP_SH")
 check "setup.sh legacy sidecar block found" \
     "$([ -n "$_sh_legacy" ] && echo 0 || echo 1)"
@@ -82,7 +69,6 @@ check "setup.sh forwards the staged helper root to whisper.cpp source builds" \
     "$(has "$SETUP_SH" 'env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"')"
 check "whisper.cpp source builds honor the managed helper root" \
     "$(has "$SCRIPT_DIR/../../scripts/build_whisper_cpp.sh" '${UNSLOTH_HOME:-}')"
-# audio.cpp installs under the same helper root, so a staged run writes it into the stage.
 check "setup.sh stages audio.cpp with llama.cpp and whisper.cpp" \
     "$(has "$SETUP_SH" 'AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"')"
 check "setup.sh hands the audio.cpp installer that directory" \
@@ -105,9 +91,7 @@ check "setup.ps1 does not install Git while staging" \
     "$(has "$SETUP_PS1" 'Background staging cannot install Git; retry with the foreground updater.')"
 check "setup.ps1 preserves foreground Git bootstrap" \
     "$(has "$SETUP_PS1" 'if ($gitNeeded -or -not $StageRoot) {')"
-# The branch that decides TORCHINDUCTOR_CACHE_DIR, by what it does rather than by its old
-# spelling: a staged run must take the stage root and must be asked FIRST, ahead of the Studio
-# cache and the short drive-root fallback that a normal install chooses between.
+# A staged run must pick the stage root FIRST, ahead of the Studio cache and drive-root fallback.
 _tcd="$(awk '/^\$TorchCacheDir = \$null$/{g=1} g{print} g && /^\$env:TORCHINDUCTOR_CACHE_DIR/{exit}' "$SETUP_PS1")"
 check "setup.ps1 keeps the staging compiler cache under the stage root" \
     "$(printf '%s' "$_tcd" | grep -qF 'if ($StageRoot) {' \
@@ -118,10 +102,7 @@ check "setup.ps1 asks about staging before anything else" \
          "$(printf '%s' "$_tcd" | grep -n 'LongPathsEnabled' | head -1 | cut -d: -f1)" ] \
        && echo 0 || echo 1)"
 
-# ── the staged activation cannot dot-source a copied Activate script ──
-# A venv copied out of $STUDIO_HOME still names the original root in its activate
-# scripts, so the staged branch sets PATH itself. Assert-VenvActivated then proves
-# `python` really resolves inside the stage.
+# A copied venv's activate scripts name the original root, so the staged branch sets PATH itself.
 check "setup.sh activates the staged venv without sourcing the copy" \
     "$(has "$SETUP_SH" 'elif [ -n "$STAGE_ROOT" ]; then')"
 check "setup.ps1 activates the staged venv without dot-sourcing the copy" \

@@ -120,7 +120,6 @@ def test_change_password_jsx_declares_exactly_three_password_inputs():
         "the change-password JSX subtree marker {!isLoginMode && (...)} "
         "is missing; the file's structure has drifted"
     )
-    # Match the corresponding `)}` for {!isLoginMode && (...)}.
     depth = 1
     i = start + len("{!isLoginMode && (")
     while i < len(src) and depth > 0:
@@ -161,7 +160,7 @@ def test_login_jsx_declares_exactly_one_password_input():
         i += 1
     subtree = src[start:i]
     ids = re.findall(r'id="([a-z-]+)"', subtree)
-    # Lock the count, not the spelling, so a rename does not falsely fail.
+    # Lock the count, not the spelling.
     pw_ids = [x for x in ids if "password" in x]
     assert (
         len(pw_ids) == 1
@@ -279,7 +278,6 @@ def _inactive_returns_null(body: str) -> bool:
             depth += (body[index] == "(") - (body[index] == ")")
             index += 1
         condition, tail = body[start : index - 1], body[index:]
-        # Braced or not: `{ return null; }` is the same guard through a formatter.
         if not re.match(r"\s*\{?\s*return null;", tail):
             continue
         if _binds_looser_than_or(condition):
@@ -294,16 +292,13 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     mount = (FRONTEND / "features/settings/settings-dialog-mount.tsx").read_text(encoding = "utf-8")
     assert "<SettingsDialogMount active={active && ready} />" in root
     assert "<CredentialBootstrapGate active={!isAuthFlowRoute}>" in root
-    # The mount must render nothing whenever inactive, which is what keeps the auth routes
-    # clear. The rest of the guard is lazy-mount bookkeeping that #10237 changed from one
-    # flag to two, so an exact spelling stopped matching.
+    # Only the render-nothing-when-inactive guard is required; the lazy-mount flags changed in #10237.
     mount_body = _function_body(_blanked(mount), "SettingsDialogMount")
     assert _inactive_returns_null(mount_body), (
         "SettingsDialogMount no longer returns null while inactive, so the settings "
         "dialog can mount on the auth routes"
     )
     assert "useSettingsDialogStore.getState().closeDialog();" in root
-    # The settings chord must stay inert on the auth routes.
     assert "if (isAuthFlowRoute) return;" in root or "{ enabled: !isAuthFlowRoute }" in root
     for route in ("login", "change-password"):
         assert "isAuthFlow: true" in (FRONTEND / f"app/routes/{route}.tsx").read_text(
@@ -314,8 +309,7 @@ def test_auth_flow_routes_do_not_mount_global_settings():
 def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    # A timeout is a SKIP: the first `node` of a job on a Windows runner pays for image
-    # scanning and a cold file cache, and 5s was not enough for a `--version` there.
+    # A timeout is a SKIP: a cold Windows runner can take over 5s for `node --version`.
     try:
         probe = subprocess.run(
             ["node", "--experimental-strip-types", "--version"],
@@ -416,7 +410,6 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         cwd = tmp_path,
         capture_output = True,
         text = True,
-        # The same cold-start allowance as the probe above, plus the work itself.
         timeout = 180,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"

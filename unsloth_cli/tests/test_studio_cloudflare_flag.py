@@ -30,9 +30,6 @@ def _studio():
 _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 
 
-# ── option registration ──────────────────────────────────────────────
-
-
 def test_run_exposes_cloudflare_option_default_off():
     import inspect
 
@@ -53,9 +50,6 @@ def test_studio_default_exposes_cloudflare_option_default_off():
     assert getattr(opt, "default", "missing") is None
 
 
-# ── re-exec forwarding: `unsloth studio run` ─────────────────────────
-
-
 class _ExecCaptured(SystemExit):
     def __init__(self, argv):
         super().__init__(0)
@@ -69,8 +63,6 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
-    # A built frontend dist is present so the public-launch UI check passes
-    # deterministically (independent of whether the repo dist was built).
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
@@ -114,12 +106,9 @@ def _invoke_run(monkeypatch, args):
 @pytest.mark.parametrize(
     "extra_flags,expected,unexpected,expected_intent",
     [
-        # Default (no flag) forwards --no-cloudflare explicitly so a mixed-version
-        # child venv (old default: --cloudflare on) can't re-enable the tunnel.
         ([], "--no-cloudflare", "--cloudflare", "unset"),
         (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
         (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
-        # --secure implies the tunnel; never forward --no-cloudflare with it.
         (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
@@ -140,9 +129,6 @@ def test_run_reexec_forwards_cloudflare_polarity(
     assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
-# ── re-exec forwarding: plain `unsloth studio` ───────────────────────
-
-
 def _invoke_studio_default(
     monkeypatch,
     args,
@@ -159,8 +145,6 @@ def _invoke_studio_default(
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
-    # A built frontend dist is present so the public-launch UI check passes; this
-    # suite exercises flag forwarding, not the missing-dist lockout guard.
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
@@ -181,13 +165,9 @@ def _invoke_studio_default(
 @pytest.mark.parametrize(
     "extra_flags,expected,unexpected,expected_intent",
     [
-        # Default (no flag) forwards --no-cloudflare explicitly: _find_run_py can fall
-        # back to an older studio-venv run.py (default on), so a mixed install must
-        # not re-enable the tunnel.
         ([], "--no-cloudflare", "--cloudflare", "unset"),
         (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
         (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
-        # --secure implies the tunnel; never forward --no-cloudflare with it.
         (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
@@ -205,9 +185,6 @@ def test_studio_default_reexec_forwards_cloudflare(
     assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
-# ── in-venv path forwards cloudflare into run_server ─────────────────
-
-
 class _RunServerCaptured(SystemExit):
     def __init__(self, kwargs):
         super().__init__(0)
@@ -222,9 +199,7 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, tmp_path, user
     import types
 
     studio_mod = _studio()
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
-    # locks inside it, so an unwritable home now aborts the run before
-    # run_server is ever reached and the flag under test goes unchecked.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -248,8 +223,7 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, tmp_path, user
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
-    # run() loads the backend via _load_run_module() (by file path); inject the
-    # mock as the cached run module so the stubbed run_server is used.
+    # run() loads the backend by file path; inject the mock as the cached run module.
     monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     state_mod = types.ModuleType("state")
@@ -326,9 +300,7 @@ def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch, tmp
     import types
 
     studio_mod = _studio()
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
-    # locks inside it, so an unwritable home now aborts the run before
-    # run_server is ever reached and the flag under test goes unchecked.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -413,13 +385,8 @@ def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch, tmp
     assert all(entry[0] not in {"verify", "print"} for entry in calls)
 
 
-# ── parent-level --cloudflare/--no-cloudflare with a subcommand is rejected ─
-
-
 @pytest.mark.parametrize("flag", ["--cloudflare", "--no-cloudflare"])
 def test_studio_default_rejects_cloudflare_flag_with_subcommand(monkeypatch, flag):
-    # `unsloth studio --cloudflare run ...` (or --no-cloudflare) would not reach the
-    # subcommand, so it must error (mirrors --parallel) rather than silently drop it.
     import typer as _typer
 
     studio_mod = _studio()
@@ -431,16 +398,11 @@ def test_studio_default_rejects_cloudflare_flag_with_subcommand(monkeypatch, fla
     assert flag in combined, combined
 
 
-# ── run() tears the server + tunnel down if startup aborts ───────────
-
-
 def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
-    # locks inside it, so an unwritable home now aborts the run before
-    # run_server is ever reached and the flag under test goes unchecked.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -464,8 +426,7 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch, tmp_path):
     backend._server = object()
     backend._shutdown_event = None
     backend._graceful_shutdown = lambda server: shutdown_calls.append(server)
-    # run() loads the backend via _load_run_module() (by file path); inject the
-    # mock as the cached run module so the stubbed symbols are used.
+    # run() loads the backend by file path; inject the mock as the cached run module.
     monkeypatch.setattr(studio_mod, "_RUN_MODULE", backend)
 
     # set_tool_policy is imported as `from state.tool_policy import set_tool_policy`.
@@ -475,7 +436,6 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch, tmp_path):
     tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
 
-    # Force the health check to fail so startup aborts after run_server().
     monkeypatch.setattr(studio_mod, "_wait_for_server", lambda *a, **k: False)
 
     import typer as _typer
@@ -494,9 +454,7 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch, tmp_path)
     import types
 
     studio_mod = _studio()
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
-    # locks inside it, so an unwritable home now aborts the run before
-    # run_server is ever reached and the flag under test goes unchecked.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -547,5 +505,4 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch, tmp_path)
     result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
 
     assert result.exit_code == 1, result.output
-    # Default first, then the explicit override, both before the server starts.
     assert calls[:3] == [("policy_default", True), ("policy", False), ("run_server", None)]

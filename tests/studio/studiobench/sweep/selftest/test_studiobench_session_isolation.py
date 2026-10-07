@@ -64,8 +64,6 @@ def test_cell_metrics_refuses_to_collapse_two_sessions():
         "cell_metrics keyed on cell_id alone and returned the last writer's values. That is how a "
         "payload holding two concurrent runs reported a 149.8% regression that does not exist."
     )
-    # The colliding cell is NAMED, not just counted: a refusal that says only "two sessions" sends the
-    # reader back to the payload to find out which reading it was protecting them from.
     assert "r1M.base.rep0" in message
     assert "91c4d6d94da8" in message and "430f0b831dda" in message
 
@@ -81,7 +79,6 @@ def test_a_resumed_run_is_not_mistaken_for_two_concurrent_ones():
     """
     rows = [
         {"row_type": "cell", "cell_id": "r100K.base.rep0", "session_id": "s1", "completed": True},
-        # died, then re-run under a new session id
         {
             "row_type": "cell",
             "cell_id": "r100K.treatment.rep0",
@@ -197,9 +194,6 @@ def test_sessions_in_lists_only_completed_cells():
     assert floor_table.sessions_in(rows) == {"91c4d6d94da8", "430f0b831dda"}
 
 
-# ── the write-time guard ────────────────────────────────────────────────────
-
-
 def test_a_second_live_session_is_refused(tmp_path):
     first = Recorder(tmp_path / "payload.jsonl", new_session_id())
     try:
@@ -224,7 +218,7 @@ def test_a_marker_from_a_dead_process_does_not_block_forever(tmp_path):
     """A crashed run must not lock the directory against every later one."""
     stale = tmp_path / ".running.deadsession"
     tmp_path.mkdir(parents = True, exist_ok = True)
-    # A pid that cannot be alive: this process's own pid is taken, so use one past the max.
+    # A pid that cannot be alive: one past pid_max.
     with open("/proc/sys/kernel/pid_max", encoding = "utf-8") as fh:
         dead_pid = int(fh.read().strip()) - 1
     stale.write_text(f"{dead_pid} deadsession\n", encoding = "utf-8")
@@ -241,9 +235,6 @@ def _pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
-
-
-# ── the rows these guards emit must actually be emittable ──────────────────
 
 
 def test_the_new_row_types_are_registered_in_the_schema(tmp_path):

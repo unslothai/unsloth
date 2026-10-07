@@ -51,8 +51,7 @@ def _import_install_manifest():
         if candidate.is_file():
             spec = importlib.util.spec_from_file_location("install_manifest", candidate)
             module = importlib.util.module_from_spec(spec)
-            # Registered BEFORE exec so the installer's own `import install_manifest` binds to
-            # this object rather than loading a second, unpatched copy.
+            # Registered before exec so the installer's import binds to this patched module.
             sys.modules["install_manifest"] = module
             spec.loader.exec_module(module)
             return module

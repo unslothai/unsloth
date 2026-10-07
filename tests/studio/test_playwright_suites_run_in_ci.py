@@ -22,36 +22,19 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 DRIVERS = sorted((REPO / "tests" / "studio").glob("playwright_*.py"))
 
-# Drivers no workflow runs, each with why.
 NOT_IN_CI = {
-    # Needs the Tauri desktop shell (it serves a page under the real Tauri CSP), which no Linux runner in this repo
-    # builds.
-    # tests/studio/ test_tauri_python_tool_images.py asserts the policy statically instead.
+    # Needs the Tauri desktop shell, which no Linux runner here builds.
     "playwright_tauri_python_tool_images.py",
-    # Drives the Train page pickers, which need a dataset and a model resolved through huggingface_hub;
-    # the UI workflows deliberately boot API-only with one 254 MiB GGUF and no network model resolution.
+    # Needs dataset/model resolution via huggingface_hub; UI workflows boot API-only.
     "playwright_train_pickers.py",
-    # A measurement harness rather than a gate: it prints the per-N cost table #8977 was sized from and deliberately
-    # sets no budget, and the sizes that make the curve mean anything (to 500 messages under 6x CPU throttling) cost
-    # tens of minutes.
-    # The part of it that can go wrong silently, the verdict in harness_failures, is driven without a browser by
-    # test_autoscroll_harness_contract.py, which CI does run.
+    # A measurement harness with no budget; its verdict logic is covered by
+    # test_autoscroll_harness_contract.py.
     "playwright_thread_weight.py",
-    # The same shape as playwright_thread_weight.py: a measurement harness, not a
-    # gate. It prints what a collapsible toggle costs against document size, and it
-    # deliberately sets no budget, because the number is hardware-dependent and a
-    # threshold here would be flaky rather than informative. The cells that make the
-    # O(total layout objects) curve readable run 100k+ element documents and cost
-    # minutes. Run by hand when that curve needs re-measuring. What it asserts that
-    # CANNOT go stale silently, the flag wiring and the absence of a measurement in
-    # the unmeasured primitive, is covered without a browser by
-    # studio/frontend/tests/reasoning-grid-collapse.test.ts, which CI does run.
+    # A measurement harness with no budget; the non-staling parts are covered by
+    # studio/frontend/tests/reasoning-grid-collapse.test.ts.
     "playwright_collapse_layout.py",
-    # Half of what it asserts is about the engine Frontend CI does not install.
-    # It proves the thread's fast copy path byte for byte against the real clipboard on BOTH engines: Chromium answers
-    # and must match, WebKit must refuse and its refusal must be backed by a measured divergence.
-    # What CI does run is studio/frontend/tests/thread-fast-copy.test.ts, which pins the gate's branches and the patch's
-    # bookkeeping but, by its own docstring, cannot see how a real engine serialises anything.
+    # Half of it is about WebKit, which Frontend CI does not install; thread-fast-copy.test.ts
+    # covers the gate's branches.
     "playwright_thread_fast_copy.py",
 }
 
@@ -128,8 +111,7 @@ def _ci_text() -> str:
         added = False
         for path in list(remaining):
             rel = path.relative_to(REPO).as_posix()
-            # A composite action is referenced by its DIRECTORY, never by the
-            # action.yml inside it, so matching the file path never opens one.
+            # A composite action is referenced by its DIRECTORY, never by its action.yml.
             if path.name in ("action.yml", "action.yaml"):
                 reached = path.parent.relative_to(REPO).as_posix() in text
             else:
@@ -216,12 +198,8 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
     )
     job = document["jobs"]["ui-indicator"]
-    # Two narrowings, each closing a way this check could pass on nothing:
-    #   uncommented -- commenting a line out is how an invocation gets disabled, and a raw substring
-    #     test reads `# bash ...engine` as coverage.
-    #   only the steps that invoke the helper -- scanning every run in the job would read
-    #     `playwright install --with-deps chromium firefox webkit` as coverage, and that step names
-    #     all three engines whether or not any of them is ever driven.
+    # Uncommented lines only, and only steps that invoke the helper: an install step names all
+    # three engines regardless.
     runs = _uncommented(
         "\n".join(
             str(step.get("run", ""))
@@ -230,16 +208,7 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
             and "run-studio-indicator-browser.sh" in str(step.get("run", ""))
         )
     )
-    # Matched as "the helper is invoked, and each engine is named as a bare argument to
-    # it", not as the literal `...sh 18899 <engine>` this once was. The engines now run
-    # concurrently from a loop over "<port> <engine>" pairs, each with its own port, so the
-    # old form no longer appears anywhere even though all three still run.
-    #
-    # The property being guarded is unchanged, and is the one that matters: the Mac and
-    # Windows UI workflows name the same helper, so dropping an engine HERE is invisible to
-    # the repo-wide scan above. What the relaxation gives up is the port literal, which
-    # this check was never really about; test_indicator_browsers_run_in_parallel.py asserts
-    # the ports are distinct, which is the property the number was standing in for.
+    # Each engine must be a bare argument to the helper (they run from a port/engine loop).
     assert (
         "run-studio-indicator-browser.sh" in runs
     ), "the ui-indicator job no longer invokes the cross-browser indicator helper at all"
@@ -253,7 +222,6 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         f"coverage this job was split out to keep, and the repo-wide check above cannot "
         f"see it go: the Mac and Windows workflows name the same helper."
     )
-    # And the disabled form does not read as coverage, or the check above passes on commented-out commands.
     disabled = _uncommented(
         "\n".join(
             f"# bash run-studio-indicator-browser.sh 18899 {e}" for e in ("chromium", "webkit")
@@ -301,8 +269,7 @@ def test_the_scan_reads_the_workflows_it_claims_to():
         "reading .github/scripts"
     )
     assert "actions/install-unsloth-local" in text
-    # From inside that action's body, not any workflow, so this fails if the walk matched the `uses:` reference without
-    # opening the action.
+    # From inside the action's body, proving the walk opened the action.
     assert "The POSIX `install.sh --local --no-torch` bootstrap" in text, (
         "the composite action's own contents are not in the text, so a driver launched "
         "from inside one would read as an orphan"
@@ -324,7 +291,6 @@ def test_every_smoke_report_is_covered_by_the_failure_upload():
     upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
     patterns = [line.strip() for line in str(upload["with"]["path"]).splitlines() if line.strip()]
 
-    # Every logs/ path the smokes CI runs actually write, read from their source.
     run = " ".join(str(s.get("run", "")) for s in steps)
     smokes = [d for d in DRIVERS if d.name in run]
     assert len(smokes) >= 5, f"expected the browser smokes to be wired up, found {len(smokes)}"

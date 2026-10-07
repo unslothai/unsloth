@@ -127,12 +127,12 @@ def test_hostinfo_exposes_the_flag():
 @pytest.mark.parametrize(
     "vendor_ids, expect_amd, expect_intel",
     [
-        (["0x1002"], True, False),  # AMD only
-        (["0x8086"], False, True),  # Intel only
-        (["0x8086", "0x1002"], True, True),  # Intel iGPU + AMD dGPU: both seen
+        (["0x1002"], True, False),
+        (["0x8086"], False, True),
+        (["0x8086", "0x1002"], True, True),
         (["0x1002", "0x8086"], True, True),  # order must not matter (no early break)
-        (["0x10de"], False, False),  # NVIDIA vendor id is not ours to claim
-        ([], False, False),  # headless
+        (["0x10de"], False, False),
+        ([], False, False),
     ],
 )
 def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, expect_intel):
@@ -149,20 +149,15 @@ def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, exp
 @pytest.mark.parametrize(
     "env, expect_amd",
     [
-        ({}, True),  # the target host: driver-only AMD, no mask
-        # ROCR_VISIBLE_DEVICES is a GPU isolation request and Vulkan honours no HIP mask, so
-        # auto-routing would hand llama.cpp the card it hid. Honoured on its own terms: no
-        # ROCm inventory tool need be installed for it to be real.
+        ({}, True),
+        # ROCR_VISIBLE_DEVICES is an isolation request and Vulkan honours no HIP mask.
         ({"ROCR_VISIBLE_DEVICES": ""}, False),
         ({"ROCR_VISIBLE_DEVICES": "-1"}, False),
         ({"ROCR_VISIBLE_DEVICES": "0"}, False),
-        # Only ROCR_VISIBLE_DEVICES empties an HSA agent list. HIP_VISIBLE_DEVICES and its
-        # CUDA_VISIBLE_DEVICES alias filter the HIP runtime, which rocminfo is no client of;
-        # counting them denied Vulkan to any host merely exporting CUDA_VISIBLE_DEVICES.
+        # Only ROCR_VISIBLE_DEVICES empties the HSA agent list; HIP/CUDA masks do not affect rocminfo.
         ({"HIP_VISIBLE_DEVICES": "-1"}, True),
         ({"CUDA_VISIBLE_DEVICES": ""}, True),
         ({"CUDA_VISIBLE_DEVICES": "0"}, True),
-        # Both set: ROCR still decides, so the isolation request is honoured.
         ({"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""}, False),
     ],
 )
@@ -197,8 +192,7 @@ def test_the_host_stub_also_hides_an_unexported_opt_rocm(monkeypatch, tmp_path):
     )
     assert ilp.os.access("/opt/rocm/bin/rocminfo", ilp.os.X_OK) is True
     _patch_no_nvidia_no_rocm(monkeypatch)
-    # Asserted directly, not just via the outcome: with the fallback reachable the probe below
-    # only fails to execute a binary this runner lacks, so it would be green for the wrong reason.
+    # Asserted directly, or the probe below passes just because this runner lacks the binary.
     assert ilp.os.access("/opt/rocm/bin/rocminfo", ilp.os.X_OK) is False
     assert ilp.detect_host().has_amd_gpu_without_rocm is True
 
@@ -227,10 +221,10 @@ def test_force_cpu_clears_the_flag():
 @pytest.mark.parametrize(
     "host_kwargs, expect_vulkan_eligible",
     [
-        (dict(has_amd_gpu_without_rocm = True), True),  # the widening
-        (dict(has_intel_gpu = True), True),  # unchanged
-        (dict(has_amd_gpu_without_rocm = True, has_physical_nvidia = True), False),  # hidden CUDA card
-        (dict(), False),  # headless / CPU-only
+        (dict(has_amd_gpu_without_rocm = True), True),
+        (dict(has_intel_gpu = True), True),
+        (dict(has_amd_gpu_without_rocm = True, has_physical_nvidia = True), False),
+        (dict(), False),
     ],
 )
 def test_vulkan_eligibility_gate(host_kwargs, expect_vulkan_eligible):
@@ -258,5 +252,4 @@ def test_vendor_probe_is_gated_off_rocm_in_source():
     after_guard = src.index(guard)
     scan = src.index('_vendor_id == "0x1002"')
     assert scan > after_guard, "AMD vendor scan is no longer inside the no-ROCm guard"
-    # ...and that nothing re-enables it later outside the guard.
     assert src.count('_vendor_id == "0x1002"') == 1

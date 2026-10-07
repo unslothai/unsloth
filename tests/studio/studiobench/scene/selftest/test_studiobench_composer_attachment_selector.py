@@ -27,15 +27,11 @@ _FRONTEND = _SCENE.parents[3] / "studio" / "frontend" / "src"
 _ATTACHMENT_TSX = _FRONTEND / "components" / "assistant-ui" / "attachment.tsx"
 _SHARED_COMPOSER_TSX = _FRONTEND / "features" / "chat" / "shared-composer.tsx"
 
-#: Which file renders which composer's attachments. The pairs are positional in actions.py -- the
-#: first container goes with the first tile -- so they are checked as pairs here too.
+# Pairs are positional in actions.py, so they are checked as pairs.
 _RENDERED_BY = (_ATTACHMENT_TSX, _SHARED_COMPOSER_TSX)
 
-#: A class selector and nothing else: the coupling check below can only speak about bare class
-#: names, so a selector that grew a descendant combinator or an attribute must not slip past it
-#: wearing the same constant name.
+# The coupling check only understands bare class names.
 _BARE_CLASS = re.compile(r"^\.([A-Za-z][\w-]*)$")
-#: `[data-thing]`, the handle shape used where a class would be a utility class and drift.
 _BARE_ATTRIBUTE = re.compile(r"^\[([A-Za-z][\w-]*)\]$")
 
 

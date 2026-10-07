@@ -38,8 +38,7 @@ OUT = Path(os.environ.get("PW_OUT", "logs/nonmodal_menus_report.json"))
 ENTRY = "/smoke-nonmodal-menus-main.tsx"
 PAGE = "/smoke-nonmodal-menus.html"
 
-# Both sides of the `duration-100` exit window: a guard outliving the close swallows the
-# next click.
+# Both sides of the `duration-100` exit window: a guard outliving the close swallows the next click.
 EXIT_WINDOW_MS = (30, 75, 125)
 
 
@@ -205,7 +204,7 @@ def check_scrolls_that_must_not_close(page, checks: Checks) -> None:
 
 
 def check_dismiss_guard(page, checks: Checks) -> None:
-    # Reset the counter AFTER opening: the click that opens a menu reaches document too.
+    # Reset AFTER opening: the opening click reaches document too.
     open_row(page, 7)
     page.evaluate("() => window.probe.resetClicks()")
     raw_click(page, "#outside-button")
@@ -239,8 +238,7 @@ def check_dismiss_guard(page, checks: Checks) -> None:
             )
             close_all(page)
 
-    # A non-modal menu lets the press reach the field before Radix restores the trigger, so
-    # Firefox and WebKit keep the caret and Chromium does not. Either is usable; <body> is not.
+    # Firefox and WebKit keep the caret, Chromium does not; either is fine, <body> is not.
     focus_after = {}
     for label, opener in (
         ("converted", lambda: open_row(page, 9)),
@@ -274,8 +272,7 @@ def check_focus_return(page, checks: Checks) -> None:
         page.evaluate(active),
     )
 
-    # A scroll-close takes a different focus path. The flag that selects it must not survive
-    # into the next close, or an ordinary Escape stops restoring focus.
+    # The scroll-close flag must not survive into the next close.
     reset_list(page)
     open_row(page, 11)
     page.evaluate("() => { document.getElementById('list').scrollTop = 300; }")
@@ -290,10 +287,7 @@ def check_focus_return(page, checks: Checks) -> None:
         page.evaluate(active),
     )
 
-    # The content stays mounted for the exit animation, so the user can click into something
-    # else before the close-autofocus runs. Radix's own restore checks for that; the
-    # scroll-close path prevents its default, so it has to make the same check itself or it
-    # takes the caret back out of whatever was clicked.
+    # The scroll-close path prevents Radix's restore, so it must itself skip stealing focus back.
     reset_list(page)
     open_row(page, 14)
     page.evaluate("() => { document.getElementById('list').scrollTop = 40; }")
@@ -322,8 +316,7 @@ def check_focus_return(page, checks: Checks) -> None:
 
 
 def check_keyboard(page, checks: Checks) -> None:
-    # An on-screen trigger, focus settled: focusing an off-screen one scrolls it into view a
-    # frame or two later, which races the open rather than testing it.
+    # Focusing an off-screen trigger scrolls it a frame later, racing the open.
     reset_list(page)
     page.get_by_label("Row options 2", exact = True).focus()
     page.wait_for_timeout(250)
@@ -373,15 +366,13 @@ def check_lifetime(page, checks: Checks) -> None:
         page.wait_for_timeout(500)
         reopened[label] = menus_open(page)
         close_all(page)
-    # Whether the reopening click lands is a race both arms lose about as often as they win.
-    # The invariant that is not a race: neither may end up with two menus open at once.
+    # The reopening click is a race either way; the invariant is never two menus open.
     checks.record(
         "reopening during the exit animation never leaves two menus open",
         all(count <= 1 for count in reopened.values()),
         reopened,
     )
 
-    # The scroll watcher is per-open. If a close ever failed to retire one, this climbs.
     before = page.evaluate("() => window.probe.scrollListeners()")
     for _ in range(30):
         page.get_by_label("Row options 18", exact = True).click()
@@ -400,8 +391,7 @@ def check_lifetime(page, checks: Checks) -> None:
         " l.scrollTop = 8 * 40 - l.clientHeight + 20; }"
     )
     page.wait_for_timeout(300)
-    # Press the sliver the scroller leaves visible. Not click_forced: that scrolls the
-    # trigger into view first, which is the one thing this case must not do.
+    # Not click_forced: that scrolls the trigger into view, which this case must not do.
     trigger = page.get_by_label("Row options 8", exact = True).bounding_box()
     clip = page.locator("#list").bounding_box()
     top = max(trigger["y"], clip["y"])

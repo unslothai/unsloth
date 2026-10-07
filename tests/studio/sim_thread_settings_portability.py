@@ -67,8 +67,7 @@ def thread_row(title, **extra):
 
 
 def main():
-    # The Windows console is cp1252 by default, so printing a kbId containing emoji raises UnicodeEncodeError and fails
-    # the run for a reason that has nothing to do with what is being tested.
+    # The Windows console is cp1252, so printing emoji would raise UnicodeEncodeError.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding = "utf-8", errors = "replace")
@@ -79,15 +78,13 @@ def main():
     print(f"sqlite3  : {sqlite3.sqlite_version}")
     print()
 
-    # ALTER TABLE ADD COLUMN is SQLite 3.2.0 (2005) and COALESCE predates it, so the floor is far below anything
-    # shipping today. Assert it rather than assume it.
     major, minor, _ = (int(p) for p in sqlite3.sqlite_version.split("."))
     check(
         "sqlite supports ALTER TABLE ADD COLUMN (>= 3.2)",
         (major, minor) >= (3, 2),
         f"found {sqlite3.sqlite_version}",
     )
-    # UPSERT (ON CONFLICT DO UPDATE), which the thread writer uses, needs 3.24.
+    # UPSERT (ON CONFLICT DO UPDATE), used by the thread writer, needs 3.24.
     check(
         "sqlite supports UPSERT (>= 3.24)",
         (major, minor) >= (3, 24),
@@ -98,9 +95,7 @@ def main():
     home = fresh_home()
     import storage.studio_db as db  # noqa: E402 - after UNSLOTH_STUDIO_HOME is set
 
-    # Build the database with the real schema, populate it the way a months-old install would be, then DROP the new
-    # column. Hand-writing the old CREATE TABLE drifts from the real one (it is missing pair_id and everything else the
-    # schema step indexes), so this is both more faithful and self-maintaining.
+    # Build with the real schema and DROP the new column; a hand-written old schema drifts.
     legacy_ids = []
     for i in range(200):
         row = thread_row(f"legacy {i}")
@@ -114,7 +109,7 @@ def main():
         conn.commit()
         dropped = True
     except sqlite3.OperationalError as exc:
-        # DROP COLUMN is 3.35+. Older SQLite needs the copy-and-rename dance.
+        # DROP COLUMN is 3.35+.
         print(f"  (DROP COLUMN unavailable: {exc}; rebuilding the table instead)")
         cols = [
             r[1] for r in conn.execute("PRAGMA table_info(chat_threads)") if r[1] != "settings_json"

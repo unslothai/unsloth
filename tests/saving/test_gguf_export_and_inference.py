@@ -24,13 +24,11 @@ import threading
 import pytest
 from real_accelerator import (
     has_real_accelerator,
-)  # tests/_shared, on sys.path via tests/conftest.py
+)
 
 from unsloth import FastLanguageModel
 
-# Downloads two checkpoints, merges them and shells out to llama.cpp. The skipif already keeps it off a GPU-less
-# runner; `gpu` is what keeps it out of a default `pytest tests/` on a machine that HAS a GPU. CI runs it under
-# `-m gpu`.
+# `gpu` keeps this out of a default `pytest tests/` on a GPU machine; CI runs it under `-m gpu`.
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
@@ -155,8 +153,7 @@ def exported_gguf(tmp_path_factory):
         processing_class = tokenizer,
         train_dataset = dataset,
         args = SFTConfig(
-            # max_length is left unset: newer TRL enables padding-free training (without packing) by default,
-            # where SFTConfig(max_length=...) raises because length is not enforced.
+            # Newer TRL defaults to padding-free training, where SFTConfig(max_length=...) raises.
             max_length = None,
             dataset_text_field = "text",
             per_device_train_batch_size = 4,
@@ -210,15 +207,13 @@ def test_gguf_llama_cli_inference_reflects_finetune(exported_gguf):
 
     text = _run_llama_capped(cli, gguf, exported_gguf["prompt"])
     assert text.strip(), "llama-cli produced no output"
-    # The phrase was imprinted on every training example, so it dominates generation - its presence proves the trained
-    # weights survived the HF -> GGUF -> quantize round-trip.
+    # The phrase is imprinted on every example, so its presence proves the weights survived GGUF export.
     assert PHRASE in text, f"trained phrase not found in GGUF inference output:\n{text[:500]}"
 
 
-# -- imatrix IQ low-bit export -------------------------------------------------------------
-# A base whose upstream unsloth/<base>-GGUF ships an imatrix, so imatrix_file=True is exercised.
+# Needs a base whose unsloth/<base>-GGUF ships an imatrix.
 IMATRIX_MODEL = os.environ.get("UNSLOTH_IMATRIX_TEST_MODEL", "unsloth/Llama-3.2-1B-Instruct")
-IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]  # both were previously disabled; imatrix unlocks them
+IMATRIX_QUANTS = ["iq2_xxs", "iq4_xs"]
 
 
 @pytest.fixture(scope = "module")
@@ -324,7 +319,6 @@ def exported_imatrix_gguf(tmp_path_factory):
 
 def test_imatrix_iq_quants_export_valid_files(exported_imatrix_gguf):
     ggufs = exported_imatrix_gguf["ggufs"]
-    # Both requested IQ quants must be produced (they are gated off without an imatrix).
     for tag in ("IQ2_XXS", "IQ4_XS"):
         match = [g for g in ggufs if tag in os.path.basename(g).upper()]
         assert match, f"no {tag} gguf produced (found: {[os.path.basename(g) for g in ggufs]})"
@@ -335,7 +329,6 @@ def test_imatrix_iq_quants_export_valid_files(exported_imatrix_gguf):
 
 
 def test_imatrix_was_downloaded(exported_imatrix_gguf):
-    # imatrix_file=True must have fetched the upstream imatrix into the export dir.
     assert exported_imatrix_gguf["imatrix"], "imatrix_file=True did not download an imatrix"
 
 
@@ -346,5 +339,4 @@ def test_imatrix_iq_inference_runs(exported_imatrix_gguf):
     iq4 = [g for g in exported_imatrix_gguf["ggufs"] if "IQ4_XS" in os.path.basename(g).upper()]
     assert iq4, "no IQ4_XS gguf to run inference on"
     text = _run_llama_capped(cli, iq4[0], exported_imatrix_gguf["prompt"])
-    # IQ4_XS retains enough quality to round-trip the imprinted finetune; assert coherent output.
     assert text.strip(), "llama-cli produced no output for the IQ4_XS imatrix quant"

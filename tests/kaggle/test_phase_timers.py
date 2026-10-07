@@ -106,11 +106,8 @@ def test_nested_calls_are_not_counted_twice(hub, tmp_path):
         elapsed = time.time() - started
 
     assert timer.calls == 4, "every call is counted"
-    # Against the outer call's OWN elapsed time, not a fixed ceiling: the three
-    # inner sleeps run inside that call, so double counting lands near 2x it
-    # while a correct sum lands at 1x. A host that deschedules the runner
-    # stretches both sides equally, where a constant bound would go red on
-    # scheduling and report it as double counting.
+    # Against the outer call's own elapsed time: double counting lands near 2x, and descheduling
+    # stretches both sides equally.
     assert (
         timer._seconds <= elapsed * 1.5
     ), f"nested seconds counted twice: {timer._seconds} against {elapsed} elapsed"
@@ -129,7 +126,6 @@ def test_a_raising_download_still_restores_the_module(hub):
         huggingface_hub.hf_hub_download()
     timer.uninstall()
     assert huggingface_hub.hf_hub_download is original, "the wrapper outlived the timer"
-    # The failed attempt is still time spent trying, so it counts.
     assert timer.calls == 1
 
 

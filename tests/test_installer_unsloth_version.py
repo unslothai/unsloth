@@ -27,7 +27,6 @@ def _extract(pattern: str, source: str) -> str:
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "POSIX shell is unavailable")
 def test_posix_installer_reports_installed_distribution_version():
     source = INSTALL_SH.read_text(encoding = "utf-8")
-    # Two blocks: the probe, whose exit code carries the conflict signal, and the report that acts on it.
     reporter = _extract(
         r"^_installed_package_version_exit=0.*?^fi.*?^fi",
         source,
@@ -58,9 +57,7 @@ def test_windows_version_reporter_uses_distribution_metadata():
         r"    \$installedPackageVersion = .*?^    if .*?^    \} else \{.*?^    \}",
         source,
     )
-    # run_pwsh, not subprocess.run: a pwsh that aborted before reaching the reporter printed no version line at all, and
-    # check = True would file that as install.ps1 reading the distribution metadata wrongly.
-    # See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh: a startup abort prints no version line and would read as bad metadata parsing.
     result = run_pwsh(
         [
             "pwsh",

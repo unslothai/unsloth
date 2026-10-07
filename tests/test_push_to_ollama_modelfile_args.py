@@ -125,8 +125,6 @@ def test_push_to_ollama_reaches_create_ollama_modelfile(tmp_path, monkeypatch):
 
 
 def test_push_to_ollama_reports_a_missing_template(tmp_path, monkeypatch):
-    # create_ollama_modelfile returns None when the model has no Ollama template mapping;
-    # writing that to the Modelfile used to fail with an opaque TypeError from f.write.
     monkeypatch.chdir(tmp_path)
     push_to_ollama, _ = _load(None)
 

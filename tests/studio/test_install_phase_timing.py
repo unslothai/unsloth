@@ -42,7 +42,6 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 ACTION = REPO / ".github" / "actions" / "install-unsloth-local" / "action.yml"
 
-# The four scripts this feature deliberately does not touch.
 INSTALLERS = (
     REPO / "install.sh",
     REPO / "install.ps1",
@@ -50,13 +49,9 @@ INSTALLERS = (
     REPO / "studio" / "setup.ps1",
 )
 
-# Markers of the two filter dialects, each paired with the log-writing stage that must come before it in the same
-# pipeline.
+# Each filter paired with the log-writing stage that must precede it in the same pipeline.
 POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
-
-
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("script", INSTALLERS, ids = lambda p: p.name)
@@ -78,11 +73,6 @@ def test_the_installers_carry_no_timing_machinery(script):
         f"installer re-adds a user-facing switch, a shell-specific truthiness rule and a "
         f"cross-process epoch handoff, for output CI can prefix for free."
     )
-
-
-# --------------------------------------------------------------------------------------
-# Where the filter is, and what has to come before it
-# --------------------------------------------------------------------------------------
 
 
 def _run_bodies():
@@ -225,8 +215,7 @@ def test_a_failing_install_still_fails_its_step():
                 f"-- and a failed install passes"
             )
         if PWSH_FILTER in run:
-            # The comparison, not the bare variable name: `$child` already ends with `exit $LASTEXITCODE`, so a
-            # substring test for the name alone stays green after the outer check is deleted.
+            # The comparison, not the name: `$child` already ends with `exit $LASTEXITCODE`.
             assert re.search(r"\$LASTEXITCODE\s+-ne\s+0", run), (
                 f"{path.name}:{jid}:{name} no longer throws on a non-zero $LASTEXITCODE "
                 f"after the pipeline. PowerShell does not fail a step for a native "
@@ -247,11 +236,6 @@ def test_the_posix_filter_does_not_swallow_the_last_line():
             f"{path.name}:{jid}:{name} reads with a bare `while IFS= read -r line`, which "
             f"discards output that ends without a newline"
         )
-
-
-# --------------------------------------------------------------------------------------
-# Run the real filters, rather than only reading them
-# --------------------------------------------------------------------------------------
 
 
 def _posix_filter_body() -> str:
@@ -357,10 +341,7 @@ def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp
 PWSH = None
 for _candidate in ("pwsh", "powershell"):
     try:
-        # pwsh_env, not run_pwsh: a probe run at import time, whose only question is whether
-        # this shell exists, must answer "no" rather than raise out of collection, which is
-        # what run_pwsh's exhausted retry loop would do. It still needs the private startup
-        # cache: a torn one makes this probe exit non-zero and silently skips the whole file.
+        # pwsh_env, not run_pwsh: an import-time probe must answer "no", not raise.
         if (
             subprocess.run(
                 [_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60, env = pwsh_env()

@@ -236,7 +236,6 @@ def test_a_reloaded_masking_utils_is_patched_again(unpatched):
     fix_transformers_fully_masked_rows()
     assert _sdpa_mask_is_patched(masking_utils)
 
-    # Exactly what a reload leaves behind: upstream functions, our marker.
     interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
     masking_utils.sdpa_mask = unpatched
     if interface is not None:
@@ -280,11 +279,9 @@ def test_the_correction_itself_on_every_dtype_it_can_meet():
     int_mask = bool_mask.to(torch.int64)
     assert _unmask_rows_attending_to_nothing(int_mask).tolist() == [[[[1, 1], [0, 1]]]]
 
-    # The eager path: returned untouched, and by identity, not by value.
     float_mask = torch.zeros((1, 1, 2, 2), dtype = torch.float32)
     assert _unmask_rows_attending_to_nothing(float_mask) is float_mask
 
-    # `is_causal` was used instead of a mask.
     assert _unmask_rows_attending_to_nothing(None) is None
 
 

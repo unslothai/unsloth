@@ -194,7 +194,6 @@ def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
         "python3 -c 'pass' scripts/lint_workflow_triggers.py",
         "python3 -m json.tool scripts/lint_workflow_triggers.py",
         "echo scripts/lint_workflow_triggers.py",
-        # A decoy with the right basename but not this repository's script.
         "python3 /tmp/lint_workflow_triggers.py",
     ],
     ids = ["dash-c", "dash-m", "echo", "decoy-path"],
@@ -216,7 +215,6 @@ def test_lint_does_not_count_a_non_running_command_as_a_host(tmp_path, command):
 @pytest.mark.parametrize(
     "body",
     [
-        # A decoy under any prefix, not just a bare /tmp path.
         "python3 /tmp/scripts/lint_workflow_triggers.py",
         # Defining a function is not calling it.
         "never_called() {\n            python3 scripts/lint_workflow_triggers.py\n          }",
@@ -283,9 +281,7 @@ def test_lint_accepts_an_explicit_plain_shell(tmp_path):
 @pytest.mark.parametrize(
     "command",
     [
-        # A fake interpreter that merely contains "python" in its name.
         "/tmp/fakepython scripts/lint_workflow_triggers.py",
-        # Flags that make python print and exit before running the file.
         "python3 --version scripts/lint_workflow_triggers.py",
         "python3 -V scripts/lint_workflow_triggers.py",
         "python3 --help scripts/lint_workflow_triggers.py",
@@ -371,7 +367,6 @@ def test_publish_cache_key_collision_found_under_both_suffixes(tmp_path, suffix)
         # -i drops into the REPL after the script;
         # on EOF the interpreter exits 0 even though the lint called sys.exit(1).
         "python3 -i scripts/lint_workflow_triggers.py",
-        # Anything outside the allowlist fails closed.
         "python3 -d scripts/lint_workflow_triggers.py",
         "python3 -uB scripts/lint_workflow_triggers.py",
     ],
@@ -717,7 +712,6 @@ def _pattern_matches(pattern: str, path: str) -> bool:
         return any(matches(p) for p in prefixes)
     if matches(path):
         return True
-    # A plain path may name a directory, and then owns everything under it.
     return not any(ch in body for ch in "*?") and any(matches(p) for p in prefixes)
 
 
@@ -779,10 +773,8 @@ def test_workflow_changes_require_code_owner_review():
         ("/.github/**", ".github/workflows/lint.yml", True),
         ("/.github/**/workflows/", ".github/workflows/lint.yml", True),
         ("/.github/**/workflows/", ".github/a/b/workflows/lint.yml", True),
-        # A plain path naming a directory owns everything beneath it.
         ("/.github/workflows/", ".github/workflows/lint.yml", True),
         ("/scripts", "scripts/data/x.txt", True),
-        # Unanchored patterns may start at any depth.
         ("workflows/", ".github/workflows/lint.yml", True),
         ("**/workflows/", ".github/workflows/lint.yml", True),
         # An internal slash anchors at the root, gitignore style, so this names a top-level workflows/ and not the one
@@ -836,9 +828,7 @@ def test_invalid_owner_does_not_count_as_ownership():
         ("* @someone-else", ["@someone-else"]),
         ("/.github/ @someone-else", ["@someone-else"]),
         (f"/{CODEOWNERS_PROBES[0]} @someone-else", ["@someone-else"]),
-        # A pattern with no owners is valid, and clears ownership.
         (f"/{CODEOWNERS_PROBES[0]}", []),
-        # Globbed and unanchored directory patterns are valid rules too.
         ("**/workflows/ @someone-else", ["@someone-else"]),
         ("workflows/ @someone-else", ["@someone-else"]),
         (".github/*/ @someone-else", ["@someone-else"]),
@@ -910,7 +900,6 @@ def test_lint_rejects_shared_cache_key_between_pr_and_publish(tmp_path):
     publish workflow is the TanStack cache-poisoning vector."""
     wf = tmp_path / "wf"
     wf.mkdir()
-    # PR-triggered: writes a cache the publish job will also restore.
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
         "on:\n"
@@ -1458,7 +1447,6 @@ def test_a_shell_built_namespace_is_narrowed_by_the_inputs_callers_pass(tmp_path
         f"`pip-mlx-`, so this must pass:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # And the narrowed namespace still has teeth: a publish prefix over `pip-mlx-` fails.
     (wf / "release-desktop.yml").write_text(
         _publish_with_restore_keys("pip-mlx-pub-${{ runner.os }}", "            pip-mlx-\n")
     )
@@ -1613,7 +1601,6 @@ def test_a_folded_restore_keys_block_is_one_prefix_not_several(tmp_path):
         f"namespace, so this must pass:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # The literal form of the same block really does offer `shared-`, and must fail.
     (wf / "release-desktop.yml").write_text(
         _publish_with_restore_keys(
             "safe-only-${{ runner.os }}",
@@ -2083,8 +2070,6 @@ def test_a_longer_fallback_over_a_complete_pr_key_is_accepted(tmp_path):
         f"pass:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # The truncated case still has teeth: the same fallback over an expression-completed
-    # key CAN meet it at runtime.
     (wf / "pr-build.yml").write_text(_pr_workflow("shared-long-${{ runner.os }}-abc"))
     proc = _run(wf)
     assert proc.returncode == 1, (
@@ -2112,9 +2097,6 @@ def test_the_truncation_predicate_reads_the_key():
     lint = _lint_module()
     _is_truncated = lint._is_truncated
     _prefix_compatible = lint._prefix_compatible
-    # `runner.os` is expanded before the head is taken, so a key containing only that
-    # expression ends up with a COMPLETE head and is not truncated. It is the expressions
-    # this check cannot expand that cut a head short.
     cases = [
         ("shared", False),
         ("shared-long-abc", False),
@@ -2126,11 +2108,8 @@ def test_the_truncation_predicate_reads_the_key():
     for key, expected in cases:
         assert _is_truncated(key) is expected, f"_is_truncated({key!r})"
 
-    # A head cut short by an expression may be reached by a LONGER publish prefix; a
-    # complete key may not.
     assert _prefix_compatible("pip-v2-", "pip-v2-Linux-", True) is True
     assert _prefix_compatible("shared", "shared-long", False) is False
-    # Either way, a prefix the head already starts with is always compatible.
     assert _prefix_compatible("shared-long-abc", "shared-", False) is True
 
 
@@ -2419,8 +2398,6 @@ def test_an_unresolvable_pr_key_is_reported_against_an_exact_publish_key(tmp_pat
         f"produce:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # ... and a publish key the PR key's fixed head cannot lead to stays accepted, or
-    # every unresolved key in the tree would reject every publish key in it.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -2458,7 +2435,6 @@ def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
         "    - uses: actions/cache@v4\n"
         "      with:\n        path: wheels\n        key: ${{ inputs.cache_key }}\n"
     )
-    # Same input NAME, no cache anywhere in it.
     (unrelated / "action.yml").write_text(
         "name: unrelated\n"
         "inputs:\n  cache_key:\n    description: k\n"
@@ -2490,7 +2466,6 @@ def test_two_targets_sharing_an_input_name_keep_their_own_namespaces(tmp_path):
         f"cache writes it:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # The caching composite receiving it IS a collision, so the narrowing kept its teeth.
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
         "on:\n  pull_request:\n"
@@ -2514,11 +2489,7 @@ def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
     recovered and a key built from one of them had no namespace at all.
     """
     lint = _lint_module()
-    # The FULL local reference, which is what a `uses:` line writes. A basename was
-    # enough to tell a workflow from an action, and not enough to tell two actions
-    # apart: `.github/actions/a/cache` and `.github/actions/b/cache` both end in
-    # `cache`, so their call sites pooled and one action's value was invented for the
-    # other.
+    # The FULL local reference: basenames cannot tell .github/actions/a/cache from b/cache.
     assert lint._target_name(Path(".github/workflows/reuse.yml")) == ".github/workflows/reuse.yml"
     assert (
         lint._target_name(Path(".github/actions/pip-cache/action.yml"))
@@ -2528,8 +2499,6 @@ def test_a_reusable_workflow_is_named_by_its_file_not_its_directory():
         lint._target_name(Path(".github/actions/pip-cache/action.yaml"))
         == ".github/actions/pip-cache"
     )
-    # An action is still named by its directory and a reusable workflow by its file,
-    # which is the distinction this started from.
     assert lint._target_name(Path(".github/actions/a/cache/action.yml")) != (
         lint._target_name(Path(".github/actions/b/cache/action.yml"))
     )
@@ -2746,8 +2715,6 @@ def test_two_differently_spelled_unresolved_keys_are_paired(tmp_path):
         f"same entry:\n{proc.stdout}\n{proc.stderr}"
     )
 
-    # Incompatible heads stay accepted, or every unresolved key in a tree would reject
-    # every other one.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -2830,7 +2797,6 @@ def test_a_literal_producer_output_is_read_as_a_key(tmp_path):
         f"{proc.stdout}\n{proc.stderr}"
     )
 
-    # And the literal really is compared, rather than merely vouching for the producer.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"
@@ -2949,10 +2915,8 @@ def test_one_readable_producer_does_not_vouch_for_an_unreadable_one(tmp_path):
         "on:\n  pull_request:\n"
         "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
-        # readable, and entirely unrelated to the key that is actually used
         "      - id: safe\n"
         "        run: echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
-        # unreadable spelling, and this is the one whose value reaches the cache
         "      - id: make\n"
         '        run: printf \'key=%s\\n\' "shared-$GITHUB_SHA" >> "$GITHUB_OUTPUT"\n'
         "      - uses: actions/cache/save@v4\n"
@@ -2979,9 +2943,7 @@ def test_a_producer_that_declares_its_key_inline_is_readable():
     beside it. Both failed the live tree before being recognised.
     """
     lint = _lint_module()
-    # Identities are (document, job, step id), because a step id is unique only within
-    # its job. A bare id let a readable namesake in another job -- or another file --
-    # answer for an unreadable one.
+    # Identities are (document, job, step id): a step id is unique only within its job.
     here = ("wf.yml", "build")
     producers = {("wf.yml", "build", "probe"): {"key"}}
     assert lint._delegation_is_read("${{ steps.probe.outputs.key }}", producers, here) is True
@@ -3007,9 +2969,7 @@ def test_a_producer_that_declares_its_key_inline_is_readable():
         )
         is False
     )
-    # A step this check never saw is not evidence of anything.
     assert lint._delegation_is_read("${{ steps.other.outputs.key }}", producers, here) is False
-    # Nor is a form that names no step at all.
     assert lint._delegation_is_read("${{ needs.build.outputs.key }}", producers, here) is False
 
 
@@ -3026,7 +2986,6 @@ def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
         "name: pr-build\n"
         "on:\n  pull_request:\n"
         "jobs:\n"
-        # unreadable producer, and the job that actually caches
         "  first:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: probe\n"
@@ -3034,7 +2993,6 @@ def test_a_readable_namesake_in_another_job_vouches_for_nothing(tmp_path):
         "      - uses: actions/cache/save@v4\n"
         "        with:\n          path: wheels\n"
         "          key: ${{ steps.probe.outputs.key }}\n"
-        # readable namesake in a different job, caching nothing of interest
         "  second:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - id: probe\n"
@@ -3300,7 +3258,6 @@ def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
         f"{proc.stdout}\n{proc.stderr}"
     )
 
-    # And the resolution keeps its teeth: the value really reaching the cache collides.
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n  workflow_dispatch:\n"

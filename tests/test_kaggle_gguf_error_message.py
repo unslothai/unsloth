@@ -54,15 +54,11 @@ def plenty_of_free_space(monkeypatch):
     ample = _Usage(total = 100 * 1024**3, used = 1 * 1024**3, free = 99 * 1024**3)
 
     def plenty(path):
-        # Keep the real failure modes; only the numbers are ours.
         real_disk_usage(path)
         return ample
 
     monkeypatch.setattr(shutil, "disk_usage", plenty)
     return ample
-
-
-# ---- failures that ARE about disk -----------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -107,9 +103,6 @@ def test_a_bad_quant_method_is_not_a_disk_problem():
     assert _looks_like_disk(exc, os.getcwd()) is False
 
 
-# ---- the guard must never be what raises ---------------------------------
-
-
 def test_a_nonexistent_directory_does_not_raise():
     assert _looks_like_disk(RuntimeError("boom"), "/definitely/not/a/real/path") in (True, False)
 
@@ -120,9 +113,6 @@ def test_none_directory_does_not_raise():
 
 def test_an_exception_with_no_message_does_not_raise():
     assert _looks_like_disk(RuntimeError()) in (True, False)
-
-
-# ---- the call site --------------------------------------------------------
 
 
 def test_the_kaggle_branch_is_gated_on_the_check():
@@ -149,7 +139,7 @@ def test_the_real_error_survives_either_way():
     assert (
         window.count("from e") >= 2
     ), "the original exception must be chained so the traceback survives"
-    # `{e}` is empty when the exception has no args, so the type-leading form counts too.
+    # `{e}` is empty for an exception with no args, so the type-leading form counts too.
     assert (
         "GGUF conversion failed: {e}" in window
         or "GGUF conversion failed: {_describe_exception(e)}" in window
@@ -158,9 +148,6 @@ def test_the_real_error_survives_either_way():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
-
-
-# ---- a converter killed by the OOM-killer ---------------------------------
 
 
 def test_sigkill_is_recognised_from_the_message():
@@ -278,9 +265,6 @@ def test_it_chains_the_original():
     src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
     i = src.index("_gguf_child_was_oom_killed(e)")
     assert "from e" in src[i : i + 900]
-
-
-# ---- the inner conversion/quantize branches are gated too ------------------
 
 
 def test_no_kaggle_disk_message_is_left_ungated():

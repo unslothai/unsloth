@@ -110,7 +110,7 @@ def test_resampling_works_without_a_usable_librosa(broken_torchcodec, monkeypatc
 
     pytest.importorskip("av")
     if shape == "absent":
-        monkeypatch.setitem(sys.modules, "librosa", None)  # `import librosa` now raises ImportError
+        monkeypatch.setitem(sys.modules, "librosa", None)
     else:
         # An old librosa beside numpy 2 raises AttributeError at import; that must reach PyAV too.
         (tmp_path / "librosa.py").write_text(
@@ -135,7 +135,7 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
 
 
 def test_the_disabler_installs_the_decoder():
-    # Read the source: importing a real torchcodec would decide this by the host, not the code.
+    # Read the source: importing a real torchcodec would decide this by the host.
     src = ast.parse((_REPO / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8"))
     fn = next(
         n
@@ -179,7 +179,6 @@ def _dominant_hz(array, rate):
 
 
 def test_the_stream_index_selects_the_track(broken_torchcodec):
-    # datasets.Audio(stream_index=1) must reach the second track, as torchcodec would.
     from datasets import Audio, Dataset
 
     raw = _two_stream_m4a_bytes()
@@ -196,8 +195,7 @@ def test_the_stream_index_selects_the_track(broken_torchcodec):
 def test_a_wheel_that_raises_anything_at_import_is_disabled(
     broken_torchcodec, monkeypatch, tmp_path
 ):
-    # A damaged torchcodec need not raise ImportError or RuntimeError; the installer already calls
-    # every failure "broken", so the library must disable it and seat the fallback the same way.
+    # A damaged torchcodec can raise anything, so every failure disables it the same way.
     import sys
 
     pkg = tmp_path / "torchcodec"
@@ -218,14 +216,12 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(
 
     assert sys.modules["torchcodec"] is None
     assert getattr(Audio, "_unsloth_audio_fallback", False) is True
-    # The one report a user gets, now that the installers say nothing: what failed and what decodes.
     said = [str(w.message) for w in caught if "torchcodec is installed but" in str(w.message)]
     assert said and "soundfile and PyAV" in said[0] and "reinstall torchcodec" in said[0]
 
 
 def test_the_audio_extras_carry_the_fallback_decoders():
-    # `unsloth[audio-torch2xx]` must install what decodes when torchcodec cannot load, or the
-    # fallback re-raises libsndfile's error on exactly the containers it exists for.
+    # `unsloth[audio-torch2xx]` must install a decoder, or the fallback re-raises libsndfile's error.
     tomllib = pytest.importorskip("tomllib")
     with open(_REPO / "pyproject.toml", "rb") as fh:
         extras = tomllib.load(fh)["project"]["optional-dependencies"]
@@ -237,8 +233,6 @@ def test_the_audio_extras_carry_the_fallback_decoders():
 
 
 def test_the_load_failure_is_classified_for_the_warning(monkeypatch):
-    # The import-time warning names the cause it can establish: FFmpeg off the loader path,
-    # FFmpeg present so the cause is elsewhere, or a failure that never reached libtorchcodec.
     def raised(msg, cls = RuntimeError):
         try:
             raise cls(msg)
@@ -262,8 +256,7 @@ def test_the_load_failure_is_classified_for_the_warning(monkeypatch):
 
 
 def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec, tmp_path):
-    # torchcodec resolves stream_index=None through av_find_best_stream, where a default
-    # disposition beats position; a file whose second track is the default must decode it.
+    # torchcodec resolves stream_index=None via av_find_best_stream, where default disposition wins.
     import shutil
     import subprocess
 
@@ -307,8 +300,7 @@ def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec
 
 
 def test_a_channel_first_array_round_trips_through_the_encoder(broken_torchcodec):
-    # torchcodec hands decoded audio out as (channels, samples); libsndfile writes (frames, channels).
-    # Written as is, a (2, 1600) clip became two frames of 1600 channels, or failed outright.
+    # torchcodec yields (channels, samples); libsndfile writes (frames, channels).
     from datasets import Audio, Dataset
 
     assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True

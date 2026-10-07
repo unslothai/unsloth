@@ -73,8 +73,7 @@ class RunIdentity:
         }
 
 
-#: The fields that must match. `session_id` is separate because its failure mode differs: mismatched
-#: ids mean different meanings, a mismatched session means an 8% drift term.
+#: `session_id` is checked separately: a mismatch there is drift, not a different meaning.
 COMPARABILITY_FIELDS = ("bench_version", "corpus_hash", "rung_ladder_id", "weights_id")
 
 
@@ -184,13 +183,9 @@ class MetricComparison:
     ci_high: float | None
     verdict: str = "no_reading"
     beyond_noise: bool = False
-    #: The 95% CI of the paired geometric mean contains 1.0, so the data cannot rule out "no effect"
-    #: however far the point estimate landed from the noise floor. Carried so the table can say the
-    #: size is unresolved rather than print a direction as a finding.
+    #: The paired geomean 95% CI contains 1.0, so the effect size is unresolved.
     ci_spans_no_effect: bool = False
-    #: At least one contributing pair had a sub-floor arm, so the ratio is a BOUND: the true magnitude
-    #: is larger. Carried so a number derived from an instrument floor is not quoted as a
-    #: measurement.
+    #: A contributing pair had a sub-floor arm, so the ratio is only a bound.
     bounded: bool = False
 
     @property
@@ -304,16 +299,11 @@ class AbResult:
         if self.regressions:
             return "FAIL"
         if self.headline_ratio is None:
-            # UNRESOLVED IS NOT UNMEASURED. `compare` keeps unresolved metrics out of the headline entirely, so
-            # a run whose every moving metric straddled 1.0 arrives with no ratio at all: the data exists and
-            # says nothing, which is INCONCLUSIVE, while NO READING means there was nothing to read.
+            # Unresolved metrics are excluded from the headline, so this is INCONCLUSIVE, not NO READING.
             if any(m.unresolved for m in self.metrics):
                 return "INCONCLUSIVE"
             return "NO READING"
-        # NO DIFFERENCE IS A CLAIM, AND A STRONGER ONE THAN THIS DATA SUPPORTS. Excluding an unresolved
-        # mover can leave only flat metrics behind, putting the aggregate back inside the noise floor;
-        # reporting 'no difference' there would assert the change did nothing when one metric moved and
-        # could not resolve its own sign.
+        # Dropping an unresolved mover can leave only flat metrics; do not claim no difference then.
         if any(m.unresolved for m in self.metrics) and not any(
             m.resolves_direction for m in self.metrics
         ):
@@ -402,11 +392,7 @@ def compare(
             if not comparison.beyond_noise:
                 comparison.verdict = "within noise"
             elif worse:
-                # THE ASYMMETRY IS THE POINT, ON BOTH THE LABEL AND THE HEADLINE. Withholding an unresolved win
-                # costs a headline; withholding an unresolved loss ships the regression. So the worse side keeps
-                # counting and keeps contributing to the aggregate, where it can only drag the number toward
-                # worse. `_divisible` exists because a single bounded pair over a zero base once vanished from the
-                # table, the headline and this list at once.
+                # Deliberately asymmetric: an unresolved win is withheld, an unresolved loss keeps counting.
                 comparison.verdict = (
                     "regressed (unresolved)" if comparison.ci_spans_no_effect else "regressed"
                 )
@@ -421,12 +407,7 @@ def compare(
                 )
             else:
                 comparison.verdict = "inconclusive" if comparison.unresolved else "improved"
-            # AN UNRESOLVED METRIC LENDS ITS MAGNITUDE TO NOTHING. The headline is a weighted geometric mean
-            # of point estimates carrying no interval of its own, so a metric that moved a long way but could
-            # not resolve its sign would supply most of the quoted number: keystroke_p95_ms at 0.2, 0.2, 1.5,
-            # 1.5 beside a resolved menu_open_ms of 0.900 produced a headline of 0.631 and the word IMPROVED.
-            # That metric's own mean was 0.548, CI 0.200-1.500.
-            # Metrics still within noise keep contributing, pulling the headline toward 1.0.
+            # Unresolved metrics are excluded from the headline geomean so a wide-CI mover cannot dominate it.
             if not comparison.withheld:
                 weight = anchor.weight if anchor else 1.0
                 weighted_logs.append((weight, math.log(geo)))
@@ -437,8 +418,7 @@ def compare(
         result.headline_ratio = math.exp(sum(w * lg for w, lg in weighted_logs) / total_weight)
 
     if is_null_control:
-        # A null control that shows a difference is the harness moving, not the build. Whatever it
-        # reports, no comparison run on the same machine at the same time can be believed.
+        # A null control showing a difference means the harness moved; nothing measured alongside counts.
         offenders = [
             f"{m.metric_key}: {abs((m.ratio_geomean - 1.0) * 100):.1f}%"
             for m in result.metrics
@@ -450,7 +430,6 @@ def compare(
                 "the null-treatment control (base vs base) moved beyond its own noise floor of "
                 f"{noise_floor_pct:.1f}%: " + ", ".join(offenders)
             )
-        # A null control never counts as a regression; it is a measurement of the harness.
         result.regressions = []
 
     return result

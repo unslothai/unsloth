@@ -51,8 +51,7 @@ _SOURCE = _STACK_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(_SOURCE, str(_STACK_PATH))
 
 
-# The torch states the classification has to agree on.
-# Each is (torch.__version__, torch.version.hip, torch.version.cuda) as the probe reports them.
+# (torch.__version__, torch.version.hip, torch.version.cuda) as the probe reports them.
 _TORCH_STATES = [
     ("2.9.1+cu128", "", "12.8"),
     ("2.7.1+cu118", "", "11.8"),
@@ -124,8 +123,7 @@ def _if_test_containing(fn_name, needle, env):
     raise AssertionError(f"{fn_name}: no `if` test containing {needle!r}")
 
 
-# Reference implementations: the probe expressions as they stood at the merge base. Reproduced verbatim, only
-# re-indented from the `-c` strings they lived in.
+# The merge-base probe expressions, verbatim.
 def _old_cuda_fields(ver, hip, cuda):
     """merge base studio/install_python_stack.py:2339-2346 (_ensure_cuda_torch)."""
     ver = ver.lower()
@@ -186,10 +184,7 @@ class TestClassificationIsAFaithfulTranslation:
         assert new == _old_cuda_fields(ver, hip, cuda)
 
     def test_cpu_gpu_predicate(self, ver, hip, cuda):
-        # _TORCH_RUNTIME_XPU is a fourth input the merge-base predicate did not have, so
-        # the equivalence is claimed with it EMPTY: over everything the old one could
-        # see, the two still agree. Its own effect is pinned separately below, because a
-        # reference that cannot model it cannot be asked about it.
+        # The merge-base predicate had no _TORCH_RUNTIME_XPU, so equivalence is claimed with it empty.
         env = {"re": re, "_version": ver, "_hip": hip, "_cuda": cuda, "_TORCH_RUNTIME_XPU": ""}
         _run_assignments("_ensure_cpu_torch", {"_ver", "_is_gpu_build"}, env)
         assert env["_is_gpu_build"] == _old_cpu_is_gpu(ver, hip, cuda)

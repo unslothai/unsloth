@@ -1,14 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# The macOS trace leg's `notools` lets git fetch the pinned git+ requirements and nothing else.
-#
-# A default install with a working git clones the pinned Diffusers main build through uv, so the
-# trace records git. `notools` rejected every git line, and the leg went red on the first
-# installer PR after the build became the default. The allowance is structural: each git line
-# may name only a remote from the requirement files in UNSLOTH_ALLOW_GIT_FROM, and a remoteless
-# line must be one of uv's own cache operations, counted only when an allowed remote was
-# fetched. The first trace below is the one that leg recorded.
+# `notools` allows git only for remotes named in UNSLOTH_ALLOW_GIT_FROM requirement files;
+# remoteless lines must be uv cache ops, counted only after an allowed fetch.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,8 +16,7 @@ FAIL=0
 
 expect_rc() {
     _label="$1"; _expected="$2"; _allow="$3"; _trace_content="$4"
-    # Where every git line ran, as the wrapper records it: uv's checkout unless the row says
-    # otherwise, or "none" for a trace with no record at all.
+    # Where each git line ran: uv's checkout unless the row says otherwise, or "none".
     _cwd="${5:-$CACHE/checkouts/76e25d04238765dd/${SHA:0:9}}"
     printf '%b' "$_trace_content" > "$ROOT/trace.log"
     rm -f "$ROOT/trace.log.git-cwd"
@@ -54,7 +47,6 @@ SHA=$(sed -n 's/^[^#]*git+https:\/\/[^@]*@\([0-9a-f]*\).*/\1/p' "$PIN")
 UV_CACHE=/Users/runner/work/unsloth/unsloth/.clean-machine/uv-cache
 CACHE=$UV_CACHE/git-v0
 
-# The macOS trace / file leg's record, with the pin read from the file it came from.
 UV_CLONE="git\t--version
 git\t-c remote.origin.url=$REMOTE submodule update --init
 git\tclone --local $CACHE/db/76e25d04238765dd $CACHE/checkouts/76e25d04238765dd/${SHA:0:9}
@@ -74,8 +66,7 @@ expect_rc "uv cloning the pinned Diffusers build passes" 0 "$PIN" "$UV_CLONE"
 expect_rc "the same trace fails with no allowance, as before" 1 "" "$UV_CLONE"
 expect_rc "an allowance file that does not exist allows nothing" 1 "$ROOT/missing.txt" "$UV_CLONE"
 expect_rc "the installer's git --version probe alone passes" 0 "$PIN" "git\t--version\n"
-# An overlay-free leg installs the released wheel, which can pin an older commit than this
-# checkout's file; uv's checkout is named after the commit it installs.
+# An overlay-free leg installs the released wheel, which can pin an older commit.
 OLDER=1111111111111111111111111111111111111111
 FETCH="git\tfetch --tags --force --update-head-ok $REMOTE +HEAD:refs/remotes/origin/HEAD\n"
 OLDER_PIN="$ROOT/older-diffusers-main.txt"
@@ -100,8 +91,7 @@ expect_rc "an ssh requirement keeps its user in the allowed remote" 0 "$SSH_PIN"
     "git\tfetch --force ssh://git@github.com/org/repo.git +HEAD:refs/remotes/origin/HEAD\n"
 expect_rc "an ssh requirement does not allow its bare scheme and user" 1 "$SSH_PIN" \
     "git\tfetch --force ssh://git +HEAD:refs/remotes/origin/HEAD\n"
-# The workflow passes the installed package's copy, which can pin another repository than
-# this checkout; only the file passed counts.
+# The installed package's pin file can differ from this checkout's; only the passed file counts.
 INSTALLED_PIN="$ROOT/installed-diffusers-main.txt"
 printf 'diffusers @ git+https://github.com/example/diffusers-fork.git@%s\n' "$SHA" > "$INSTALLED_PIN"
 expect_rc "the installed package's remote is allowed" 0 "$INSTALLED_PIN" \
@@ -163,9 +153,7 @@ expect_rc "brew next to the allowed clone still fails" 1 "$PIN" \
     "${UV_CLONE}brew\tinstall cmake\n"
 
 echo "=== the trace wrapper's working-directory record ==="
-# Trace mode only writes wrappers, so it runs as-is on Linux. The git wrapper must record
-# where it ran, and a fresh trace must start that record empty, or a rerun judges the new
-# install by an older one's rows.
+# A fresh trace must start the git-cwd record empty, or a rerun is judged by older rows.
 ENV_SH="$REPO_ROOT/.github/scripts/clean-machine-env.sh"
 if command -v git >/dev/null 2>&1; then
     CM="$ROOT/cm"

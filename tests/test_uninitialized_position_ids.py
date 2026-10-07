@@ -42,7 +42,6 @@ def _record(keys_repr: str) -> logging.LogRecord:
             "'vision_model.encoder.layers.0.position_ids']",
             True,
         ),
-        # A real missing weight alongside position_ids must NOT be suppressed.
         (
             "['model.vision_model.embeddings.position_ids', 'model.layers.5.mlp.weight']",
             False,
@@ -56,13 +55,11 @@ def test_all_missing_keys_are_position_ids(keys_repr, expected):
 
 
 def test_emit_suppresses_position_ids_only_record():
-    # A record listing only position_ids buffers loads cleanly (no raise).
     handler = _RaiseUninitialized()
     handler.emit(_record("['model.vision_model.embeddings.position_ids']"))
 
 
 def test_emit_raises_when_real_weight_missing_alongside_position_ids():
-    # The core fix: one benign position_ids key must not mask a real missing weight.
     handler = _RaiseUninitialized()
     with pytest.raises(Exception, match = "some weights are not initialized"):
         handler.emit(

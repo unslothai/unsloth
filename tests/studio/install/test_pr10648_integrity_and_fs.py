@@ -69,8 +69,7 @@ CORE = _load("studio_prebuilt_core_pr10648_integrity", "prebuilt_core.py")
 NODE = _load("studio_install_node_prebuilt_pr10648_integrity", "install_node_prebuilt.py")
 WHISPER = _load("studio_install_whisper_prebuilt_pr10648_integrity", "install_whisper_prebuilt.py")
 
-# build_install writes a real install tree. Imported rather than re-implemented: a private
-# copy is how a fixture drifts from the tree the installer actually makes.
+# Imported, not copied, so the fixture cannot drift from the real tree.
 import test_keep_install_backcompat_9979 as KEEP  # noqa: E402
 
 MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
@@ -234,8 +233,7 @@ _CORRUPTIONS = {
     "delete": _delete,
 }
 
-# The digest tier on a Linux install: both copies of each binary, since the root and build/bin
-# layouts can rot independently, plus the DiffusionGemma visual server.
+# Both copies of each binary: the root and build/bin layouts can rot independently.
 HASHED_TIER = (
     "llama-server",
     "llama-quantize",
@@ -247,7 +245,6 @@ HASHED_TIER = (
 SIZE_TIER = ("build/bin/libggml.so", "build/bin/libllama.so")
 
 
-# ── PART 1: the corruption matrix ────────────────────────────────────────────────────
 def test_the_healthy_install_is_accepted_by_the_fast_path(tmp_path, monkeypatch):
     """The baseline every corruption below is measured against.
 
@@ -429,7 +426,6 @@ def test_a_same_size_payload_rewrite_is_not_detected(tmp_path, monkeypatch, rela
     assert LLAMA._existing_install_runs(install_dir, LINUX) is True
 
 
-# ── PART 2: what the fingerprint does and does not cover ─────────────────────────────
 def test_runtime_files_is_not_an_input_to_the_marker_fingerprint(tmp_path, monkeypatch):
     """Establishes the boundary the rest of Part 2 explores.
 
@@ -450,7 +446,6 @@ def test_runtime_files_is_not_an_input_to_the_marker_fingerprint(tmp_path, monke
     marker["runtime_files"] = {"llama-server": {"size": 1}}
     assert LLAMA._marker_install_fingerprint(marker) == before
 
-    # A release-identity key, by contrast, is covered.
     marker["release_tag"] = "release-2"
     assert LLAMA._marker_install_fingerprint(marker) != before
 
@@ -479,7 +474,6 @@ def test_dropping_the_digest_from_one_entry_downgrades_it_to_the_size_tier(tmp_p
     assert _files_match(install_dir) is True
     assert _fast_path(install_dir) is True
 
-    # ... and the size half of that entry still bites.
     _truncate_half(install_dir / "llama-server")
     assert _fast_path(install_dir) is False
 
@@ -552,14 +546,12 @@ def test_deleting_one_entry_leaves_only_that_file_unchecked(tmp_path, monkeypatc
     assert _fast_path(install_dir) is False
 
 
-# ── PART 3: whisper, which records no payload digests ────────────────────────────────
 WHISPER_LINUX = whisper_host(WHISPER.HostInfo)
 _GGML_TREE = "ggml-tree-aaaa"
 
 
 def _whisper_selection(**overrides):
-    # CORE, not WHISPER.InstallSelection: this file loads its own prebuilt_core instance and
-    # the marker writer accepting it is part of what Part 3 says.
+    # CORE.InstallSelection: this file loads its own prebuilt_core instance.
     return CORE.InstallSelection(**whisper_selection_fields(WHISPER, **overrides))
 
 
@@ -697,7 +689,6 @@ def test_whisper_a_slim_install_is_kept_only_while_its_paired_ggml_tree_stands(
 
     monkeypatch.setattr(WHISPER, "installed_llama_ggml_tree", lambda *_a, **_k: "ggml-tree-bbbb")
     assert _whisper_keep(install_dir) is False
-    # The tree on disk is untouched; only the pairing moved.
     assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is True
 
     # A llama install that cannot say (predating ggml_tree) is not a licence to keep it.
@@ -730,7 +721,6 @@ def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, mon
     assert _whisper_keep(install_dir) is False
 
 
-# ── PART 4: the marker rewrite as a filesystem operation ─────────────────────────────
 @dataclasses.dataclass(frozen = True)
 class _Writer:
     name: str
@@ -765,8 +755,7 @@ WRITERS = (
 )
 _WRITER_IDS = [writer.name for writer in WRITERS]
 
-# release_tag and tag are rendered in the Studio About tab through /api/system/hardware,
-# so a rewrite that drops them changes what the UI shows.
+# release_tag and tag are shown in the Studio About tab via /api/system/hardware.
 _LIVE_PAYLOAD = {
     "release_tag": "release-1",
     "tag": "b9001",

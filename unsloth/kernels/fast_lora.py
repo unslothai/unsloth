@@ -184,22 +184,18 @@ class LoRA_MLP(torch.autograd.Function):
         d_upA = torch.empty_like(upA)
         d_upB = torch.empty_like(upB)
 
-        # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
         up_dB = df @ upB.t()
         gate_dB = de @ gateB.t()
 
-        # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
         d_upA.addmm_(X.t(), up_dB, alpha = upS, beta = 0)
         d_upB.addmm_(upA.t() @ X.t(), df, alpha = upS, beta = 0)
 
-        # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
         d_gateA.addmm_(X.t(), gate_dB, alpha = gateS, beta = 0)
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
-        # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
         # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
@@ -231,7 +227,7 @@ class LoRA_MLP(torch.autograd.Function):
             None,
             None,
             None,
-        )  # _backward and _forward and inplace
+        )
 
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
@@ -417,7 +413,6 @@ class LoRA_QKV(torch.autograd.Function):
         K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
         V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
 
-        # Restore original shape after matmul
         if len(orig_shape) == 3:
             Q = Q.view(orig_shape[0], orig_shape[1], -1)
             K = K.view(orig_shape[0], orig_shape[1], -1)
@@ -478,7 +473,6 @@ class LoRA_QKV(torch.autograd.Function):
 
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
-        # Weight projection LoRA derivatives; see the Unsloth blogpost.
         d_QA = torch.empty_like(QA)
         d_QB = torch.empty_like(QB)
         d_KA = torch.empty_like(KA)
@@ -490,8 +484,7 @@ class LoRA_QKV(torch.autograd.Function):
         k_dB = dK @ KB.t()
         v_dB = dV @ VB.t()
 
-        # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
-        # identical with their own scales.
+        # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, scaled by QS; K, V likewise.
         d_QA.addmm_(X.t(), q_dB, alpha = QS, beta = 0)
         d_QB.addmm_(QA.t() @ X.t(), dQ, alpha = QS, beta = 0)
 
@@ -501,7 +494,6 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA.addmm_(X.t(), v_dB, alpha = VS, beta = 0)
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
-        # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
@@ -623,7 +615,7 @@ class LoRA_W(torch.autograd.Function):
 
         batch, seq_len, hd = X.shape
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
-        X = X.reshape(-1, X.shape[-1])  # Must be reshape
+        X = X.reshape(-1, X.shape[-1])
         dtype = X.dtype
 
         A, B = A.to(dtype), B.to(dtype)
@@ -635,11 +627,9 @@ class LoRA_W(torch.autograd.Function):
 
         y_dB = dY @ B.t()
 
-        # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
         d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
-        # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
@@ -674,7 +664,6 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
     elif self.merged:
         result = self.base_layer(x, *args, **kwargs)
     else:
-        # Fastpath
         if len(self.active_adapters) == 1:
             active_adapter = self.active_adapters[0]
             if active_adapter not in self.lora_A.keys():

@@ -98,7 +98,6 @@ def test_qkv_o_mlp_match_peft(adapters):
         model,
     )
     if adapters > 1:
-        # The second adapter must be in the graph, not just the first.
         assert any(".b." in n for n in qkv) and any(".b." in n for n in mlp)
 
 

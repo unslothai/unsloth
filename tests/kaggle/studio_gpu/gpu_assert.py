@@ -48,17 +48,13 @@ import json
 import re
 from pathlib import Path
 
-# A llama-server holding less than this on the card is not offloading anything worth calling offload -- CUDA context
-# plus scratch alone is tens of MiB, and a fully CPU-resident model can still show a context-sized allocation if
-# anything touched the device.
+# CUDA context plus scratch alone is tens of MiB, so less than this is not real offload.
 MIN_PROCESS_VRAM_MIB = 96
 
 # Device-wide growth across the load that no CPU-resident model explains.
 MIN_DEVICE_VRAM_DELTA_MIB = 256
 
-# GGUF's four-byte file magic.
-# Checked before anything tries to load a file the export path claims to have written: a truncated or half-moved file is
-# a far more likely export bug than a wrong-magic one, and both look like a present file to `os.path.exists`.
+# Checked before loading: a truncated file passes os.path.exists.
 GGUF_MAGIC = b"GGUF"
 
 _OFFLOAD_RE = re.compile(r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+GPU")
@@ -68,12 +64,9 @@ _CUDA_BUFFER_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Install kinds from studio/install_llama_prebuilt.py that mean the binaries on disk carry CUDA kernels.
 CUDA_INSTALL_KINDS = frozenset({"linux-cuda", "linux-arm64-cuda"})
 
-# "cuda12", "cuda13", and whatever major comes next, anywhere in a runtime
-# line or an asset filename. Anchored on the digit so "cudart" or a repo name
-# containing "cuda" cannot match on its own.
+# Anchored on the digit so "cudart" or a repo name containing "cuda" cannot match.
 _CUDA_RUNTIME_RE = re.compile(r"cuda\d+")
 
 
@@ -237,10 +230,7 @@ def is_cuda_install(kind: str | None) -> bool:
     return bool(_CUDA_RUNTIME_RE.search(lowered)) or lowered in CUDA_INSTALL_KINDS
 
 
-# Where a llama.cpp install can be, most specific first.
-# STUDIO_HOME is checked because a caller may point an install there explicitly;
-# the canonical location is what `install_llama_prebuilt.py` uses by default (its `Path.home() / ".unsloth" /
-# "llama.cpp"`), and it is where `install.sh --local` actually puts one.
+# Most specific first; the canonical location is install_llama_prebuilt.py's default.
 def llama_cpp_marker(studio_home: Path) -> Path | None:
     """The UNSLOTH_PREBUILT_INFO.json of the llama.cpp this box will use.
 
@@ -330,8 +320,7 @@ def offload_verdict(
     if buffer_mib is not None:
         evidence.append(f"llama.cpp device model buffer: {buffer_mib:.0f} MiB")
 
-    # Unsloth's status body carries no pid, so the caller also discovers the llama-server processes itself; either
-    # source is accepted here.
+    # The status body carries no pid, so discovered pids are accepted too.
     candidates: list[int] = []
     for pid in [server_pid, *(server_pids or [])]:
         if isinstance(pid, int) and pid not in candidates:

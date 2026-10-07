@@ -37,12 +37,11 @@ def _exact_forward_kernel(
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    # f = 1/2 * e * (1 + erf(1/sqrt(2) * e)), h = f * up.
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)
 
     f_row = 0.5 * e_row * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
-    f_row = f_row.to(g_row.dtype)  # Exact copy from HF
+    f_row = f_row.to(g_row.dtype)
     h_row = f_row * g_row
 
     tl.store(h + offsets, h_row, mask = mask)
@@ -92,16 +91,12 @@ def _exact_backward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)
 
-    # Break e_row away for reuse f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     f_partial_row = 0.5 * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_partial_row * e_row
 
     f_row = f_row.to(DW_row.dtype)
-    # h = f * g
     h_row = f_row * g_row
-    # df = DW * f
     df_row = DW_row * f_row
-    # dg = DW * g
     dg_row = DW_row * g_row
 
     # df/de = 1/2 * (1 + erf(1/sqrt(2) * e)) + 1/sqrt(2*pi) * e * exp(-1/2 * e^2).
@@ -151,7 +146,7 @@ def _approx_forward_kernel(
     g_row = tl.load(g + offsets, mask = mask, other = 0)
 
     f_row = 0.5 * e_row * (triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) + 1.0)
-    f_row = f_row.to(g_row.dtype)  # Exact copy from HF
+    f_row = f_row.to(g_row.dtype)
     h_row = f_row * g_row
 
     tl.store(h + offsets, h_row, mask = mask)
@@ -205,24 +200,19 @@ def _approx_backward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)
 
-    # See desmos.com/calculator/nqprfoni6x
     s = 0.7978845608028654
     a = s * e_row
     b = a * 0.044715 * e_row * e_row
     T = 1.0 + triton_tanh(a + b)
     T2 = 0.5 * T
-    # Q = 0.5 * -T * (T - 2.0) * (a + 3.0 * b), where a = sqrt(2/pi) * x and b = a * 0.044715 * x^2.
+    # Q = 0.5 * -T * (T - 2) * (a + 3b), a = sqrt(2/pi) * x, b = a * 0.044715 * x^2.
     Q2 = -T2 * (T - 2.0) * (a + 3.0 * b)
     df_de = T2 + Q2
 
-    # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
     f_row = T2 * e_row
     f_row = f_row.to(DW_row.dtype)
-    # h = f * g
     h_row = f_row * g_row
-    # df = DW * f
     df_row = DW_row * f_row
-    # dg = DW * g
     dg_row = DW_row * g_row
 
     de_row = dg_row.to(tl.float32) * df_de

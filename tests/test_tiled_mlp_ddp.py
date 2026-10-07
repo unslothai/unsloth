@@ -19,7 +19,7 @@ if not dist.is_available() or not dist.is_gloo_available():
 
 
 def _tiled_mlp():
-    # Spawned ranks skip conftest, so repeat its accelerator-less import of unsloth_zoo.device_type.
+    # Spawned ranks skip conftest, so repeat its accelerator-less import of device_type.
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
     if "unsloth_zoo.device_type" not in sys.modules and not torch.cuda.is_available():
         is_available = torch.cuda.is_available
@@ -78,9 +78,7 @@ def _load_patch():
 
 def _worker(rank, init_file, queue):
     try:
-        # A spawned worker gets none of conftest.py's device_type preloading, and
-        # _tiled_mlp_ddp.py imports unsloth_zoo at module level, whose GPU init refuses a CPU-only
-        # runner ("cannot find any torch accelerator"). Zoo's own switch for CPU tests skips it.
+        # Spawned workers lack conftest preloading and zoo GPU init refuses CPU-only runners.
         if not torch.cuda.is_available():
             os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
         _load_patch().patch_tiled_mlp_for_ddp()

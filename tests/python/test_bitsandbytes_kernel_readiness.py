@@ -76,7 +76,6 @@ def test_probe_covers_every_module_scope_ctypes_bind():
     xpu = set(probe.bitsandbytes_symbols("xpu"))
     cuda = set(probe.bitsandbytes_symbols("cuda"))
     assert bound == xpu | cuda, f"probe and module-scope binds differ: {bound ^ (xpu | cuda)}"
-    # xpu probes the gemv pair, every other device the naive gemm pair, never both.
     assert xpu - cuda and cuda - xpu, "the device split collapsed"
 
 
@@ -155,8 +154,7 @@ def test_the_ctypes_binds_are_gated_on_the_same_verdict():
         "if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):" in source
     ), "the ctypes bind block must take the _bnb_required branch on a dead library too"
     guarded = source.split("if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):")[1]
-    # Anchor on the symbol, not the module alias: #7580 renamed the binding from `bnb.functional.lib` to
-    # `bnb_functional.lib`, which is exactly the kind of rename this assertion should survive.
+    # Anchor on the symbol, not the module alias, which has been renamed before.
     assert "lib.cdequantize_blockwise_fp32" in guarded, "the binds must sit under that guard"
 
 

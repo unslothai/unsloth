@@ -59,10 +59,8 @@ else:
 def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
     # n: int32 nibbles. Every mode returns the same fp32 table entry, so the choice is speed only.
     if LUT_MODE == 0:
-        # A 64-byte table gather stays in L1.
         return tl.load(lut_ptr + n, eviction_policy = "evict_last")
     elif LUT_MODE == 1:
-        # Select tree on the nibble bits over table values held as scalars.
         b0 = (n & 1) != 0
         b1 = (n & 2) != 0
         b2 = (n & 4) != 0
@@ -83,7 +81,6 @@ def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
         d1 = tl.where(b2, c3, c2)
         return tl.where(b3, d1, d0)
     else:
-        # Register-resident table, gathered along its only axis.
         return _lut_gather(lut_ptr, n)
 
 
@@ -106,7 +103,7 @@ def _nf4_dequant_kernel(
     ROWS: tl.constexpr,  # absmax blocks per program
     WORDS: tl.constexpr,  # load the packed bytes as int32 words (needs n_bytes % 4 == 0)
     EVICT: tl.constexpr,  # "evict_first" streams the weight and the output past L2, else ""
-    LUT_MODE: tl.constexpr,  # see _nf4_lut
+    LUT_MODE: tl.constexpr,
 ):
     # A [ROWS, HALF] tile of packed bytes: each row is one absmax block, so its scale is
     # decoded once per row and broadcast, instead of once per byte.
@@ -172,7 +169,6 @@ _CONFIGS = {
         (1 << 20, 1024, 2, False, False, 0),
         (None, 2048, 4, False, False, 0),
     ),
-    # Blackwell datacenter (B200): int32 loads + register table gather.
     (10,): (
         (1 << 16, 256, 2, True, True, 2),
         (None, 1024, 2, True, True, 2),

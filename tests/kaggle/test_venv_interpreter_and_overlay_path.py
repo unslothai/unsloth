@@ -77,11 +77,6 @@ def _driver_source() -> str:
     return "".join("".join(c["source"]) for c in driver["cells"])
 
 
-# --------------------------------------------------------------------------
-# Defect one: the interpreter
-# --------------------------------------------------------------------------
-
-
 def test_the_venv_is_built_on_the_drivers_own_interpreter():
     """`--system-site-packages` on a different python version is a silent
     no-op, so the flag alone is not the guard. The interpreter is."""
@@ -116,11 +111,6 @@ def test_the_resulting_python_version_is_REPORTED():
     assert (
         "sys.version_info" in body
     ), "nothing compares the venv against the driver's own interpreter"
-
-
-# --------------------------------------------------------------------------
-# Defect two: the overlay directory, driven against the real dill predicate
-# --------------------------------------------------------------------------
 
 
 def _overlay_dir_from_generated_source() -> pathlib.Path:
@@ -164,8 +154,7 @@ def test_the_mutation_this_rule_exists_for_is_actually_caught():
     dill answers True for everything, which it does not."""
     dill_dill = pytest.importorskip("dill._dill")
     before = types.ModuleType("pyarrow")
-    # The path the driver used until this was found: a --target directory that
-    # is neither under a sys prefix nor named site-packages.
+    # The old --target path: neither under a sys prefix nor named site-packages.
     before.__file__ = "/tmp/t4ci_venvs/overlay_t4_Default/pyarrow/__init__.py"
     assert not dill_dill._is_builtin_module(before), (
         "dill no longer distinguishes the two paths, so the fix above may have "

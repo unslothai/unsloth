@@ -39,7 +39,6 @@ def test_the_repair_reads_its_own_messages_as_late_as_it_can():
     )
 
     storage = _read(STORAGE)
-    # Nothing hands a message map out of the shared list function.
     assert "messagesByThreadId" not in storage
 
 
@@ -60,7 +59,6 @@ def test_an_emptied_chat_is_not_retried_for_the_session():
     title stays clipped and keeps matching the pre-filter."""
     repair = _read(REPAIR)
     assert "const withoutMessages = threadsMissingMessages(ids, messages);" in repair
-    # Only fetched when there is something to decide.
     assert "if (withoutMessages.length > 0) {" in repair
     assert "imported = await listChatImportLedger();" in repair
     assert (
@@ -74,7 +72,6 @@ def test_the_repair_never_creates_anything():
     deleted on another client from the Dexie rows still sitting here. A
     migration patching a row that is gone has to 404, not resurrect it."""
     repair = _read(REPAIR)
-    # The storage layer is out of the picture entirely, not just at this call.
     assert 'from "./chat-history-storage"' not in repair
     assert "await updateChatThread( repair.threadId, { title: repair.title }," in repair
 
@@ -133,7 +130,7 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
     assert "if (!probe.settled) guardSupport = null;" in repair
 
     backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
-    # The probe reads the schema, so the fields have to be declared on the model.
+    # The probe reads the schema, so the fields must be declared on the model.
     assert "expectedTitle: Optional[str] = None" in backend
 
 

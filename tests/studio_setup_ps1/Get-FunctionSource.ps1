@@ -29,16 +29,13 @@ function Get-FunctionSource {
     $text = Get-Content -Raw -LiteralPath $Path
     if ([string]::IsNullOrEmpty($text)) { return $null }
 
-    # Match "function <Name>" at the start of a line (multiline, case-insensitive).
     $pattern = "(?im)^\s*function\s+$([regex]::Escape($Name))\b"
     $m = [regex]::Match($text, $pattern)
     if (-not $m.Success) { return $null }
 
-    # Locate the opening brace at/after the match.
     $braceStart = $text.IndexOf('{', $m.Index)
     if ($braceStart -lt 0) { return $null }
 
-    # Walk braces to the matching close.
     $depth = 0
     $end = -1
     for ($i = $braceStart; $i -lt $text.Length; $i++) {

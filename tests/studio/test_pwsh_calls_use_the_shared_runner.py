@@ -39,22 +39,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = REPO_ROOT / "tests"
 
-# Both test trees, because the race is a property of the interpreter's startup cache and
-# not of which directory the test lives in. studio/backend/tests runs under xdist in the
-# same job and reaches tests/_shared through its own conftest, so a direct spawn there is
-# the identical defect; it was invisible while this guard scanned tests/ alone, and
-# studio/backend/tests/test_setup_llama_cpp_backend.py duly died with SIGABRT in the
-# Backend-CI "rest" shard while every allowlisted file in tests/ stayed green.
+# Both test trees: studio/backend/tests also runs under xdist and reaches tests/_shared.
 _SCAN_ROOTS = (TESTS_ROOT, REPO_ROOT / "studio" / "backend" / "tests")
 
-# The runner itself calls subprocess.run on a pwsh argv -- that is the whole point of it.
 _RUNNER = TESTS_ROOT / "_shared" / "unsloth_pwsh_runner.py"
 
-# subprocess entry points that start a process. `subprocess.run(...)`, and the
-# from-import spellings, are both resolved; nothing else in subprocess spawns.
 _SPAWNERS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 
-# Interpreter names, lowercased and stripped of a .exe suffix, that mean PowerShell.
 _PWSH_EXECUTABLES = frozenset({"pwsh", "powershell", "powershell_ise"})
 
 # Switches only PowerShell takes. An argv that passes one is a PowerShell launch whatever
@@ -124,7 +115,6 @@ class _PwshCallFinder(ast.NodeVisitor):
         self._subprocess_aliases = {"subprocess"}
         self._bare_spawners: set[str] = set()
 
-    # -- import bookkeeping ---------------------------------------------------------
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.name == "subprocess":
@@ -138,7 +128,6 @@ class _PwshCallFinder(ast.NodeVisitor):
                     self._bare_spawners.add(alias.asname or alias.name)
         self.generic_visit(node)
 
-    # -- the check ------------------------------------------------------------------
     def _is_spawner(self, func: ast.expr) -> bool:
         if isinstance(func, ast.Attribute):
             return (
@@ -204,7 +193,6 @@ def _pwsh_bound_names(tree: ast.AST) -> set[str]:
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             targets, value = [node.target], node.value
         elif isinstance(node, (ast.For, ast.comprehension)):
-            # `for shell in POWERSHELLS:` / `[... for shell in (PWSH, PS5)]`
             targets, value = [node.target], node.iter
         else:
             continue
@@ -214,10 +202,7 @@ def _pwsh_bound_names(tree: ast.AST) -> set[str]:
             and _is_pwsh_executable(child.value)
             for child in ast.walk(value)
         )
-        # Aliases of an already-known name, and only in the forms that really are aliases:
-        # `PWSH_OR_NONE = PWSH`, `for shell in POWERSHELLS:`. A Call on the right-hand side
-        # is excluded on purpose, or `proc = subprocess.run([PWSH, ...])` would make `proc`
-        # itself read as an interpreter.
+        # A Call on the right is excluded, or `proc = subprocess.run([PWSH, ...])` reads as a shell.
         aliases_a_known_name = isinstance(
             value, (ast.Name, ast.Tuple, ast.List, ast.Set, ast.BoolOp, ast.IfExp)
         ) and any(isinstance(child, ast.Name) and child.id in names for child in ast.walk(value))
@@ -334,7 +319,6 @@ class TestEveryPwshCallUsesTheSharedRunner:
             'from subprocess import run\nrun(["powershell", "-NoProfile"])\n': 2,
             'import subprocess as sp\nPWSH = shutil.which("pwsh")\nsp.Popen([PWSH, "-c", "x"])\n': 3,
             'import subprocess\nsubprocess.check_output(args = ["pwsh", "-c", "x"])\n': 2,
-            # An env is given, but not the runner's one.
             'import subprocess\nsubprocess.run(["pwsh", "-c", "x"], env = os.environ.copy())\n': 2,
             # The interpreter arrives as a parameter, named only by the switches it is given.
             'import subprocess\ndef start(shell):\n    subprocess.Popen([shell, "-NoLogo", "-NonInteractive", "-File", "x.ps1"])\n': 3,
@@ -355,7 +339,6 @@ class TestEveryPwshCallUsesTheSharedRunner:
             'import subprocess\ndef start(shell):\n    subprocess.Popen([shell, "-NoLogo", "-NonInteractive"], env = pwsh_env(env))\n',
             # "pwsh" as prose, not as an argv0.
             'import subprocess\nsubprocess.run(["bash", "-c", "which pwsh"])\n',
-            # The pwsh_env route, inline and through a hoisted name.
             'import subprocess\nsubprocess.run(["pwsh", "-c", "x"], env = pwsh_env())\n',
             'import subprocess\nsubprocess.Popen(["pwsh", "-c", "x"], env = pwsh_env(env))\n',
             'import subprocess\ne = pwsh_env()\nsubprocess.run(["pwsh", "-c", "x"], env = e)\n',

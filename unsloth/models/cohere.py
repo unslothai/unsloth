@@ -51,7 +51,6 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
-# For Pytorch 2.1.1
 try:
     from transformers.models.cohere.modeling_cohere import (
         CohereSdpaAttention,
@@ -77,7 +76,6 @@ def fast_layernorm_inference(
     return XX.to(X.dtype)
 
 
-# QK norm in Cohere.
 def CohereAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -124,7 +122,6 @@ def CohereAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
     if position_embeddings:
         cos, sin = position_embeddings
     else:
@@ -151,8 +148,7 @@ def CohereAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
-    # padding mask) raises. None means the byte-identical default.
+    # PrefixGrouper seg table rides in **kwargs; None means the default path.
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -175,7 +171,6 @@ def CohereAttention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-# Ported from transformers models/llama/modeling_llama.py#L590
 def CohereDecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -294,7 +289,6 @@ def CohereAttention_fast_forward_inference(
             (bsz, n_heads, 1, head_dim), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
         )
 
-        # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
             self.temp_O = torch.empty(
                 (bsz, 1, hidden_size), dtype = dtype, device = f"{DEVICE_TYPE_TORCH}:0"
@@ -309,7 +303,6 @@ def CohereAttention_fast_forward_inference(
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
-        # Cohere has QK layernorms.
         if self.use_qk_norm:
             self.q_norm_out_weight = torch.empty(
                 self.q_norm.weight.shape,
@@ -349,7 +342,7 @@ def CohereAttention_fast_forward_inference(
         Kn = fast_layernorm_inference(self.k_norm, Kn, self.k_norm_out_weight)
 
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
-    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
+    # Transformers 5.x may pass full-length position_ids; keep the last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     cos = cos[position_ids].unsqueeze(1)
@@ -375,7 +368,6 @@ def CohereAttention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -386,7 +378,6 @@ def CohereAttention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
-    # Grouped query attention.
     _, _, cached_len, _ = Knn.shape
     if n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
@@ -396,8 +387,7 @@ def CohereAttention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scalar
-        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
-        # (comment 2153349963).
+        # (Q * scalar) @ K overflows less than (Q @ K) * scalar.
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vnn, out = Qn)
@@ -409,7 +399,6 @@ def CohereAttention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-# Ported from transformers models/llama/modeling_llama.py#L825
 def CohereModel_fast_forward_inference(
     self,
     input_ids,
@@ -438,7 +427,6 @@ def CohereModel_fast_forward_inference(
             seq_len,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
-        # Pre-convert to bool once for all layers, avoiding a per-layer .eq(0).
         if attention_mask is not None and attention_mask.dtype != torch.bool:
             attention_mask = attention_mask.eq(0)
     else:

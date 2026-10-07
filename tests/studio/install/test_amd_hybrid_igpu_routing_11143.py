@@ -41,9 +41,7 @@ def _rocminfo(*arches: str) -> str:
     )
 
 
-# Autouse: _pick_rocm_gfx_target reads the visibility masks, so a test that forgot to ask for
-# this passed on a bare CI runner and failed wherever CUDA_VISIBLE_DEVICES is set, a GPU box
-# included. Tests that want a mask set it after this runs.
+# Autouse: _pick_rocm_gfx_target reads visibility masks set on GPU hosts.
 @pytest.fixture(autouse = True)
 def unmasked(monkeypatch):
     for name in _VISIBILITY_ENV:
@@ -80,7 +78,6 @@ def test_an_all_integrated_host_keeps_its_own_arch(unmasked):
 def test_gfx906_is_never_the_repick(unmasked):
     """install.sh excludes it because naming it on a mixed host strands BOTH cards."""
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906", "gfx1200")) == "gfx1200"
-    # Nothing else to move to: the iGPU stays, rather than gfx906 being chosen.
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx906")) == "gfx1036"
 
 
@@ -323,9 +320,7 @@ def test_a_single_build_platform_never_records_an_unfulfillable_request():
     for request in ("cpu", "vulkan", "rocm", "cuda"):
         assert ILP.persisted_marker_backend_request(request, mac) == "auto"
         assert ILP.marker_backend_request_was_satisfied(request, mac) is True
-    # The reason it is safe: the landed backend is not one a user can ask for.
     assert ILP.backend_for_install_kind("macos-arm64") == "metal"
     assert "metal" not in ILP.REQUESTABLE_BACKENDS
-    # Unchanged where a later release COULD serve the request.
     assert ILP.persisted_marker_backend_request("vulkan", _choice("linux-rocm")) == "vulkan"
     assert ILP.marker_backend_request_was_satisfied("vulkan", _choice("linux-rocm")) is False

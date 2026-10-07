@@ -23,18 +23,15 @@ import pytest
 import unsloth.save as save_mod
 
 
-# -- _choose_first_conversion (pure planning logic) ----------------------------------------
-
-
 @pytest.mark.parametrize(
     "methods, model_dtype, expected",
     [
-        (["q8_0"], "f16", "q8_0"),  # default "fast_quantized" path: single pass
-        (["q8_0", "q8_0"], "bf16", "q8_0"),  # duplicates collapse to a single pass
-        (["f32"], "f16", "f32"),  # 16/32-bit outputs convert directly too
+        (["q8_0"], "f16", "q8_0"),
+        (["q8_0", "q8_0"], "bf16", "q8_0"),
+        (["f32"], "f16", "f32"),
         (["bf16"], "bf16", "bf16"),
         (["q4_k_m"], "f16", "f16"),  # k-quants need a 16-bit base
-        (["q4_k_m", "q8_0"], "bf16", "bf16"),  # mixes need the shared base
+        (["q4_k_m", "q8_0"], "bf16", "bf16"),
         (["q8_0", "f16"], "f16", "f16"),
     ],
 )
@@ -45,9 +42,6 @@ def test_choose_first_conversion(methods, model_dtype, expected):
 def test_choose_first_conversion_imatrix_forces_two_pass():
     # Only llama-quantize can apply an imatrix, so q8_0-only must keep the 16-bit base.
     assert save_mod._choose_first_conversion(["q8_0"], "f16", has_imatrix = True) == "f16"
-
-
-# -- save_to_gguf pass planning (mocked convert/quantize) -----------------------------------
 
 
 class _Harness:
@@ -141,7 +135,7 @@ def test_q8_0_only_is_single_pass(monkeypatch, tmp_path):
 
 def test_fast_quantized_alias_is_single_pass(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path)
-    _run(tmp_path, "fast_quantized")  # the default of save_pretrained_gguf
+    _run(tmp_path, "fast_quantized")
     assert h.convert_calls[0]["quantization_type"] == "q8_0"
     assert h.quantize_calls == []
 
@@ -169,7 +163,6 @@ def test_k_quant_keeps_two_pass(monkeypatch, tmp_path):
     assert h.convert_calls[0]["max_shard_size"] == "50GB"
     assert [c["quant_type"] for c in h.quantize_calls] == ["q4_k_m"]
     assert want_full_precision is False
-    # The 16-bit intermediate must be cleaned up.
     assert len(locations) == 1 and locations[0].endswith("testmodel.Q4_K_M.gguf")
 
 
@@ -190,7 +183,7 @@ def test_parallel_quants_preserve_request_order(monkeypatch, tmp_path):
     assert h.max_concurrency == 2, "quantize passes should overlap, bounded at 2"
     quant_names = [os.path.basename(l) for l in locations if "F16" not in l]
     assert quant_names == [
-        "testmodel.Q6_K.gguf",  # list is reversed by the cleanup block, as before
+        "testmodel.Q6_K.gguf",
         "testmodel.Q5_K_M.gguf",
         "testmodel.Q4_K_M.gguf",
     ]
@@ -217,9 +210,6 @@ def test_quantize_failure_raises_actionable_error(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path, quantize_error = OSError("disk full"))
     with pytest.raises(RuntimeError, match = "Quantization failed"):
         _run(tmp_path, ["q4_k_m", "q5_k_m"])
-
-
-# -- reclaiming the 16-bit merge on a tight disk (see tests/test_gguf_disk_headroom.py) -----
 
 
 def _tight_disk(monkeypatch, free_gb = 1):

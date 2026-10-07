@@ -22,9 +22,7 @@ from __future__ import annotations
 
 import re
 
-# A JSX attribute value is double-quoted or a template literal. A single quote is an
-# apostrophe in prose far more often than a delimiter here, and treating it as one opens a
-# literal that never closes.
+# Single quotes are usually apostrophes in JSX prose, not delimiters.
 _QUOTES = frozenset('"`')
 _COMMENT_SPAN = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
@@ -45,8 +43,7 @@ def without_comments(source: str) -> str:
     index = 0
     while index < len(source):
         char = source[index]
-        # A literal first: `bg-[url(https://example.com/a.svg)]` is a class, and
-        # blanking from its `//` would eat the rest of the line and its quote.
+        # Literal first: a // inside a class like bg-[url(...)] is not a comment.
         if char in _QUOTES:
             index = skip_literal(source, index)
             continue

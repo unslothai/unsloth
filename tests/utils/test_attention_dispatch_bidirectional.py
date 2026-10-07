@@ -48,7 +48,7 @@ def _run(
 
 @pytest.mark.parametrize("backend", [ad.SDPA, ad.FLASH_VARLEN, ad.XFORMERS])
 def test_packed_bidirectional_outputs_and_gradients_match_independent_rows(monkeypatch, backend):
-    # Flash / xFormers: force the int32-overflow SDPA fallback so CPU SDPA runs for real.
+    # Force the int32-overflow SDPA fallback so CPU SDPA runs for real.
     if backend != ad.SDPA:
         monkeypatch.setattr(ad, "_VARLEN_INT32_GUARD_DISABLED", False)
         monkeypatch.setattr(ad, "_varlen_backward_overflows_int32", lambda *args: True)

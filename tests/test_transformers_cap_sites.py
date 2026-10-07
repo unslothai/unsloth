@@ -27,10 +27,10 @@ REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Newest transformers the matrix was run against; moving it means re-running the sweep first.
+# Newest transformers tested; moving it means re-running the sweep first.
 TESTED_CEILING = Version("5.17.0")
 
-# Not 4.51.3: peft 0.18.0 imports GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 are rejected below.
+# Not 4.51.3: peft 0.18.0 needs GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 rejected.
 TESTED_FLOOR = Version("4.52.4")
 
 # Tested and rejected; a specifier rewrite that drops one silently re-admits a broken release.
@@ -52,7 +52,7 @@ REJECTED = (
 
 NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
 
-# Keyed on (workflow, exact requirement), never the workflow alone. Empty on purpose.
+# Keyed on (workflow, exact requirement), never the workflow alone.
 PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
 
 # pip intersects our window with the zoo's, so the zoo's ceiling decides what resolves.
@@ -60,7 +60,7 @@ ZOO_TRANSFORMERS_CEILING_BEFORE_THE_LIFT = Version("5.5.0")
 
 ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP = Version("2026.9.7")
 
-# CPU lanes must admit what the zoo's torch bound admits, or they test a torch nobody gets.
+# CPU lanes must admit what the zoo's torch bound admits.
 TESTED_TORCH = Version("2.14.0")
 TORCH_MIRROR_WORKFLOW = WORKFLOWS / "studio-export-capability-ci.yml"
 
@@ -404,7 +404,7 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
-    # PyYAML resolves a bare `on:` key to the boolean True (YAML 1.1), so read both.
+    # PyYAML resolves a bare `on:` key to True (YAML 1.1), so read both.
     triggers = workflow.get("on", workflow.get(True)) or {}
     paths = (triggers.get("pull_request") or {}).get("paths") or []
 
@@ -425,8 +425,8 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
     workflows.mkdir()
     (workflows / "version-compat-ci.yml").write_text(
         "run: |\n"
-        "  pip install 'transformers==4.51.3'\n"  # exact pin: a point, not a cap
-        "  pip install 'transformers>=4.51.3,<=5.5.0'\n",  # stale range cap: must be caught
+        "  pip install 'transformers==4.51.3'\n"
+        "  pip install 'transformers>=4.51.3,<=5.5.0'\n",
         encoding = "utf-8",
     )
     monkeypatch.setattr(sys.modules[__name__], "WORKFLOWS", workflows)
@@ -760,7 +760,7 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
     if not released:
         return None
 
-    # Whole SpecifierSets: `<5.17.0` and `<=5.17.0` name the same number but differ.
+    # Whole SpecifierSets: `<5.17.0` and `<=5.17.0` differ.
     windows = []
     for raw in info.get("requires_dist") or []:
         try:

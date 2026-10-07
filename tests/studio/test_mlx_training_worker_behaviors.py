@@ -95,8 +95,7 @@ def test_mlx_dora_decided_before_load_and_merged_into_peft_kwargs():
     assert (
         min(merged_at) < first_wrap
     ), "peft_kwargs must be updated before get_peft_model is called"
-    # Store/Del only: string-bound names (import aliases, `case` captures)
-    # and the merge's own line are outside this check.
+    # Store/Del only: string-bound names and the merge's own line are out of scope.
     rebound = [
         node.lineno
         for node in ast.walk(fn)

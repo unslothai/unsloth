@@ -88,7 +88,6 @@ def check_package_installed(package_name, package_manager = None):
 def require_package(package_name, executable_name = None):
     """Require a package to be installed; skip the module under pytest if not."""
 
-    # Executable in PATH is the most reliable signal
     if executable_name:
         if shutil.which(executable_name):
             print(f"✓ {executable_name} is available")
@@ -125,10 +124,6 @@ def require_package(package_name, executable_name = None):
 
     print(f"\nPlease install the required package and run the script again.")
     sys.exit(1)
-
-
-# Usage
-# require_package("ffmpeg", "ffmpeg")
 
 
 def require_python_package(

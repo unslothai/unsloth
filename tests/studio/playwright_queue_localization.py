@@ -14,15 +14,9 @@ from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 PAGE = "/smoke-prompt-queue-actions.html"
 ENTRY = "/smoke-prompt-queue-actions-main.tsx"
 
-# `wait_for_smoke_page` proves vite ANSWERS, by fetching the raw HTML. The first navigation
-# is what makes it WORK: vite transforms the page's whole module graph on demand, and the
-# default `wait_until = "load"` waits out every one of those requests, which on a cold
-# Windows runner runs past playwright's 30s default. The `wait_for` at the end of `seed`
-# already carries 60s for the same reason; this is the navigation ahead of it.
+# The first navigation compiles vite's whole module graph, exceeding 30s on cold Windows runners.
 NAV_TIMEOUT_MS = 90_000
 
-# The queue view must not fall back to English while Settings shows the
-# translated Queue/Steer wording from the same catalog.
 JA = {
     "steer": "方向を変更",
     "edit": "メッセージを編集",
@@ -83,7 +77,6 @@ def check_localized(page, base):
 
 
 def check_editor_shortcut(page, base):
-    # Default "Enter" sends in the composer, so it saves here; Shift+Enter is a newline.
     seed(page, base, shortcut = "enter")
     editor = open_editor(page, "More options for queued prompt 1", "Edit message")
     editor.fill("shift-stays-open")
@@ -98,13 +91,11 @@ def check_editor_shortcut(page, base):
     expect(page.locator("[data-queue-item-id]").first).to_contain_text("saved-with-enter")
     expect(page.get_by_label("Composer submissions", exact = True)).to_have_text("0")
 
-    # "mod-enter" moves the chord: plain Enter becomes a newline.
     seed(page, base, shortcut = "mod-enter")
     editor = open_editor(page, "More options for queued prompt 1", "Edit message")
     editor.fill("plain-enter-stays-open")
     editor.press("Enter")
     expect(editor).to_be_visible()
-    # The row renders the open editor, so read the committed prompt off the label.
     expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
         "aria-label", "Queued prompt 1 of 3: First prompt"
     )
@@ -117,8 +108,7 @@ def check_editor_shortcut(page, base):
 
 
 def check_escape_during_ime(page, base):
-    # An IME consumes Escape to close its candidate window and reports the key
-    # as composing, so the editor must keep the draft rather than cancel.
+    # An IME consumes Escape and reports it as composing, so the draft must be kept.
     seed(page, base)
     editor = open_editor(page, "More options for queued prompt 1", "Edit message")
     editor.fill("draft-survives-ime-escape")
@@ -132,7 +122,6 @@ def check_escape_during_ime(page, base):
         )
         expect(editor).to_be_visible()
         expect(editor).to_have_value("draft-survives-ime-escape")
-    # Escape with no composition still cancels.
     editor.press("Escape")
     expect(editor).to_have_count(0)
     expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
@@ -142,8 +131,7 @@ def check_escape_during_ime(page, base):
 
 
 def check_candidate_confirming_enter(page, base):
-    # A candidate-confirming Enter can arrive with isComposing false and no key
-    # code 229, so per-event flags alone would save the pre-edit text.
+    # A candidate-confirming Enter can arrive with isComposing false and no keyCode 229.
     seed(page, base, shortcut = "enter")
     editor = open_editor(page, "More options for queued prompt 1", "Edit message")
     editor.fill("composition-in-progress")
@@ -159,7 +147,6 @@ def check_candidate_confirming_enter(page, base):
     expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
         "aria-label", "Queued prompt 1 of 3: First prompt"
     )
-    # After the composition ends the same Enter saves.
     page.evaluate(
         """() => {
             const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
@@ -182,20 +169,18 @@ def start_composition(page):
 
 
 def check_stuck_composition_recovers(page, base):
-    # Some IMEs never send compositionend. The gate must not wedge Enter.
+    # Some IMEs never send compositionend; the gate must not wedge Enter.
     seed(page, base, shortcut = "enter")
     editor = open_editor(page, "More options for queued prompt 1", "Edit message")
     editor.fill("recovers-after-timeout")
     start_composition(page)
     editor.press("Enter")
     expect(editor).to_be_visible()
-    # The watchdog drops the flag, so the next Enter saves.
     page.wait_for_timeout(2800)
     editor.press("Enter")
     expect(editor).to_have_count(0)
     expect(page.locator("[data-queue-item-id]").first).to_contain_text("recovers-after-timeout")
 
-    # Blur is the other reset point.
     editor = open_editor(page, "More options for queued prompt 2", "Edit message")
     editor.fill("recovers-after-blur")
     start_composition(page)
@@ -207,8 +192,6 @@ def check_stuck_composition_recovers(page, base):
     print("PASS: a stuck composition recovers on timeout and on blur", flush = True)
 
 
-# Reads the glyph's painted box back into viewBox units, so the check does not
-# depend on the rendered icon size.
 GLYPH_GEOMETRY = """() => {
     const item = [...document.querySelectorAll('[role="menuitem"]')]
         .find((element) => element.textContent.trim() === 'Resume queue');
@@ -223,22 +206,20 @@ GLYPH_GEOMETRY = """() => {
 
 
 def check_resume_icon_centred(page, base):
-    # The play glyph is not centred in its own viewBox, so the icon shifts it
-    # back. Without that the triangle sits right of the button's centre.
+    # The play glyph is off-centre in its own viewBox; the icon shifts it back.
     seed(page, base)
     page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
     page.get_by_role("button", name = "More options for queued prompt 1", exact = True).click()
     page.get_by_role("menuitem", name = "Resume queue", exact = True).wait_for()
     offset = page.evaluate(GLYPH_GEOMETRY)
-    # The raw glyph is 0.15 units off centre, so this tolerance still catches it.
+    # The raw glyph is 0.15 units off centre.
     assert abs(offset["dx"]) < 0.05, offset
     assert abs(offset["dy"]) < 0.05, offset
     print("PASS: the resume glyph is centred in its icon box", flush = True)
 
 
 def check_queue_frame_clips_scrollbar(page, base):
-    # Scrollbars are painted outside the scroller's own radius, so a long queue
-    # squared off the top corners. The rounding has to clip from outside.
+    # Scrollbars paint outside the scroller's radius, so the rounding has to clip from outside.
     seed(page, base)
     page.get_by_role("button", name = "Long queue", exact = True).click()
     layout = page.evaluate(
@@ -261,11 +242,9 @@ def check_queue_frame_clips_scrollbar(page, base):
     )
     assert layout["overflows"], layout
     assert layout["scrollerOverflow"] == "auto", layout
-    # The scroller must not own the rounding, or it clips its own scrollbar.
     assert layout["scrollerRadius"] == "0px", layout
     assert layout["frameOverflow"] == "hidden", layout
     assert parse_px(layout["frameRadius"]) > 0, layout
-    # The gutter sits inside the frame, so the rounded clip covers it.
     assert layout["insetRight"] >= layout["frameBorder"] - 0.5, layout
     assert layout["insetTop"] >= layout["frameBorder"] - 0.5, layout
     print("PASS: the queue frame rounds and clips the scrollbar corner", flush = True)

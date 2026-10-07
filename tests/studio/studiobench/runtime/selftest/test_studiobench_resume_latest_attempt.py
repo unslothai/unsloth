@@ -99,9 +99,6 @@ def _paths(tmp_path, sessions):
     return paths
 
 
-# ── the decision ─────────────────────────────────────────────────────────────────────────────
-
-
 def test_a_cell_whose_latest_attempt_failed_is_not_skipped(tmp_path):
     """The interrupted A/B: the base arm succeeded, its rerun died, the treatment arm is fine."""
 
@@ -147,9 +144,6 @@ def test_the_pair_is_therefore_re_run_and_the_run_is_not_a_no_op(tmp_path):
 
     assert score_payload(paths.payload_jsonl, [10_000]).rungs[0].complete is False
     assert skippable_cells(_work(), _resume_set(paths)) == set()
-
-
-# ── the controls ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_a_cell_completed_once_and_never_re_run_is_skipped(tmp_path):

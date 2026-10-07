@@ -31,9 +31,7 @@ import sys
 import pytest
 
 
-# The repair flips availability state on the REAL transformers and datasets modules, not on copies.
-# Restoring only sys.modules would leave `is_torchaudio_available` bound to `lambda: False` for every later test in the
-# process, so the fixture snapshots these too.
+# The repair mutates the real transformers/datasets modules, so snapshot them too.
 _PATCH_SITES = (
     ("transformers.utils.import_utils", "_torchaudio_available"),
     ("transformers.utils.import_utils", "is_torchaudio_available"),
@@ -127,9 +125,7 @@ def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
 
     tf_iu = pytest.importorskip("transformers.utils.import_utils")
 
-    # Stand up the 5.x shape explicitly rather than asking whichever
-    # transformers happens to be installed: on 4.x both readers share one
-    # module global, so the 4.x version of this test cannot fail.
+    # Build the 5.x shape explicitly; on 4.x both readers share one global, so it cannot fail.
     monkeypatch.delattr(tf_iu, "_torchaudio_available", raising = False)
     monkeypatch.setattr(tf_iu, "is_torchaudio_available", lru_cache(lambda: True))
     monkeypatch.setattr(
@@ -137,7 +133,7 @@ def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
     )
 
     _stage(monkeypatch, fresh, MISMATCH)
-    assert tf_iu.is_speech_available() is True  # warmed, as a live process would be
+    assert tf_iu.is_speech_available() is True
     with pytest.warns(UserWarning, match = "torchaudio cannot initialise"):
         fresh.disable_torchaudio_if_cuda_mismatched()
     assert tf_iu.is_torchaudio_available() is False
@@ -194,8 +190,7 @@ def test_the_check_itself_is_never_patched_out():
 
     func = import_fixes.disable_torchaudio_if_cuda_mismatched
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
-    # The docstring names it, deliberately, to say why it is NOT touched, so strip it by AST rather than by string
-    # surgery. Only the body is a claim.
+    # The docstring names it on purpose; strip it via AST, only the body is a claim.
     body = tree.body[0].body
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
         body = body[1:]

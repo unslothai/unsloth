@@ -28,9 +28,7 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
-# _load plants stand-ins for these, and the rest of the suite shares the interpreter: a later
-# `import unsloth_zoo.compiler` in the same xdist worker would pick up a peft_utils with no
-# get_lora_layer_modules and fail with "cannot import name ... (unknown location)".
+# _load stubs these; a later real import in the same xdist worker would get the stub.
 _STUBBED_ZOO_MODULES = ("unsloth_zoo.peft_utils", "unsloth_zoo.device_map_planner")
 
 
@@ -97,8 +95,7 @@ def _load(
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
-    # planner_quantization_kwargs reads the shared skip list;
-    # stub it so the test never imports the real unsloth_zoo (and so the assertions do not track its contents).
+    # Stub so the test never imports the real unsloth_zoo or tracks its skip list contents.
     peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
     peft_utils.SKIP_QUANTIZATION_MODULES = list(_SKIP_MODULES)
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
@@ -125,7 +122,7 @@ class _Plan:
         "auto",  # accelerate's, which this must never reinterpret
         "balanced",  # what Unsloth Studio passes
         "balanced_low_0",
-        None,  # a single device
+        None,
     ],
 )
 def test_every_existing_device_map_is_returned_untouched(device_map):
@@ -165,7 +162,6 @@ def test_the_env_var_can_turn_planning_back_off(monkeypatch):
     ns = _load()
     monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "0")
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "sequential"
-    # Still a plain "sequential" downstream, marker and all.
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == ns["DEFAULT_DEVICE_MAP"]
 
 
@@ -186,9 +182,6 @@ def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(mon
     )
     assert resolved == planned
     assert calls == ["unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"]
-
-
-# ------------------------------------------------------- where planning cannot apply
 
 
 @pytest.mark.parametrize(
@@ -235,10 +228,8 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     for node in signature:
         args = {a.arg for a in node.args.args + node.args.kwonlyargs}
         assert "text_only_decoder" in args, f"vision.py:{node.lineno}"
-    # The direct-call path resolves the text config itself, so it has to raise the flag.
     assert "text_only_decoder = True" in vision
 
-    # The veto reaches the planner call, and whatever it is spelled as is decided by the flag.
     assignments = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
@@ -253,10 +244,8 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
         assert "text_only_decoder" in planned, f"vision.py:{call.lineno}"
         assert "skip_reason" in passed, f"vision.py:{call.lineno}"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
-        # The other way the load can diverge from the plan; see the task-head test.
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
-    # loader.py does the swap for FastModel/FastLanguageModel, so it has to say so too.
     loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
     assert "text_only_decoder = True" in loader
     forwarded = [
@@ -420,7 +409,6 @@ def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devic
     """
     ns = _load(devices = devices, planner = planner)
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m", **kwargs) == "balanced"
-    # The plain sentinel is unchanged: an existing caller keeps the answer it had.
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
 
 
@@ -460,9 +448,6 @@ def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
     Widening that to "balanced" would change what every single-card caller loads."""
     ns = _load()
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
-
-
-# ------------------------------------------------------------- when it does plan
 
 
 def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
@@ -563,7 +548,7 @@ def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
         quantization_config = config,
     )
     assert kwargs == {"quantization_config": config}
-    # Both at once is exactly what transformers and the planner reject.
+    # transformers and the planner reject both at once.
     assert "load_in_4bit" not in kwargs
     assert "load_in_8bit" not in kwargs
 
@@ -729,11 +714,6 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
             assert (
                 passed.get("quantization_config") == "qcfg"
             ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
-
-
-# --------------------------------------------------------------------------------------
-# Planning by default reaches paths the opt-in never did.
-# --------------------------------------------------------------------------------------
 
 
 def _helpers():
@@ -916,7 +896,7 @@ def test_the_optimized_path_declines_a_caller_supplied_config():
         "a caller-supplied config may not describe the repo the planner rebuilds" in llama
     ), "the optimized path plans against a config the load does not use"
 
-    # The veto has to come first, or a later branch that finds no other reason overwrites it.
+    # The veto has to come first, or a later branch with no reason overwrites it.
     veto = llama.index("a caller-supplied config may not describe the repo the planner rebuilds")
     num_labels = llama.index("num_labels loads a task head the repo config does not describe")
     assert veto < num_labels, "the caller-config veto is set after another branch clears it"
@@ -988,8 +968,7 @@ def test_an_unresolvable_explicit_model_class_declines_planning():
     assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
     assert "an explicit model class has no auto mapping" in vision
 
-    # Ahead of the class comparison it backstops, or that one returns None and the
-    # caller-config branch below claims the slot with the wrong reason.
+    # Ahead of the class comparison it backstops, or the caller-config branch claims the slot.
     veto = vision.index("an explicit model class has no auto mapping")
     caller = vision.index("a caller-supplied config may not describe the repo the planner")
     assert veto < caller, "the unresolvable-class veto never gets to run"
@@ -1063,9 +1042,6 @@ def test_every_rank_of_a_16bit_distributed_launch_still_gets_its_own_device():
                 f"({guard!r}), so a 16-bit distributed load keeps a string device_map "
                 f"and every rank dispatches onto cuda:0"
             )
-
-
-# --- The rank a distributed launch is pinned to, and the placements it may pin ---
 
 
 class _FakeDistributed:

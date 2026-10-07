@@ -32,7 +32,6 @@ SIDES = [
     {"label": "treatment", "ref": "fix", "base_url": "http://127.0.0.1:5400", "owns": True},
 ]
 
-#:(rung, tokens, base p95, treatment p95). 10K regresses by 100%, 100K improves by 20%.
 LADDER = (("10K", 10_000, 100.0, 200.0), ("100K", 100_000, 100.0, 80.0))
 
 
@@ -101,7 +100,6 @@ def test_a_failed_base_cell_does_not_publish_a_verdict_from_the_rung_that_surviv
 
     assert "VOID. No numbers are quotable" in table
     assert "r10K.base.rep0" in table
-    # The exact headline this used to publish, off the 100K pair alone.
     assert "IMPROVED" not in table
     assert "20.0% faster" not in table
     assert "headline ratio" not in table
@@ -131,7 +129,6 @@ def test_the_unguarded_render_is_the_wrong_verdict(tmp_path):
 
     assert "VERDICT: INCONCLUSIVE" in table
     assert "20.0% faster" not in table
-    # The failure the guard exists to catch: unguarded, the dead cell is never mentioned.
     assert "VOID" not in table
     assert "r10K.base.rep0" not in table
 

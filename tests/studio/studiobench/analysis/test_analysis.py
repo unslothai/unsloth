@@ -41,16 +41,12 @@ from studiobench.analysis.traceparse import Trace, build_tree  # noqa: E402
 
 TRACE = os.path.join(_HERE, "testdata", "probe_msgchan_timer_raf.json.gz")
 
-# Ground truth about the page the fixture was captured from.
 EXPECTED_MESSAGE_CHANNEL_TASKS = 120
 EXPECTED_RAF_ITERATIONS = 60
 
 
 def _trace() -> Trace:
     return Trace.from_path(TRACE)
-
-
-# --------------------------------------------------------------- traceparse
 
 
 def test_loads_object_form_trace() -> None:
@@ -60,8 +56,7 @@ def test_loads_object_form_trace() -> None:
 
 
 def test_truncated_trace_fails_the_cell_rather_than_parsing_short() -> None:
-    # A stream cut off mid-document must not degrade into 'a shorter trace'; that reads exactly like
-    # the expensive work not happening.
+    # A truncated stream must fail, not read as a shorter trace.
     try:
         Trace.from_json_text('{"traceEvents":[{"ph":"X","ts":1,"dur":2,"name":"RunTask"')
     except CellFailure as exc:
@@ -74,7 +69,7 @@ def test_profiled_thread_is_the_renderer_main_not_the_profiler_thread() -> None:
     tr = _trace()
     pid, tid = tr.profiled_thread()
     assert tr.thread_name(pid, tid) == "CrRendererMain"
-    # The chunks themselves live on a different thread; that is the trap.
+    # The chunks live on a different thread; that is the trap.
     chunk_tids = {e.get("tid") for e in tr.events if e.get("name") == "ProfileChunk"}
     assert chunk_tids and chunk_tids != {tid}, (
         "fixture should exercise the case where ProfileChunk is emitted on the "
@@ -92,7 +87,6 @@ def test_tree_nests_and_self_time_never_goes_negative() -> None:
 
 
 def test_overlapping_events_become_siblings_not_corrupt_parents() -> None:
-    # An event that starts inside another and ends after it is not nested.
     events = [
         {"ph": "X", "ts": 0, "dur": 100, "name": "outer", "cat": "c", "pid": 1, "tid": 1},
         {"ph": "X", "ts": 50, "dur": 200, "name": "straddles", "cat": "c", "pid": 1, "tid": 1},
@@ -116,9 +110,6 @@ def test_unmatched_begin_invents_no_duration() -> None:
     assert roots == []
 
 
-# --------------------------------------------------------------- cpuprofile
-
-
 def test_profile_parses_and_deltas_match_wall_clock() -> None:
     prof = C.main_thread_profile(_trace())
     report = prof.assert_deltas_match_wall()
@@ -127,8 +118,7 @@ def test_profile_parses_and_deltas_match_wall_clock() -> None:
 
 
 def test_nodes_accumulate_across_chunks() -> None:
-    # Only a handful of chunks carry a `nodes` array; a parser that reads nodes per chunk and forgets
-    # them resolves almost nothing.
+    # Only a few chunks carry `nodes`; a per-chunk parser resolves almost nothing.
     tr = _trace()
     chunks_with_nodes = sum(
         1
@@ -146,7 +136,7 @@ def test_nodes_accumulate_across_chunks() -> None:
 def test_negative_time_deltas_are_summed_not_clamped() -> None:
     prof = C.main_thread_profile(_trace())
     assert prof.negative_deltas > 0, "fixture must exercise negative deltas"
-    # Clamping would inflate the total past wall clock and break the gate above.
+    # Clamping would inflate the total past wall clock.
     naive = sum(max(0, s.delta) for s in prof.samples)
     honest = sum(s.delta for s in prof.samples)
     assert naive > honest
@@ -178,8 +168,6 @@ def test_stacks_have_ancestry() -> None:
 
 
 def test_clock_anchor_is_the_event_timestamp() -> None:
-    # `args.data.startTime` is in a different clock domain and is kept only to report the skew, never
-    # used to anchor samples.
     prof = C.main_thread_profile(_trace())
     assert prof.declared_start_time
     assert abs(prof.clock_skew_us) < 10_000
@@ -193,13 +181,10 @@ def test_underpowered_windows_are_declared_not_hidden() -> None:
     assert isinstance(rows, list)
 
 
-# ------------------------------------------------------------------ classify
-
-
 def test_every_task_gets_an_origin() -> None:
     cls = K.classify_thread(_trace())
     assert cls.total_us > 0
-    cls.assert_named()  # raises if unclassified time exceeds the limit
+    cls.assert_named()
     assert cls.unclassified_pct == 0.0
 
 
@@ -228,8 +213,6 @@ def test_timers_and_frames_and_input_are_all_present() -> None:
 
 def test_harness_cost_is_named_not_hidden() -> None:
     cls = K.classify_thread(_trace())
-    # The devtools pipe running Runtime.evaluate is our own cost. It must have its own column so it
-    # can be watched, and must not be inside the app's.
     assert K.AGENT_IPC in K.ORIGINS
     assert K.AGENT_IPC in K.HARNESS_ORIGINS
 
@@ -250,16 +233,13 @@ def test_unclassified_threshold_actually_fails() -> None:
 def test_task_duration_cross_check_fails_on_disagreement() -> None:
     cls = K.classify_thread(_trace())
     good = cls.total_us / 1e6
-    K.cross_check_task_duration(cls, good * 1.02)  # inside 5%
+    K.cross_check_task_duration(cls, good * 1.02)
     try:
         K.cross_check_task_duration(cls, good * 1.5)
     except CellFailure as exc:
         assert exc.gate == "task_duration_mismatch"
     else:
         raise AssertionError("a 50% disagreement must fail the cell")
-
-
-# ---------------------------------------------------------------------- fit
 
 
 def _pts(session: str, pairs) -> list[F.Point]:
@@ -314,9 +294,6 @@ def test_ranking_reports_what_it_could_not_fit() -> None:
     assert rows[-1].severity == 0.0
 
 
-# ------------------------------------------------------------------ oracles
-
-
 def test_exact_match_is_a_naming() -> None:
     q = O.blocks_times_renders(685, 6, source = "DOM census")
     v = O.check("cloneChildFibers", 4110, [q])
@@ -357,9 +334,6 @@ def test_check_all_reports_every_bucket() -> None:
     assert out["named_at_least_one_frame"]
     assert len(out["unexplained_hot_frames"]) == 1
     assert len(out["not_measured"]) == 1
-
-
-# ------------------------------------------------------------------ symbols
 
 
 class _Fn:
@@ -434,8 +408,6 @@ def test_bridge_resolves_a_minified_name_by_count_vector() -> None:
     assert b.status == S.OK
     assert b.resolve("/assets/index-abc123.js", 0, 5) == "cloneChildFibers"
     assert b.resolve("/assets/index-abc123.js", 10, 15) == "beginWork"
-    # The anchor legitimately maps to itself, so some identity is expected; what must not happen is
-    # identity DOMINATING, which would mean no minification was undone.
     assert b.identity_mappings / len(b.mapping) <= S.MAX_IDENTITY_MAPPING_FRACTION
 
 
@@ -465,7 +437,7 @@ def test_anchor_mismatch_discards_the_whole_bridge() -> None:
         {"cloneChildFibers": [340, 3400]},
         {"Zk": [340, 3400]},
         {"ThreadMessage": [50, 500]},
-        {"ThreadMessage": [51, 500]},  # counts are NOT invariant here
+        {"ThreadMessage": [51, 500]},
     )
     b = S.build_bridge(
         dev,
@@ -483,10 +455,7 @@ def test_anchor_mismatch_discards_the_whole_bridge() -> None:
 
 
 def test_same_build_on_both_arms_is_refused() -> None:
-    # The one failure anchors are structurally blind to: if both arms are the same build every anchor
-    # maps to itself PERFECTLY, so anchor validation passes and the bridge reports ok while mapping
-    # minified names to themselves. Verified against the real implementation before this guard
-    # existed: it returned status ok with {"Zk": "Zk"}.
+    # Same-build arms map every anchor perfectly; the old bridge returned ok with {"Zk": "Zk"}.
     _, prod = _arms(
         {"a": [1, 1]},
         {"Zk": [340, 3400], "qi": [17, 170]},
@@ -510,8 +479,6 @@ def test_same_build_on_both_arms_is_refused() -> None:
 
 
 def test_an_all_identity_mapping_is_refused() -> None:
-    # Different scripts and offsets, but no minification was undone: every resolved name is its own
-    # name, so the bridge is doing nothing.
     dev, prod = _arms(
         {"Zk": [340, 3400], "qi": [17, 170]},
         {"Zk": [340, 3400], "qi": [17, 170]},
@@ -547,7 +514,7 @@ def test_single_rung_bridge_is_refused() -> None:
 
 def test_no_dev_millisecond_can_enter_the_artefact() -> None:
     b = S.Bridge(status = S.OK, react_version = "19.2.4", bundle_sha = "abc")
-    b.to_json()  # integers only: fine
+    b.to_json()
     try:
         S.assert_no_measurements({"mapping": {"a": "b"}, "dev_render_ms": 12.5})
     except CellFailure as exc:
@@ -567,9 +534,6 @@ def test_bridge_round_trips_through_disk(tmpdir: str = "") -> None:
         assert os.path.basename(path) == "react-dom@19.2.4-deadbeefcafe.json"
         again = S.Bridge.load(path)
     assert again.resolve("/whatever/react-dom.js", 0, 5) == "cloneChildFibers"
-
-
-# ------------------------------------------------ the no-bare-zero convention
 
 
 def test_zero_is_distinguishable_from_did_not_run() -> None:
@@ -609,9 +573,6 @@ def test_merge_refuses_conflicting_keys() -> None:
         raise AssertionError("a silent key collision must raise")
 
 
-# ------------------------------------------------------------- M2/M3 oracles
-
-
 def test_cumulative_reparse_reads_as_quadratic() -> None:
     out = O.reparse_regime(4_020_000, 40_000, 200)
     assert out["regime"] == O.REGIME_QUADRATIC
@@ -643,8 +604,7 @@ def test_missing_page_counters_are_skipped_loudly() -> None:
 
 
 def test_page_counter_contract_is_documented() -> None:
-    # Layer 3 emits against these exact key names; a rename here is a contract change and must be
-    # agreed, not discovered at analysis time.
+    # Layer 3 emits these exact key names; a rename is a contract change.
     assert set(O.PAGE_COUNTER_CONTRACT) == {"m2_reparse", "m3_forced_layout"}
     assert "chars_rescanned" in O.PAGE_COUNTER_CONTRACT["m2_reparse"]
     assert "forced_layouts" in O.PAGE_COUNTER_CONTRACT["m3_forced_layout"]

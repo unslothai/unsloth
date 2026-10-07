@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# $HasNvidiaSmi suppresses AMD and Intel detection, so the presence source must say yes only for a
-# healthy VEN_10DE adapter (names are deliberately adversarial) and must lead to a real index.
+# $HasNvidiaSmi suppresses AMD and Intel detection, so presence must mean a healthy VEN_10DE
+# adapter.
 # Run: pwsh -NoProfile -File tests/studio/test_nvidia_adapter_presence.ps1
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,6 @@ function Check($name, $cond) {
     if ($cond) { Write-Host "  PASS  $name" }
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
-# Passes when $text is non-empty, matches every $re and none of $not.
 function CheckText($name, $text, [string[]]$re = @(), [string[]]$not = @()) {
     $ok = -not [string]::IsNullOrEmpty($text)
     foreach ($r in $re) { $ok = $ok -and ($text -match $r) }
@@ -58,13 +57,11 @@ foreach ($name in $shared) {
     if ($name -ne "Invoke-BoundedVideoControllerScan") { Invoke-Expression (Get-FunctionText $setupPs1 $name) }
 }
 
-# The gate also takes AMD evidence from the host (HIP SDK, ROCm variables, hipinfo or amd-smi on
-# PATH), which an AMD machine running this test really has. Only the fakes below may answer.
+# The gate also reads host AMD evidence; only the fakes below may answer.
 foreach ($v in @("UNSLOTH_ROCM_GFX_ARCH", "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF", "HIP_PATH", "HIP_PATH_57", "ROCM_PATH", "UNSLOTH_ENABLE_AMD_SMI")) {
     [Environment]::SetEnvironmentVariable($v, $null)
 }
-# [IO.Path]::Combine, not Join-Path: Windows PowerShell 5.1's Join-Path throws on an entry whose
-# drive does not exist, which a real PATH can carry.
+# Not Join-Path: 5.1's Join-Path throws on a PATH entry whose drive does not exist.
 $env:PATH = (@("$env:PATH" -split [System.IO.Path]::PathSeparator | Where-Object {
     $dir = $_
     $keep = [bool]$dir
@@ -80,7 +77,7 @@ function Get-IntelRegistryAdapterNames {
     return $script:FakeRegistryNames
 }
 $script:FakeAdapters = @()
-$script:FakeScanOk = $null   # $null derives Ok from the fixture
+$script:FakeScanOk = $null
 function Invoke-BoundedVideoControllerScan {
     param([int]$TimeoutSec = 15)
     return [pscustomobject]@{
@@ -89,7 +86,7 @@ function Invoke-BoundedVideoControllerScan {
         Adapters = $script:FakeAdapters
     }
 }
-# No HKLM on Linux: the class keys are stubbed from $script:RegKeys so rows cannot pass for the wrong reason.
+# No HKLM on Linux: class keys are stubbed so rows cannot pass for the wrong reason.
 $script:RegKeys = @()
 $script:RegistryConsulted = $false
 function Get-ChildItem {
@@ -120,10 +117,10 @@ function NvAdapter($code = 0, $driver = "32.0.15.6094") { Adapter "NVIDIA GeForc
 $nv = NvAdapter
 $amd = Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 0
 $basic = Adapter "Microsoft Basic Display Adapter" "ROOT\BASICDISPLAY" 0
-# "Intel" in katakana, by code point so the file stays ASCII.
+# By code point so the file stays ASCII.
 $jp = -join [char[]](0x30A4, 0x30F3, 0x30C6, 0x30EB)
 
-# Names are the trap: only the vendor ID and a healthy status count.
+# Only the vendor ID and a healthy status count, not names.
 foreach ($case in @(
     @{ N = "nothing on the bus";               A = @(); P = $false },
     @{ N = "a healthy NVIDIA adapter";         A = @(Adapter "NVIDIA GeForce RTX 4090" "PCI\VEN_10DE&DEV_2684&SUBSYS_00000000" 0); P = $true },
@@ -147,7 +144,7 @@ foreach ($case in @(
 foreach ($case in @(
     @{ N = "a healthy AMD adapter";   A = @($amd); Want = $true },
     @{ N = "a healthy Intel adapter"; A = @(Adapter "Intel Arc A770" "PCI\VEN_8086&DEV_56A0" 0); Want = $true },
-    # The AMD route keeps faulted, parked and PNP-less Radeons, so each must veto the promotion.
+    # The AMD route keeps faulted, parked and PNP-less Radeons, so each vetoes the promotion.
     @{ N = "a faulted AMD adapter";   A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 43); Want = $true },
     @{ N = "a parked AMD adapter";    A = @(Adapter "AMD Radeon RX 7900 XTX" "PCI\VEN_1002&DEV_744C" 45); Want = $true },
     @{ N = "an AMD adapter with no PNP ID"; A = @(Adapter "AMD Radeon RX 7900 XTX" "" 0); Want = $true },
@@ -159,7 +156,7 @@ foreach ($case in @(
     Check "other-vendor gate sees $($case.N) as $($case.Want)" ((Test-OtherVendorAdapterPresent) -eq $case.Want)
 }
 
-# AMD evidence outside WMI: the AMD route queries HIP (or an override / opted-in amd-smi) even when WMI omits the card.
+# The AMD route queries HIP even when WMI omits the card.
 $hipRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("hip-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path (Join-Path $hipRoot "bin") | Out-Null
 Set-Content -LiteralPath (Join-Path $hipRoot "bin\hipinfo.exe") -Value ""
@@ -195,8 +192,7 @@ try {
     Remove-Item -LiteralPath $hipRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# NVIDIA plus one other adapter. UHD / Iris get no XPU wheels, so they must not block; a localized Arc is
-# reconciled through the registry names (R), as the Intel route does.
+# UHD / Iris get no XPU wheels so must not block; a localized Arc goes via registry names.
 $i4680 = "PCI\VEN_8086&DEV_4680"; $i56a0 = "PCI\VEN_8086&DEV_56A0"
 foreach ($case in @(
     @{ N = "AMD Radeon 780M";         W = "AMD Radeon 780M";                   Id = "PCI\VEN_1002&DEV_15BF"; Blocks = $true },
@@ -230,7 +226,7 @@ foreach ($case in @(
 $script:FakeRegistryThrows = $false; $script:FakeRegistryNames = @()
 
 CheckText "the gate defers to the shared XPU-capable pattern" (Get-FunctionText $installPs1 "Test-OtherVendorAdapterPresent") 'Get-XpuCapableNameRegex'
-# @() around the WHOLE pipeline: one unique string would make [0] its first character.
+# @() around the WHOLE pipeline: one string would make [0] its first character.
 $patternDefs = @(@([regex]::Matches($installText, 'function Get-XpuCapableNameRegex \{ return "([^"]+)" \}') |
     ForEach-Object { $_.Groups[1].Value }) | Sort-Object -Unique)
 $routeDefs = @(@([regex]::Matches($installText, '\$_xpuNameRe = "([^"]+)"') |
@@ -240,13 +236,13 @@ Check "both patterns are defined exactly once" ($patternDefs.Count -eq 1 -and $r
 Check "the gate pattern and the XPU route pattern are identical" ($patternDefs[0] -ceq $routeDefs[0])
 
 foreach ($case in @(
-    @{ V = "32.0.15.6094"; Want = "12.6" },   # 560.94
-    @{ V = "32.0.15.7020"; Want = "12.8" },   # 570.20
-    @{ V = "32.0.15.8000"; Want = "13.0" },   # 580.00
-    @{ V = "31.0.15.5222"; Want = "12.4" },   # 552.22 -> 550 floor
-    @{ V = "31.0.15.3667"; Want = "12.2" },   # 536.67 -> 535 floor
+    @{ V = "32.0.15.6094"; Want = "12.6" },
+    @{ V = "32.0.15.7020"; Want = "12.8" },
+    @{ V = "32.0.15.8000"; Want = "13.0" },
+    @{ V = "31.0.15.5222"; Want = "12.4" },
+    @{ V = "31.0.15.3667"; Want = "12.2" },
     @{ V = "30.0.14.4568"; Want = "" },       # 445.68 is BELOW 450: no floor
-    @{ V = "570.20";       Want = "12.8" },   # already NVIDIA-shaped, as nvidia-smi reports
+    @{ V = "570.20";       Want = "12.8" },
     @{ V = "";             Want = "" },
     @{ V = "not a version"; Want = "" },
     @{ V = "junk";         Want = "" }
@@ -264,7 +260,6 @@ foreach ($case in @(
     @{ V = "1.2.3";        R = $null; N = "a three-field version" },
     @{ V = "99.1";         R = $null; N = "a two-digit release" },
     @{ V = "100.1";        R = 100;  N = "the lowest release shape NVIDIA actually ships" },
-    # Microsoft Basic Display versions are not NVIDIA releases.
     @{ V = "10.0.19041.3636"; R = $null; N = "a Microsoft Basic Display driver version" },
     @{ V = "10.0.22621.1";    R = $null; N = "a Windows 11 Basic Display driver version" },
     @{ V = "10.0.19041.1";    R = $null; N = "a Windows 10 Basic Display driver version" },
@@ -290,7 +285,7 @@ Check "the python floor table was found" ($tableMatch.Success)
 $pyRows = @([regex]::Matches($tableMatch.Groups[1].Value, '\((\d+),\s*\((\d+),\s*(\d+)\)\)') |
     ForEach-Object { "$($_.Groups[1].Value):$($_.Groups[2].Value).$($_.Groups[3].Value)" })
 Check "the python table has rows to compare (bites)" ($pyRows.Count -ge 5)
-# Get-NvidiaDriverCudaFloor no longer holds the table; reading it would pass on an empty list.
+# The table lives in Get-NvidiaCudaFloorForRelease, not Get-NvidiaDriverCudaFloor.
 $psRows = @([regex]::Matches((Get-FunctionText $setupPs1 "Get-NvidiaCudaFloorForRelease"), '@\((\d+),\s*(\d+),\s*(\d+)\)') |
     ForEach-Object { "$($_.Groups[1].Value):$($_.Groups[2].Value).$($_.Groups[3].Value)" })
 Check "the PowerShell floor table matches nvidia_probe.py exactly" (($pyRows -join ",") -eq ($psRows -join ","))
@@ -306,7 +301,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
         $library -gt 0 -and $presence -gt 0 -and $library -lt $presence)
     Check "$name only reaches the bus when nothing else answered" ($busAt -gt 0 -and $busAt -lt $presence)
     CheckText "$name gates the promotion on no other vendor being present" $text '-not \(Test-OtherVendorAdapterPresent -Scan \$presenceScan\)'
-    # PowerShell does not hoist, and the pwsh suites define functions in dependency order themselves.
+    # PowerShell does not hoist, so define functions in dependency order.
     foreach ($fn in $shared) {
         $def = $text.IndexOf("function $fn")
         Check "$name defines $fn before the promotion that uses it" ($def -gt 0 -and $def -lt $presence)
@@ -320,7 +315,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
         Check "$name calls Invoke-BoundedVideoControllerScan at offset $($m.Index) after its definition" ($m.Index -gt $scanDef)
     }
     Check "$name has real calls to the bounded scan to order (bites)" ($scanCalls -gt 0)
-    # Release rows below set the release directly, so check the promotion site records it.
     CheckText "$name records the driver release at the promotion site" $text '\$_presenceRelease = Get-NvidiaAdapterDriverRelease -Scan \$presenceScan[\s\S]{0,800}?\$script:NvidiaPresenceDriverRelease = \$_presenceRelease'
     CheckText "$name records it beside the floor, from the same scan" $text 'Get-NvidiaAdapterCudaFloor -Scan \$presenceScan[\s\S]{0,400}?Get-NvidiaAdapterDriverRelease -Scan \$presenceScan'
     CheckText "$name initialises the release to null" $text '\$script:NvidiaPresenceDriverRelease = \$null'
@@ -341,7 +335,7 @@ foreach ($file in @($installPs1, $setupPs1)) {
     if ($file -eq $installPs1) { CheckText "install.ps1 declines it on a preserved XPU verdict too" $promo '-not \$script:StudioPreservedXpuVerdict' }
 }
 
-# setup.ps1 must NOT guess: "" keys the do-not-wipe escape (#9255); install.ps1 is where floor and release are consumed.
+# setup.ps1 must NOT guess: "" keys the do-not-wipe escape.
 $setupTag = Get-FunctionText $setupPs1 "Get-PytorchCudaTag"
 $installIdx = Get-FunctionText $installPs1 "Get-TorchIndexUrl"
 CheckText "setup.ps1 still returns empty for unknown rather than flooring" $setupTag @() 'NvidiaPresenceCudaFloor'
@@ -392,7 +386,7 @@ $staleEscape = @($escAst.FindAll({ param($n) $n -is [System.Management.Automatio
 Check "the fast-path escape asks Test-NvidiaPresenceStaleGpuWheel (bites)" ($null -ne $staleEscape)
 if ($staleEscape) {
     foreach ($case in @(
-        # tag, presence-only, probe answer ($null = no answer), pre-R450, want stale, want skip afterwards
+        # tag, presence-only, probe answer ($null = no answer), pre-R450, want stale, want skip
         @{ T = "rocm";  P = $true;  A = "DEV=False"; R = $false; Stale = $true;  Skip = $false; N = "+rocm that sees no GPU" },
         @{ T = "xpu";   P = $true;  A = "DEV=False"; R = $false; Stale = $true;  Skip = $false; N = "+xpu that sees no GPU" },
         @{ T = "rocm";  P = $true;  A = "DEV=False"; R = $true;  Stale = $true;  Skip = $false; N = "+rocm on a pre-R450 driver (goes to CPU)" },
@@ -439,9 +433,9 @@ foreach ($row in @(@(10, 2, "cpu"), @(11, 0, "cu118"), @(11, 8, "cu118"), @(12, 
     Check "CUDA $($row[0]).$($row[1]) is served by $($row[2])" ((Get-CudaFamilyForVersion -Major $row[0] -Minor $row[1]) -eq $row[2])
 }
 
-# Presence never comes from the class keys; a failed scan may only borrow a unanimous driver release from them.
+# A failed scan may only borrow a unanimous driver release from the class keys.
 $nvKey = @{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1" }
-$nv536 = @{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"; DriverVersion = "31.0.15.3699" }   # R536: floor 12.2
+$nv536 = @{ MatchingDeviceId = "PCI\\VEN_10DE&DEV_1DB1"; DriverVersion = "31.0.15.3699" }
 foreach ($case in @(
     # A = answered scan with these adapters; no A = a scan that could not answer.
     @{ N = "a failed scan with an NVIDIA class key"; K = @($nvKey); P = $false; Reg = $false },
@@ -470,7 +464,6 @@ foreach ($case in @(
     if ($case.ContainsKey('Reg')) { Check "registry: $($case.N) consulted the registry = $($case.Reg)" ($script:RegistryConsulted -eq $case.Reg) }
 }
 
-# The real helper, so the fallback reads the class keys through the Intel route's normalization.
 $registryNamesStub = ${function:Get-IntelRegistryAdapterNames}
 Invoke-Expression (Get-FunctionText $setupPs1 "Get-IntelRegistryAdapterNames")
 foreach ($case in @(
@@ -494,8 +487,7 @@ Check "a scan that answered is not second-guessed by the registry" ((Test-OtherV
 Check "and the registry was never consulted" ($script:RegistryConsulted -eq $false)
 $script:RegKeys = @(); $script:FakeScanOk = $null
 
-# Runs the real Get-TorchIndexUrl: promoting without a version used to still yield a CPU index.
-# ParseInput on the UTF-8 text: 5.1's ParseFile reads a BOM-less file as ANSI, so its offsets would not index it.
+# ParseInput on the UTF-8 text: 5.1's ParseFile reads a BOM-less file as ANSI.
 $idxAst = [System.Management.Automation.Language.Parser]::ParseInput($installText, $installPs1, [ref]$null, [ref]$null)
 foreach ($n in @("Get-TorchIndexUrl", "Trim-IndexPathSlashes", "Get-CudaFamilyCappedForPreTuring")) {
     $f = @($idxAst.FindAll({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true))
@@ -509,7 +501,7 @@ $libInv = [pscustomobject]@{ CudaMajor = 12; CudaMinor = 8; ComputeCaps = @() }
 foreach ($case in @(
     # Must stay SILENT: every AMD, Intel and CPU-only host reaches this.
     @{ N = "an AMD, Intel or CPU-only host";       Pres = $false; Want = "cpu"; Loud = $false },
-    # No compute capability, so unknown stops at cu126 (pre-Turing). Unknown is NOT too old.
+    # No compute capability: unknown stops at cu126, but unknown is NOT too old.
     @{ N = "presence-only with a 12.8 driver";     Pres = $true; Floor = @(12, 8); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with a 12.6 driver";     Pres = $true; Floor = @(12, 6); Want = "cu126"; Loud = $true },
     @{ N = "presence-only with a 13.0 driver";     Pres = $true; Floor = @(13, 0); Want = "cu126"; Loud = $true },
@@ -575,7 +567,7 @@ foreach ($case in @(
 }
 $script:NvidiaPresenceOnly = $false
 
-# One bounded scan per run (Start-Job counted on the REAL function), and a terminating Remove-Job must not escape it.
+# One bounded scan per run, and a terminating Remove-Job must not escape it.
 function Invoke-ScanHarness($scanText, $mode) {
     $script:StartJobs = 0
     function Start-Job { param($ScriptBlock) $script:StartJobs++; return [pscustomobject]@{ Id = 1 } }
@@ -608,7 +600,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
 }
 $script:VideoControllerScanResult = $null
 
-# Basic Display or no version: no promotion, same as base.
 foreach ($case in @(
     @{ N = "an NVIDIA adapter with Basic Display 10.0.19041.3636"; A = @(NvAdapter 0 "10.0.19041.3636"); Want = $true },
     @{ N = "an NVIDIA adapter with Basic Display 10.0.22621.1";    A = @(NvAdapter 0 "10.0.22621.1");    Want = $true },
@@ -668,7 +659,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
            A = @((BasicNv "10.0.19041.3636"), (Adapter "Intel(R) UHD Graphics" "PCI\VEN_8086&DEV_9A49" 0 "31.0.101.1")) },
         @{ N = "an NVIDIA driver plus a Meteor Lake GPU whose PyTorch has proven XPU"; A = @((Rtx4060), (Mtl)); Want = $false; Xpu = "True" },
         @{ N = "an NVIDIA driver plus a Meteor Lake GPU with no XPU runtime";            A = @((Rtx4060), (Mtl)); Want = $true },
-        # Base's Intel route ignored PNP ID and status, so these must still decline.
         @{ N = "an NVIDIA driver plus a Meteor Lake with no status, PyTorch XPU proven"; A = @((Rtx4060), (Mtl -code $null)); Want = $false; Xpu = "True" },
         @{ N = "an NVIDIA driver plus a Meteor Lake with no PNP ID, PyTorch XPU proven"; A = @((Rtx4060), (Mtl $null)); Want = $false; Xpu = "True" },
         @{ N = "an NVIDIA driver and no Intel row at all, PyTorch XPU proven";           A = @(Rtx4060); Want = $false; Xpu = "True" },
@@ -688,7 +678,6 @@ foreach ($file in @($installPs1, $setupPs1)) {
         Check "$leaf, NVIDIA on $($case.N): driver hint printed = $hint" ([bool](@($got.Lines) -match 'without the NVIDIA driver') -eq $hint)
     }
 }
-# Base asked Get-ProbableStudioVenvDir, which is not $VenvDir under a stage root.
 $emptyVenv = Join-Path ([System.IO.Path]::GetTempPath()) ("promo-empty-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $emptyVenv | Out-Null
 $script:ProbeAnswer = @{ Ok = $true; Output = "True" }

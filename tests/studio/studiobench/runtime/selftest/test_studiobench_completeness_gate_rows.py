@@ -45,7 +45,6 @@ from studiobench.runtime.readiness import (  # noqa: E402
 from studiobench.runtime.session import record_completeness_gate  # noqa: E402
 from studiobench.runtime.types import Cell, Recorder, make_cell_id  # noqa: E402
 
-#:The arm the whole windowed readiness gate exists for, at a rung big enough to be windowed.
 CELL = Cell(
     cell_id = make_cell_id("100K", "B1", 0),
     rung = "100K",
@@ -54,8 +53,6 @@ CELL = Cell(
     session_id = "sess0",
 )
 
-#: What the probe returns for a thread that kept its head and its tail and lost the middle: the
-#: marker check is satisfied and the ordinals are not.
 LOST_MIDDLE = {
     "probe_attempted": True,
     "expected_messages": 18,
@@ -85,7 +82,6 @@ def test_the_completeness_verdict_names_the_cell_it_was_taken_from(tmp_path):
     assert row["row_type"] == "gate"
     assert row["name"] == "thread_complete"
     assert passed is False and row["passed"] is False
-    # `r{rung}.{arm}.rep{rep}`, so the one field answers which arm and which rung lost them.
     assert row["cell_id"] == "r100K.B1.rep0"
     assert row["detail"]["ordinals_missing"] == list(range(4, 16))
 
@@ -156,9 +152,6 @@ def test_an_undifferentiated_coverage_None_is_not_a_pass_either(tmp_path):
         {"probe_attempted": True, "head_reached": True, "ordinal_coverage_complete": None},
     )
     assert passed is False and rows[0]["passed"] is False
-
-
-# ── the two ends, joined: the probe's own output through the gate ───
 
 
 def _coverage(**traverse) -> dict:
@@ -250,9 +243,6 @@ def test_a_probe_that_never_ran_fails_the_cell_rather_than_passing_it(tmp_path):
     assert [c["cell_id"] for c in excluded_from_rows(rows)] == [CELL.cell_id]
 
 
-# ── every per-cell gate, not just the completeness one ──────────────
-
-
 def test_every_per_cell_gate_names_its_cell():
     """THE SAME DEFECT, IN FOUR MORE PLACES. `excluded_from_rows` reads
     `row.get("cell_id") or "run"`, so a per-cell gate emitted without one is attributed to the
@@ -271,8 +261,7 @@ def test_every_per_cell_gate_names_its_cell():
     src = inspect.getsource(S)
 
     def _calls(text: str) -> list:
-        # A PAREN COUNTER, not a regex: `rec.gate("follows_the_stream", bool(...), ...)` contains a nested
-        # call, and a non-greedy regex stops at the inner closing paren.
+        # Paren counter, not regex: the gate call contains nested calls.
         out = []
         for marker in ("rec.gate(", "recorder.gate("):
             start = 0
@@ -289,8 +278,7 @@ def test_every_per_cell_gate_names_its_cell():
                         depth -= 1
                     j += 1
                 args = text[i + len(marker) : j - 1]
-                # Skip prose: `session.py` carries a comment reading "WHY THIS IS NOT `recorder.gate(...)`", and a
-                # scanner that counts it reports a defect in a sentence.
+                # Skip prose: session.py has a comment quoting `recorder.gate(...)`.
                 line_start = text.rfind("\n", 0, i) + 1
                 is_comment = text[line_start:i].lstrip().startswith("#")
                 if args.strip() != "..." and not is_comment:

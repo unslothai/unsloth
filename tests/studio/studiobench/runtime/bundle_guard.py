@@ -34,15 +34,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Kept small: an app entry chunk is megabytes and the marker pair sits within a few hundred bytes
-# of each other in every React build, minified or not.
+# Small: the marker pair sits within a few hundred bytes in every React build.
 _WINDOW = 4000
 
-# BACKTICKS as well as quotes. Unsloth's production bundle is minified with a pass that rewrites
-# short string literals as template literals, so the marker reads with backticks and a quote-only
-# pattern misses it on every asset, which reads as "build mode could not be established" on a
-# perfectly good production build. Verified against the shipped bundle.
-# The marker reads ``rendererPackageName:`react-dom` ``.
+# Accept backticks: the minified production bundle rewrites short strings as template literals.
 _RENDERER_RE = re.compile(r'rendererPackageName\s*:\s*["\'`]react-dom["\'`]')
 _BUNDLETYPE_RE = re.compile(r"bundleType\s*:\s*([01])")
 
@@ -66,8 +61,7 @@ class BundleVerdict:
             "entry_url": self.entry_url,
             "entry_bytes": self.entry_bytes,
             "checked": self.checked,
-            # Attempted flags, because "bundle_type is None" and "bundle_type is 0" are opposite findings and a
-            # bare null cannot say which.
+            # Attempted flag: bundle_type None and 0 are opposite findings.
             "bundle_type_attempted": self.entry_url is not None,
             "vite_probe_attempted": self.vite_client_status is not None,
         }
@@ -115,8 +109,7 @@ def _entry_urls(base_url: str, html: str) -> list[str]:
     for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html):
         url = src if src.startswith("http") else base_url.rstrip("/") + "/" + src.lstrip("/")
         out.append(url)
-    # A modulepreload is how Vite names the real entry chunk when the script tag points at a loader
-    # shim, so it is worth following when the script tags carry nothing.
+    # Vite names the real entry chunk via modulepreload when the script tag is a loader shim.
     for href in re.findall(
         r'<link[^>]+rel=["\']modulepreload["\'][^>]+href=["\']([^"\']+)["\']', html
     ):
@@ -182,8 +175,7 @@ def check_bundle(base_url: str) -> BundleVerdict:
         if match is None:
             checked.append(f"{url}: no rendererPackageName marker, {len(raw)} bytes")
             continue
-        # The SAME chunk, and within a small window of the marker: a bundle this size carries several
-        # `bundleType` occurrences and picking the wrong one is picking a different package's answer.
+        # Search near the marker in the same chunk; other packages also carry bundleType.
         lo = max(0, match.start() - _WINDOW)
         hi = min(len(text), match.end() + _WINDOW)
         found = _BUNDLETYPE_RE.search(text, lo, hi)

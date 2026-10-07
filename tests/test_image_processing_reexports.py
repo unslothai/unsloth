@@ -160,9 +160,7 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
     if out.returncode != 0:
-        # No import happened, so there is no laziness to measure; asserting here
-        # would test the runner. Not keyed on one exception: CPU runners produce
-        # at least two unrelated ones.
+        # No import happened, so there is nothing to measure; CPU runners raise varied exceptions.
         pytest.skip(
             "import unsloth does not complete on this host; nothing to measure. "
             + out.stderr.strip()[-400:]
@@ -170,8 +168,7 @@ def test_import_unsloth_does_not_pull_in_the_image_stack():
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout[-2000:]
 
 
-# Everything above passes with the `_gpu_init.py` call reverted: it proves the
-# helper works, never that it is wired up. The tests below close that gap.
+# The tests above prove the helper works; the ones below prove it is wired up.
 
 
 def _unsloth_import_or_skip():
@@ -245,9 +242,7 @@ def test_remote_code_reading_siglip_helpers_loads(tmp_path):
         shutil.rmtree(package, ignore_errors = True)
 
 
-# Helpers transformers 5 kept but re-specified numpy -> torch. A module
-# __getattr__ never fires for a name that still resolves, so these need
-# replacing rather than forwarding.
+# transformers 5 re-specified these numpy -> torch; a module __getattr__ never fires for them.
 
 
 def _numpy_image():
@@ -283,8 +278,7 @@ def test_the_torch_contract_is_untouched(siglip2_module):
         before = siglip2_module.convert_image_to_patches(image, 2).clone()
         before_pad, before_mask = siglip2_module.pad_along_first_dim(before, 6)
     except Exception:
-        # transformers 4.x specified these for numpy only, so there is no torch
-        # contract to preserve. Skipping rather than asserting one into existence.
+        # transformers 4.x specified these for numpy only, so there is no torch contract.
         pytest.skip("this transformers has no torch contract for these helpers")
 
     _install_legacy_image_reexports(SIGLIP2)
@@ -316,8 +310,6 @@ def test_numpy_dispatch_covers_the_keyword_forms(siglip2_module, style):
     """
     np = pytest.importorskip("numpy")
     if not _image_processing_reexports_are_missing(siglip2_module):
-        # transformers 4.x: the shim is correctly a no-op, and the 5.x spelling
-        # of the first parameter does not exist there to be accepted.
         pytest.skip("this transformers still re-exports the image helpers")
     _install_legacy_image_reexports(SIGLIP2)
     image = _numpy_image()
@@ -419,13 +411,8 @@ def test_the_module_shims_are_reinstalled_after_a_module_reload(siglip2_module):
         _remove_legacy_image_reexports(SIGLIP2)
 
 
-# ---------------------------------------------------------------------------
-# The same numpy/torch split one level up: BACKEND METHODS on the remote class.
-#
-# transformers 5 put a torchvision backend in every image processor's MRO, so a
-# remote-code subclass that hands channel-last numpy to `self.normalize` reaches
-# torchvision and raises. These tests drive the real classes; nothing here
-# asserts on a version.
+# transformers 5 puts a torchvision backend in every image processor's MRO, so remote-code
+# subclasses passing channel-last numpy to `self.normalize` raise.
 
 from unsloth.import_fixes import (  # noqa: E402
     _IMAGE_METHOD_BOUND,
@@ -664,9 +651,7 @@ def test_install_is_idempotent_and_the_guard_reads_the_live_descriptor(remote_pr
     assert _install_legacy_numpy_image_methods(remote_processor_class) == []
     assert remote_processor_class.__dict__["normalize"] is first
 
-    # What a redefinition of the class body looks like from here: the flagged
-    # function is gone while `_IMAGE_METHOD_BOUND` survives. A guard reading the
-    # class attribute would call this done.
+    # A class-body redefinition drops the flagged function while `_IMAGE_METHOD_BOUND` survives.
     delattr(remote_processor_class, "normalize")
     assert getattr(remote_processor_class, _IMAGE_METHOD_BOUND, None) is not None
     assert _install_legacy_numpy_image_methods(remote_processor_class) == ["normalize"]
@@ -847,9 +832,7 @@ def test_remote_code_calling_the_backend_methods_on_numpy_loads_and_runs(tmp_pat
         shutil.rmtree(package, ignore_errors = True)
 
 
-# The unpickle path: pickle stores a processor by (module, qualname), so a spawn
-# worker rebuilds the class by IMPORTING the remote module, never through
-# `get_class_in_module`.
+# pickle stores a processor by (module, qualname), so a spawn worker imports the remote module.
 
 
 def _remote_probe_package():
@@ -863,17 +846,13 @@ def _remote_probe_package():
     init_hf_modules()
 
     root = pathlib.Path(HF_MODULES_CACHE) / "transformers_modules"
-    # One package per call. The modules cache is shared by every xdist worker, and four tests build this probe and
-    # rmtree it on the way out, so under one fixed name a worker's teardown deleted the file another worker was
-    # importing: `ModuleNotFoundError` for the probe, or `FileNotFoundError` from inside the import (both seen in CI).
+    # A unique package per call: xdist workers share the modules cache and rmtree it on teardown.
     name = f"unsloth_spawn_probe_{uuid.uuid4().hex[:12]}"
     package = root / name
     package.mkdir(parents = True, exist_ok = True)
     (root / "__init__.py").touch(exist_ok = True)
     (package / "__init__.py").write_text("")
-    # The decorator is load-bearing: it is read while the CLASS BODY executes,
-    # as the real checkpoint's file does. Without it this probe passed while the
-    # loader still patched after delegating to the real `exec_module`.
+    # The decorator is read while the class body executes, as in the real checkpoint's file.
     (package / "image_processing_probe.py").write_text(
         "import transformers.models.siglip2.image_processing_siglip2 as siglip2_ips\n"
         "\n"
@@ -945,8 +924,7 @@ def pickled_remote_processor(tmp_path):
         target = tmp_path / "processor.pkl"
         with open(target, "wb") as handle:
             pickle.dump(module.SpawnProbeImageProcessor(), handle)
-        # The root the child must put on sys.path: the parent of the
-        # `transformers_modules` package, not the package itself.
+        # The parent of the `transformers_modules` package, not the package itself.
         yield target, package.parent.parent
     finally:
         shutil.rmtree(package, ignore_errors = True)
@@ -957,10 +935,7 @@ def pickled_remote_processor(tmp_path):
 def test_a_spawn_started_worker_rebuilds_a_patched_class(pickled_remote_processor):
     """The finder's test: a fresh interpreter must still honour numpy."""
     out = _run_spawn_child(pickled_remote_processor, "import unsloth")
-    # The sentinel, not a list of stderr strings: a CPU runner where the child
-    # has no accelerator for `import unsloth` says nothing about the finder,
-    # and sniffing for each way that can read leaves the real failure skipped
-    # too. Past the sentinel, every failure is this test's to report.
+    # Skip only before the sentinel; past it every failure is this test's to report.
     if "PREAMBLE_OK" not in out.stdout:
         pytest.skip(f"the child could not import unsloth: {out.stderr.strip()[-400:]}")
     assert out.returncode == 0, out.stderr[-2000:]
@@ -976,9 +951,7 @@ def test_a_spawn_started_worker_without_unsloth_is_the_documented_limit(pickled_
     out = _run_spawn_child(pickled_remote_processor, "")
     assert "PREAMBLE_OK" in out.stdout, out.stderr[-2000:]
     assert out.returncode != 0, out.stdout
-    # Either failure mode counts: unpatched, the child now dies earlier on the
-    # class-body decorator rather than later on numpy `normalize`, and pinning
-    # only the second would go red on the deeper break.
+    # Either failure mode counts: unpatched, the child may die on the decorator or on `normalize`.
     assert (
         "filter_out_non_signature_kwargs" in out.stderr
         or "Functional F.normalize" in out.stderr

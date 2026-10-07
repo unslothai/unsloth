@@ -151,5 +151,5 @@ def test_every_harness_test_asks_for_resolution():
         text = path.read_text(encoding = "utf-8")
         for call in re.findall(r"run_harness\((?:[^()]|\([^()]*\))*\)", text):
             if "_harness_source()" not in call:
-                continue  # No slices to follow: this one builds its script inline.
+                continue
             assert "sources =" in call, f"{path.name}: {call}"

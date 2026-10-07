@@ -58,7 +58,7 @@ class ArmStatus(enum.Enum):
     BOUND = "BOUND"  # DOM-changing but potent: an upper bound, printed as `<= x`
     VOIDED = "VOIDED"  # claimed invariance and drifted: measured, unattributable, not quoted
     NOT_RUN = "NOT_RUN"  # potency counter did not move: the treatment never happened
-    UNAVAILABLE = "UNAVAILABLE"  # the arm needs a build that this install is not
+    UNAVAILABLE = "UNAVAILABLE"
 
 
 @dataclass(frozen = True)
@@ -292,7 +292,7 @@ def judge(
             return outcome
     elif arm.invariance is Invariance.EQUIVALENT:
         declared = arm.declared_diff
-        assert declared is not None  # enforced in Arm.__post_init__
+        assert declared is not None
         if normalised_before is None or normalised_after is None:
             outcome.status = ArmStatus.VOIDED
             outcome.reason = (

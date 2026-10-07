@@ -119,7 +119,6 @@ def test_existing_dep_with_postinstall_ignored(tmp_path: Path):
             "integrity": "sha512-fake",
             "hasInstallScript": True,
         },
-        # Transitive install-script copy, nested under another dep.
         "node_modules/some-build-pkg/node_modules/node-gyp": {
             "version": "10.0.1",
             "resolved": "https://registry.npmjs.org/node-gyp/-/node-gyp-10.0.1.tgz",
@@ -140,7 +139,6 @@ def test_existing_dep_with_postinstall_ignored(tmp_path: Path):
         f"expected exit 0, got {result.returncode}; stderr:\n{result.stderr}\n"
         f"stdout:\n{result.stdout}"
     )
-    # Sanity: the existing node-gyp must NOT be reported.
     assert "node-gyp" not in result.stderr
 
 
@@ -178,7 +176,6 @@ def test_v2_v3_lockfile_format_support(tmp_path: Path):
     )
     assert "v2-postinstall-dep" in result.stderr
 
-    # Same packages as lockfileVersion 3 must give the same finding.
     base_v3 = _write(tmp_path / "base_v3.json", _v3_lockfile(base_pkgs))
     head_v3 = _write(tmp_path / "head_v3.json", _v3_lockfile(head_pkgs))
     result_v3 = _run(base_v3, head_v3)

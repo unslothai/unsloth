@@ -31,9 +31,6 @@ if str(_STUDIO_TESTS) not in sys.path:
 from studiobench import __main__ as M  # noqa: E402
 
 
-# ── the check itself ────────────────────────────────────────────────
-
-
 def test_the_arms_of_the_run_are_accepted():
     assert M._windowed_arms("treatment", ["base", "treatment"]) == {"treatment"}
     assert M._windowed_arms(" base , treatment ", ["base", "treatment"]) == {"base", "treatment"}
@@ -56,9 +53,6 @@ def test_naming_the_treatment_arm_of_a_run_that_has_no_treatment_is_refused():
     believes a gate is in force that nothing in the run will ever apply."""
     with pytest.raises(SystemExit):
         M._windowed_arms("treatment", ["base"])
-
-
-# ── and it happens before anything is started ───────────────────────
 
 
 def test_a_bad_arm_name_is_refused_before_any_process_is_started(monkeypatch):

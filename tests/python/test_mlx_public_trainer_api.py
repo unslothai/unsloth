@@ -26,8 +26,7 @@ _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
-    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g. bitsandbytes) skip cleanly
-    # instead of erroring at collection.
+    # Skip before importing unsloth so non-MLX hosts without GPU deps skip cleanly.
     if not (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"
@@ -82,9 +81,7 @@ def test_non_mlx_exports_public_trainer_api_when_available():
     try:
         unsloth = importlib.import_module("unsloth")
     except ImportError as exc:
-        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo, bitsandbytes/triton, and _gpu_init can
-        # re-raise missing deps as ImportError). Skip when any of it is unavailable rather than failing collection on
-        # CPU/ROCm/XPU review hosts.
+        # Non-MLX import pulls the optional GPU stack; skip rather than fail collection.
         pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
@@ -234,7 +231,6 @@ def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape
     if shape == "core":
         monkeypatch.setattr(mx, "clear_cache", clear)
     else:
-        # Older MLX releases expose cache clearing under mx.metal.clear_cache.
         monkeypatch.delattr(mx, "clear_cache", raising = False)
         metal = getattr(mx, "metal", None) or type("Metal", (), {})()
         monkeypatch.setattr(mx, "metal", metal, raising = False)
@@ -1078,8 +1074,7 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    # chat_templates now wraps the zoo function (issue #2693), so the re-export is no longer the same object;
-    # functools.wraps records the original.
+    # chat_templates wraps the zoo function, so compare via functools.wraps' __wrapped__.
     assert (
         getattr(
             chat_templates.train_on_responses_only,
@@ -1173,7 +1168,6 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
         with pytest.raises(NotImplementedError) as exc:
             getattr(trl, name)(model = None, args = None)
         assert "MLX" in str(exc.value) and name in str(exc.value)
-    # trainers trl never exposed must not be invented
     assert not hasattr(trl, "PPOTrainer")
     stub = trl.GRPOTrainer
     unsloth._install_mlx_trl_sft_shim()
@@ -1198,9 +1192,8 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     trl.__getattr__ = _lazy_getattr
     monkeypatch.setitem(sys.modules, "trl", trl)
 
-    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
+    unsloth._install_mlx_trl_sft_shim()
 
-    # trainers declared in __all__ are stubbed WITHOUT ever resolving the real one
     assert resolved == []
     for name in ("GRPOTrainer", "DPOTrainer"):
         with pytest.raises(NotImplementedError):
@@ -1247,11 +1240,9 @@ def test_mlx_sftconfig_alias_keeps_trl_epoch_default(monkeypatch):
 
     unsloth._install_mlx_trl_sft_shim()
 
-    # no explicit length -> TRL epoch default (3 epochs, step cap disabled)
     cfg = trl.SFTConfig(output_dir = "mlx-out")
     assert cfg.num_train_epochs == 3
     assert cfg.max_steps == -1
-    # explicit step / epoch counts stay exactly as written
     assert trl.SFTConfig(output_dir = "mlx-out", max_steps = 17).max_steps == 17
     assert trl.SFTConfig(output_dir = "mlx-out", num_train_epochs = 2).num_train_epochs == 2
 
@@ -1382,8 +1373,6 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert torch.cuda.get_device_name(0) == stats.name
     assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
-    # current (non-max) APIs report live active memory, not the peak high-water
-    # mark, and never exceed it.
     assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
     assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
     assert torch.cuda.device_count() == 1

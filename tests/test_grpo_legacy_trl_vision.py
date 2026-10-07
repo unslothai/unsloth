@@ -153,11 +153,9 @@ def _run_legacy(processor_output, inputs, completion_ids):
         "torch": torch,
         "_unsloth_grpo_vision_inputs": _unsloth_grpo_vision_inputs,
         "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
-        # Injected on this TRL too now: its vLLM server path cannot carry a multi image row,
-        # so the guard is handed the trainer and decides at runtime.
+        # This TRL's vLLM server path cannot carry a multi-image row, so the guard decides at runtime.
         "_unsloth_reject_grpo_image_list": _unsloth_reject_grpo_image_list,
         "prepare_multimodal_messages": lambda prompt, num_images = 1: prompt.append(num_images),
-        # Injected by the same rewrite for the text-only branch; TRL never sees it.
         "calculate_pad_tokens_in_prompt": lambda ids, keep, pad: torch.zeros(
             ids.shape[0], dtype = torch.long
         ),
@@ -319,9 +317,7 @@ def test_a_modern_trl_is_untouched_by_the_legacy_rewrite():
     assert patched.count('output["num_images"]') == 1, patched
 
 
-# ---------------------------------------------------------------------------------------------
 # The shuffle and the slice, on the layout 0.22.x-0.23.x leaves behind.
-# ---------------------------------------------------------------------------------------------
 
 
 def _legacy_split_pixel_values_by_grid(batch):
@@ -504,7 +500,6 @@ def test_an_untruncated_token_type_ids_as_wide_as_prompt_plus_completion_is_drop
     import torch
 
     processor_output, inputs, completion_ids = _grid_batch()
-    # prompt_ids 5 wide, completion 3 wide: an 8 wide untruncated processor copy.
     processor_output["token_type_ids"] = torch.ones(2, 8, dtype = torch.long)
     trainer, output = _run_legacy(processor_output, inputs, completion_ids)
     for call in trainer.calls:

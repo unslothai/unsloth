@@ -36,8 +36,7 @@ class FakeServer:
         error = None,
     ):
         self.requests.append((method, url))
-        # Both spellings: the CLI asks for the resident listing and falls back to
-        # /v1/models against a server too old to serve it.
+        # The CLI falls back to /v1/models against a server too old for loaded-models.
         if url.endswith(("/api/inference/loaded-models", "/v1/models")):
             return {"data": [dict(m) for m in self.models]}
         if url.endswith("/api/inference/status"):
@@ -451,7 +450,6 @@ class TestExplicitFlagsThroughTheRealCli:
         finally:
             start_cli._connect = real_connect
         if "load" not in captured:
-            # Without the exit code, a parser incompatibility reads as a dropped flag.
             pytest.fail(
                 f"{argv} never reached _connect (exit {result.exit_code}): "
                 f"{result.exception!r}\n{result.output}"
@@ -492,7 +490,6 @@ class TestExplicitFlagsThroughTheRealCli:
     def test_every_agent_command_tracks_flags_identically(self, command):
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
         assert "max_seq_length" in load.supplied
-        # overrides() is what _resolve_model reads; supplied alone never reaches the load.
         assert "max_seq_length" in load.overrides()
 
 

@@ -31,9 +31,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 _IMPORT_FIXES_PATH = _ROOT / "unsloth" / "import_fixes.py"
 _PYPROJECT_PATH = _ROOT / "pyproject.toml"
 
-# Releases that carry the defect, and releases that do not. Used only to document the
-# window in the warning text and to keep the pyproject specifier honest -- never as the
-# detector's input.
+# Used only to document the window and check pyproject, never as the detector's input.
 BROKEN_RELEASES = ["5.4.0", "5.5.0", "5.5.1", "5.5.2", "5.5.3", "5.5.4"]
 GOOD_RELEASES = ["4.57.6", "5.2.0", "5.3.0", "5.6.0", "5.6.2", "5.14.1", "5.17.0"]
 
@@ -53,9 +51,6 @@ def import_fixes():
     return _load_import_fixes()
 
 
-# Fake transformers builds. Each one is a shape upstream really shipped.
-
-
 def _install(
     monkeypatch,
     *,
@@ -64,9 +59,7 @@ def _install(
 ):
     """Put a fake `transformers` in sys.modules for the duration of one test."""
     fake = types.ModuleType("transformers")
-    # A real transformers may already be imported, and `from transformers import X` falls
-    # back to sys.modules["transformers.X"], so every submodule entry is pinned here --
-    # None makes the import raise, which is what "this build does not have it" means.
+    # `from transformers import X` falls back to sys.modules, so pin every submodule (None raises).
     for name, submodule in (
         ("conversion_mapping", conversion_mapping),
         ("core_model_loading", core_model_loading),
@@ -240,9 +233,6 @@ HEALTHY_BUILDS = [
 ]
 
 
-# The probe
-
-
 @pytest.mark.parametrize("build", DEFECTIVE_BUILDS, ids = lambda b: b.__name__)
 def test_defective_build_is_detected(import_fixes, monkeypatch, build):
     build(monkeypatch)
@@ -308,9 +298,6 @@ def test_a_fixed_nightly_is_not_told_it_is_broken(import_fixes, monkeypatch, cap
     assert "quant_state" not in caplog.text
 
 
-# The warning
-
-
 def _uninstall_runtime_repair(import_fixes, monkeypatch):
     """Put the live attribute back to an unpatched function.
 
@@ -340,8 +327,7 @@ def _uninstall_runtime_repair(import_fixes, monkeypatch):
 def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplog):
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
-    # Uninstall first: `_build_broken` swaps in a stand-in conversion_mapping module that
-    # has no `get_model_conversion_mapping` at all, and the uninstall reads that attribute.
+    # Uninstall first: the stand-in conversion_mapping lacks get_model_conversion_mapping.
     _uninstall_runtime_repair(import_fixes, monkeypatch)
     _build_broken(monkeypatch)
     with caplog.at_level(logging.WARNING):
@@ -349,11 +335,8 @@ def test_warning_names_the_cause_and_the_remedy(import_fixes, monkeypatch, caplo
     text = caplog.text
     assert "5.5.4" in text
     assert "quant_state" in text
-    # It must say the checkpoint is fine: the reported threads told users to regenerate it.
     assert "not be regenerated" in text.lower()
     assert "transformers>=5.6.0" in text
-    # And it must not tell the user to do something this repository forbids without
-    # saying how: unsloth still caps transformers at 5.5.0.
     assert "--no-deps" in text
 
 
@@ -395,9 +378,6 @@ def test_the_check_is_warn_only(import_fixes, monkeypatch):
         assert import_fixes.check_transformers_prequantized_vlm_quant_state() is None
 
 
-# pyproject
-
-
 def _transformers_requirements():
     data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding = "utf-8"))
     found = []
@@ -434,9 +414,6 @@ def test_pyproject_still_allows_a_working_version():
         )
 
 
-# Where the check is called from
-
-
 def test_the_check_runs_after_the_torchaudio_guard():
     """The probe imports transformers, and `disable_torchaudio_if_cuda_mismatched` exists
     because reaching torchaudio before it runs takes the whole `import unsloth` down."""
@@ -464,8 +441,6 @@ def test_warning_is_silent_once_the_runtime_repair_is_installed(import_fixes, mo
 
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "5.5.4")
     monkeypatch.delenv("UNSLOTH_SKIP_TRANSFORMERS_QUANT_STATE_CHECK", raising = False)
-    # This one really does need the live module: it installs the repair onto it. Skipping
-    # keeps the rest of the file runnable with pytest alone.
     transformers = pytest.importorskip("transformers")
     conversion_mapping = pytest.importorskip("transformers.conversion_mapping")
     del transformers

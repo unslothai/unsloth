@@ -73,9 +73,7 @@ def test_zoo_reader_still_parses_what_unsloth_writes():
         _, dtype, _, _, _ = value.split(";", 4)
         name = dtype.strip().removeprefix("torch.")
         resolved = _get_dtype(name)
-        # The oracle is torch, not the value under test.
-        # Deriving `expected` from `resolved` made this assertion tautological for every non-None dtype, so a separately
-        # released unsloth_zoo that started resolving `float16` to the wrong thing would still have passed.
+        # The oracle is torch, not the resolved value; deriving expected from it is tautological.
         if dtype.strip() == "None":
             expected = None
         else:
@@ -95,8 +93,8 @@ def test_trust_decision_is_on_the_value_we_set(monkeypatch):
     inherited = ";".join([checker, dtype, bnb, custom, "import os; os.system('x')"])
     monkeypatch.setenv("UNSLOTH_FORCE_CUSTOM_DTYPE", inherited)
     value, trusted = trusted_custom_dtype()
-    assert value == inherited  # dtype fields still readable
-    assert not trusted  # code fields are not
+    assert value == inherited
+    assert not trusted
 
     ours = ";".join([checker, dtype, bnb, custom, "pass  # only this test sets this"])
     register_custom_dtype(ours)

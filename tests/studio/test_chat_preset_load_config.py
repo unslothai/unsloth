@@ -72,8 +72,6 @@ def test_backend_chat_preset_accepts_load_config():
 
 
 def test_preset_load_config_carries_parallel_slots():
-    # Captured, clamped on read, applied, and accepted by the extra="forbid"
-    # backend model (a missing backend field would 422 every settings sync).
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
     assert '| "nParallel"' in source
     assert "nParallel: snapshot.nParallel ?? null" in source
@@ -93,7 +91,7 @@ def test_preset_load_config_carries_reasoning_budget():
     assert "reasoningBudget: capturesReasoning ? snapshot.reasoningBudget : -1" in source
     assert "? snapshot.reasoningBudgetMessage" in source
     routes = _read("studio/backend/routes/chat_history.py")
-    # NotABoolean: bool subclasses int, so a lax parse would take `true` for a budget of 1.
+    # bool subclasses int, so a lax parse would take `true` for a budget of 1.
     assert "reasoningBudget: NotABoolean" in routes
     assert "reasoningBudgetMessage: Optional[str]" in routes
 
@@ -233,8 +231,6 @@ _TOKEN = re.compile(
     r"|(?P<name>[A-Za-z_$][\w$]*)"
     r"|(?P<op>\?\?|\?\.(?!\d)|===|!==|==|!=|<=|>=|&&|\|\||[-?:()\[\].,<>!]))"
 )
-# Operators that end the value a selector hands zustand at a comparison or a branch: an arm
-# holding one at its own level returns a boolean, or picks between values unscored.
 _COLLAPSING = frozenset({"===", "!==", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!", "?"})
 _UNARY_AFTER = _COLLAPSING | {None, ":", "(", ",", "??"}
 
@@ -266,7 +262,6 @@ def _tokens(expression: str):
         if kind == "name" and text in _RESERVED and not member:
             return None
         if text == "-":
-            # Only a sign on a number literal: arithmetic is outside the subset.
             following = raw[index + 1] if index + 1 < len(raw) else (None, None)
             if previous[1] not in _UNARY_AFTER or following[0] != "number":
                 return None
@@ -274,7 +269,6 @@ def _tokens(expression: str):
             index += 2
             continue
         if text == "[":
-            # Only `x["key"]`, a member access spelled with a string. An array is refused.
             if index + 2 >= len(raw) or raw[index + 2][1] != "]" or raw[index + 1][0] != "string":
                 return None
             key = raw[index + 1][1][1:-1]
@@ -332,7 +326,6 @@ def _paths(tokens: list, guards: tuple = ()) -> list:
     marks = [index for index, text in _top_level(tokens) if text in ("?", ":")]
     if not marks or tokens[marks[0]][1] != "?":
         return [(tokens, guards)]
-    # The colon that closes the first `?` is the first one no nested `?` is still waiting for.
     open_questions = 0
     for index in marks:
         open_questions += 1 if tokens[index][1] == "?" else -1
@@ -438,10 +431,9 @@ def _selector_reads(selector: str, field: str) -> bool:
         body = selector[destructured.end() :]
     else:
         return False
-    # The argument list's trailing comma rides along on a multi-line call.
     body = body.strip().removesuffix(",").strip()
     if body.startswith("{"):
-        # A single `return` only. A line break straight after `return` returns undefined.
+        # A line break straight after `return` returns undefined.
         match = re.fullmatch(r"\{\s*return(?![\w$])[ \t]*(?=[^\s;}])([^;{}]*?)\s*;?\s*\}", body)
         if match is None:
             return False
@@ -477,9 +469,6 @@ def _memo_dependency_lists(source: str) -> dict:
     return out
 
 
-# The guard above is only as good as this predicate, and it is the part a refactor of the sheet
-# will walk into. Accepted and rejected forms, stated as cases rather than left to the one
-# spelling the sheet happens to use today.
 SELECTOR_CASES = [
     ("(s) => s.reasoningBudget", True),
     ("(store) => store.reasoningBudget", True),
@@ -495,14 +484,12 @@ SELECTOR_CASES = [
     ("(s) => { return s.reasoningBudget; }", True),
     ("(s) => { return s.enabled ? s.reasoningBudget : s.reasoningBudget }", True),
     ("(s) => s.reasoningBudget,", True),
-    # The sheet's own shape. The `??` arm is accepted by the contract, not proved: while the
-    # budget equals the loaded one it returns the requested value (see the sheet test).
+    # The `??` arm is accepted by the contract, not proved (see the sheet test).
     (
         "(s) => s.reasoningBudget === s.loadedReasoningBudget "
         "? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget) : s.reasoningBudget",
         True,
     ),
-    # A destructured parameter subscribes to exactly the same field.
     ("({ reasoningBudget }) => reasoningBudget", True),
     ("({ reasoningBudget: budget }) => budget", True),
     ("({ reasoningBudget, loaded }) => (loaded ? reasoningBudget : reasoningBudget)", True),
@@ -523,22 +510,17 @@ SELECTOR_CASES = [
     ("(s) => s.reasoningBudget !== null ? s.other : null", False),
     ("(s) => (s.enabled ? s.other : s.reasoningBudget).toString()", False),
     ("(s) => String(s.enabled ? s.reasoningBudget : s.nBatch)", False),
-    # A property of the field is another value: two messages of one length compare equal.
     ("(s) => s.reasoningBudget.length", False),
     ("(s) => s.reasoningBudget.toString()", False),
     ("(s) => (s.reasoningBudget).length", False),
-    # `?.` can skip the rest of the chain, the read of the field included.
     ("(s) => s.other?.format(s.reasoningBudget)", False),
-    # A constant arm counts only when a guard pins the field to that very value there.
     ("(s) => s.reasoningBudget === -1 ? -1 : s.reasoningBudget", True),
     ("(s) => -1 === s.reasoningBudget ? -1 : s.reasoningBudget", True),
     ("(s) => s.reasoningBudget !== null ? s.reasoningBudget : null", True),
     ("(s) => s.reasoningBudget === 'x' ? \"x\" : s.reasoningBudget", True),
     ('(s) => s.reasoningBudget === -1 && s.mode === "x" ? -1 : s.reasoningBudget', True),
     ("({ reasoningBudget: b }) => b === -1 ? -1 : b", True),
-    # -1 becoming 0 returns 0 both times.
     ("(s) => s.reasoningBudget === -1 ? 0 : s.reasoningBudget", False),
-    # Loose, negated, disjoined or nested comparisons hold the field to more than one value.
     ("(s) => s.reasoningBudget != null ? s.reasoningBudget : null", False),
     ("(s) => s.reasoningBudget == 0 ? 0 : s.reasoningBudget", False),
     ("(s) => !(s.reasoningBudget === -1) ? -1 : s.reasoningBudget", False),
@@ -548,16 +530,11 @@ SELECTOR_CASES = [
     ("(s) => defaults.reasoningBudget === -1 ? -1 : s.reasoningBudget", False),
     # `=== 0` also takes -0, which zustand's Object.is tells apart from 0.
     ("(s) => s.reasoningBudget === 0 ? 0 : s.reasoningBudget", False),
-    # A comparison or a logical operator returns something the field does not decide.
     ("(s) => s.reasoningBudget > 0", False),
     ("(s) => !s.reasoningBudget", False),
     ("(s) => s.enabled && s.reasoningBudget", False),
     ("(s) => s.reasoningBudget || -1", False),
-    # A line break after `return` returns undefined.
     ("(s) => { return\ns.reasoningBudget; }", False),
-    # Outside the subset read here, so refused rather than guessed at: statements, bindings,
-    # writes, nested functions, the comma operator, templates, regexes, escapes, arithmetic,
-    # a second call argument.
     ("(s) => { if (s.enabled) return s.reasoningBudget; return s.reasoningBudget; }", False),
     ("(s) => { const v = s.reasoningBudget; return v; }", False),
     ("(s) => { switch (s.mode) { default: return s.reasoningBudget; } }", False),
@@ -595,18 +572,11 @@ def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     selector mapping every budget to one constant would pass here.
     """
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
-    # The component that holds the capture memos, not the module: its siblings subscribe to the
-    # runtime store too, and only this one's re-render moves the Update button and the summary.
-    # Comments out before anything is discovered, not just inside the arms: a commented-out
-    # `// useChatRuntimeStore((s) => s.reasoningBudget)` left beside a selector repointed at
-    # another field is still a call as far as a text scan is concerned, and the marker sits
-    # outside the extracted argument, so stripping later cannot reach it.
+    # Comments are stripped first: a commented-out selector is still a call to a text scan.
     panel = _without_comments(_component_body(sheet, "ChatSettingsPanel"))
     selectors = _store_selectors(panel)
     assert selectors, "ChatSettingsPanel makes no useChatRuntimeStore() call"
     dependency_lists = _memo_dependency_lists(panel)
-    # The two memos that call capturePresetLoadConfig(): the dirty state behind the Update
-    # button, and the summary. Named, so the field cannot leave one for an unrelated memo.
     capturing = ("hasUnsavedPresetChanges", "currentLoadSummary")
     for memo in capturing:
         assert memo in dependency_lists, (
@@ -634,23 +604,19 @@ def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
     body = source[source.index("export function capturePresetLoadConfig") :]
     body = body[: body.index("\n}\n")]
-    # Here: capture asks the rule, off classifiers rather than constants, and bounds it.
     assert "requestableContextLength(\n    capturedContextLength(" in body, body
     assert "isServedByLlamaCpp({\n    loadedIsGguf: store.loadedIsGguf," in body, body
     assert not re.search(r"LlamaCpp\(\{[^}]*?(\w+): (?!store\.[\w.]*\1,)", body), body
     assert "isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason)" in body, body
-    # Compared as a pin, not as a field: another backend holds it in the other field.
     compare = source[source.index("function toComparablePerModelConfig(") :]
     compare = compare[: compare.index("\n}\n")]
     assert "const pin = savedContextPin(config);" in compare, compare
     assert "customContextLength: pin,\n    maxSeqLength: null," in compare, compare
-    # Both bounds, in the one rule capture and storage share, else the replays disagree.
     rule = source[source.index("function requestableContextLength(") :]
     rule = rule[: rule.index("\n}\n")]
     assert "Math.min(MAX_SEQ_LENGTH_MAX, Math.max(CONTEXT_LENGTH_MIN," in rule, rule
     assert source.count("requestableContextLength(") == 3, source
     assert "loadedContextLength: store.loadedContextLength," in body, body
     assert "controlPin: snapshot.customContextLength," in body, body
-    # A self-sized window is never captured: bounded, it replays a wider one narrower.
     assert re.search(r"capturedContextLength\(\{\n\s*isGguf,\n\s*controlPin:", body), body
     assert "maxSeqLength: isMlx ? null : normalizeMaxSeqLength(" in body, body

@@ -41,7 +41,7 @@ SCRIPTS = REPO / ".github" / "scripts"
 
 LINT_CI = WORKFLOWS / "lint-ci.yml"
 
-# lane name -> (shared script, the workflow that keeps a standalone copy of the job)
+# lane name -> (shared script, workflow that keeps a standalone copy of the job)
 ABSORBED = {
     "load-orchestrator": ("lane-load-orchestrator.sh", "studio-load-orchestrator-ci.yml"),
     "lockfile-audit": ("lane-lockfile-audit.sh", "lockfile-audit.yml"),

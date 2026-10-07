@@ -1,8 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# install.sh warns only when CUDA_VISIBLE_DEVICES="" hid NVIDIA on a mixed host and ROCm torch was picked.
+# Warn only when CUDA_VISIBLE_DEVICES="" hid NVIDIA on a mixed host and ROCm torch was picked.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,7 +21,7 @@ fi
 
 _SH="${BASH:-/bin/bash}"
 ROCM_URL="https://download.pytorch.org/whl/rocm7.1"
-# $1 = physical NVIDIA card (1/0), $2 = index url, $3 = env assignments, $4 = AMD card on PCI (default 1). Stub honours the mask like the real probe.
+# $1 = NVIDIA card (1/0), $2 = index url, $3 = env, $4 = AMD card on PCI (default 1).
 _run() {
     env -u CUDA_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES \
         $3 "$_SH" -c "

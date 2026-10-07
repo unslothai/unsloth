@@ -28,20 +28,15 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-# Terminal phases of GET /api/train/status.
-# From studio/backend/models/training.py: the field is `phase`, not `status`, and `completed` is the only one of the
-# three that means the adapter exists.
+# The field is `phase`, not `status`; only `completed` means the adapter exists.
 TRAINING_TERMINAL = frozenset({"completed", "error", "stopped"})
 TRAINING_OK = "completed"
 
-# Terminal values of GET /api/export/status last_op_status.
 EXPORT_OK = "success"
 
-# What a saved PEFT adapter directory has to contain before this payload will call a training run complete.
 ADAPTER_CONFIG = "adapter_config.json"
 ADAPTER_WEIGHTS = ("adapter_model.safetensors", "adapter_model.bin")
 
-# A LoRA adapter for the smallest model this payload will ever train is still tens of MiB.
 MIN_ADAPTER_BYTES = 4096
 
 
@@ -61,7 +56,6 @@ class Studio:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.token: str | None = None
-        # The password this session is currently authenticated by. See login().
         self.password: str | None = None
 
     def request(
@@ -173,8 +167,7 @@ class Studio:
         """Replace the bootstrap password so the session can reach the real routes."""
         import secrets
 
-        # token_urlsafe never yields whitespace, which change-password rejects,
-        # and never collides with the bootstrap value it has to differ from.
+        # token_urlsafe never yields whitespace, which change-password rejects.
         replacement = secrets.token_urlsafe(24)
         status, payload = self.post(
             "/api/auth/change-password",

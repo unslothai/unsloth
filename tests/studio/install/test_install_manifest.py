@@ -135,7 +135,6 @@ def test_a_pip_tilde_backup_is_named_as_a_backup(tmp_path, monkeypatch):
 
     assert im.installed_versions("demo") == ["1.0", "2.0"]
     assert im.pip_backup_metadata_paths("demo") == [backup]
-    # A healthy record must never be mistaken for one.
     assert im.pip_backup_metadata_paths("demo") != [site / "demo-2.0.dist-info"]
 
 
@@ -355,8 +354,7 @@ def test_platform_gated_lines_are_skipped_when_the_marker_does_not_apply(tmp_pat
 
 
 def test_missing_requirements_matches_on_distribution_not_import_name(tmp_path):
-    # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are jwt / docx / fitz, so matching on imports
-    # would look missing.
+    # studio.txt names PyJWT/python-docx/pymupdf (imported as jwt/docx/fitz), so match on dist names.
     req = tmp_path / "studio.txt"
     req.write_text("pytest\n", encoding = "utf-8")
     assert im.missing_requirements(req) == []
@@ -366,7 +364,7 @@ def test_complete_install_verifies_ok(install_root, req_root):
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
-    assert state["deps_ok"] is False  # the fake dist is intentionally absent
+    assert state["deps_ok"] is False
     assert state["reason"] == "studio_deps_missing"
     assert "unsloth-definitely-not-a-real-package" in state["missing"]
 
@@ -379,7 +377,7 @@ def test_missing_manifest_reports_incomplete(install_root, req_root):
 
 
 def test_interrupted_install_leaves_no_manifest(install_root, req_root):
-    # remove_manifest() runs before the dependency pass, so a later kill cannot leave a stale-but-valid manifest behind.
+    # remove_manifest() runs first, so a later kill cannot leave a stale-but-valid manifest.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     assert im.manifest_path(install_root).is_file()
     assert im.remove_manifest(install_root) is True
@@ -393,9 +391,7 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
 ):
     assert im.remove_manifest(install_root) is True
 
-    # A surviving marker must be reported, not swallowed: the dependency pass
-    # would then run behind a manifest that still verifies, so a part-way kill
-    # looks complete.
+    # A surviving marker must be reported, or a part-way kill would look complete.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = im.manifest_path(install_root)
 
@@ -407,7 +403,6 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
     assert im.remove_manifest(install_root) is False
     monkeypatch.undo()
 
-    # The stale marker still verifies, which is why the installer has to stop.
     assert path.is_file()
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
@@ -445,7 +440,6 @@ def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
 
 @pytest.mark.parametrize("conflict", ["pytest", "unsloth-zoo"])
 def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_root, conflict):
-    # `studio update --package X` records X.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(
         root = install_root,
@@ -460,8 +454,7 @@ def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_ro
 
 
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
-    # The --local dev path: an edited studio.txt must re-run the dependency pass, not sit behind setup.sh's "up to date"
-    # fast path.
+    # --local: an edited studio.txt must re-run the dep pass, not hit setup.sh's fast path.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     (req_root / "studio.txt").write_text("pytest\nrich\n", encoding = "utf-8")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
@@ -476,8 +469,7 @@ def test_unwritable_root_degrades_to_incomplete(tmp_path, req_root):
 
 
 def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
-    # `unsloth studio update` injects no UNSLOTH_NO_TORCH, so the venv has to remember how it was built or the update
-    # reinstalls torch into a GGUF-only environment (and on Windows deletes the venv it is running out of).
+    # `studio update` injects no UNSLOTH_NO_TORCH, so the venv must record how it was built.
     for recorded in (True, False):
         im.write_manifest(
             root = install_root,
@@ -493,8 +485,7 @@ def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
 
 
 def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_root):
-    # Manifests written before the key existed must keep verifying, and must report None rather than False so callers
-    # fall back to their own detection instead of silently switching an install out of no-torch mode.
+    # Pre-key manifests report None, not False, so callers fall back to their own detection.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     payload = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
     assert "no_torch" not in payload
@@ -520,8 +511,7 @@ def test_recorded_no_torch_reports_unknown_without_a_manifest(install_root):
 
 
 def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_root):
-    # remove_manifest() runs before every dependency pass, so a run killed during it leaves no manifest. The marker is
-    # what stops the next update reading the absent torch as a stale venv and deleting the environment it runs out of.
+    # A kill during the dep pass leaves no manifest; the marker stops the next update deleting the venv.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = True)
     assert im.recorded_no_torch(root = install_root) is True
@@ -531,7 +521,6 @@ def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_ro
 
 
 def test_manifest_key_overrides_a_stale_marker(install_root, req_root):
-    # Migrating out of no-torch must not be blocked by a marker left behind.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = False)
     assert im.recorded_no_torch(root = install_root) is False
@@ -649,7 +638,6 @@ def test_the_manifest_records_the_venvs_own_requirements_not_the_installers(inst
         "every install it performs as stale"
     )
 
-    # And the whole point: the install it just described reads as finished.
     state = im.verify_install(root = install_root, req_root = installed, package_name = "pytest")
     assert state["manifest_ok"] is True, state["reason"]
 
@@ -680,13 +668,10 @@ def test_remove_manifest_parks_the_file_as_evidence_only(install_root, req_root)
     live = json.loads(im.manifest_path(install_root).read_text(encoding = "utf-8"))
     assert im.remove_manifest(install_root) is True
     assert not im.manifest_path(install_root).is_file()
-    # The parked copy is byte-for-byte the last completed pass...
     assert im.read_previous_manifest(install_root) == live
-    # ...and nothing that decides whether the venv is finished can see it.
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["reason"] == "studio_install_incomplete"
     assert im.read_manifest(install_root) is None
-    # A pass that verifies against the parked copy gets the same verdict the live file gave.
     parked = im.read_previous_manifest(install_root)
     state = im.verify_install(
         root = install_root, req_root = req_root, package_name = "pytest", manifest = parked

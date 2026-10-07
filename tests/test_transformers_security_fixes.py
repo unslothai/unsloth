@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover
 
 REPO = Path(__file__).resolve().parent.parent
 TF_VERSION = Version(transformers.__version__.split("+")[0].split("rc")[0].split(".dev")[0])
-KERNEL_AFFECTED = TF_VERSION < Version("5.3.0")  # the fix installs below this
+KERNEL_AFFECTED = TF_VERSION < Version("5.3.0")
 # Hub kernels are only reachable from attn_implementation since 4.56.0.
 KERNEL_EXPLOITABLE = Version("4.56.0") <= TF_VERSION < Version("5.3.0")
 LIGHTGLUE_AFFECTED = Version("4.54.0") <= TF_VERSION < Version("5.5.0")
@@ -41,8 +41,7 @@ TEMPLATE_AFFECTED = TF_VERSION < Version("5.10.0")
 
 
 def _load_import_fixes():
-    # Loaded by path so the test needs neither a GPU nor unsloth_zoo; UNSLOTH_IMPORT_FIXES lets a
-    # base-vs-head run point the same tests at another revision.
+    # UNSLOTH_IMPORT_FIXES lets a base-vs-head run point these tests at another revision.
     path = os.environ.get("UNSLOTH_IMPORT_FIXES", str(REPO / "unsloth" / "import_fixes.py"))
     spec = importlib.util.spec_from_file_location("unsloth_import_fixes_security", path)
     module = importlib.util.module_from_spec(spec)
@@ -73,8 +72,7 @@ if ProcessorMixin is not None:
 
 @pytest.fixture
 def unpatched():
-    # conftest's `import unsloth` may already have installed the fixes, so strip them first and
-    # put back exactly what was there afterwards.
+    # conftest's `import unsloth` may have installed the fixes: strip them, restore after.
     saved = [(owner, name, owner.__dict__.get(name)) for owner, name, _ in _TARGETS]
     for owner, name, flag in _TARGETS:
         setattr(owner, name, _unwrapped(owner, name, flag))
@@ -147,8 +145,7 @@ def _crafted_kernel_repo(tmp_path):
 
 def _crafted_lightglue_repo(tmp_path):
     marker = tmp_path / "LIGHTGLUE_CODE_RAN"
-    # A per-test module name: transformers caches dynamic modules by name, so a shared one would
-    # import once per process and leave later tests unable to see the code run.
+    # Per-test module name: transformers caches dynamic modules by name.
     detector = tmp_path / f"evil_detector_{tmp_path.name}"
     detector.mkdir()
     (detector / "configuration_evil.py").write_text(
@@ -196,11 +193,6 @@ def _escaped_files(root):
     return [p for p in Path(root).rglob("ESCAPED_TEMPLATE*")]
 
 
-# ---------------------------------------------------------------------------
-# Wiring: the fixes run at `import unsloth`, on both the GPU and the MLX path.
-# ---------------------------------------------------------------------------
-
-
 def test_fixes_are_called_and_deleted_in_gpu_init():
     source = (REPO / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
     for name in (
@@ -216,11 +208,6 @@ def test_fixes_are_called_on_the_mlx_path():
     assert "fix_transformers_untrusted_config_fields as _fix_untrusted_config" in source
     assert "fix_transformers_chat_template_path_traversal as _fix_template_names" in source
     assert "_fix_untrusted_config()" in source and "_fix_template_names()" in source
-
-
-# ---------------------------------------------------------------------------
-# The exploits reproduce without the fix exactly where the advisories say.
-# ---------------------------------------------------------------------------
 
 
 def test_unpatched_kernel_field_reaches_the_kernel_fetch(unpatched, kernel_fetches, tmp_path):
@@ -252,11 +239,6 @@ def test_unpatched_template_name_escapes_save_dir(unpatched, tmp_path):
     assert bool(_escaped_files(tmp_path / "out")) == TEMPLATE_AFFECTED
 
 
-# ---------------------------------------------------------------------------
-# With the fix: blocked, benign behaviour unchanged.
-# ---------------------------------------------------------------------------
-
-
 def test_kernel_field_from_config_json_is_dropped(patched, kernel_fetches, tmp_path):
     repo = _crafted_kernel_repo(tmp_path)
     config = AutoConfig.from_pretrained(repo)
@@ -285,7 +267,7 @@ def test_explicit_kernel_attn_implementation_still_reaches_the_hub(
             repo, attn_implementation = "kernels-community/flash-attn"
         )
     except Exception:
-        pass  # the stub refuses the fetch; what matters is that the caller's choice got there
+        pass  # the stub refuses the fetch; only that the caller's choice got there matters
     assert kernel_fetches == ["kernels-community/flash-attn"]
 
 
@@ -366,11 +348,6 @@ def test_benign_model_roundtrip_is_unchanged(patched, tmp_path):
         assert torch.equal(model(ids).logits, again(ids).logits)
 
 
-# ---------------------------------------------------------------------------
-# Idempotent, and nothing installed on a transformers that carries the fix.
-# ---------------------------------------------------------------------------
-
-
 def _wrap_depth(owner, name, flag):
     current = owner.__dict__.get(name)
     function = current.__func__ if isinstance(current, classmethod) else current
@@ -420,7 +397,6 @@ def test_lightglue_class_ignores_a_disguised_model_type(patched, tmp_path):
 
 
 def test_template_names_checked_even_without_jinja_files(patched):
-    # Processor save_pretrained writes named templates without consulting save_jinja_files.
     class Holder:
         chat_template = {"default": "x", "../../escape": "y"}
 
@@ -429,8 +405,7 @@ def test_template_names_checked_even_without_jinja_files(patched):
 
 
 def test_windows_drive_relative_template_name_is_refused(patched, monkeypatch):
-    # On Windows `C:evil` joins onto a C: probe base unchanged but lands outside a save
-    # directory on another drive. Simulate ntpath with a drive on the probe base.
+    # On Windows `C:evil` lands outside a save dir on another drive; simulate via ntpath.
     import ntpath
     import types
 

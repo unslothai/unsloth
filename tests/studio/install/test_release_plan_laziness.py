@@ -163,7 +163,7 @@ def test_linux_still_takes_the_newest_release_from_the_download_host(monkeypatch
     releases = FakeReleases(monkeypatch, cdn_tag = RELEASE_TAGS[0])
     _tag, plans = resolve(linux_host())
 
-    assert len(list(plans)) == 1  # the CDN surfaces only the newest, as before
+    assert len(list(plans)) == 1
     assert releases.resolved == [RELEASE_TAGS[0]]
     assert releases.api_listing_reads == 0
 
@@ -345,12 +345,10 @@ def test_a_deferred_403_still_reaches_the_source_build_end_to_end(tmp_path, monk
 
     monkeypatch.setattr(ILP, "validate_prebuilt_attempts", _validation_fails)
 
-    # Keep a runnable install when release lookup fails.
     install_dir = build_install(tmp_path, host = MACOS, marker = S12, payload_backend = "metal")
     ILP.install_prebuilt(install_dir, "latest", PUBLISHED_REPO, "")
     assert (install_dir / "llama-server").exists()
 
-    # Otherwise request a source build.
     broken = build_install(
         tmp_path / "broken", host = MACOS, marker = S12, payload_backend = "metal", runnable = False
     )

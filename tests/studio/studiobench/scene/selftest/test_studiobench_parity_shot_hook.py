@@ -75,8 +75,7 @@ def test_no_shot_is_taken_when_none_was_asked_for():
 
 
 def test_the_digest_call_never_takes_a_picture():
-    # The digest is taken INSIDE the measured window and the shot outside it, so `_parity` must not be a
-    # camera; if it becomes one again, the encode is charged to the film's own clock.
+    # The digest is taken inside the measured window and the shot outside, so `_parity` is no camera.
     page = StubPage()
     got = runner(page, parity_shots = "/nonexistent", arm_label = "base")._parity()
     assert page.shots == []
@@ -84,8 +83,7 @@ def test_the_digest_call_never_takes_a_picture():
 
 
 def test_the_shot_is_named_for_its_cell_action_and_arm(tmp_path):
-    # The arm has to be IN the name. Both arms share a fixture, a film and a password, so a file that
-    # says only "settings" cannot be attributed to a side once it leaves this directory.
+    # Both arms share fixture, film and password, so the arm must be in the filename.
     page = StubPage(scroll = 940)
     got = runner(page, parity_shots = str(tmp_path), arm_label = "treatment")._parity_shot("settings")
     assert got["shot"] == "r100K.treatment.rep1__settings__treatment.png"
@@ -102,20 +100,17 @@ def test_the_two_arms_do_not_collide_on_one_filename(tmp_path):
 
 
 def test_a_camera_failure_does_not_cost_the_measurement(tmp_path):
-    # The digest is the reading; the picture is evidence about it. Losing the second must not discard
-    # the first, or a flaky screenshot turns a green run red for no reason.
+    # A failed screenshot must not discard the digest.
     page = StubPage(shot_raises = True)
     got = runner(page, parity_shots = str(tmp_path), arm_label = "base")._parity_shot("settings")
     assert "shot" not in got
     assert "Target closed" in got["shot_error"]
-    # And the row it merges into keeps its reading.
     row = {"parity_attempted": True, "digest": "abcd1234"}
     row.update(got)
     assert row["parity_attempted"] is True and row["digest"] == "abcd1234"
 
 
 def test_a_capture_failure_is_still_reported_as_a_failure(tmp_path):
-    # And the other direction: the shot hook must not paper over a capture that did not happen.
     page = StubPage(capture_raises = True)
     got = runner(page, parity_shots = str(tmp_path), arm_label = "base")._parity()
     assert got["parity_attempted"] is False

@@ -43,7 +43,6 @@ def _calls(fn: ast.FunctionDef, name: str) -> list[ast.Call]:
 
 def test_the_permission_reload_never_waits_for_networkidle():
     helper = _helper()
-    # Positional or `state = "networkidle"`: both are the same wait.
     idle = [
         call
         for call in _calls(helper, "wait_for_load_state")

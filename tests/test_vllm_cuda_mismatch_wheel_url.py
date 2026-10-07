@@ -135,9 +135,7 @@ _RELEASE_ASSETS = {
     ),
 }
 
-# Which CUDA major each snapshot asset is built for.
-# the unsuffixed default wheel is CUDA 13 from 0.20.0 on ("CUDA 13.0 default" in the v0.20.0 release notes) and CUDA 12
-# before that.
+# Unsuffixed default wheel is CUDA 13 from vLLM 0.20.0 on, CUDA 12 before.
 _LOCAL_TAG_RE = re.compile(r"^vllm-[0-9.]+\+cu(\d\d)\d")
 
 _ARCHES = ("x86_64", "aarch64")
@@ -256,7 +254,7 @@ def test_unmapped_newer_release_points_at_the_release_page(monkeypatch):
     message = _mismatch_message(monkeypatch, vllm = "0.99.0")
     assert ".whl" not in message, message
     assert "https://github.com/vllm-project/vllm/releases/tag/v0.99.0" in message
-    assert "+cu129" in message  # still says which variant to pick
+    assert "+cu129" in message
 
 
 def test_non_release_version_never_fabricates_a_filename(monkeypatch):

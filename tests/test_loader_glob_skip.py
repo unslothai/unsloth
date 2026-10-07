@@ -76,7 +76,6 @@ class TestGlobSkippedWhenNotBothConfigs(unittest.TestCase):
             model_name = "org/some-model",
         )
         self.assertFalse(glob_called, "glob should not be called when SUPPORTS_LLAMA32=False")
-        # both_exist set by the old-style check: (is_model and is_peft) and not SUPPORTS_LLAMA32
         self.assertTrue(both_exist)
 
     def test_glob_called_when_both_true_and_supports_llama32(self):
@@ -120,7 +119,7 @@ class TestLoaderSourceHasGuard(unittest.TestCase):
             for line in lines
             if "SUPPORTS_LLAMA32" in line and "if " in line and "is_model" in line
         ]
-        # There should be exactly 2 guarded checks (one per from_pretrained method)
+        # One guarded check per from_pretrained method.
         self.assertEqual(
             len(guard_lines),
             2,

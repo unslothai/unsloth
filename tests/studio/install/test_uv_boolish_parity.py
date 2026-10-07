@@ -57,14 +57,11 @@ from woa_ps_harness import (
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 
-# uv's own set, from crates/uv-static/src/lib.rs at 0.10.7. Spelled out rather than
-# derived, because a derived table would follow the implementation wherever it went.
+# uv's set from crates/uv-static/src/lib.rs at 0.10.7, spelled out so it cannot follow the code.
 UV_TRUE = ("1", "t", "true", "y", "yes", "on")
 UV_FALSE = ("0", "f", "false", "n", "no", "off")
 
-# (value, is the flag set). Every row is a value a caller could really write.
 BOOLISH_TABLE = (
-    # The ordinary spellings.
     ("1", True),
     ("true", True),
     ("yes", True),
@@ -72,15 +69,13 @@ BOOLISH_TABLE = (
     # The single letters. uv takes them, so a table that stopped at `true` would be wrong.
     ("t", True),
     ("y", True),
-    # Case is not significant to uv, nor to pip.
     ("TRUE", True),
     ("True", True),
     ("YES", True),
     ("ON", True),
     ("T", True),
     ("Y", True),
-    # The four that the old `-notin @("", "0", "false")` spelling got backwards. These are
-    # the whole reason this file exists.
+    # The four the old `-notin @("", "0", "false")` spelling got backwards.
     ("off", False),
     ("OFF", False),
     ("OfF", False),
@@ -90,16 +85,12 @@ BOOLISH_TABLE = (
     ("N", False),
     ("f", False),
     ("F", False),
-    # The two it already got right.
     ("0", False),
     ("false", False),
     ("FALSE", False),
-    # Unset, or set to nothing, is not a request for anything.
     ("", False),
     ("   ", False),
-    # Not boolish at all. uv exits on these rather than resolving, so the only answer that
-    # does not act on a value uv rejected is "not set". `2` is the one the old spelling
-    # read as TRUE.
+    # uv exits on non-boolish values, so answer 'not set'; the old spelling read `2` as TRUE.
     ("2", False),
     ("01", False),
     ("maybe", False),
@@ -107,8 +98,7 @@ BOOLISH_TABLE = (
     ("truee", False),
     ("offline", False),
     ("nope", False),
-    # Padded. uv itself does not trim and aborts on all four, so the resolve fails whatever
-    # is answered here; every implementation trims, and they must trim alike.
+    # uv itself does not trim and aborts on these; every implementation must trim alike.
     ("  1  ", True),
     ("  true  ", True),
     ("\ttrue\t", True),
@@ -143,8 +133,7 @@ def _sh_offline(value: str | None, tmp_path: pathlib.Path) -> bool:
         text[start : text.index("\n}\n", start) + 3]
         + "\nif _uv_offline_requested; then echo yes; else echo no; fi\n"
     )
-    # `sh` with a pinned POSIX PATH, not `bash`: on a Windows runner `bash` resolves to the
-    # WSL stub, which answers in UTF-16 and runs nothing.
+    # `sh` with a pinned PATH: on Windows `bash` is the WSL stub, which runs nothing.
     done = subprocess.run(
         ["sh", str(probe)],
         capture_output = True,
@@ -175,8 +164,7 @@ def _py_flag(function: str, name: str, value: str | None, monkeypatch) -> bool:
 
     namespace: dict = {"os": os}
     exec(compile(ast.Module(body = [node], type_ignores = []), "<stack>", "exec"), namespace)
-    # monkeypatch, never a bare os.environ write: a bare write outlives the test and leaves
-    # a resolver policy set for every other module in this directory.
+    # A bare os.environ write outlives the test.
     monkeypatch.delenv(name, raising = False)
     if value is not None:
         monkeypatch.setenv(name, value)
@@ -202,9 +190,6 @@ def _ps_flag(script: pathlib.Path, function: str, name: str, value: str | None) 
         f'Write-Output ([string]({function} "{name}"))',
     )
     return _ps_last(snippet, env = _env(name, value)) == "True"
-
-
-# ── uv's table, in all four languages ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
@@ -275,9 +260,6 @@ def test_every_uv_variable_gets_the_same_table(variable, value, expected):
     assert _ps_flag(SETUP_PS1, "Test-UvEnvFlag", variable, value) is expected
 
 
-# ── pip's table, kept its own ────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
 def test_the_python_installer_reads_pip_no_index_from_pips_table(value, expected, monkeypatch):
     assert _py_flag("_pip_env_flag", "PIP_NO_INDEX", value, monkeypatch) is expected
@@ -303,8 +285,7 @@ def test_pips_rule_is_checked_against_pip_itself():
     for value in UV_FALSE:
         assert strtobool(value) == 0, value
         assert strtobool(value.upper()) == 0, value
-    # Everything else is an error to pip, which is why the installers answer "not set"
-    # rather than picking a side: pip would never have run with that value anyway.
+    # Everything else is an error to pip, so the installers answer 'not set'.
     for value in ("", "   ", "2", "01", "maybe", "tr", "offline"):
         with pytest.raises(ValueError):
             strtobool(value)
@@ -328,24 +309,17 @@ def test_the_pip_reader_is_a_separate_function_from_the_uv_one():
         assert uv_name not in _function_source(source, pip_name)
 
 
-# ── the sites ────────────────────────────────────────────────────────────────────────────
-
-
 PS1_FILES = sorted(
     path
     for path in PACKAGE_ROOT.rglob("*.ps1")
     if ".git" not in path.parts and "tests" not in path.parts
 )
 
-# The spelling that was wrong. Matched as text so a new site written the old way fails
-# here, which is the only thing that keeps four separated copies honest over time.
+# Matched as text so a new site written the old way fails.
 OLD_IDIOM = '-notin @("", "0", "false")'
 
-#: Reading an environment variable through the provider and then taking `.Value`. Fine
-#: while the variable is set; under a caller's `Set-StrictMode -Version 2` or `Latest` it
-#: is a terminating PropertyNotFoundException the moment it is not, because the property
-#: is being read off `$null`. `-ErrorAction SilentlyContinue` does not help: it suppresses
-#: Get-Item's own error, not the property access on what it did not return.
+# (Get-Item Env:X).Value throws PropertyNotFoundException under Set-StrictMode 2+ when X is unset;
+# -ErrorAction SilentlyContinue does not cover the property access.
 _STRICT_UNSAFE_ENV_READ = re.compile(r"\(\s*Get-Item\s+[\"']?Env:[^)]*\)\s*\.Value")
 
 
@@ -415,9 +389,6 @@ def test_the_two_powershell_copies_are_identical(name):
     assert install == setup
 
 
-# ── UV_NO_INDEX is ours, and the code must say so ────────────────────────────────────────
-
-
 def test_uv_no_index_is_not_a_uv_environment_variable():
     """Recorded as an assertion because the code reads a UV_-prefixed name and a reader
     will otherwise assume uv defines it.
@@ -433,13 +404,10 @@ def test_uv_no_index_is_not_a_uv_environment_variable():
         (STACK_SRC, "_no_index_requested", "def _no_index_requested("),
     ):
         assert reader in source, reader
-        # The documentation window: PowerShell puts it in the comment block ABOVE the
-        # function, Python in the docstring below the def, so take both sides.
+        # PowerShell documents above the function, Python below the def: take both.
         at = source.index(marker)
         window = source[max(0, at - 1800) : at + 1800]
-        # Comment markers stripped and whitespace collapsed before matching: the sentence
-        # is wrapped across lines, and an assertion that a reflow can break is an assertion
-        # that will be deleted rather than fixed.
+        # Strip markers and collapse whitespace so a reflow cannot break the assertion.
         prose = " ".join(line.lstrip().lstrip("#").strip() for line in window.splitlines())
         prose = " ".join(prose.split())
         assert "defines no such environment variable" in prose, reader
@@ -482,9 +450,6 @@ def test_we_do_not_silently_translate_our_convention_into_a_uv_flag():
             if line.strip().startswith("#"):
                 continue
             assert not ("--no-index" in line and "UV_NO_INDEX" in line), line
-
-
-# ── what the callers do with the answer ──────────────────────────────────────────────────
 
 
 @requires_pwsh
@@ -579,8 +544,7 @@ def test_a_no_index_set_to_a_false_value_still_names_an_index(script, variable, 
         f"Write-Output ('[' + ((Get-WoaDependencyIndexArgs -Resolver '{resolver}')"
         " -join '|') + ']')",
     )
-    # UV_NO_CONFIG is left unset here on purpose, so the config walk runs the way it does
-    # on a real host; the assertion is only that an index was named.
+    # UV_NO_CONFIG stays unset so the config walk runs as on a real host.
     got = _ps_last(snippet, env = _env(variable, value))
     assert got != "[]", f"{variable}={value!r} is false, so an index must still be named"
     assert "https://pypi.org/simple" in got, got

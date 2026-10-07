@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 # tests/conftest.py puts tests/_shared on sys.path; see unsloth_pwsh_runner for why a bare
-# subprocess call to pwsh is not enough under xdist.
+# pwsh subprocess is not enough under xdist.
 from unsloth_pwsh_runner import PWSH, run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,10 +31,7 @@ SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 
-# These execute blocks of the POSIX installer, so they need bash AND a POSIX filesystem. Git
-# Bash puts bash on PATH on a Windows runner, where the blocks run against Windows path
-# semantics and hand back UTF-16 (`assert '\x00' == 'ALLOWED'`). setup.ps1 is covered separately
-# here and in tests/studio/, so skipping loses no coverage.
+# Needs POSIX bash: Git Bash on Windows runs these against Windows paths and UTF-16.
 NEEDS_POSIX_BASH = pytest.mark.skipif(
     shutil.which("bash") is None or os.name == "nt",
     reason = "runs studio/setup.sh blocks: needs bash on a POSIX filesystem",
@@ -187,7 +184,7 @@ def test_setup_ps1_derives_both_runtimes_from_the_master_root():
     assert "$env:UNSLOTH_HOME" in helper
     llama = _slice(src, "function Get-ManagedLlamaCppDir", "\n# Failure reason when the managed")
     assert "Get-MasterRootOverride" in llama
-    # The master root has to lose to an explicit staging root, as it does in setup.sh.
+    # The master root must lose to an explicit staging root, as in setup.sh.
     assert llama.index("$StagingRoot") < llama.index("Get-MasterRootOverride")
     node = _slice(src, "    $_masterRoot = Get-MasterRootOverride", "    $NodeDir = Join-Path")
     assert "$NodeParent = $_masterRoot" in node
@@ -416,18 +413,13 @@ def test_a_master_root_alone_still_asserts_ownership_of_the_runtimes(tmp_path):
 @pytest.mark.parametrize(
     "environment, expected",
     [
-        # Staging: the placement below gives STAGE_ROOT precedence over the master root, so the
-        # master root is not where anything lands and must not decide ownership. Raised anyway,
-        # it demanded an owner marker from a markerless tree the old updater had staged, and an
-        # update that worked on the merge base exited instead.
+        # Staging: STAGE_ROOT beats the master root, so the master root must not decide ownership.
         pytest.param(
             {"UNSLOTH_STUDIO_STAGE_ROOT": "STAGE", "_STUDIO_HOME_IS_CUSTOM": "false"},
             ["false", "false"],
             id = "a staged update ignores the master root",
         ),
-        # And the flag has to be ASSIGNED, not only raised: a custom STUDIO_HOME whose runtimes
-        # land in the legacy root kept it true and demanded markers from exactly the pre-marker
-        # ~/.unsloth/llama.cpp this comparison exists to spare.
+        # The flag must be assigned, not only raised, or pre-marker legacy roots demand markers.
         pytest.param(
             {"UNSLOTH_HOME": "LEGACY", "_STUDIO_HOME_IS_CUSTOM": "true"},
             ["true", "false"],
@@ -508,8 +500,7 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
             name in line for name in ("$NODE_DIR", "$LLAMA_CPP_DIR", "$WHISPER_CPP_DIR")
         ), line
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    # Seeded from the Studio flag and raised only when the master root is elsewhere, as setup.sh
-    # does; test_the_windows_legacy_root_named_explicitly_is_not_custom runs the divergence.
+    # Seeded from the Studio flag, raised only when the master root is elsewhere, as setup.sh.
     assert "$RuntimeRootIsCustom = $StudioHomeIsCustom\n" in ps
     assert "$_masterRootForOwnership -ine $_legacyRuntimeRoot" in ps
     for line in ps.splitlines():
@@ -553,7 +544,6 @@ def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
         return done.stdout.strip()
 
     assert flag(str(home / ".unsloth")) == "false"
-    # Non-vacuity: a root that really is elsewhere still takes the strict path.
     assert flag(str(tmp_path / "portable")) == "true"
     assert flag("") == "false"
 
@@ -572,23 +562,19 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
     profile = tmp_path / "profile"
     (profile / ".unsloth" / "studio").mkdir(parents = True)
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    # The derivation itself, from the flag it seeds to the line after it.
     block = _slice(ps, "$RuntimeRootIsCustom = $StudioHomeIsCustom", "$LlamaCppDir = ")
     script = tmp_path / "probe.ps1"
     script.write_text(
         "\n".join(
             (
                 f"$txt = Get-Content -Raw '{SETUP_PS1}'",
-                # The shipped helpers, so a rewrite that keeps the words and changes the
-                # canonicalisation still fails here.
                 'foreach ($n in @("Get-PathState", "Test-AccessDeniedError", "Get-CanonicalDir",'
                 ' "Get-MasterRootOverride")) {',
                 '    $m = [regex]::Match($txt, "(?ms)^function $n \\{.*?^\\}")',
                 '    if (-not $m.Success) { Write-Output "EXTRACT-FAILED:$n"; exit 1 }',
                 "    Invoke-Expression $m.Value",
                 "}",
-                # Test-StudioHomeIsCustom closes over $StudioHome, so it is stated here rather
-                # than extracted: the point of this probe is the master-root comparison.
+                # Test-StudioHomeIsCustom closes over $StudioHome, so it is stated, not extracted.
                 "$StudioHomeIsCustom = $false",
                 block,
                 "Write-Output $RuntimeRootIsCustom",
@@ -614,7 +600,6 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
         return out.splitlines()[-1].strip()
 
     assert flag(str(profile / ".unsloth")) == "False"
-    # Non-vacuity, and the same two controls the bash test uses.
     assert flag(str(tmp_path / "portable")) == "True"
     assert flag("") == "False"
 
@@ -639,11 +624,10 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert "function _RemoveDirIfEmpty" in ps
     helper = _slice(ps, "    function _RemoveDirIfEmpty {", "\n    # The exact shape")
-    # One atomic call: no -Recurse anywhere in it, and no emptiness question asked separately.
+    # One atomic call: no -Recurse, and no separate emptiness check.
     assert "[System.IO.Directory]::Delete($Path, $false)" in helper
     assert "-Recurse" not in helper, helper
     assert "Get-ChildItem" not in helper, helper
-    # And both master-root sites go through it rather than keeping their own version.
     master_block = _slice(ps, "$masterRoot = $masterRootToStop", "if ($defaultLlamaCpp)")
     assert master_block.count("_RemoveDirIfEmpty") == 2, master_block
     assert "-ErrorAction SilentlyContinue)) {\n            _RemovePath" not in master_block
@@ -686,7 +670,7 @@ def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_pa
     assert still_there(occupied)
     assert (occupied / "theirs.txt").is_file(), "a non-empty root must keep its contents"
 
-    # A directory holding only a subdirectory: rmdir refuses this too, and a -Recurse would not.
+    # A dir holding only a subdir: rmdir refuses it, a -Recurse would not.
     nested = tmp_path / "nested"
     (nested / "child").mkdir(parents = True)
     assert still_there(nested)
@@ -762,10 +746,7 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     assert refusal, "the unparseable-path refusal is gone"
     assert "\\s" in refusal.group(1), "the whitespace refusal is gone"
     assert "''" in refusal.group(1), "the apostrophe refusal is gone"
-    # The two refusals do NOT share a destination. A spaced path keeps the drive-root directory
-    # it has always used; an apostrophe-only path publishes nothing, because C:\tc is shared and
-    # predictable and _setup_cache_env honours an inherited value without applying its own
-    # per-account rule to it.
+    # The refusals differ: an apostrophe-only path publishes nothing since C:\tc is shared.
     assert "$TorchCacheUnparseable" in block, "the apostrophe case lost its separate route"
     assert "-not $TorchCacheUnparseable" in block
     assert '"C:\\tc"' in block
@@ -773,7 +754,7 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     roots = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(
         encoding = "utf-8"
     )
-    # The same key, named by both sides, so the two cannot drift apart silently.
+    # Same key named by both sides, so they cannot drift apart.
     assert '"TORCHINDUCTOR_CACHE_DIR",' in roots
     assert 'str(root / "torchinductor")' in roots
 
@@ -791,15 +772,11 @@ def test_the_windows_node_guard_covers_a_master_root():
     never wrote: it named a third variable. So the rule here is positive, not a denial.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
-    # Every site in the Node install section that decides whether the Node path is the user's.
-    # Keyed on $NodeOverride, the variable the bug named, not $NodeDir: the guard's probe moved
-    # to its own line, so a $NodeDir test would pass by seeing less. The section start drops the
-    # parsing block far above, which rightly says nothing about the runtime root.
+    # Keyed on $NodeOverride, not $NodeDir, whose probe moved and would pass by seeing less.
     lines = ps.splitlines()
     start = next(i for i, line in enumerate(lines) if "$nodeEntry = if (" in line)
     guards = [line for line in lines[start:] if "$NodeOverride" in line]
-    # The guard's probe, and the marker's `if`. Fewer means the block was restructured and this
-    # test would otherwise pass by finding nothing.
+    # Fewer means the block was restructured and this test would pass by finding nothing.
     assert len(guards) >= 2, guards
     for line in guards:
         assert "$RuntimeRootIsCustom" in line, line
@@ -853,9 +830,7 @@ def test_neither_uninstaller_recurses_into_an_install_lock_path():
     assert "_remove_lock_file() {" in sh
     assert "function _RemoveLockFile" in ps
 
-    # The call sites do not all spell the lock out (PowerShell iterates $lockName, both sweep a
-    # $stale), so matching only "install.lock" let the master-root loop keep the recursive
-    # remover and still pass.
+    # Call sites do not all spell out the lock name, so match these variable spellings too.
     lockish = ("install.lock", "lockName", "$stale", "_stale", "_mr_lock")
     for text, remover, shape in (
         (sh, "_remove_path ", "_remove_lock_file"),
@@ -871,14 +846,9 @@ def test_neither_uninstaller_recurses_into_an_install_lock_path():
                 continue
             hits += 1
             assert shape in line, line
-        # Counts the call sites found, not the ones left wrong: once they are all correct the
-        # remover no longer appears beside a lock at all, and a count of zero would mean the
-        # tokens above had stopped matching and this loop proved nothing.
+        # Counts sites found, not wrong ones; zero would mean the tokens stopped matching.
         assert hits >= 4, (remover, hits)
 
-    # The rename keeps the leading dot, and neither a glob without one nor the dot alone is
-    # enough, so the sweep matches the installer's full shape; held by
-    # test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make below.
     assert "install.lock.stale" in ps
     assert '"*.install.lock.stale.*"' not in ps
 
@@ -897,11 +867,9 @@ def test_both_uninstallers_clear_the_master_root_children():
         assert marker in block, block
         for child in ("llama.cpp", "node", "whisper.cpp"):
             assert child in block, (child, block)
-    # A user-chosen root reaches the deny list on both sides before anything is removed.
     assert '_is_unsafe_root "$_mr_root"' in sh
     assert "_IsUnsafeRoot $masterRoot" in ps
-    # And it only contributes its studio child when neither exact override is set, as in
-    # storage_roots.studio_root().
+    # Adds its studio child only when neither override is set, as storage_roots.studio_root().
     assert '_emit "$(_master_root)/studio"' in sh
     assert '$envRoot = (Join-Path $master "studio")' in ps
 
@@ -929,9 +897,6 @@ def test_a_shared_staging_directory_is_pruned_not_deleted():
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert 'rmdir "$_mr_root/.staging"' in sh
     assert '_remove_path "$_mr_root/.staging"' not in sh
-    # The Windows equivalent of rmdir, for the same reason. Asking with Get-ChildItem and then
-    # calling _RemovePath is not it: see
-    # test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty.
     staging = _slice(
         ps, '_RemoveDirIfEmpty (Join-Path $masterRoot ".staging")', "# Shared llama.cpp build"
     )
@@ -1059,8 +1024,7 @@ def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
     assert "(Get-MasterRootOverride)" in block
     assert "-not $StageRoot" in block
     assert '".unsloth-master-root"' in block
-    # Staged then renamed: a reader catching a half-written note would name a truncated path,
-    # and this note licenses deletions.
+    # Staged then renamed: this note licenses deletions, so it must never be half-written.
     assert "$noteTmp" in block and "Move-Item" in block
     # The 3-argument overwrite overload is .NET Core only, and setup.ps1 runs under 5.1.
     assert "[System.IO.File]::Move(" not in block
@@ -1088,23 +1052,17 @@ def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
     assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code, code
     assert "[NullString]::Value, 'User'" in code, code
     assert "Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR" in code, code
-    # Both clears go through the one predicate, so shape and provenance cannot drift apart.
     assert code.count("Test-UnparseableManagedTorchCache") == 2, code
     predicate = _slice(
         ps, "function Test-UnparseableManagedTorchCache", "\nfunction Clear-Unparseable"
     )
     rule = "\n".join(l for l in predicate.splitlines() if not l.lstrip().startswith("#"))
-    # Shape: a path the builders can read belongs to whoever set it.
     assert "-notmatch '[\\s'']'" in rule, rule
-    # Provenance: and so does an unparseable path this installer never wrote. Comparing against
-    # the contained path this run computes is the only evidence available, since nothing records
-    # who set the variable.
+    # Nothing records who set the variable, so compare against this run's managed path.
     assert "$Managed" in rule and "-ieq" in rule, rule
     assert '$managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in code
-    # A staged run never writes the real account's environment, as the persist below does not.
     assert "-not $StageRoot" in code, code
 
-    # The call is outside the dependency block, measured by brace depth rather than by reading.
     lines = ps.splitlines()
     gate = lines.index("if (-not $SkipPythonDeps) {")
     depth = 0
@@ -1133,10 +1091,9 @@ def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
     )
     assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in block
     assert "[NullString]::Value, 'User'" in block
-    # Scoped to what this run owns. $knownRoots includes roots the gates refused to delete.
+    # $knownRoots includes roots the gates refused to delete.
     assert "$ownedRoots" in block and "$knownRoots" not in block
-    # Comments stripped first: this block explains why C:\tc is spared, and a comment saying so
-    # is not the same thing as code naming it.
+    # Strip comments first: prose naming C:\tc is not code naming it.
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
     assert "C:\\tc" not in code
 
@@ -1156,13 +1113,10 @@ def test_the_windows_node_guard_treats_a_file_as_occupied():
         "install_node_prebuilt.py",
     )
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
-    # Get-Item -Force, not Test-Path: under 5.1 Test-Path answers for the link TARGET, so a
-    # dangling `node` link read as absent and install_node_prebuilt.py installed through it.
+    # Get-Item -Force, not Test-Path: 5.1 Test-Path follows links, so a dangling one reads absent.
     assert "Get-Item -LiteralPath $NodeDir -Force" in code, code
     assert "Test-Path -LiteralPath $NodeDir" not in code, code
-    # A reparse point is not a directory here either, however it resolves.
     assert "$nodeEntry.PSIsContainer" in code and "ReparsePoint" in code, code
-    # And a non-directory must fail rather than fall through to the marker questions.
     assert "$nodeIsDir" in code and "-not $nodeIsDir -or" in code
 
 
@@ -1178,9 +1132,7 @@ def test_the_windows_runtime_guard_treats_a_file_as_occupied():
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(ps, "function Assert-StudioOwnedOrAbsent", "function Mark-StudioOwned")
     code = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("#"))
-    # Get-Item -Force, not another Test-Path: 5.1 answers false for a dangling link.
     assert "Get-Item -LiteralPath $Path -Force" in code
-    # A non-directory is refused, and only under a root the user chose.
     assert "if (-not $isCustomRoot) { return }" in code
     assert "already exists and is not a directory" in block
     # Fatal even in -NonFatal mode: that mode rescues a denial, not somebody else's file.
@@ -1205,8 +1157,7 @@ def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
     sh_block = _slice(sh, "_crf_canon=", '_remove_root_recording_db "$_custom_root"')
     sh_code = "\n".join(l for l in sh_block.splitlines() if not l.lstrip().startswith("#"))
     assert "_MASTER_ROOT_SAVED" in sh_code and "continue" in sh_code
-    # Canonicalised on both sides, or a symlinked path compares unequal to itself and the guard
-    # never fires on the very layout it is for.
+    # Canonicalised on both sides, or a symlinked path compares unequal to itself.
     assert "cd -P --" in sh_code
 
     ps_block = _slice(ps, "$flatMaster = $masterRootToStop", "_RemoveRootRecordingDb $r")
@@ -1230,12 +1181,10 @@ def test_neither_uninstaller_re_resolves_the_master_root_after_deleting_it():
     sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
     saved = sh_code.index('_MASTER_ROOT_SAVED="$(_master_root)"')
     removal = sh_code.index("_custom_studio_roots | while IFS= read -r _custom_root")
-    # Resolved before the first deletion, and nothing asks again after it. Calls BEFORE the loop
-    # are fine: those enumerate while every tree is still on disk.
+    # Resolved before the first deletion; calls before the loop are fine.
     assert saved < removal
     after = sh_code[removal:]
     assert "_master_root" not in after, after[: after.index("_master_root") + 200]
-    # Both consumers take the saved value: the flat-layout guard and the children block.
     assert after.count('"$_MASTER_ROOT_SAVED"') >= 2
 
     ps_code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
@@ -1256,7 +1205,6 @@ def test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make():
 
     sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
     assert ".*.install.lock.stale.*" not in sh_code
-    # A numeric pid, checked at both sweeps: the master root and the default home.
     assert sh_code.count("*[!0-9]*) continue ;;") >= 2
 
     ps_code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
@@ -1282,8 +1230,7 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     src = SETUP_SH.read_text(encoding = "utf-8")
     block = _slice(src, "_master_root_note_is_honoured() {", "LLAMA_CPP_DIR=")
 
-    # Contained, so the honoured-note gate passes and the writer below actually runs. The gate
-    # itself is covered by test_the_master_root_note_is_only_written_when_a_reader_honours_it.
+    # Contained, so the honoured-note gate passes and the writer actually runs.
     master = tmp_path / "portable"
     studio_home = master / "studio"
     (studio_home / "share").mkdir(parents = True)
@@ -1293,7 +1240,6 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     script = "\n".join(
         (
             "set -u",
-            # The predictable name the old block would have opened.
             'ln -s "$VICTIM" "$STUDIO_HOME/share/.unsloth-master-root.$$"',
             block,
         )
@@ -1317,9 +1263,7 @@ def test_the_master_root_note_does_not_write_through_a_planted_link(tmp_path):
     assert victim.read_text(encoding = "utf-8") == "do not truncate me\n"
     note = studio_home / "share" / ".unsloth-master-root"
     assert note.read_text(encoding = "utf-8").strip() == str(master)
-    # The rename replaces a link at the final path rather than writing through it.
     assert not note.is_symlink()
-    # No staging file survives the run, whatever name it was given.
     leftovers = sorted(
         p.name
         for p in (studio_home / "share").iterdir()
@@ -1333,8 +1277,7 @@ def test_the_windows_note_writer_creates_its_staging_file_exclusively():
     Windows filesystem to plant a link on, and CreateNew is the thing that must not regress."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(ps, "if ((Get-MasterRootOverride) -and -not $StageRoot -and", "\n# ")
-    # Comments stripped, as the other structural checks here do: the block explains the old
-    # staging name in prose, and the name is only a finding when something executes it.
+    # Comments stripped: the block mentions the old staging name in prose.
     block = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
 
     assert "$notePath.$PID" not in block, "predictable staging name is back"
@@ -1402,7 +1345,6 @@ def test_the_master_root_note_is_only_written_when_a_reader_honours_it(tmp_path)
     assert value is None, f"wrote a note no reader will honour: {value}"
     assert "cannot be recorded" in stderr, stderr
 
-    # The contained layout, which every reader does honour, still records.
     contained = master / "studio"
     value, _ = _run_note_block(tmp_path, contained, master, home = home)
     assert value == str(master)
@@ -1426,11 +1368,10 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
     legacy_master = home / ".unsloth"
     studio_home.mkdir(parents = True)
 
-    # Contained (studio IS inside ~/.unsloth), so only the legacy-root rule can refuse it.
+    # Contained (studio is inside ~/.unsloth), so only the legacy-root rule can refuse it.
     value, _ = _run_note_block(tmp_path, studio_home, legacy_master, home = home)
     assert value is None, f"recorded the legacy default root: {value}"
 
-    # An install that already carries one from an earlier build is repaired in place.
     value, _ = _run_note_block(
         tmp_path,
         studio_home,
@@ -1440,7 +1381,7 @@ def test_the_legacy_default_root_is_never_recorded_and_an_old_note_is_cleared(tm
     )
     assert value is None, "a stale legacy-root note survived"
 
-    # A note naming any other root is left alone: it may describe an install this run cannot see.
+    # A note naming another root is left alone: it may describe an install this run cannot see.
     other = tmp_path / "portable"
     other.mkdir()
     value, _ = _run_note_block(
@@ -1460,7 +1401,6 @@ def test_the_windows_note_gate_holds_the_same_two_rules():
     gate = _slice(ps, "function Test-MasterRootNoteIsHonoured {", "\nif ((Get-MasterRootOverride)")
     assert "$legacy = Get-CanonicalDir" in gate, "the legacy default root is not refused"
     assert "StartsWith($norm + $sep" in gate, "containment is not checked"
-    # The gate has to be wired into the writer, not merely defined beside it.
     assert "Test-MasterRootNoteIsHonoured -Root $UnslothHome -StudioRoot $StudioHome" in ps
     sweep = _slice(ps, "$staleNote = Join-Path", "} catch {")
     assert "Remove-Item -LiteralPath $staleNote" in sweep
@@ -1508,9 +1448,7 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     first = run_pwsh(argv, capture_output = True, text = True, check = True)
     note = note_dir / ".unsloth-master-root"
 
-    # Back-dated so a rewrite is unmistakable: two runs a millisecond apart land on one
-    # filesystem tick, which is how the first version of this test passed against the unfixed
-    # writer.
+    # Back-dated: two runs a millisecond apart can land on one filesystem tick.
     old_stamp = 1_000_000_000
     os.utime(note, (old_stamp, old_stamp))
 
@@ -1525,7 +1463,7 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     leftovers = [p.name for p in note_dir.iterdir() if p.name != ".unsloth-master-root"]
     assert leftovers == [], leftovers
 
-    # And a CHANGED value must still be written, or the check above passes by doing nothing.
+    # A changed value must still be written, or the check above passes by doing nothing.
     script.write_text(
         script.read_text(encoding = "utf-8").replace(
             _ps_quote(str(tmp_path / "master")), _ps_quote(str(tmp_path / "moved"))

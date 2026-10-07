@@ -129,7 +129,7 @@ def test_dispatched_multi_gpu_model_is_released_and_redispatched(_fake_accelerat
 
 
 def test_dispatched_move_failure_redispatches_and_returns_none(_fake_accelerate):
-    # If .to("cpu") raises after the hooks came off, the model must be re-dispatched, not left hookless and half-moved.
+    # If .to("cpu") raises after the hooks came off, the model must be re-dispatched.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     device_map = {"model.embed": 0, "model.layers.1": 1}
 
@@ -139,7 +139,7 @@ def test_dispatched_move_failure_redispatches_and_returns_none(_fake_accelerate)
 
     model = _MoveFails(device_map = device_map, devices = ("cuda:0", "cuda:1"))
     token = ns["_offload_model_for_quantize_subprocess"](model)
-    assert token is None  # offload aborted
+    assert token is None
     assert _fake_accelerate["removed"] == [model]
     assert _fake_accelerate["dispatched"] == [(model, device_map)]
 
@@ -160,13 +160,11 @@ def test_single_device_move_failure_restores_and_returns_none():
     model = _MoveFails()
     token = ns["_offload_model_for_quantize_subprocess"](model)
     assert token is None
-    # attempted the cpu move, then restored back to the original device
     assert model.moved_to == ["cpu", "cuda:0"]
 
 
 def test_cpu_spilled_map_still_releases_its_gpu_shards(_fake_accelerate):
-    # One module spilled to CPU, but the rest is the GPU memory the reload needs, and the spilled weights are already in
-    # host RAM, so the move is safe.
+    # Spilled weights are already in host RAM, so moving the rest off GPU is safe.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     device_map = {"model.embed": 0, "model.layers.0": 1, "model.layers.9": "cpu"}
     model = _FakeModel(device_map = device_map)
@@ -182,7 +180,7 @@ def test_cpu_spilled_map_still_releases_its_gpu_shards(_fake_accelerate):
 
 
 def test_disk_offloaded_map_is_left_alone(_fake_accelerate):
-    # disk/meta entries are not on the model, so moving would materialize the whole checkpoint into RAM.
+    # disk/meta entries would materialize the whole checkpoint into RAM if moved.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(device_map = {"model.embed": 0, "model.layers.9": "disk"})
     assert ns["_offload_model_for_quantize_subprocess"](model) is None
@@ -191,7 +189,6 @@ def test_disk_offloaded_map_is_left_alone(_fake_accelerate):
 
 
 def test_all_cpu_map_is_left_alone(_fake_accelerate):
-    # Nothing on an accelerator: no GPU memory to reclaim, so do not churn the hooks.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(device_map = {"model.embed": "cpu", "model.layers.0": "cpu"})
     assert ns["_offload_model_for_quantize_subprocess"](model) is None
@@ -211,7 +208,7 @@ def test_single_device_model_keeps_plain_move():
 
 
 def test_quantized_model_is_released_when_the_stack_allows_it():
-    # Unsloth exports load 4-bit by DEFAULT, so skipping quantized models left a shard on every GPU.
+    # Unsloth exports load 4-bit by default, so quantized models must be released too.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     model = _FakeModel(devices = ("cuda:0",), quantized = True)
     token = ns["_offload_model_for_quantize_subprocess"](model)
@@ -220,8 +217,7 @@ def test_quantized_model_is_released_when_the_stack_allows_it():
 
 
 def test_quantized_model_that_refuses_to_move_is_left_usable():
-    # transformers rejects .to() for some bitsandbytes builds and raises before anything moves, so the old behaviour
-    # must hold: no token, nothing escaping.
+    # transformers rejects .to() for some bitsandbytes builds before anything moves.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
 
     class _Refuses(_FakeModel):
@@ -250,12 +246,11 @@ def test_restore_failure_warns_instead_of_raising(_fake_accelerate):
 
     model = _ExplodingModel(devices = ("cuda:0",))
     ns["_restore_model_after_quantize_subprocess"](model, ("device", "cuda:0"))
-    assert fake_logger.warnings  # warned, did not raise
+    assert fake_logger.warnings
 
 
 def test_lora_merge_budgets_per_device():
-    # A merged tensor W lives on the GPU of its source layer, so budget against W's own device, not GPU0, else a
-    # sharded model OOMs GPU1+ (#7053).
+    # A merged W lives on its source layer's GPU, so budget against W's device, not GPU0.
     src = _SAVE_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     fn = next(
@@ -268,13 +263,9 @@ def test_lora_merge_budgets_per_device():
     )
     assert fn is not None, "unsloth_save_model not found"
     body = ast.get_source_segment(src, fn)
-    # Budget keyed on W's device, not a hardcoded device 0 / unqualified alloc.
     assert "torch.cuda.memory_allocated(W.device)" in body
     assert "_device_vram_budget(W.device)" in body
     assert "get_device_properties(0).total_memory * maximum_memory_usage" not in body
-
-
-# ── the torchao ("portable" FP8/INT8) export shares the same release ──
 
 
 def _fake_torch_xpu():
@@ -285,7 +276,7 @@ def _fake_torch_xpu():
 
 
 def test_dispatched_xpu_model_is_released(_fake_accelerate):
-    # torchao runs on Intel GPUs too, so an XPU-dispatched shard must release exactly like a CUDA one.
+    # torchao runs on Intel GPUs too, so an XPU shard must release like a CUDA one.
     ns = _load_helpers(_fake_torch_xpu(), _FakeLogger())
     device_map = {"model.embed": "xpu:0", "model.layers.0": "xpu:1"}
     model = _FakeModel(device_map = device_map, devices = ("xpu:0", "xpu:1"))
@@ -318,11 +309,7 @@ def test_torchao_export_uses_the_shared_release():
     torchao = src.split("def _unsloth_save_torchao(", 1)[1].split("\ndef ", 1)[0]
     assert "_offload_model_for_quantize_subprocess(model)" in torchao
     assert "_restore_model_after_quantize_subprocess(model" in torchao
-    # No hand-rolled single-device gate left behind.
     assert "len(_devs) == 1" not in torchao
-
-
-# ── regressions for the multi-GPU dispatch branch ──
 
 
 class _Child:
@@ -415,8 +402,7 @@ def test_offload_failure_is_logged_not_swallowed():
 
 
 def test_restore_without_a_snapshot_forwards_skip_keys(_fake_accelerate):
-    # dispatch_model() defaults skip_keys to None, which moves every forward kwarg to the executing device, wrong for
-    # tensors transformers marks device-invariant.
+    # dispatch_model() defaults skip_keys to None, moving device-invariant kwargs too.
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     device_map = {"model.embed": 0, "model.layers.0": 1}
     model = _FakeModel(device_map = device_map, devices = ("cuda:0", "cuda:1"))
@@ -515,8 +501,8 @@ def test_meta_tensors_never_form_tie_groups(_fake_accelerate):
     ns = _load_helpers(_fake_torch(), _FakeLogger())
     _hooks, places, _attrs, ties, _grads = ns["_snapshot_dispatch_state"](root)
 
-    assert ties == []  # nothing is tied here
-    assert "b.weight" in places  # still tracked for placement
+    assert ties == []
+    assert "b.weight" in places
 
 
 def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):
@@ -617,7 +603,6 @@ def test_torchao_releases_the_quantized_copy_in_finally():
     finally_block = body.split("    finally:", 1)[1]
     assert "del quantized_model" in finally_block
     assert "_restore_model_after_quantize_subprocess(model, model_restore)" in finally_block
-    # and the restore must come after the copy is dropped
     assert finally_block.index("del quantized_model") < finally_block.index(
         "_restore_model_after_quantize_subprocess"
     )
@@ -643,7 +628,6 @@ def test_a_live_traceback_pins_the_failed_copy_until_its_frames_are_cleared():
         raise RuntimeError("save_pretrained failed")
 
     def _run(clear_frames):
-        # try/finally with the exception still in flight, exactly as in save.py
         sink = []
         alive = None
         try:

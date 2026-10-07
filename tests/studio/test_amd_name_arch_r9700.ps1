@@ -2,11 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Behavioural test for the $nameArchTable GPU-name -> gfx inference in install.ps1 and
-# studio/setup.ps1, on the Radeon AI PRO R9700 (Navi 48, gfx1201; issues #7624 and #7307).
-# Its name holds neither "9070" nor "9080", so on a host with no HIP SDK the table returned
-# nothing and the installer fell back to CPU torch ("GPU not detected").
-# The Python parity suite evaluates these rows with Python's re; this runs them through
-# PowerShell's own -match, the engine that actually ships.
+# studio/setup.ps1 on the Radeon AI PRO R9700 (gfx1201), whose name has neither 9070 nor 9080.
+# Uses PowerShell's own -match, the engine that ships.
 # Run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
 
 $ErrorActionPreference = "Stop"
@@ -18,11 +15,9 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Returns the shipped `$nameArchTable = @( ... )` literal, sliced on balanced parens so the
-# rows under test are the ones in the file rather than a copy pasted into this test.
+# Slices the shipped `$nameArchTable = @( ... )` literal on balanced parens.
 function Get-NameArchTableSource($path) {
-    # CRLF normalised: these installers ship with Windows line endings, else every
-    # source-text match below silently misses.
+    # CRLF normalised, or every source-text match below silently misses.
     $src = (Get-Content -Raw $path) -replace "`r`n", "`n"
     $start = $src.IndexOf('$nameArchTable = @(')
     if ($start -lt 0) { throw "$path : `$nameArchTable = @( was not found (renamed or restructured?)" }
@@ -36,13 +31,13 @@ function Get-NameArchTableSource($path) {
     throw "$path : unterminated `$nameArchTable"
 }
 
-# First-match-wins, exactly as both installers consume the table.
+# First match wins, as in both installers.
 function Resolve-Arch($table, $name) {
     foreach ($row in $table) { if ($name -match $row.P) { return $row.A } }
     return $null
 }
 
-# The card as its reporters saw it, plus the spellings WMI and amd-smi vary between.
+# Plus the spellings WMI and amd-smi vary between.
 $r9700Names = @(
     "AMD Radeon AI PRO R9700",
     "AMD Radeon(TM) AI PRO R9700",
@@ -50,10 +45,8 @@ $r9700Names = @(
     "AMD Radeon AI PRO R9700 32GB"
 )
 
-# Every other name the table already answers for, so the new alternation is shown not to
-# steal a neighbour's row, plus names that must keep resolving to nothing. The ATI Radeon
-# 9700 PRO is why the pattern is "R9700" and not a bare "9700": that 2002 card would match
-# a loose token and be handed RDNA 4 wheels.
+# Neighbour names must keep their rows. The pattern is "R9700", not "9700", so the 2002
+# ATI Radeon 9700 PRO is not handed RDNA 4 wheels.
 $otherNames = @(
     @{ N = "AMD Radeon RX 9070 XT";        A = "gfx1201" },
     @{ N = "AMD Radeon RX 9070 GRE";       A = "gfx1201" },
@@ -71,7 +64,6 @@ $otherNames = @(
     @{ N = "AMD Radeon RX 6900 XT";        A = "gfx1030" },
     @{ N = "AMD Radeon RX 6600 XT";        A = "gfx1032" },
     @{ N = "AMD Radeon RX 6500 XT";        A = "gfx1034" },
-    # RDNA 2 refresh numbers, not covered by the arms above (#10468).
     @{ N = "AMD Radeon RX 6950 XT";        A = "gfx1030" },
     @{ N = "AMD Radeon RX 6850M XT";       A = "gfx1030" },
     @{ N = "AMD Radeon RX 6550M";          A = "gfx1034" },
@@ -80,7 +72,7 @@ $otherNames = @(
     @{ N = "ATI Radeon 9700 PRO";          A = $null },
     @{ N = "ATI Radeon 9800 PRO";          A = $null },
     @{ N = "AMD Radeon R9 Fury X";         A = $null },
-    @{ N = "AMD Radeon RX 5700 XT";        A = "gfx1010" },  # RDNA 1 routes on Windows since unslothai#11614
+    @{ N = "AMD Radeon RX 5700 XT";        A = "gfx1010" },
     @{ N = "AMD Radeon Pro WX 9100";       A = $null },
     @{ N = "AMD Instinct MI300X";          A = $null },
     @{ N = "NVIDIA GeForce RTX 4090";      A = $null },
@@ -95,8 +87,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     $tableSrc = Get-NameArchTableSource $path
     $nameArchTable = $null
     Invoke-Expression ("`$nameArchTable = " + $tableSrc.Substring($tableSrc.IndexOf("@(")))
-    # Guard against a vacuous pass: an empty or truncated slice resolves everything to
-    # $null, so every negative case below would "pass".
+    # Guard against a vacuous pass: an empty slice resolves everything to $null.
     Check "the shipped nameArchTable was found and parsed" ($nameArchTable -and $nameArchTable.Count -ge 12)
     Check "every parsed row has a pattern and an arch" (@($nameArchTable | Where-Object { -not $_.P -or -not $_.A }).Count -eq 0)
 
@@ -109,9 +100,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         else { Check "'$($row.N)' -> $($row.A)" ($got -eq $row.A) }
     }
 
-    # The alternation must live on the gfx1201 arm specifically: an arm added anywhere would
-    # also resolve correctly today, but a later one gets shadowed the day another row grows
-    # a pattern that matches first.
+    # Must be on the gfx1201 arm itself, or a later row could shadow it.
     $gfx1201Rows = @($nameArchTable | Where-Object { $_.A -eq "gfx1201" })
     Check "exactly one gfx1201 arm" ($gfx1201Rows.Count -eq 1)
     Check "the gfx1201 arm carries R9700" ($gfx1201Rows[0].P -match "R9700")

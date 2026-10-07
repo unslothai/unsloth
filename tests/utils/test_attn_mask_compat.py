@@ -265,10 +265,7 @@ def test_import_falls_back_when_is_tracing_missing():
 
     fake_import_utils.is_torchdynamo_compiling = _is_torchdynamo_compiling
 
-    # Ensure both the leaf and the parent's `transformers.utils` package resolve to our stub so the `from ... import
-    # is_tracing` inside the compat module body raises ImportError as it would on transformers < 4.52. We re-use
-    # `transformers.utils` if it's already in sys.modules (so we don't disturb the rest of the test suite), and only
-    # replace the leaf submodule.
+    # Stub the leaf so `from ... import is_tracing` fails as on transformers < 4.52.
     existing_utils_pkg = sys.modules.get("transformers.utils")
     with mock.patch.dict(
         sys.modules,
@@ -284,14 +281,11 @@ def test_import_falls_back_when_is_tracing_missing():
     assert reloaded.is_tracing() is False
     assert reloaded.is_tracing(torch.zeros(1)) is False
 
-    # ``torch.fx.Proxy`` should be detected even when Dynamo is idle, since symbolic_trace / export-only paths don't go
-    # through dynamo. Construct the Proxy from a real fx.Graph node (passing a Tensor directly to ``Proxy(...)`` is a
-    # common foot-gun that raises AttributeError).
+    # fx.Proxy needs a real graph node; passing a Tensor raises AttributeError.
     fx_graph = torch.fx.Graph()
     fx_node = fx_graph.create_node("call_function", torch.zeros, (torch.zeros(1).shape,))
     proxy = torch.fx.Proxy(fx_node)
     assert reloaded.is_tracing(proxy) is True
 
-    # ``torch.jit.is_tracing()`` should be detected via patch.
     with mock.patch("torch.jit.is_tracing", return_value = True):
         assert reloaded.is_tracing() is True

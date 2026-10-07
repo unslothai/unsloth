@@ -28,9 +28,7 @@ def test_the_compact_tail_seed_keeps_its_name_and_arity() -> None:
 
 
 def test_the_compact_tail_seed_reuses_the_ordinary_fixture_builder() -> None:
-    # The census parity #9058 relies on comes from calling the same buildThread() seed() calls.
-    # Measured: seedCompactTail(25000, 16) reports 36 messages against seed(25000)'s 20, a tail of exactly 16, with
-    # every other count unchanged.
+    # Census parity comes from calling the same buildThread() seed() calls.
     body = entry()
     tail = body[body.index("seedCompactTail(") : body.index("gapMetrics()")]
     assert "buildThread(targetChars)" in tail, (
@@ -55,7 +53,6 @@ def test_gap_metrics_keeps_every_key_the_probe_reads() -> None:
         "gapBottom",
         "spacerHeight",
     ):
-        # `key:` or the shorthand `key,` / `key\n`.
         assert re.search(
             rf"\b{key}\s*[:,\n]", gap
         ), f"gapMetrics no longer reports {key}, which #9058's probe reads"
@@ -63,7 +60,6 @@ def test_gap_metrics_keeps_every_key_the_probe_reads() -> None:
 
 def test_the_gap_below_is_measured_against_the_viewport_edge() -> None:
     # Against the box bottom, not scrollHeight.
-    # Measured with a 16 message tail: spacerHeight 165, gapBottom 199.
     body = entry()
     gap = body[body.index("gapMetrics()") :]
     gap = gap[: gap.index("\n      },")]

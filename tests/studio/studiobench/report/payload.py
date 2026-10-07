@@ -122,7 +122,6 @@ class PayloadWriter:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         if exc_type is not None:
-            # Best effort: if the driver is dying, say so in the file before it goes.
             try:
                 self.write(
                     "crash",
@@ -206,10 +205,6 @@ def assemble(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     return payload
 
 
-#: How the harness layer's `row_type` values map onto the sections of an assembled payload. Layer 1
-#: writes rows through its `Recorder` and this layer reads them; keeping the mapping in one table
-#: means a new row type is one line here and a visible `unknown_rows` entry until somebody decides
-#: where it belongs.
 ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "run_meta": "header",
     "gate": "selfcheck",
@@ -218,25 +213,12 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app. Its OWN section: the
-    # `header` section is collapsed to its FIRST row when the payload is assembled, so an ab_plan
-    # row filed there is silently dropped while record_counts still reports two header rows.
+    # Own section: header is collapsed to its first row, which would silently drop this row.
     "ab_plan": "ab_plan",
-    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
-    # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
-    # The comparability key. Its own section rather than `header` for two reasons: `header` is
-    # collapsed to its FIRST row when the payload is assembled, so a second row filed there is dropped
-    # without a word; and the row's `fields` block is identity bookkeeping, not a measurement, so the
-    # section is exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the
-    # row fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
-    # session on `$.unknown_rows[0].fields.instrument_level = 0`.
+    # Own section: header keeps only its first row, and these identity fields are exempt from the zero ban.
     "comparability": "comparability",
-    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer reads,
-    # and NOT an exclusion source: the `cell` row it follows is emitted with `completed: false`
-    # immediately before it and `excluded_from_rows` already turns that into a `rung_incomplete`
-    # exclusion, so filing this as a second exclusion would count one abort twice. It exists so a
-    # reader scanning FORWARD can discard the cell's window rows.
+    # Not an exclusion source: the preceding completed=false cell row already counts the abort.
     "cell_aborted": "aborted_cells",
 }
 
@@ -295,9 +277,6 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not plans:
         return {}
     plan = dict(plans[0])
-    # The merged object is a synthesis of every session's plan, so the first row's own stamps
-    # would assert it was written by one of them at one moment. `sessions` says who contributed
-    # instead, which is the question those fields were being read for.
     plan["sessions"] = [row.get("session_id") for row in plans]
     for stamp in ("session_id", "ts_ms"):
         plan.pop(stamp, None)
@@ -312,7 +291,6 @@ def merged_ab_plan(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         if record.get("row_type") in ATTEMPT_ROW_TYPES and record.get("cell_id") is not None:
             owner[str(record["cell_id"])] = record.get("session_id")
     owning = set(owner.values())
-    # No attempt rows at all is not an experiment; the newest request is the best word there is.
     live = [row for row in plans if row.get("session_id") in owning] or [plans[-1]]
     verdicts = []
     for row in live:

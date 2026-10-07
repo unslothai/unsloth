@@ -90,7 +90,6 @@ def test_reporting_the_age_cannot_fail_the_job():
     assert any(scripts), f"{ACTION} has no script left to check"
 
     for script in scripts:
-        # Comments explain the exits; the code is what runs.
         code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
         bad = re.findall(r"^\s*exit\s+(?!0\b)\S+", code, re.M)
         assert not bad, (

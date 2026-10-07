@@ -44,11 +44,6 @@ def _baseline():
     return _snap(vtd._BASELINE_FIXTURE, "baseline", "a" * 64)
 
 
-# ---------------------------------------------------------------------------
-# The baseline is a real file, not a number someone typed
-# ---------------------------------------------------------------------------
-
-
 def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
     """Recomputed from this repository's history rather than trusted.
 
@@ -56,9 +51,7 @@ def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
     `install.ps1` at `1ad44677d`, and if the constant and the history ever disagree, the whole
     comparison is against the wrong file while still looking perfectly healthy.
     """
-    # Shape first, and unconditionally. The git half below skips on a shallow clone, which is every
-    # CI lane that collects tests/security -- so without this, the single assertion tying the
-    # baseline to real history would be green locally and silently absent everywhere that matters.
+    # Shape check is unconditional: the git half below skips on the shallow clones CI uses.
     assert len(vtd.BASELINE_SHA256) == 64, "the baseline is not a SHA-256"
     assert all(
         c in "0123456789abcdef" for c in vtd.BASELINE_SHA256
@@ -95,11 +88,6 @@ def test_the_recorded_baseline_note_matches_the_fixture() -> None:
         assert (
             fragment in vtd.BASELINE_NOTE
         ), f"the recorded note no longer says {fragment!r}, but the fixture still does"
-
-
-# ---------------------------------------------------------------------------
-# It must report a regression
-# ---------------------------------------------------------------------------
 
 
 def test_a_new_high_severity_sigma_rule_is_worse() -> None:
@@ -190,11 +178,6 @@ def test_a_baseline_with_no_engine_verdicts_is_void_like_the_candidate() -> None
     assert not delta.worse, f"it reported regressions against an empty baseline: {delta.worse}"
 
 
-# ---------------------------------------------------------------------------
-# It must recognise an improvement without overstating it
-# ---------------------------------------------------------------------------
-
-
 def test_a_clear_improvement_passes_and_is_named() -> None:
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
     payload["data"]["attributes"]["sigma_analysis_stats"] = {"medium": 4, "low": 5}
@@ -213,11 +196,6 @@ def test_an_unmoved_engine_verdict_is_reported_as_unchanged() -> None:
     delta = vtd.compare(_baseline(), _snap(payload))
     assert any("unchanged" in row for row in delta.same)
     assert any("Skyhigh" in row for row in delta.same)
-
-
-# ---------------------------------------------------------------------------
-# VOID is not clean
-# ---------------------------------------------------------------------------
 
 
 def test_an_unknown_candidate_hash_is_void() -> None:
@@ -262,11 +240,6 @@ def test_the_three_outcomes_have_distinct_exit_codes() -> None:
     assert (void.exit_code(), worse.exit_code(), fine.exit_code()) == (3, 2, 0)
 
 
-# ---------------------------------------------------------------------------
-# The tool's own controls, and the parsers
-# ---------------------------------------------------------------------------
-
-
 def test_the_self_test_passes() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--self-test"], capture_output = True, text = True, timeout = 120
@@ -278,7 +251,7 @@ def test_the_self_test_can_fail() -> None:
     """A control that cannot fail is decoration."""
     original = vtd.compare
     try:
-        vtd.compare = lambda base, cand: vtd.Delta()  # never reports anything
+        vtd.compare = lambda base, cand: vtd.Delta()
         failures = vtd.self_test()
         assert failures, "a comparison that reports nothing at all still passed the controls"
     finally:
@@ -304,9 +277,7 @@ def test_the_tool_has_no_upload_path_at_all() -> None:
     import ast
 
     tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
-    # Parsed, not grepped. The module docstring explains at length why there is no upload path, so a
-    # substring search over the file text matches its own explanation -- which is how the first
-    # version of this test failed. What matters is what the code does.
+    # Parsed, not grepped: the module docstring itself explains there is no upload path.
     calls = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -349,7 +320,6 @@ def test_the_workflow_reads_the_secret_this_repository_actually_has() -> None:
         "the workflow reads secrets.VT_API_KEY, which does not exist. VT_API_KEY is the ENV VAR "
         "name; the secret is VIRUS_TOTAL_API_TOKEN."
     )
-    # And the history check the lane performs needs full depth, or it reverifies nothing.
     data = _yaml.safe_load(body)
     checkout = next(
         s for s in data["jobs"]["delta"]["steps"] if "checkout" in str(s.get("uses", ""))
@@ -419,8 +389,7 @@ def test_an_overridden_baseline_is_not_labelled_as_the_recorded_one() -> None:
     resulting artifact combines one file's live table with another's name, which is a delta built
     to be misread.
     """
-    # The real recorded hash, not the placeholder the other helpers use: the label is chosen by
-    # comparing against it, so a stand-in would test nothing.
+    # The real recorded hash: the label is chosen by comparing against it.
     real = _snap(copy.deepcopy(vtd._BASELINE_FIXTURE), "baseline", vtd.BASELINE_SHA256)
     recorded = vtd.render(real, _snap(copy.deepcopy(vtd._BASELINE_FIXTURE)), vtd.Delta())
     assert vtd.BASELINE_NOTE in recorded, "the recorded baseline lost its provenance note"
@@ -513,7 +482,6 @@ def test_engines_that_answered_in_a_newer_bucket_still_count() -> None:
         after == before + 7
     ), f"engines that answered in a newer bucket were not counted: {before} -> {after}"
 
-    # The bucket-only case, which used to read as unanalysed and void the run.
     only_new = copy.deepcopy(vtd._BASELINE_FIXTURE)
     only_new["data"]["attributes"]["last_analysis_stats"] = {"type-unsupported": 3}
     snap = vtd.snapshot_from_payload("candidate", "b" * 64, only_new)
@@ -556,7 +524,6 @@ def test_an_engine_that_did_not_answer_has_not_cleared_us() -> None:
     ), f"an engine that never answered was reported as having cleared the candidate: {delta.better}"
     assert any("NOT cleared" in row for row in delta.same), delta.same
 
-    # And the real improvement still reads as one: Skyhigh answered, and answered undetected.
     cleared = copy.deepcopy(vtd._BASELINE_FIXTURE)
     cleared["data"]["attributes"]["last_analysis_results"] = {
         "Skyhigh": {"category": "undetected", "result": None},

@@ -68,9 +68,6 @@ def no_torch_venv(request, tmp_path_factory):
     return str(venv_python)
 
 
-# ── AST structural checks ─────────────────────────────────────────────
-
-
 class TestDataCollatorsAST:
     """Static analysis: data_collators.py has no top-level torch imports."""
 
@@ -145,9 +142,6 @@ class TestChatTemplatesAST:
             )
 
 
-# ── data_collators.py: exec + dataclass instantiation in no-torch venv ──
-
-
 class TestDataCollatorsNoTorchVenv:
     """Run data_collators.py in an isolated no-torch venv, verify classes load."""
 
@@ -219,9 +213,6 @@ class TestDataCollatorsNoTorchVenv:
         result = _shared_setup_1(code, no_torch_venv)
         assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
-
-
-# ── chat_templates.py: exec in no-torch venv ─────────────────────────
 
 
 class TestChatTemplatesNoTorchVenv:
@@ -318,9 +309,6 @@ class TestChatTemplatesNoTorchVenv:
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
 
 
-# ── format_conversion.py: AST + runtime tests ────────────────────────
-
-
 class TestFormatConversionAST:
     """Static analysis: format_conversion.py torch imports are guarded."""
 
@@ -343,7 +331,6 @@ class TestFormatConversionAST:
                         and child.module
                         and child.module.startswith("torch")
                     ):
-                        # This torch import must be inside a Try node.
                         found_in_try = False
                         for try_node in ast.walk(node):
                             if isinstance(try_node, ast.Try):
@@ -486,9 +473,6 @@ class TestFormatConversionNoTorchVenv:
         assert b"OK: convert_alpaca_to_chatml works without torch" in result.stdout
 
 
-# ── Negative controls ─────────────────────────────────────────────────
-
-
 class TestNegativeControls:
     """Prove the fix is necessary by showing what fails WITHOUT it."""
 
@@ -536,10 +520,8 @@ class TestNegativeControls:
             timeout = 60,
         )
         if result.returncode != 0:
-            # torchao install/resolution failed as expected.
             pass
         else:
-            # dry-run may miss dep issues; verify torch is absent instead.
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,

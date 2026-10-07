@@ -175,8 +175,6 @@ def test_delete_opens_the_more_menu_and_selects_its_delete_item():
     assert out["ran"] is True, out
     assert out["ms"] is not None, "the reply never left the document after Delete was selected"
     assert (out["before"], out["after"]) == (2, 1), out
-    # The menu mounts three paints late. The document-wide lookup for it runs on the first look
-    # and when body's children change, not once per paint while waiting.
     assert out["menuLookups"] <= 2, out
 
 
@@ -236,8 +234,7 @@ def test_every_control_the_scene_asks_for_is_still_rendered():
         {"More", "Copy"} <= buttons and "Delete" in items
     ), "parsed fewer control names than the scene uses; this check would pass on nothing"
     tooltips = set(re.findall(r"tooltip=\"([^\"]+)\"", tsx))
-    # An item's label is its last line of text before the closing tag. Its attributes can hold
-    # arrow functions, so the opening tag cannot be skipped with a `[^>]*` match.
+    # Attributes can hold arrow functions, so the opening tag cannot be skipped with [^>]*.
     rendered_items = set()
     for body in re.findall(
         r"<ActionBarMorePrimitive\.Item\b([\s\S]*?)</ActionBarMorePrimitive\.Item>", tsx

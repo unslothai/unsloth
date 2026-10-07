@@ -22,14 +22,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "unsloth"
 
-# studio/ ships under the same requires-python, so it is held to the syntax check. Its
-# evaluated-union debt is ratcheted rather than fixed here: the files involved include FastAPI routers and pydantic
-# models, where `from __future__ import annotations` is supported but has real failure modes around class
-# dependencies, so converting them needs Unsloth actually booted and its routes exercised.
-#
-# The SET, not just a count, so a breach can name the files it added. Shrinking is the only edit that should ever be
-# made here: a new entry means a new file evaluates a union on the floor, and the fix is the future import in that
-# file, not a longer list.
+# studio/ union debt is ratcheted: only shrink this set; fix new files with the future import.
 STUDIO_UNION_DEBT_FILES = frozenset(
     {
         "studio/backend/auth/hashing.py",
@@ -215,7 +208,7 @@ def evaluated_annotations(tree):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 walk(child, True)
             elif isinstance(child, ast.ClassDef):
-                walk(child, False)  # a class body is class scope wherever it sits
+                walk(child, False)
             else:
                 walk(child, in_function)
 
@@ -223,8 +216,7 @@ def evaluated_annotations(tree):
     return out
 
 
-# A `|` between these is a union, not arithmetic. These are the builtin types; `None` and whatever the module pulled
-# in from typing count as anchors too, and are handled in the check below.
+# A `|` between these is a union, not arithmetic; None and typing imports are handled below.
 TYPE_ANCHORS = frozenset(
     {
         "str",
@@ -285,7 +277,7 @@ def looks_like_a_type_alias(node, known_typing_names):
         if isinstance(operand, ast.Constant):
             if operand.value is None:
                 return True
-            continue  # a bare string is a forward reference, never an anchor alone
+            continue
         name = operand.id if isinstance(operand, ast.Name) else operand.attr
         if name in TYPE_ANCHORS or name in known_typing_names:
             return True
@@ -320,7 +312,7 @@ def evaluated_values(tree):
                 out.extend(child.decorator_list)
                 out.extend(d for d in child.args.defaults if d is not None)
                 out.extend(d for d in child.args.kw_defaults if d is not None)
-                continue  # the body only runs when called
+                continue
             if isinstance(child, ast.ClassDef):
                 out.extend(child.decorator_list)
             if isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
@@ -392,13 +384,7 @@ def test_studio_evaluated_unions_do_not_grow():
     if not studio.is_dir():
         pytest.skip("no studio/ directory in this checkout")
     offenders = sorted(str(p.relative_to(REPO_ROOT)) for p in evaluated_union_files(studio))
-    # Name the files that are NEW against the recorded set, not the whole list.
-    # A bare count told you only that 37 exceeded 35, and the full list was truncated at 2000 chars, so finding the two
-    # additions meant re-running the scan on an older checkout and diffing by hand.
-    # Membership governs the assertion alongside the count: a swap that fixes one recorded file and adds one new one
-    # leaves the count equal, so a count alone would pass it, and the new file is the one thing this test exists to
-    # stop. The count stays because it also catches net growth that adds nothing new, which happens when a recorded
-    # file is fixed without being dropped from the list.
+    # Check membership and count: a swap keeps the count equal; net growth may add no new file.
     added = [p for p in offenders if p not in STUDIO_UNION_DEBT_FILES]
     removed = [p for p in sorted(STUDIO_UNION_DEBT_FILES) if p not in offenders]
     assert not added and len(offenders) <= len(STUDIO_UNION_DEBT_FILES), (
@@ -448,10 +434,6 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
     )
 
 
-# ---- the exemption itself ------------------------------------------------
-#
-# The skip above is the kind of thing that rots into a blanket `vendor/`
-# exclusion. These pin it to the guard.
 def test_the_truststore_guard_is_what_exempts_it():
     """Not the path. If upstream drops the version guard, the files come back
     into the scan and this gate goes red again -- which is correct, because at

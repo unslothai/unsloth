@@ -147,7 +147,6 @@ def _run(code, **env):
     path = [str(_ROOT)]
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # Importing Unsloth sets the gate; each case supplies its own starting value.
     clean = {k: v for k, v in os.environ.items() if k != _GATE}
     return subprocess.run(
         [sys.executable, "-c", code],

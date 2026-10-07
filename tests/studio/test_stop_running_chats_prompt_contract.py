@@ -24,21 +24,16 @@ def _read(rel: str) -> str:
 
 
 def test_the_prompt_counts_conversations_not_generation_handles():
-    # One chat holds several handles while a tool continuation registers its next leg before the previous unwinds
-    # (active_generations.ActiveGeneration mints one per __enter__), so active.count exceeds the deduplicated thread_ids
-    # and the dialog offered to stop two chats while listing one title.
+    # One chat can hold several handles during a tool continuation, so count deduplicated threads.
     src = _read("features/chat/utils/confirm-stop-running-chats.ts")
     assert "entry.thread_id" in src, "the unnamed entries have to be counted separately"
-    # The raw handle count survives only for a backend too old to send the entries.
     primary = src.index("running.length + unnamed")
     fallback = src.index("Math.max(active.count")
     assert primary < fallback, "the handle count must be the fallback, not the primary"
 
 
 def test_an_unload_is_not_described_as_a_reload():
-    # ejectModel confirms through the same dialog, but confirming calls /unload and leaves no model loaded: the older
-    # "Unloading the model reloads the model" and "Stop and reload" wording promised the opposite for the destructive
-    # one.
+    # Confirming ejectModel unloads and leaves no model loaded, so copy must not promise a reload.
     dialog = _read("features/chat/components/stop-running-chats-dialog.tsx")
     assert "Stop and unload" in dialog and "Stop and reload" in dialog
     assert "leaves no model loaded" in dialog
@@ -51,7 +46,6 @@ def test_an_unload_is_not_described_as_a_reload():
 
 
 def test_the_tts_request_names_its_thread():
-    # The audio branch registers its run locally under the thread key, and the backend tracker reads payload.thread_id.
     src = _read("features/chat/api/chat-adapter.ts")
     call = src.index("const result = await generateAudio(")
     assert (

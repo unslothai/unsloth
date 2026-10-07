@@ -437,7 +437,6 @@ def test_the_instance_forward_is_the_one_inspected(tmp_path):
     ns["apply_accepts_loss_kwargs_fix"](model)
     assert not hasattr(model, "accepts_loss_kwargs")
 
-    # An accelerate-style hook (partial + update_wrapper) still resolves to the original mean-loss forward.
     hooked = mods.NemotronHForCausalLM()
     old_forward = hooked.forward
 

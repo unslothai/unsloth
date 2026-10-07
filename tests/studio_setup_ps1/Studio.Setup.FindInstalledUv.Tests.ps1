@@ -1,17 +1,8 @@
 <#
-    Find-InstalledUv, executed rather than read.
+    Find-InstalledUv, executed rather than read; the shell suite only greps setup.ps1.
 
-    tests/sh/test_setup_reuse_installed_uv.sh runs the shell finder for real, but checks the
-    PowerShell one only by grepping setup.ps1. Mutation-tested: deleting the winget alias
-    directory from the candidates, and making the finder skip every candidate so it can never
-    reuse anything, both left that suite green at 43 of 43. Windows is where the re-download
-    cost 42 of a 53 s no-op update, so it is the side that most needs running.
-
-    Fixtures are a real executable copied into a candidate directory, and a text file for the
-    one that cannot run, so both the Test-Path gate and the launch are exercised. On Windows the
-    text file is never handed to CreateProcess: a .exe that is not a PE image is taken for a DOS
-    program and raises the modal "Unsupported 16-Bit Application" dialog on a desktop. There
-    Start-Process is shadowed for non-PE files only, to fail the way the refused launch does.
+    On Windows a non-PE .exe is never launched: CreateProcess would raise the modal
+    "Unsupported 16-Bit Application" dialog, so Start-Process is shadowed for those.
 #>
 
 BeforeAll {
@@ -23,13 +14,11 @@ BeforeAll {
         if (-not $src) { throw "could not extract $fn from setup.ps1" }
         . ([scriptblock]::Create($src))
     }
-    # Read from setup.ps1, not repeated here, so a change to the number cannot leave these cases
-    # testing the old one.
+    # Read from setup.ps1 so a change to the number cannot leave these cases stale.
     $script:SetupUvMinVersionSource = (Select-String -Path $setup -Pattern '^\$SetupUvMinVersion = "([^"]+)"' |
         Select-Object -First 1).Matches[0].Groups[1].Value
     if (-not $script:SetupUvMinVersionSource) { throw "could not read `$SetupUvMinVersion from setup.ps1" }
     $SetupUvMinVersion = $script:SetupUvMinVersionSource
-    # setup.ps1 reports through substep; the finder must not depend on its formatting.
     function substep { param([string]$Message, [string]$Color = 'DarkGray') }
 
     $script:UvCandidateVars = @(
@@ -41,16 +30,13 @@ BeforeAll {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         New-Item -ItemType Directory -Force -Path (Join-Path $dir 'home') | Out-Null
         foreach ($v in $script:UvCandidateVars) { Remove-Item -Path ("env:" + $v) -ErrorAction SilentlyContinue }
-        # A home with no uv in it, so the default tier is a miss unless a test populates it.
         $env:USERPROFILE = Join-Path $dir 'home'
         if (-not $IsWindows) { $env:HOME = Join-Path $dir 'home' }
         return $dir
     }
 
     function Copy-RunnableExe {
-        # Copied ALONE into a candidate directory, it still has to launch and exit 0 for
-        # `--version`. pwsh.exe does NOT qualify: on Windows it cannot start without its runtime
-        # files beside it. curl.exe and tar.exe link only against System32 and take --version.
+        # Must launch alone; pwsh.exe needs its runtime files, curl.exe and tar.exe do not.
         param([Parameter(Mandatory)][string]$Destination)
         foreach ($src in $script:RunnableExeCandidates) {
             if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
@@ -86,7 +72,6 @@ BeforeAll {
     }
 
     function Test-IsPeImage {
-        # The two bytes CreateProcess needs before it will treat a file as a Windows image.
         param([string]$Path)
         try {
             $head = [byte[]]::new(2)
@@ -98,12 +83,8 @@ BeforeAll {
         }
     }
 
-    # Windows only, installed per Describe with Set-Item function:Start-Process (see below). A
-    # plain function rather than a Pester Mock: it shadows the cmdlet for the finder too, and an
-    # unmatched Mock filter falls through to the real command in Pester 5 but fails the call in
-    # Pester 6. Real images launch for real; a non-PE file fails as a refused launch does, with
-    # Start-Process throwing, and is never started. POSIX keeps the real exec, where a text file
-    # fails with ENOEXEC and no UI.
+    # A plain function, not a Pester Mock: an unmatched Mock filter behaves differently in
+    # Pester 5 and 6. Non-PE files throw as a refused launch does.
     $script:RefusedLaunches = [System.Collections.Generic.List[string]]::new()
     function Start-ProcessUnlessNonPe {
         [CmdletBinding()]
@@ -167,8 +148,6 @@ Describe "the fixtures themselves" {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) ('fixtureprobe_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
         try {
             $exe = New-FakeUv -Dir $dir -Kind broken
-            # What makes it unlaunchable, checked on the file itself rather than only through
-            # the Windows guard.
             Test-IsPeImage -Path $exe | Should -BeFalse
             Test-ExeAnswers -Path $exe | Should -BeFalse
         } finally {
@@ -179,9 +158,7 @@ Describe "the fixtures themselves" {
 
 Describe "Find-InstalledUv" {
     BeforeAll {
-        # The Windows stand-in is a real console binary that is NOT uv, so its --version line
-        # cannot clear the floor and every discovery case would miss for an unrelated reason.
-        # The floor is answered here and tested on its own in "the uv version floor" below.
+        # The Windows stand-in is not uv, so its --version cannot clear the floor; it is stubbed here.
         if ($IsWindows) {
             function Test-SetupUvVersionAtLeast { param([string]$VersionLine, [string]$Minimum) return $true }
         }
@@ -216,7 +193,6 @@ Describe "Find-InstalledUv" {
         Find-InstalledUv | Should -Be ([System.IO.Path]::Combine($env:USERPROFILE, '.local', 'bin'))
         $script:InstalledUvProbeMiss | Should -Not -BeNullOrEmpty
         if ($IsWindows) {
-            # The broken uv was asked, through the guard, so the skip above is the finder's doing.
             @($script:RefusedLaunches | Where-Object { $_ -like "*broken dir*" }).Count |
                 Should -BeGreaterThan 0
         }
@@ -230,9 +206,7 @@ Describe "Find-InstalledUv" {
     }
 
     It "finds the uv install.ps1 put in winget's alias directory" {
-        # winget's alias directory reaches PATH only through the registry, so a process started
-        # before that install never saw it: this is the tier that made the Windows no-op update
-        # download uv again even though install.ps1 had just installed it.
+        # winget's alias dir reaches PATH only via the registry, so earlier processes never saw it.
         $local = Join-Path $script:Sandbox 'localappdata'
         $env:LOCALAPPDATA = $local
         $links = [System.IO.Path]::Combine($local, 'Microsoft', 'WinGet', 'Links')
@@ -268,8 +242,6 @@ Describe "Find-InstalledUv" {
     }
 
     It "refuses a uv that runs but does not clear the floor, and says which one" {
-        # The refusal itself, on every platform: the gate answers no for this case only, so
-        # what is under test is the finder's handling of it, not the version parsing.
         function Test-SetupUvVersionAtLeast { param([string]$VersionLine, [string]$Minimum) return $false }
         $dest = Join-Path $script:Sandbox 'old uv'
         $env:UV_INSTALL_DIR = $dest
@@ -297,9 +269,7 @@ Describe "Find-InstalledUv" {
 }
 
 Describe "the uv version floor" {
-    # The parsing on its own, so the discovery cases above do not have to carry it. install.ps1
-    # refuses a uv below the same number outright; reusing one instead of downloading the pinned
-    # release would hand the dependency pass the interpreter that refusal exists to avoid.
+    # install.ps1 refuses a uv below the same floor outright.
     It "reads <line> as clearing <floor>: <expected>" -ForEach @(
         @{ line = 'uv 0.12.1 (0123456 2026-01-01)'; floor = '0.9.3'; expected = $true }
         @{ line = 'uv 0.9.3';                       floor = '0.9.3'; expected = $true }
@@ -307,16 +277,12 @@ Describe "the uv version floor" {
         @{ line = 'uv 0.9.2';                       floor = '0.9.3'; expected = $false }
         @{ line = 'uv 0.4.0';                       floor = '0.9.3'; expected = $false }
         @{ line = 'curl 8.9.1 (x86_64-pc-linux-gnu)'; floor = '0.9.3'; expected = $false }
-        # A prerelease of the floor is the floor minus something. install.sh's _uv_version_ok
-        # refuses exactly this shape, and one above the floor is a normal release to both.
+        # A prerelease of the floor is below it; install.sh's _uv_version_ok agrees.
         @{ line = 'uv 0.9.3-rc.1';                  floor = '0.9.3'; expected = $false }
         @{ line = 'uv 0.9.3+build5';                floor = '0.9.3'; expected = $false }
         @{ line = 'uv 0.9.4-rc1';                   floor = '0.9.3'; expected = $true }
         @{ line = 'uv 1.0.0-beta';                  floor = '0.9.3'; expected = $true }
-        # The floor this file actually ships is install.ps1's, which is lower than install.sh's:
-        # nothing here asks uv for an interpreter, so the manifest reason that raised the POSIX
-        # number does not apply, and refusing 0.8.16-0.9.2 would decline to reuse a uv the
-        # Windows installer installs and keeps.
+        # install.ps1's floor is lower than install.sh's: the POSIX reason does not apply here.
         @{ line = 'uv 0.8.16';                      floor = '0.8.16'; expected = $true }
         @{ line = 'uv 0.9.2';                       floor = '0.8.16'; expected = $true }
         @{ line = 'uv 0.8.15';                      floor = '0.8.16'; expected = $false }

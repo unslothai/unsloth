@@ -99,13 +99,9 @@ def quiet_null(tmp: Path, name: str, actions: list[str]) -> Path:
     return write(tmp, name, rows)
 
 
-# ── only the differences that turned the verdict red ─────────────────
-
-
 def test_only_the_stable_differences_are_illustrated(tmp_path, capsys):
     shots = tmp_path / "shots"
-    # `settings` differs and is stable here; `stop_generation` differs and is DECLARED unstable, so
-    # it is noise the reader must not be handed.
+    # `stop_generation` is declared unstable, so it must not be illustrated.
     result = result_with(
         tmp_path,
         "result",
@@ -130,16 +126,12 @@ def test_a_verdict_with_no_stable_difference_produces_no_pictures(tmp_path, caps
     assert "no corroborated stable difference" in capsys.readouterr().out
 
 
-# ── the pair has to be a pair ────────────────────────────────────────
-
-
 def test_a_missing_half_is_reported_not_rendered_alone(tmp_path, capsys):
     shots = tmp_path / "shots"
     rows = [{"row_type": "run_meta", "tier": "fast"}]
     for rep in ("rep0", "rep1"):
         png(shots / f"b_{rep}.png", 200, 120, (10, 60, 10))
         rows.append(action(f"r100K.base.{rep}", "settings", "A", f"b_{rep}.png"))
-        # the treatment arm recorded no shot at all
         rows.append(action(f"r100K.treatment.{rep}", "settings", "B", None))
     result = write(tmp_path, "result", rows)
     null = quiet_null(tmp_path, "null", ["settings"])
@@ -157,9 +149,6 @@ def test_a_scroll_mismatch_is_called_out(tmp_path, capsys):
     out = tmp_path / "out"
     assert S.build(result, null, shots, out) == 0
     assert "SCROLL MISMATCH" in capsys.readouterr().out
-
-
-# ── the picture itself ───────────────────────────────────────────────
 
 
 def test_the_composite_pads_rather_than_scales(tmp_path):
@@ -181,7 +170,7 @@ def test_the_composite_pads_rather_than_scales(tmp_path):
         },
     )
     got = Image.open(out)
-    # Height is the TALLER half plus the banner: a scaled composite would be 120-tall on the left.
+    # Taller half plus the banner: the composite pads, never scales.
     assert got.height == 300 + S.BANNER
     assert got.width == 200 * 2 + S.GUTTER
 
@@ -205,8 +194,7 @@ def test_the_two_halves_are_labelled_in_the_image_not_only_the_filename(tmp_path
         },
     )
     got = Image.open(out).convert("RGB")
-    # The banner strip must carry ink on both halves: a pair whose sides are distinguished only by
-    # filename is one rename away from being misattributed.
+    # Both banner halves must carry ink so the pair is not told apart by filename alone.
     left = got.crop((0, 0, 320, S.BANNER)).getcolors(maxcolors = 100000)
     right = got.crop((320 + S.GUTTER, 0, 640 + S.GUTTER, S.BANNER)).getcolors(maxcolors = 100000)
     assert len(left) > 1, "the BEFORE banner drew nothing"
@@ -216,20 +204,14 @@ def test_the_two_halves_are_labelled_in_the_image_not_only_the_filename(tmp_path
 def test_shot_index_reads_the_payload_rather_than_globbing(tmp_path):
     shots = tmp_path / "shots"
     result = result_with(tmp_path, "result", [("settings", "A", "B", 100, 100)], shots)
-    # A file that looks like one of ours but was never recorded must not be picked up.
     png(shots / "settings_rep0_IMPOSTOR.png", 10, 10, (0, 0, 255))
     index = S.shot_index([result / "payload.jsonl"])
     assert ("result", "r100K.base.rep0", "settings", "base") in index
     assert all("IMPOSTOR" not in v["file"] for v in index.values())
 
 
-# ── the artifact shows what turned it red, and nothing else ──────────
-
-
 def test_a_one_repetition_flake_is_not_illustrated_at_the_verdicts_threshold(tmp_path, capsys):
-    # `settings` differs on both passes and is what fails the job; `thread_reopen` differs on one and
-    # is explicitly uncorroborated. Shipping both leaves the reader unable to tell which is which,
-    # which buries the finding the artifact exists to show.
+    # Only the corroborated difference (`settings`) is shown, not the one-rep `thread_reopen`.
     shots = tmp_path / "shots"
     rows = [{"row_type": "run_meta", "tier": "fast"}]
     for rep in ("rep0", "rep1"):
@@ -249,8 +231,7 @@ def test_a_one_repetition_flake_is_not_illustrated_at_the_verdicts_threshold(tmp
 
 
 def test_the_workflow_illustrates_at_the_same_threshold_it_scores_at():
-    # Two numbers in two steps of one job that must agree, with nothing at runtime to notice if they
-    # drifted: the verdict would fail on one set of actions and the artifact would show another.
+    # The verdict step and the artifact step must use the same --min-reps.
     text = (
         Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
     ).read_text(encoding = "utf-8")
@@ -261,10 +242,7 @@ def test_the_workflow_illustrates_at_the_same_threshold_it_scores_at():
 
 
 def test_the_cli_forwards_the_threshold_it_was_given(tmp_path, capsys):
-    # `build` takes min_reps and `main` parses --min-reps, and the value was dropped between them:
-    # the workflow asked for 2, `build` defaulted back to 1, and the artifact carried a
-    # one-repetition flake beside the change that failed the job. Driven through main() because
-    # build() was never the half that was wrong.
+    # Driven through main(): the bug was --min-reps being parsed but not passed to build().
     shots = tmp_path / "shots"
     rows = [{"row_type": "run_meta", "tier": "fast"}]
     for rep in ("rep0", "rep1"):
@@ -300,18 +278,12 @@ def test_the_cli_forwards_the_threshold_it_was_given(tmp_path, capsys):
 
 
 def test_the_workflow_actually_runs_the_prune_it_documents():
-    # The images are the only large thing this job produces and the payload upload is `if: always()`,
-    # so a green run shipped every one of them (18 actions x 2 arms x 2 repetitions per job) while
-    # the step below claimed the arms had already deleted the matching ones. A command nobody invokes
-    # cannot be the reason a claim is true.
+    # The payload upload is `if: always()`, so the arms must really prune unneeded shots.
     text = (
         Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
     ).read_text(encoding = "utf-8")
     prune, upload = text.index("--prune"), text.index("- name: Upload the payload")
     assert prune < upload, "the prune has to happen BEFORE the upload it exists to shrink"
-
-
-# ── the evidence has to cover every way the verdict goes red ─────────
 
 
 def _one_sided_rows(action_name: str, reps: tuple[str, ...], shots: Path) -> list[dict]:
@@ -331,10 +303,7 @@ def _one_sided_rows(action_name: str, reps: tuple[str, ...], shots: Path) -> lis
 
 
 def test_a_control_that_only_one_arm_can_operate_is_illustrated(tmp_path, capsys):
-    # The regression shape that leaves NO digest to differ: a control that stops opening records
-    # `ran: false`, not a different hash. `ui_parity.report` exits 1 on it and the arm-side prune
-    # keeps its shots for this step, but the selector only accepted DIFFER, so a red verdict
-    # published 'no STABLE differences' and no composite at all.
+    # A control that stops opening records `ran: false`, not a differing digest; it must be shown.
     shots = tmp_path / "shots"
     result = write(tmp_path, "result", _one_sided_rows("settings", ("rep0", "rep1"), shots))
     null = quiet_null(tmp_path, "null", ["settings"])
@@ -346,8 +315,7 @@ def test_a_control_that_only_one_arm_can_operate_is_illustrated(tmp_path, capsys
 
 
 def test_a_one_arm_miss_in_one_repetition_of_two_is_not_illustrated(tmp_path):
-    # The same bar the verdict uses. A contended runner can lose one arm's slot once without redding
-    # the job, so a picture of it beside the change that did would bury the finding.
+    # Same corroboration bar as the verdict.
     shots = tmp_path / "shots"
     result = write(tmp_path, "result", _one_sided_rows("settings", ("rep0",), shots))
     null = quiet_null(tmp_path, "null", ["settings"])
@@ -357,10 +325,8 @@ def test_a_one_arm_miss_in_one_repetition_of_two_is_not_illustrated(tmp_path):
 
 
 def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tmp_path):
-    # `--resume` re-runs an A/B pair WHOLE under the same deterministic cell id, so if the retry
-    # captures the differing digest but its screenshot fails, a raw scan of the append-only payload
-    # keeps the DEAD attempt's `shot` and pairs the retry's verdict with a picture of a different
-    # page. A missing half is a caption `build` already prints; a stale half is a lie.
+    # `--resume` re-runs a pair under the same cell id, so a raw scan could pair the retry's verdict
+    # with the dead attempt's shot.
     shots = tmp_path / "shots"
     png(shots / "old.png", 200, 120, (10, 60, 10))
     png(shots / "base.png", 200, 120, (10, 60, 10))
@@ -388,7 +354,6 @@ def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tm
                 "session_id": "s1",
             }
         )
-    # The retry: a DIFFERENT digest, and no shot because the capture failed.
     for rep in ("rep0", "rep1"):
         new = action(f"r100K.treatment.{rep}", "settings", "B", None)
         new["session_id"] = "s2"
@@ -404,18 +369,13 @@ def test_a_superseded_attempts_screenshot_is_not_shown_for_the_retrys_verdict(tm
 
 
 def test_the_workflow_runs_the_gate_on_the_routes_the_measurement_depends_on():
-    # A gate that does not fire on a change that can move what it measures is not measuring it.
-    # chat-api.ts sends the scripted turn to /api/inference/chat/completions, and lifecycle.py logs
-    # each arm in through /api/auth/login and /api/auth/change-password before any scene renders, so
-    # both can alter, empty or block the measured DOM on a PR with no frontend file.
+    # chat-api.ts and lifecycle.py routes can change the measured DOM without a frontend change.
     text = (
         Path(__file__).resolve().parents[5] / ".github/workflows/studiobench-ui-parity.yml"
     ).read_text(encoding = "utf-8")
     for route in ("inference.py", "auth.py", "chat_history.py", "providers.py"):
         assert f"studio/backend/routes/{route}" in text, route
-    # A route is not one file: its response models, provider lookups and storage can each change the
-    # measured picker without the route module being touched, which is how the same item arrived
-    # three rounds running, one file further down each time.
+    # A route's models, provider lookups and storage can each change the measured picker.
     for dep in (
         "studio/backend/storage/studio_db.py",
         "studio/backend/models/providers.py",
@@ -436,8 +396,6 @@ def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_pat
     as publishing no evidence at all, one round after it was fixed the first time.
     """
     shots = tmp_path / "shots"
-    # The null raced on `settings`. This runner did not: side A is identical across both repetitions,
-    # and head differs in both.
     null_rows = [{"row_type": "run_meta", "tier": "fast"}]
     for rep in ("rep0", "rep1"):
         for arm in ("base", "treatment"):
@@ -464,9 +422,7 @@ def test_the_evidence_uses_the_same_confined_set_the_verdict_scored_with(tmp_pat
 
 
 def test_a_direction_reversing_pair_is_not_illustrated_either(tmp_path):
-    # The verdict does not fail on a pair whose two repetitions blame opposite arms, so the artifact
-    # must not present one as the change that turned the job red. The two selections are keyed the
-    # same way for the same reason they are corroborated the same way.
+    # Pairs whose reps blame opposite arms do not fail the verdict, so they are not illustrated.
     shots = tmp_path / "shots"
     rows = [{"row_type": "run_meta", "tier": "fast"}]
     for rep in ("rep0", "rep1"):
@@ -510,11 +466,10 @@ def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
             "".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8"
         )
 
-    # `shards_of` globs, so a directory OF shards is addressed with a trailing `*`.
+    # `shards_of` globs, so a directory of shards needs a trailing `*`.
     paths = S.shards_of(str(result / "*"))
     assert len(paths) == 2, paths
     index = S.shot_index(paths)
-    # Both shards survive rather than one overwriting the other.
     assert ("sh1", "r100K.base.rep0", "settings", "base") in index
     assert ("sh2", "r100K.base.rep0", "settings", "base") in index
     assert index[("sh1", "r100K.base.rep0", "settings", "base")]["file"] == "sh1_base_rep0.png"
@@ -524,7 +479,6 @@ def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
     out = tmp_path / "out"
     assert S.build(result / "*", null, shots, out, min_reps = 2) == 0
     names = sorted(p.name for p in out.glob("*composite*"))
-    # One composite per shard per repetition, each naming its own shard, and none overwritten.
     assert any(n.startswith("sh1__") for n in names), names
     assert any(n.startswith("sh2__") for n in names), names
     assert len(names) == 4, names
@@ -534,13 +488,8 @@ def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
             assert before.read_bytes() == (shots / f"{shard}_base_{rep}.png").read_bytes()
 
 
-# Direct first-party imports of a measured route that are deliberately NOT gated on, each with
-# the reason. A module is either in the workflow or here, and adding an import to a measured
-# route fails the test below until someone decides which.
-# The drip this ends: routes/chat_history.py was listed, then storage/studio_db.py a round later,
-# then models/providers.py and core/inference/providers.py, then external_provider.py and
-# sse_control_frames.py, then provider_credentials.py, every one correct and every one found by
-# reading imports by hand. The boundary is a judgement, but a RECORDED one.
+# First-party imports of a measured route deliberately not gated on, with reasons. Every
+# import must be either in the workflow or here.
 NOT_GATED: dict[str, str] = {
     "studio/backend/auth/authentication.py": "session plumbing shared by every route in the app; "
     "routes/auth.py already gates the endpoints studiobench actually calls",
@@ -593,8 +542,7 @@ def test_every_import_of_a_measured_route_is_gated_or_explicitly_waived():
 
 
 def test_every_waiver_names_a_file_that_exists_and_gives_a_reason():
-    # A waiver for a file that has been moved or deleted is a stale exemption that reads as a
-    # decision. Same bar as the RACY_EXECUTION entries.
+    # A waiver for a moved or deleted file is stale.
     repo = Path(__file__).resolve().parents[5]
     for path, why in NOT_GATED.items():
         assert (repo / path).exists(), path

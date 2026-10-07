@@ -37,8 +37,7 @@ def download():
 
 def run_tests():
     os.environ.setdefault("HF_HOME", str(CACHE_ROOT))
-    # Real-cache suite is gated on this; without it every integration test skips
-    # and the runner reports success after only the fake-cache unit file ran.
+    # Without this every real-cache test skips and the runner reports success anyway.
     env = os.environ.copy()
     env["UNSLOTH_INTEGRATION_IMPORT"] = "1"
     cmd = [

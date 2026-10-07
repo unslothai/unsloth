@@ -124,9 +124,7 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
-        # decoder the two numbers above are about, and the exact integer depends on how many decoders
-        # the page has built before this assertion.
+        # Not pinned: the exact id depends on how many decoders the page built.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -149,9 +147,6 @@ def test_an_unterminated_frame_is_reported_as_still_buffered(page):
     _feed(page, 'data: {"choices":[{"delta":{"content":"half a fra')
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
     assert got["pending_chars"] > 0, got
-
-
-# ── the consumer, which is where the defect actually lived ──────────
 
 
 def _instrument(page):
@@ -206,15 +201,9 @@ def test_a_clean_window_stays_scoreable(page):
     assert out["reply_chars_delta"] == len("all good")
 
 
-# A frame split INSIDE the "data:" prefix. The hook starts buffering when a chunk contains a
-# complete `data:`, but the socket can cut a frame between the "da" and the "ta:": neither half
-# contains the marker or completes a buffered frame, so both were discarded and the frame's
-# characters left the denominator WITHOUT incrementing `wireParseFailures`. Later frames then make
-# the window look scoreable while the count underneath is short, inflating every
-# cost-per-character at exactly the moment the instrument exists to measure.
+# A socket can cut a frame inside "data:", so neither half contains the marker.
 
 
-# ── a frame split INSIDE the "data:" prefix ─────────────────────────
 def _halves(text: str, at: int) -> tuple:
     return text[:at], text[at:]
 
@@ -233,9 +222,7 @@ def test_the_counter_survives_a_split_inside_the_data_prefix(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
-        # decoder the two numbers above are about, and the exact integer depends on how many decoders
-        # the page has built before this assertion.
+        # Not pinned: the exact id depends on how many decoders the page built.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -274,9 +261,7 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
-        # decoder the two numbers above are about, and the exact integer depends on how many decoders
-        # the page has built before this assertion.
+        # Not pinned: the exact id depends on how many decoders the page built.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -320,9 +305,6 @@ def test_a_failure_before_the_window_does_not_taint_it(page):
     assert out["reply_chars_scoreable"] is True, out
 
 
-# ── the OTHER end of a split, which is the window that opens on it ──
-
-
 def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
     """THE DEFECT, one window to the right of the one already covered above.
 
@@ -337,7 +319,6 @@ def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
     page.evaluate("() => window.__sb.streamcost.reset()")
     head, tail = _halves(_frame("straddles the boundary"), 30)
     assert "\n\n" not in head, head
-    # The first window closes mid-frame: already refused, by `wire_pending_chars_at_close`.
     first = _instrument(page)
     first.open(_Window())
     _feed(page, head)
@@ -345,7 +326,6 @@ def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
     assert closed["reply_chars_scoreable"] is False, closed
     assert closed["wire_pending_chars_at_close"] > 0, closed
 
-    # The second opens holding that frame, and is handed its whole character count.
     second = _instrument(page)
     second.open(_Window())
     _feed(page, tail)
@@ -353,7 +333,6 @@ def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
     assert out["wire_parse_failures_in_window"] == 0, out
     assert out["wire_pending_chars_at_close"] == 0, out
     assert out["wire_pending_chars_at_open"] > 0, out
-    # The whole frame was charged here, including the part delivered in the window before it.
     assert out["reply_chars_delta"] == len("straddles the boundary"), out
     assert out["reply_chars_scoreable"] is False, out
     assert "already buffered" in out["reply_chars_unscoreable_reason"], out
@@ -391,7 +370,6 @@ def test_a_marker_fragment_held_at_the_open_does_not_cost_the_window_its_reading
     page.evaluate("() => window.__sb.streamcost.reset()")
     _feed(page, _frame("earlier"))
     _end_response(page)
-    # The next response begins with a chunk that is only part of the marker.
     _feed(page, "dat")
     inst = _instrument(page)
     inst.open(_Window())
@@ -402,12 +380,8 @@ def test_a_marker_fragment_held_at_the_open_does_not_cost_the_window_its_reading
     assert out["wire_pending_chars_at_open"] == 3, out
     assert out["wire_pending_chars_at_close"] == 0, out
     assert out["wire_parse_failures_in_window"] == 0, out
-    # Every counted character arrived inside the window: the fragment held none of them.
     assert out["reply_chars_delta"] == len("hello"), out
     assert out["reply_chars_scoreable"] is True, out
-
-
-# ── an aborted response must not poison the next one ──────────────────────────
 
 
 def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
@@ -421,12 +395,10 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
     either, so `pending_chars` stayed above zero and every later window was refused as well.
     """
     page.evaluate("() => window.__sb.streamcost.reset()")
-    # A response aborted in the middle of a frame.
     _feed(page, 'data: {"choices":[{"delta":{"content":"half a re')
     assert page.evaluate("() => window.__sb.streamcost.wireIntegrity()")["pending_chars"] > 0
     _end_response(page)
 
-    # The next turn is a new response, and it is intact.
     page.evaluate("() => window.__sb.streamcost.reset()")
     _feed(page, _frame("hello"))
     assert page.evaluate("() => window.__sb.streamcost.replyChars()") == len("hello")
@@ -435,9 +407,7 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the id says which
-        # decoder the two numbers above are about, and the exact integer depends on how many decoders
-        # the page has built before this assertion.
+        # Not pinned: the exact id depends on how many decoders the page built.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -531,8 +501,7 @@ def test_an_abort_does_not_cost_the_next_response_its_reading_when_that_one_is_s
     _feed(page, tail)
     out = inst.close(_Window())
     assert out["reply_chars_delta"] == len("a clean reply"), out
-    # The new response DID carry a frame across a decode boundary, so the counter really moved: this
-    # window is accepted despite that, not because nothing was counted.
+    # The counter did move: the window is accepted despite a carried frame.
     assert out["wire_carried_frames_counted_in_window"] == 0, out
     assert out["reply_chars_scoreable"] is True, out
 
@@ -585,21 +554,15 @@ def test_a_frame_that_really_did_straddle_the_open_still_refuses_its_window(page
     inst.open(_Window())
     assert inst._integrity_open["pending_chars"] > 0, inst._integrity_open  # noqa: SLF001
     _feed(page, tail)
-    # Some other decoder takes over as active before the close.
     _feed_other(page, "unrelated page traffic")
     out = inst.close(_Window())
     assert out["wire_carried_frames_counted_in_window"] == 1, out
     assert out["reply_chars_scoreable"] is False, out
 
 
-# The tail of a split frame is stream traffic on the numerator too. `noteSse` was gated on the
-# marker while the character counter was gated on `looksSse || pending`, so the two halves of one
-# frame went to two different things: the tail's characters into the denominator and its render
-# work nowhere. The bias is downward on `stream_delta_cost_ms_per_kchar` and grows with
-# fragmentation, which is the regime the instrument exists to measure.
+# The tail of a split frame must count on the numerator too, or cost per char biases down.
 
 
-# ── the tail of a split frame is stream traffic on the numerator too ─────────
 def test_the_tail_of_a_split_frame_is_counted_as_stream_traffic(page):
     """THE DEFECT, at the quantity the numerator is built from.
 
@@ -617,7 +580,6 @@ def test_the_tail_of_a_split_frame_is_counted_as_stream_traffic(page):
     _feed(page, tail)
     out = inst.close(_Window())
 
-    # Both chunks carried this response's bytes, so both are stream chunks.
     assert out["sse_chunks"] == 2, out
     assert out["reply_chars_delta"] == len("cut inside the body"), out
     assert out["reply_chars_scoreable"] is True, out

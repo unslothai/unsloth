@@ -36,10 +36,7 @@ from . import register_action
 
 SETTLE_TIMEOUT_MS = 8000
 
-#: How long an action needing the message ACTION BAR waits before reporting NOT RUN: 1,500 ms,
-#: deliberately NOT ctx.budget_ms (51 ms left at entry on one measured cell), and bounded so a
-#: genuinely absent control reports NOT RUN rather than eating the film. The wait happens BEFORE
-#: the operation the action times, so `menu_open_ms` is unaffected.
+# Fixed 1,500 ms, not ctx.budget_ms; waited before the timed op so `menu_open_ms` is unaffected.
 ACTION_BAR_WAIT_MS = 1500
 
 
@@ -56,7 +53,6 @@ def _ev(
         return {"__error": f"{type(exc).__name__}: {exc}"}
 
 
-#: How much of an exception's message a refusal reason carries.
 _EXC_CHARS = 160
 
 
@@ -86,10 +82,8 @@ def _failed(raw: Any) -> str | None:
     return None
 
 
-# Two rAFs resolve no sooner than two vsync intervals, so any double-rAF timing has a ~33ms floor
-# on a 60Hz display; measured per cell and recorded so a reader can subtract it.
+# Double-rAF timing has a ~33ms floor at 60Hz; measured per cell so readers can subtract it.
 
-# ── the paint floor ─────────────────────────────────────────────────
 PAINT_FLOOR_JS = """
 async (samples) => {
   const values = [];
@@ -112,9 +106,7 @@ def paint_floor_ms(page, samples: int = 9) -> float | None:
         return None
 
 
-#: The bound that stops a wedged renderer from eating the slot; the wait itself ENDS when nothing
-#: is in flight, and reaching this bound means a lost sample the coverage check fails on.
-# ── 1. keystroke to paint ───────────────────────────────────────────
+# Bound that stops a wedged renderer; hitting it is a lost sample the coverage check fails.
 
 KEYSTROKE_SETTLE_TIMEOUT_MS = 3000
 KEYSTROKE_SETTLE_POLL_MS = 25
@@ -134,7 +126,6 @@ def _settle_keystrokes(ctx: ActionContext, inst: Any) -> None:
         return
     while time.monotonic() < deadline:
         state = settled()
-        # The page could not answer: polling on it would spin to the bound and tell us nothing.
         if not isinstance(state, dict):
             break
         if not state.get("pending"):
@@ -168,8 +159,7 @@ def keystroke(ctx: ActionContext) -> ActionResult:
 
     ctx.page.click(selector)
     started = time.monotonic()
-    # A real inter-character delay: delay=0 sends the burst in one CDP message, which the renderer
-    # coalesces into a single input event and a single paint.
+    # delay=0 sends one CDP message that the renderer coalesces into a single input and paint.
     ctx.page.keyboard.type("a" * count, delay = 60)
     _settle_keystrokes(ctx, inst)
     got = inst.collect(count)
@@ -189,10 +179,7 @@ def keystroke(ctx: ActionContext) -> ActionResult:
         "composer_grew_by": grew,
         "composer_text_length": got.get("text_length"),
     }
-    # EVERY KEYSTROKE ACCOUNTED FOR, not merely a composer that grew: `grew_by` alone is satisfied
-    # while the timings describe a subset, and the keystroke whose paint had not resolved is the
-    # slowest one (a 500 ms keystroke vanished from a reading whose max was 20 ms). So the reading
-    # stands only when nothing was in flight and samples + coalesced covers every input.
+    # Valid only when samples + coalesced cover every keystroke; the missing one is the slowest.
     covered = (
         seen is not None
         and seen >= count
@@ -228,8 +215,6 @@ def keystroke(ctx: ActionContext) -> ActionResult:
         ),
     )
 
-
-# ── 2, 3. scrolling ─────────────────────────────────────────────────
 
 SCROLL_JS = """
 async ([steps, stepPx, settleMs]) => {
@@ -288,9 +273,7 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
     steps = int(ctx.args.get("steps", 14))
     step_px = int(ctx.args.get("step_px", 420))
     settle_ms = int(ctx.args.get("settle_ms", 200))
-    # THE FOLLOW SAMPLER IS SUSPENDED FOR THIS GESTURE: it drags the viewport thousands of pixels off
-    # the bottom while the reply streams, so samples taken during it make `follows_the_stream` a
-    # reading about the film.
+    # Suspend the follow sampler: this gesture deliberately drags the viewport off the bottom.
     _ev(ctx, "() => window.__sb.follow && window.__sb.follow.suspend()")
     try:
         raw = _ev(ctx, SCROLL_JS, [steps, step_px, settle_ms])
@@ -304,8 +287,7 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
         return not_run(raw.get("reason", "the scroll did not run"))
     commanded = raw["commandedPx"]
     travelled = raw["travelledPx"]
-    # 90% of commanded: Unsloth's intent-aware autoscroll snaps a move it reads as programmatic
-    # straight back to the bottom, so travel is the only thing separating a real scroll from none.
+    # 90% of commanded: Unsloth's autoscroll snaps programmatic moves back to the bottom.
     ok = commanded > 0 and travelled >= 0.9 * commanded
     return ActionResult(
         ran = True,
@@ -341,12 +323,7 @@ def scroll_after(ctx: ActionContext) -> ActionResult:
     return _scroll(ctx, "after")
 
 
-# SETTLE ON THE DOM, NOT ON `data-state`: the attribute flips before the content it reveals has
-# mounted, and the gap depends on the collapse mechanism an A/B is comparing. At 100K, reading
-# `pre span` on the attribute frame gave a 41% phantom reduction across arms where a quiet-DOM
-# read gave the same number on both. A null control cannot see a bias it shares, so both the
-# timing and the census terminate on `quietFrames` unchanged frames.
-# ── 4. reasoning expand / collapse ──────────────────────────────────
+# Settle on a quiet DOM, not `data-state`: the attribute flips before content mounts.
 
 SETTLE_QUIET_FRAMES = 4
 
@@ -524,8 +501,6 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
     if not raw.get("ran"):
         return not_run(raw.get("reason", "the reasoning toggle did not run"))
 
-    # THE REASON NAMES THE CLAUSE THAT ACTUALLY FAILED: built from pane counts alone it printed a
-    # description of SUCCESS under EXPECT FAILED when the real failure was a censored timing.
     failures: list[str] = []
     if raw["openCount"] != raw["panes"]:
         failures.append(f"only {raw['openCount']} of {raw['panes']} panes opened")
@@ -537,9 +512,7 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
         failures.append(f"close_ms is censored: {raw.get('closeCensoredReason')}")
     ok = not failures
 
-    # A CENSORED TIMING IS ABSENT, NOT ZERO, and absent loudly: `_action_timings` drops non-numeric
-    # values, so censoring silently leaves the fast survivors behind. Recorded as its own field so
-    # scoring can refuse to pool a metric censored at some rungs and not others.
+    # A censored timing is recorded explicitly, since `_action_timings` silently drops non-numerics.
     timings = {}
     if raw["openMs"] is not None:
         timings["open_ms"] = raw["openMs"]
@@ -550,16 +523,12 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
         ran = True,
         expect_ok = ok,
         expect = {
-            # SCOPED TO WHAT IS MOUNTED: `reasoningTriggers()` is a querySelectorAll, so on a windowed mount
-            # its COST stops being a function of thread length and becomes one of window size. The assertion
-            # stays self-consistent either way, so this timing needs the pane count beside it.
-            # A windowed mount is `isWindowed()` in scene/dom.js.
+            # On a windowed mount the cost scales with window size, so the pane count must ride along.
             "panes": raw["panes"],
             "panes_scope": "mounted",
             "open_after_expand": raw["openCount"],
             "open_after_collapse": raw["afterClose"],
-            # Present ONLY when the span census went quiet; read on the state-flip frame this number was 41%
-            # wrong on one arm and right on the other (see the note above REASONING_JS).
+            # Present only when the span census went quiet (see the note above REASONING_JS).
             "highlight_spans_while_open": raw["spansOpen"],
             "highlight_spans_while_open_reason": raw.get("spansOpenReason"),
             "settled": raw["spansOpen"] is not None,
@@ -567,7 +536,6 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
             "close_censored": bool(raw.get("closeCensored")),
             "open_censored_reason": raw.get("openCensoredReason"),
             "close_censored_reason": raw.get("closeCensoredReason"),
-            # The ruler's resolution, and how much of `open_ms` was spent after the state flip.
             "open_frames": raw.get("openFrames"),
             "open_state_reached_ms": raw.get("openStateReachedMs"),
             "quiet_frames_required": raw.get("quietFramesRequired"),
@@ -577,10 +545,7 @@ def reasoning_toggle(ctx: ActionContext) -> ActionResult:
     )
 
 
-#: THE SAME GESTURE A USER MAKES: `reasoning_toggle` opens every pane at once (2.2 fps at 100K), a
-#: deliberate worst case that has been quoted as though a user did it. NOT in the standard film:
-#: adding a slot shifts every window after it and voids comparability with every payload on disk.
-# The fast film opens this slot 0.4 s after the worst-case drain.
+# Opens one pane like a user does. Not in the standard film: a new slot voids comparability.
 REASONING_ONE_JS = """
 async (timeoutMs) => {
   const D = window.__sb.dom;
@@ -642,19 +607,13 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
         ran = True,
         expect_ok = ok,
         expect = {
-            # SCOPED TO WHAT IS MOUNTED: `reasoningTriggers()` is a querySelectorAll, so on a windowed mount
-            # its COST becomes a function of window size rather than thread length, and this timing is not
-            # comparable across arms without the pane count beside it.
             "panes": raw["panes"],
             "panes_scope": "mounted",
-            # `panes_opened` is the assertion the notes above are context for: this action opens exactly one
-            # pane whatever the thread holds. Asserted by test_studiobench_reasoning_one_live.
+            # Asserted by test_studiobench_reasoning_one_live.
             "panes_opened": 1,
             "open_after_expand": raw["openCount"],
             "open_after_collapse": raw["afterClose"],
             "highlight_spans_while_open": raw["spansOpen"],
-            # The cost driver, so a reading can be normalised rather than compared across threads whose
-            # newest reply differs in size.
             "highlight_spans_added": raw["spansAdded"],
         },
         timings = {"open_ms": raw["openMs"], "close_ms": raw["closeMs"]},
@@ -665,58 +624,30 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
     )
 
 
-#: Fixed waits the throwaway turn costs once it starts: 80 ms for the composer, 600 ms to get the
-#: turn going, 400 ms for in-flight chunks, 200 ms for the cleanup delete. RESERVED out of the
-#: drain wait, or the overrun lands in `scroll_after`'s window as a bogus `slot_missed`. Split,
-#: because the 80 ms is spent before the turn is sent.
-# `scroll_after` has a 1,200 ms window on the fast film.
-# ── 5. stop generation ──────────────────────────────────────────────
+# Fixed sleeps reserved out of the drain wait, or the overrun lands in `scroll_after`'s window.
 
 OWN_TURN_FIXED_AFTER_SEND_MS = 600 + 400 + 200
 OWN_TURN_FIXED_MS = 80 + OWN_TURN_FIXED_AFTER_SEND_MS
 
-#: What the same turn costs BEYOND those sleeps: two polls plus the driver round trips. Measured
-#: against real chromium, 1,394-1,938 ms against the fixed 1,280, so 700 ms covers the measured
-#: 443-658 ms and still leaves every film a real drain wait.
-#:
-#: SPLIT AT THE MOMENT THE TURN STARTS, because that is where the wait below is bounded and a
-#: total is not a bound: the stop-settle poll, the cleanup delete and the driver calls between
-#: them are all still ahead. Measured at 60-424 ms after the sleeps; 500 ms covers it.
-# 90 ms to stop, 60 ms to delete, 227 ms after the sleeps; `STOP_CLEANUP_JS` is unbounded by the slot.
-# Against the fast film's 3,000 ms stop slot.
+# Non-sleep cost measured at 60-424 ms after the turn starts; 500 ms covers it.
 OWN_TURN_STOP_POLL_MS = 500
 OWN_TURN_START_POLL_MS = 200
 OWN_TURN_POLL_MS = OWN_TURN_START_POLL_MS + OWN_TURN_STOP_POLL_MS
 
-#: What the throwaway turn needs in the slot in total, reserved out of the drain wait rather than
-#: spent past the deadline. A reserve is not enough on its own: the drain loop tests its deadline
-#: at the TOP, so `stop_generation` re-reads the clock before committing to a turn.
-#: The fixed waits are 80 ms for the composer to take the text, 600 ms to let the turn get
-#: going, 400 ms for the chunks in flight and 200 ms for the cleanup delete.
-# One iteration is a 100 ms tick.
+# Total reserved out of the drain wait. The drain loop tests its deadline at the top, so
+# `stop_generation` also re-checks the clock before committing to a turn.
 OWN_TURN_RESERVE_MS = OWN_TURN_FIXED_MS + OWN_TURN_POLL_MS
 
-#: How long to wait for the throwaway turn to start. Enter is pressed BEFORE this wait, so the
-#: send is already committed: returning at the slot bound left two extra messages and a live
-#: stream running into the next action's window. The slot bounds how long the turn is worth
-#: MEASURING; this bounds how long it is worth waiting for so it can be stopped and deleted.
-# The turn stays in the thread `still_running`.
+# Enter is already pressed, so wait long enough to stop and delete the turn, not just the slot.
 TURN_START_TIMEOUT_MS = 8000
 
-#: The composer text the throwaway turn is sent with, read back as well as written: a composer
-#: that still holds it is a send the app REFUSED, the one case where nothing was committed.
+# A composer still holding this text means the app refused the send.
 OWN_TURN_TEXT = "one more"
 
-#: Remove the throwaway turn: assistant first, then the user turn, because deleting the user
-#: message can take the reply with it and leave the count ambiguous. Reports rather than asserts.
-#: The cleanup reaches Delete through the reply's More menu (#12735), so it first waits for that
-#: menu to mount. A paint or two in practice; the bound matters only when the menu is slow or never
-#: comes. `stop_generation` passes what is left of its slot after the settle, clamped to these, so a
-#: slow menu cannot carry the turn into the next action's window. The floor is a few paints, so a
-#: slot already spent still tries once rather than leaving the turn in the thread.
+# Delete assistant first: deleting the user message can take the reply with it.
+# Menu wait is clamped to the slot remainder so cleanup cannot spill into the next action.
 CLEANUP_MENU_MAX_MS = 1000
 CLEANUP_MENU_MIN_MS = 100
-#: What the slot still owes after the menu opens: the 200 ms settle and the delete itself.
 CLEANUP_AFTER_MENU_MS = 300
 
 STOP_CLEANUP_JS = """
@@ -823,7 +754,6 @@ def _reclaim_pending_turn(
                     stopped = True
                     break
                 ctx.page.wait_for_timeout(50)
-            # The chunks already in flight, as on the measured path.
             ctx.page.wait_for_timeout(400)
 
     messages_after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
@@ -844,8 +774,7 @@ def _reclaim_pending_turn(
     if removed is not None:
         ctx.page.wait_for_timeout(200)
 
-    # BOTH HALVES, REPORTED SEPARATELY: deleted-but-never-stopped and stopped-but-not-deleted leave
-    # the film in different states.
+    # Reported separately: not-stopped and not-deleted leave the film in different states.
     if running is not True:
         state = f"never started within the {TURN_START_TIMEOUT_MS}ms it was worth waiting for"
     elif stopped:
@@ -872,8 +801,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     Queue control at the same position with the same class. Pressing it queues a message and the
     stream carries on, and the action reports a fast, precise, entirely wrong number.
     """
-    # THE SLOT, ON THE CLOCK THE ACTION ITSELF RUNS ON: `ctx.budget_ms` is what the slot HAD when the
-    # runner entered it, and a budget spent is not a budget available.
+    # `ctx.budget_ms` is what the slot had at entry, so anchor the deadline on the action's own clock.
     slot_deadline = time.monotonic() + ctx.budget_ms / 1000.0
 
     def remaining_ms() -> float:
@@ -884,13 +812,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         ctx.page.fill('textarea[aria-label="Message input"]', "")
         ctx.page.wait_for_timeout(120)
 
-    # STOP GETS ITS OWN GENERATION. Stopping whatever the cell was streaming permanently truncated
-    # the measured reply (5,304 of 17,737 characters at 10K), so every later action ran against a
-    # third-sized thread. THE GUARD BELOW IS THE OTHER HALF: entering the own-turn path only when
-    # `isRunning()` was false let `--stream-tail-chars` kill the opening reply while liveness passed.
-    # At 96,000 characters the slot opens at 28 s and kills it at about 9,200.
-    # So the reply gets this slot's budget less `OWN_TURN_RESERVE_MS`, and if it has not finished
-    # NOTHING IS STOPPED and the row says why.
+    # Stop a throwaway generation, never the measured reply, which would truncate the thread.
     if _ev(ctx, "() => window.__sb.dom.isRunning()"):
         drain_ms = max(0.0, ctx.budget_ms - OWN_TURN_RESERVE_MS)
         settle_deadline = time.monotonic() + drain_ms / 1000.0
@@ -909,9 +831,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
                 "and the final census measure, so nothing was stopped. Lower --stream-tail-chars "
                 "or move this slot past the drain"
             )
-        # AND THE RESERVE IS CHECKED AGAINST THE CLOCK: the loop tests `settle_deadline` at the top, so a
-        # drain landing in the last iteration leaves less than the reserve however it is sized, and the
-        # turn cannot be abandoned once Enter is pressed.
+        # Re-check the reserve: once Enter is pressed the turn cannot be abandoned.
         if remaining_ms() < OWN_TURN_RESERVE_MS:
             return not_run(
                 "the cell's own reply drained with only "
@@ -922,18 +842,14 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
                 "--stream-tail-chars or move this slot past the drain"
             )
 
-    # READ BEFORE ENTER: the only way to tell the turn this action added from the thread it was
-    # handed, and `_reclaim_pending_turn` deletes only if it grew. threadTotal, not messageCount:
-    # under a windowed mount a send that WORKED reports after == before.
+    # Read before Enter; threadTotal, since a windowed mount reports after == before.
     messages_before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     ctx.page.fill('textarea[aria-label="Message input"]', OWN_TURN_TEXT)
     ctx.page.wait_for_timeout(80)
     ctx.page.keyboard.press("Enter")
     own_generation = True
     sent_at = time.monotonic()
-    # HOW LONG THE TURN IS WORTH MEASURING, bounded by the SLOT as well as by `TURN_START_TIMEOUT_MS`
-    # (8 s is 2.7x the whole stop slot). What is reserved out of it is the rest of the turn, not only
-    # its sleeps: reserving `OWN_TURN_FIXED_MS` left 424 ms unpaid against real chromium.
+    # Bounded by the slot too; reserve the full remaining turn cost, not only its sleeps.
     start_wait_ms = max(
         0.0,
         min(
@@ -942,7 +858,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         ),
     )
     deadline = time.monotonic() + start_wait_ms / 1000.0
-    # HOW LONG IT IS WORTH WAITING FOR, a different question, and NOT bounded by the slot. See `_reclaim_pending_turn`.
+    # Not bounded by the slot. See `_reclaim_pending_turn`.
     reclaim_deadline = sent_at + TURN_START_TIMEOUT_MS / 1000.0
     started_late = (
         f"nothing was generating and a new turn did not start within {start_wait_ms:.0f}ms"
@@ -955,7 +871,6 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         return _reclaim_pending_turn(ctx, messages_before, started_late, reclaim_deadline)
     if not _ev(ctx, "() => window.__sb.dom.isRunning()"):
         return _reclaim_pending_turn(ctx, messages_before, started_late, reclaim_deadline)
-    # Let it get going, so stop is measured against a live stream rather than a starting one.
     ctx.page.wait_for_timeout(600)
     button = ctx.page.query_selector('button[aria-label="Stop generating"]')
     if button is None:
@@ -978,9 +893,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     chars_after = _ev(ctx, "() => window.__sb.dom.assistantChars()")
     ok = stopped_ms is not None
 
-    # LEAVE THE THREAD AS WE FOUND IT: left in place the throwaway turn adds an assistant message and
-    # a reasoning pane that the rest of the film, the census and the seeded-versus-streamed
-    # comparison all measure.
+    # Remove the throwaway turn, or later census and equivalence checks measure it.
     removed = None
     if own_generation:
         menu_wait_ms = min(
@@ -1000,15 +913,10 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
             "chars_before": chars_before,
             "chars_after": chars_after,
             "still_running": not ok,
-            # Which reply was stopped: `chars_added_after_stop` reads differently for a throwaway turn than
-            # for the cell's own.
             "own_generation": own_generation,
-            # Whether the scaffolding was removed. Reported rather than asserted: a failed cleanup leaves an
-            # extra turn every later census must be read against.
+            # Reported, not asserted: a failed cleanup leaves an extra turn later censuses must account for.
             "scaffold_removed": (None if removed is None else bool(removed.get("removed"))),
             "scaffold_note": (None if removed is None else removed.get("reason")),
-            # A stop that worked leaves the text where it was, give or take the chunks already in flight; a
-            # large jump means the stream ran on.
             "chars_added_after_stop": (
                 None if chars_after is None or chars_before is None else chars_after - chars_before
             ),
@@ -1018,9 +926,6 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
         if ok
         else f"the run was still going {SETTLE_TIMEOUT_MS}ms after stop was pressed",
     )
-
-
-# ── 6. settings ─────────────────────────────────────────────────────
 
 
 @register_action(name = "settings", default_budget_ms = 12000)
@@ -1104,9 +1009,6 @@ def settings(ctx: ActionContext) -> ActionResult:
     )
 
 
-# ── 7. model change ─────────────────────────────────────────────────
-
-
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
     """Open the model picker and select a row marked with data-model-picker-option."""
@@ -1115,8 +1017,7 @@ def model_change(ctx: ActionContext) -> ActionResult:
         return not_run("no model selector trigger on the page")
     before = _ev(ctx, "() => window.__sb.dom.currentModelLabel()")
     started = time.monotonic()
-    # Click the LABEL, not the trigger's right edge: a `span[data-eject-hit]` sits there and ejects
-    # the model instead of opening the picker.
+    # Click the label: a `span[data-eject-hit]` at the right edge ejects the model.
     trigger.click(position = {"x": 8, "y": 8})
     opened_ms = None
     deadline = started + SETTLE_TIMEOUT_MS / 1000
@@ -1163,9 +1064,6 @@ def model_change(ctx: ActionContext) -> ActionResult:
     )
 
 
-# ── 8. composer lengths, then send ──────────────────────────────────
-
-
 @register_action(name = "composer_fill", default_budget_ms = 10000)
 def composer_fill(ctx: ActionContext) -> ActionResult:
     """Short, medium and very long text into the composer, timing each paint.
@@ -1209,7 +1107,6 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
         timings[f"fill_{n}_ms"] = got["ms"]
         observed[f"length_{n}"] = got["length"]
         observed[f"height_{n}_px"] = got["rows"]
-    # The LAST fill is sent, so the send path is exercised with the heaviest composer state.
     send = ctx.page.query_selector('button[aria-label="Send message"]')
     sent = False
     if send is not None and ctx.args.get("send", False):
@@ -1228,9 +1125,6 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
     )
 
 
-# ── 9. copy markdown ────────────────────────────────────────────────
-
-
 @register_action(name = "copy_markdown", default_budget_ms = 6000)
 def copy_markdown(ctx: ActionContext) -> ActionResult:
     """The message action bar's Copy, which copies `getCopyText()` for the whole message.
@@ -1239,8 +1133,7 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     triggers a file download rather than a clipboard write. The action bar has `autohide`, so it
     is hovered first or the button is not in the tree to click.
     """
-    # Hover AND WAIT, on the same reasoning as `message_menu`: the bar is `hideWhenRunning`, so a slot
-    # opening with the follow-up's last chunks still arriving finds no Copy button.
+    # Wait for the bar: it is `hideWhenRunning`, and the follow-up may still be streaming.
     found = _ev(
         ctx,
         """
@@ -1277,8 +1170,7 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
         return not_run("no Copy button on the last assistant message")
     ctx.page.wait_for_timeout(200)
     elapsed = (time.monotonic() - started) * 1000
-    # Read back from the clipboard: headless Chromium grants clipboard-read only with the permission
-    # the browser factory requests, and without it the action still RAN but could not be proved.
+    # Headless Chromium allows clipboard-read only with the permission the browser factory requests.
     clip = None
     reason = None
     try:
@@ -1294,9 +1186,6 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
         timings = {"copy_ms": round(elapsed, 1)},
         reason = reason or (None if ok else "the clipboard was empty after Copy"),
     )
-
-
-# ── 10, 11. selection ───────────────────────────────────────────────
 
 
 @register_action(name = "select_text", default_budget_ms = 6000)
@@ -1336,9 +1225,7 @@ def select_text(ctx: ActionContext) -> ActionResult:
     if not raw.get("ran"):
         return not_run(raw.get("reason", "selection did not run"))
     visible = raw.get("visibleChars") or 0
-    # NON-EMPTY, with the coverage fraction as evidence rather than a gate: innerText collapses
-    # whitespace and skips nested scrollers while Selection.toString normalises differently, so the
-    # two counts are not the same quantity.
+    # Coverage fraction is evidence, not a gate: innerText and Selection.toString normalise differently.
     ok = raw["chars"] > 0
     return ActionResult(
         ran = True,
@@ -1383,17 +1270,10 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     err = _failed(raw)
     if err:
         return not_run(err)
-    # A SENTINEL ON THE CLIPBOARD BEFORE THE COPY, so the copy is OBSERVED rather than assumed from
-    # the keystroke. Playwright's WebKit never copies on Control+C: the action reported its own
-    # 250 ms sleep as `copy_ms` across forty-three rows. The test is on the CLIPBOARD, not the engine
-    # name. A failed `writeText` falls back to SNAPSHOTTING what the clipboard already holds; when
-    # even that fails the action is NOT RUN, because clearing the sentinel re-admits the defect.
-    # Chromium reads about 1,538 ms at 100K for the same action.
-    # Residual: an honest copy of character-identical content reads as a no-op.
+    # Write a sentinel first so the copy is observed: WebKit never copies on Control+C.
+    # If the write fails, snapshot the clipboard; if that fails too, the action is NOT RUN.
     sentinel = f"__sb_clipboard_sentinel_{int(time.monotonic() * 1000)}__"
     sentinel_written = False
-    #: What the clipboard held before Control+C and where that value came from; None means no
-    #: pre-copy value could be established, which is refused below.
     pre_copy: Optional[str] = None
     pre_copy_source = "sentinel"
     pre_copy_reason = None
@@ -1424,10 +1304,7 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     ctx.page.keyboard.press("Control+C")
     ctx.page.wait_for_timeout(250)
     copy_ms = (time.monotonic() - copy_started) * 1000
-    # THE CLIPBOARD, NOT THE SELECTION: a selection covers only mounted nodes while a copy handler
-    # reading the message store puts the whole conversation on the clipboard, so scoring on the
-    # selection would report a build that FIXED the data loss as still losing it. Read back before
-    # the selection is cleared, and a failed read is reported rather than read as an empty clipboard.
+    # Score the clipboard, not the selection: a copy-from-store handler copies unmounted messages.
     clip = None
     clip_reason = None
     try:
@@ -1437,9 +1314,7 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     clipboard_chars = len(clip) if isinstance(clip, str) else None
     ctx.page.evaluate("() => window.getSelection().removeAllRanges()")
 
-    # NO CONFIRMED COPY, NO TIMING: a reader seeing `copy_ms` cannot tell a real copy from a
-    # keystroke that went nowhere, and the engines that fail do so consistently enough to look
-    # like data.
+    # No confirmed copy, no timing: failing engines are consistent enough to look like data.
     if pre_copy is not None and clip == pre_copy:
         held = (
             "it still holds the sentinel written before the keystroke"
@@ -1472,16 +1347,11 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
         expect_ok = ok,
         expect = {
             "selected_chars": raw["chars"],
-            # WHAT ACTUALLY REACHED THE CLIPBOARD, the user-facing quantity the truncation alarm is scored
-            # on: a windowed mount cannot SELECT what is not in the DOM but can still COPY it from the store.
             "clipboard_chars": clipboard_chars,
             "clipboard_readable": clip_reason is None,
             "clipboard_note": clip_reason,
-            # WHICH pre-copy value the change was confirmed against: the sentinel this action wrote, or a
-            # snapshot taken when the write was refused (the weaker of the two).
+            # Sentinel this action wrote, or a weaker snapshot taken when the write was refused.
             "copy_confirmed_against": pre_copy_source,
-            # The DOM coverage beside it: `mounted_fraction` well below 1 with whole `clipboard_chars` means
-            # the copy-from-store path works; both short means the conversation is being lost.
             "messages_total": total,
             "messages_mounted": mounted,
             "mounted_fraction": (
@@ -1495,18 +1365,13 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
             "copy_ms": round(copy_ms, 1),
             "total_ms": round((time.monotonic() - started) * 1000, 1),
         },
-        # `expect_ok` stays `chars > 0`: within one run the selection and every DOM-derived reference
-        # shrink together, and an absolute floor would need per-rung, per-platform calibration.
-        # `clipboard_chars` comes first as the user-visible number, `selected_chars` as the mechanism.
+        # `expect_ok` stays `chars > 0`: an absolute floor would need per-rung calibration.
         counts = {
             "clipboard_chars": clipboard_chars,
             "selected_chars": raw["chars"],
         },
         reason = None if ok else "select-all selected nothing",
     )
-
-
-# ── 12. image upload ────────────────────────────────────────────────
 
 
 @register_action(name = "send_turn", default_budget_ms = 10000)
@@ -1525,9 +1390,7 @@ def send_turn(ctx: ActionContext) -> ActionResult:
     """
     pacer = ctx.args.get("_pacer")
     queue = ctx.args.get("_stream_queue") or []
-    # A SHARED MUTABLE cursor, not a scalar in `args`: the runner rebuilds each action's args, so a
-    # scalar written back is discarded and the second send re-sent the first turn.
-    # Slot args merge as `{**base_args, **slot.args}`.
+    # Shared mutable cursor: the runner rebuilds args each action, so a scalar write-back is lost.
     cursor = ctx.args.get("_stream_cursor")
     if not isinstance(cursor, dict):
         return not_run("no shared stream cursor was passed to the action")
@@ -1537,16 +1400,11 @@ def send_turn(ctx: ActionContext) -> ActionResult:
     if index >= len(queue):
         return not_run(f"the stream queue is exhausted ({len(queue)} turns planned)")
     if _ev(ctx, "() => window.__sb.dom.isRunning()"):
-        # Sending while a reply is in flight queues the message instead of starting a stream, and the
-        # action would report a precise number about a message that is merely parked.
         return not_run("a reply was still streaming, so this send would have been queued")
 
     unit = queue[index]
     cursor["i"] = index + 1
-    # NO `pacer.reset()` HERE: `CellRunner` records `last_stats()`, so resetting discarded the
-    # opening reply's StreamStats and let a later completed turn mask a disconnected one. Every turn
-    # is tagged instead, so `check_planned_streams` can verify what the cell streamed.
-    # One turn delivered 4,624 of its 10,000 characters.
+    # No `pacer.reset()`: it would discard earlier turns' StreamStats. Turns are tagged instead.
     tag = f"{ctx.args.get('cell_id', 'cell')}#turn{index + 1}"
     pacer.load(
         unit["reasoning"],
@@ -1560,8 +1418,7 @@ def send_turn(ctx: ActionContext) -> ActionResult:
         return not_run("no composer on the page")
     ctx.page.fill(selector, f"studiobench follow-up {index + 1}")
     ctx.page.wait_for_timeout(80)
-    # THE THREAD'S LENGTH, not the mounted count: under a windowed mount a send that worked perfectly
-    # reports `after == before`, since the new pair arrives as two messages leave the top.
+    # Thread length, not mounted count: a windowed mount reports after == before on success.
     before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     mounted_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
     started = time.monotonic()
@@ -1576,8 +1433,6 @@ def send_turn(ctx: ActionContext) -> ActionResult:
         ctx.page.wait_for_timeout(50)
     after = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     mounted_after = _ev(ctx, "() => window.__sb.dom.messageCount()")
-    # A POSITIVE consequence: the turn actually started streaming AND the thread grew, so a silently
-    # failed send cannot read as an instant one.
     ok = (
         first_ms is not None
         and isinstance(after, int)
@@ -1590,15 +1445,11 @@ def send_turn(ctx: ActionContext) -> ActionResult:
         expect = {
             "messages_before": before,
             "messages_after": after,
-            # What was MOUNTED either side, kept beside the thread totals: identical on the shipped build,
-            # and where they differ the difference is the window size the virtualization arm measures.
             "mounted_before": mounted_before,
             "mounted_after": mounted_after,
             "turn_index": index + 1,
             "queued_turns": len(queue),
             "streamed_chars": len(unit["reasoning"]) + len(unit["content"]),
-            # The tag this turn's stream carries, so the cell checks it against the pacer's own record rather
-            # than re-deriving the naming rule.
             "pacer_tag": tag,
             "unit_kind": unit.get("kind"),
         },
@@ -1607,9 +1458,6 @@ def send_turn(ctx: ActionContext) -> ActionResult:
     )
 
 
-#: What the page can tell us when the attachments button cannot be found: geometry, style,
-#: hit-testing and surrounding chrome, so three explanations that look identical from a `not_run`
-#: string look different here.
 IMAGE_BUTTON_DIAGNOSTIC = """() => {
     const sel = 'button[aria-label="Tools and attachments"]';
     const all = [...document.querySelectorAll(sel)];
@@ -1640,20 +1488,8 @@ IMAGE_BUTTON_DIAGNOSTIC = """() => {
 }"""
 
 
-#: THERE ARE TWO COMPOSERS AND THEY SHARE NO MARKUP, so counting one of them is counting none on
-#: the screen that uses the other. The chat thread renders assistant-ui's composer, where every
-#: attachment goes through `AttachmentPrimitive.Root` as `.aui-attachment-root` inside
-#: `.aui-composer-attachments` (studio/frontend/src/components/assistant-ui/attachment.tsx). The
-#: compare screen renders `SharedComposer`, which keeps its own pending-image and pending-audio
-#: markup (studio/frontend/src/features/chat/shared-composer.tsx) and carries the assistant-ui
-#: classes nowhere; its elements are tagged `data-composer-attachment` inside
-#: `[data-composer-attachments]` so they have a handle that is not a utility class.
-#:
-#: Both containers are mounted whenever their composer is, and hidden while empty, so a missing
-#: container means the markup moved rather than that nothing is attached.
-#: `selftest/test_studiobench_composer_attachment_selector.py` pins every name below against the
-#: file that renders it, because a selector that matches nothing counts zero and reads exactly like
-#: an upload that never happened.
+# Two composers with no shared markup: assistant-ui in chat, SharedComposer in compare.
+# Pinned by selftest/test_studiobench_composer_attachment_selector.py.
 _COMPOSER_ATTACHMENT_CONTAINERS = (".aui-composer-attachments", "[data-composer-attachments]")
 _COMPOSER_ATTACHMENT_TILES = (".aui-attachment-root", "[data-composer-attachment]")
 
@@ -1673,10 +1509,7 @@ _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS = (
 )
 
 
-#: The composer's "Tools and attachments" menu is a MODAL Radix dropdown, and a modal one sets
-#: `pointer-events: none` on everything outside itself for as long as it is open. Menus are told apart
-#: by identity, not presence: the chat UI also has non-modal menus, whose outside pointerdown is let
-#: through, so the attachments click can dismiss one of those and open its own in the same moment.
+# The attachments menu is a modal Radix dropdown; menus are told apart by identity, not presence.
 _MARK_MENUS_BEFORE_JS = """() => {
   window.__sbMenusBefore = new WeakSet(document.querySelectorAll('[role="menu"]'));
 }"""
@@ -1726,24 +1559,14 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     png = ctx.args.get("image_path")
     if not png:
         return not_run("no image path was supplied to the action")
-    # `:visible`, and the FIRST visible match: `document.querySelector` returns document order and
-    # the composer exists more than once (the welcome-screen instance stays in the tree, compare mode
-    # has two threads), so a plain query handed back an unclickable button while a direct probe found
-    # the real one. Playwright's actionability wait also blocks for its 30s default, so everything
-    # here is bounded by what is left of the slot.
+    # First `:visible` match: the composer exists more than once in the tree.
     locator = ctx.page.locator('button[aria-label="Tools and attachments"]:visible').first
     try:
         plus = locator.element_handle(timeout = 2000)
     except Exception:  # noqa: BLE001
         plus = None
     if plus is None:
-        # WHY, not just THAT: a bare "not visible" conflates a button that is absent, one that is covered
-        # and a locator that disagrees with the page, and has already cost three wrong hypotheses. A
-        # direct probe once found the control at 36x36, fully opaque and hit-testable, on a fresh chat,
-        # after a settings round trip and under a 20,000-character composer fill, so those states alone
-        # did not explain it then; a fixture that loads no model has no attachments button at all, and
-        # nothing here rules out a change in the current build. Read the diagnostic below rather than
-        # this note. Carrying the probe state into the row means the next run answers it.
+        # Carry the probe diagnostic into the row: a bare "not visible" conflates several causes.
         return not_run(
             "no visible attachments button on the composer: "
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})
@@ -1751,13 +1574,10 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     before = _ev(ctx, _COUNT_COMPOSER_ATTACHMENTS_JS)
     _ev(ctx, _MARK_MENUS_BEFORE_JS)
     started = time.monotonic()
-    # Bounded by what is left of the slot, never by Playwright's 30s default.
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
-        # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
-        # hit-tests to it") on a run that allowed only this action not to run.
+        # Radix opens on pointerdown, so a timed-out click may leave the menu open and block later actions.
         closed = _close_open_menu(ctx)
         return not_run(
             f"the attachments button could not be clicked: {type(exc).__name__}"
@@ -1783,12 +1603,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     containers = None
     reason = None
     if not ok:
-        # A STALE SELECTOR AND A FAILED UPLOAD BOTH COUNT ZERO, and that is exactly how this
-        # assertion spent its first life: it counted a class the frontend has never rendered, so
-        # `after > before` could not come out true however well the composer worked. It stayed
-        # invisible because the action only mounts once a model is selected, and until then
-        # `--allow-not-run image_upload` excused every row. Probe the container before blaming the
-        # upload, so the next failure says which file to open.
+        # Probe the container first: a stale selector and a failed upload both count zero.
         containers = _ev(ctx, _COUNT_COMPOSER_ATTACHMENT_CONTAINERS_JS)
         if not containers:
             reason = (
@@ -1811,11 +1626,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     )
 
 
-#: The end of the thread as a plain string that can be looked for after the rebuild. NOT the
-#: seeder's `last_marker`: `send_turn` appends turns mid-film, so the seeded marker sits several
-#: messages from the end while `end_present` requires it within two rows. `trim()` then a prefix,
-#: never a whitespace-collapsing normalisation, since readiness.PROBE_JS matches RAW text.
-# ── 13. thread reopen ───────────────────────────────────────────────
+# Not the seeder's `last_marker`: send_turn appends turns. Raw prefix, as readiness.PROBE_JS.
 
 _LAST_USER_TEXT_JS = """
 () => {
@@ -1827,10 +1638,7 @@ _LAST_USER_TEXT_JS = """
 }
 """
 
-#: How long the rebuilt thread is given to reach the readiness gate, in seconds: what is left of
-#: the SLOT, floored at 10s so a 1M-token thread still gets a fair chance and capped at the flat
-#: minute the previous loop waited. Slot-bounded because a broken arm can fail the condition
-#: forever and `delete_message`, the film's last slot, has nowhere to absorb an overrun.
+# Slot-bounded, floored at 10s: `delete_message` is the last slot and cannot absorb overrun.
 _REOPEN_READY_FLOOR_S = 10.0
 _REOPEN_READY_CEILING_S = 60.0
 
@@ -1847,34 +1655,25 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
     thread_id = ctx.args.get("thread_id")
     if not thread_id:
         return not_run("no thread id was supplied to the action")
-    # The THREAD's length, not the mounted count: a windowed arm reopening at a different scroll
-    # anchor mounts a different number of rows and would fail the exact-equality assertion.
+    # Thread length, not mounted count: a windowed arm may reopen at a different scroll anchor.
     before = _ev(ctx, "() => window.__sb.dom.threadTotal()")
     mounted_before = _ev(ctx, "() => window.__sb.dom.messageCount()")
-    # AN INTEGER, not merely truthy: `_ev` hands back `{"__error": ...}` when the page throws, and a
-    # truthy dict would reach the readiness gate as a length and raise there.
+    # `_ev` returns an `{"__error": ...}` dict on page errors, so require an int.
     if not isinstance(before, int) or before <= 0:
         return not_run("the thread has no messages to rebuild")
-    # WHICH READINESS MODE THIS ARM IS HELD TO, decided from the mount on screen before anything is
-    # torn down: a declared total larger than the mounted count IS a windowed mount. Read from the
-    # page rather than a session flag so both arms are judged by one rule.
+    # Read the mode from the page, not a session flag, so both arms are judged by one rule.
     mode = (
         MODE_WINDOWED if isinstance(mounted_before, int) and mounted_before < before else MODE_FULL
     )
     marker = _ev(ctx, _LAST_USER_TEXT_JS)
     if not isinstance(marker, str) or not marker:
-        # Refused HERE, before anything is touched, so a thread this action cannot verify is also one it
-        # has not disturbed: without a string identifying the end of the conversation there is no way to
-        # tell a rebuilt thread from a half-rebuilt one.
+        # Refused before anything is touched, so an unverifiable thread is also undisturbed.
         return not_run(
             "the last user turn carried no text to identify the end of the thread with, so a "
             "finished rebuild could not have been told from a partial one"
         )
     started = time.monotonic()
-    # NO FALLBACK ON THE WAY OUT. A goto is a FULL DOCUMENT NAVIGATION while the click is a
-    # client-side subtree rebuild, and read as the click the substitution produced thread_reopen at
-    # 6.0 fps. Refusing AFTER `page.goto` had run left the scene on an empty new chat, so the
-    # substitution is now declined BEFORE it happens.
+    # No navigation fallback on the way out: a full page load is not the client-side rebuild measured.
     leave = _click_or_navigate(
         ctx,
         'button[aria-label="New chat"]',
@@ -1893,11 +1692,7 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             "page navigation; a document reload is not a thread rebuild, so the action was not run "
             f"and no navigation was performed ({leave.reason})"
         )
-    # BOTH CLOCKS START AT THE CLICK THAT WORKED. `_click_or_navigate` tries `handle.click` first,
-    # and Playwright's hit-target check retries for its full 2,000 ms against the New chat button,
-    # which is `opacity-0 pointer-events-none` until its header group is hovered, so that timeout
-    # landed inside the `close_ms` floor_table quotes. The retry is MOVED to the retry fields.
-    # Moved to `left_click_retry_ms` and `reopen_click_retry_ms`.
+    # Clocks start at the click that worked; Playwright retry time goes to the *_click_retry_ms fields.
     click_left_at = leave.started_at if leave.started_at is not None else started
     # Unmount FIRST, or "already back" is indistinguishable from "never left".
     closed_ms = None
@@ -1911,9 +1706,7 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         return not_run("the thread never unmounted, so the rebuild could not be timed")
 
     reopen_started = time.monotonic()
-    # THE FALLBACK IS ALLOWED ON THE WAY BACK: from an empty new chat, navigating to the thread's own
-    # URL restores the scene for the slots that follow. Still not a measurement of a rebuild, so no
-    # timing is reported for it.
+    # Fallback allowed on the way back to restore the scene, but no timing is reported for it.
     back = _click_or_navigate(
         ctx, f'[data-thread-id="{thread_id}"]', f"{ctx.args['base_url']}/chat?thread={thread_id}"
     )
@@ -1931,11 +1724,7 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             "the thread's sidebar row could not be clicked and a full page navigation was "
             f"substituted, so the rebuild was never timed ({back.reason})"
         )
-    # WHEN IS THE REBUILD OVER? Not when `threadTotal()` reaches its old length: on a windowed arm
-    # that reads `aria-setsize`, the STORE'S CLAIM, which the first reopened row publishes while
-    # three of eighteen messages are mounted. `reopen_ms` now runs from the sidebar click until
-    # runtime/readiness.py's own gate passes. That same function, not a second definition of ready,
-    # and each arm is judged in its own mode; the cost is one STABLE_GAP_MS paid equally by both.
+    # The rebuild is over when readiness.py's gate passes, not when `threadTotal()` matches.
     left_ms = ctx.budget_ms - (time.monotonic() - started) * 1000
     timeout_s = min(_REOPEN_READY_CEILING_S, max(_REOPEN_READY_FLOOR_S, left_ms / 1000))
     reopen_ms = None
@@ -1951,12 +1740,9 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
         reopen_ms = (time.monotonic() - click_back_at) * 1000
         readiness = ready.as_dict()
     except ThreadNotReady as exc:
-        # A REAL FINDING ABOUT THE ARM: `ran` stays True with the outstanding conditions on the row, and
-        # `reopen_ms` stays null so scoring does not read it as a fast rebuild.
+        # `reopen_ms` stays null so scoring does not read a failed gate as a fast rebuild.
         readiness = exc.detail
     except Exception as exc:  # noqa: BLE001
-        # The probe itself failed (a closed page, an uninstalled `window.__sb`), so nothing is claimed
-        # about the rebuild.
         ctx.log(f"    the readiness probe failed during the reopen: {type(exc).__name__}: {exc}")
         return not_run(
             f"the reopened thread could not be probed for readiness: {type(exc).__name__}: {exc}"
@@ -1976,15 +1762,10 @@ def thread_reopen(ctx: ActionContext) -> ActionResult:
             "highlight_spans_after": spans,
             "left_via": leave.path,
             "reopened_via": back.path,
-            # THE HARNESS'S OWN COST, kept OUT of the two timings above: how long `_click_or_navigate` spent
-            # on attempts that failed, almost always Playwright's 2,000 ms hit-target retry.
+            # Harness cost kept out of the timings: mostly Playwright's 2,000 ms hit-target retry.
             "left_click_retry_ms": round((click_left_at - started) * 1000, 1),
             "reopen_click_retry_ms": round((click_back_at - reopen_started) * 1000, 1),
-            # WHICH GATE THE TIMING WAS TAKEN AGAINST: two arms in different readiness modes are answering
-            # slightly different questions.
             "reopen_ready_mode": mode,
-            # The gate's own verdict: "mounted 3 of 18, aria-setsize 18" is the difference between a slow app
-            # and an arm that publishes a total it has not built.
             "reopen_readiness": readiness,
         },
         timings = {
@@ -2014,10 +1795,7 @@ class Transition:
     ok: bool
     path: str  # "click", "navigate" or "failed"
     reason: str = ""
-    #: The monotonic instant the interaction that SUCCEEDED was issued, so a caller can time from the
-    #: click rather than the first attempt; None when nothing succeeded. The failed attempt is not
-    #: part of the gesture: Playwright's hit-target check retries for the full 2,000 ms against the
-    #: sidebar's `New chat`, which made `thread_reopen.close_ms` two seconds of retry.
+    # Instant the successful interaction was issued, so timing excludes failed attempts.
     started_at: Optional[float] = None
 
     @property
@@ -2025,8 +1803,6 @@ class Transition:
         return self.path == "navigate"
 
 
-#: Where on an element to look for a point a user could hit: fractions of the box, centre first,
-#: then the lower band that stays uncovered when a sticky header overlaps the top.
 _HIT_POINTS = (
     (0.5, 0.5),
     (0.5, 0.75),
@@ -2038,9 +1814,7 @@ _HIT_POINTS = (
     (0.5, 0.25),
 )
 
-#: EVERY match, not the first: this app renders "New chat" twice, and a collapsed sidebar leaves
-#: its zero-size button first in document order, so a plain query reported "no point hit-tests to
-#: it" about a fully clickable button elsewhere. The same trap `image_upload` documents.
+# Every match: "New chat" renders twice and a collapsed sidebar's zero-size button comes first.
 _HIT_TEST_JS = """
 ([selector, points]) => {
   for (const el of document.querySelectorAll(selector)) {
@@ -2069,14 +1843,11 @@ def _reachable_point(ctx: ActionContext, selector: str) -> tuple[float, float] |
     return None
 
 
-#: `.sidebar-header-action` transitions opacity over 150ms, and one sample after a fixed sleep
-#: lost roughly one run in three on a loaded machine, so the hit test is retried instead.
+# Opacity transitions over 150ms, so the hit test is retried instead of one fixed-sleep sample.
 _REVEAL_SETTLE_MS = 120
 _REVEAL_ATTEMPTS = 5
 
-#: The control's own box, whatever its computed style says: mid-transition `getComputedStyle`
-#: reports the old opacity, and after a failed click the element can read as revealed while not
-#: yet hit-testable. This only runs when the control is already known to be unreachable.
+# Mid-transition `getComputedStyle` reports stale opacity, so use the control's own box.
 _HOVER_TARGET_JS = """
 (selector) => {
   for (const el of document.querySelectorAll(selector)) {
@@ -2166,11 +1937,7 @@ def _click_or_navigate(
             return Transition(ok = True, path = "click", started_at = attempt_at)
         except Exception as exc:  # noqa: BLE001
             click_error = f"{selector} was not clickable: {type(exc).__name__}"
-        # THE CENTRE IS COVERED, BUT THE CONTROL IS NOT. Playwright clicks the centre and refuses when
-        # something else hit-tests there; the sidebar's sticky group label overlaps the top of New chat
-        # while most of the button is clickable. So the box is hit-tested at a spread of points and the
-        # first that resolves to the control is clicked with a real mouse event; no reachable point is a
-        # finding worth reporting rather than a reason to substitute a page load.
+        # Playwright clicks the centre, which a sticky header can cover; hit-test several points instead.
         point = _reachable_point(ctx, selector) or _reveal_by_hover(ctx, selector)
         if point is not None:
             try:
@@ -2211,8 +1978,6 @@ def _click_or_navigate(
             reason = f"{click_error}, and the navigation failed too: {type(exc).__name__}",
         )
 
-
-# ── 14. message menu ────────────────────────────────────────────────
 
 MENU_JS = """
 async (opts) => {
@@ -2283,10 +2048,7 @@ async (opts) => {
 """
 
 
-#: How long an action that needs a message's ACTION BAR waits for the reply to finish. Unsloth
-#: hides the bar while a message generates, and the film schedules `message_menu` about four
-#: seconds after a `send_turn` whose reply runs for roughly fourteen, so the action reported NOT
-#: RUN on every CI run. Bounded by the slot's budget, and waited BEFORE the timed operation.
+# Unsloth hides the action bar while generating; waited before the timed op, slot-bounded.
 _ACTION_BAR_WAIT_FRACTION = 0.6
 _ACTION_BAR_POLL_MS = 100
 
@@ -2308,10 +2070,7 @@ def _wait_for_the_reply_to_land(ctx: ActionContext) -> bool:
 
 @register_action(name = "message_menu", default_budget_ms = 12000)
 def message_menu(ctx: ActionContext) -> ActionResult:
-    # TWO WAITS, COVERING DIFFERENT THINGS: this one waits for the STREAM to stop, bounded by a
-    # fraction of the slot, while `waitForButtonMs` waits for the BAR TO MOUNT a few hundred ms
-    # later, which this one cannot see because `isRunning()` is already false.
-    # See `OWN_TURN_STOP_POLL_MS`.
+    # Waits for the stream to stop; `waitForButtonMs` separately waits for the bar to mount.
     if not _wait_for_the_reply_to_land(ctx):
         return not_run(
             "a reply was still generating when the slot's budget ran out, and Unsloth hides the "
@@ -2329,23 +2088,17 @@ def message_menu(ctx: ActionContext) -> ActionResult:
         return not_run(raw.get("reason", "the menu action did not run"))
     waited_ms = raw.get("waitedMs")
     if waited_ms:
-        # Logged rather than swallowed: a cell that had to wait says so, because the wait is a fact about
-        # the film's PACKING.
         ctx.log(f"    message_menu waited {waited_ms}ms for the action bar to be mounted")
-    # Opened AND closed AND a non-zero item count. Any one of the three alone can be satisfied by
-    # a menu that never rendered its items.
+    # All three, since any one alone is satisfied by a menu that never rendered its items.
     ok = raw["openMs"] is not None and raw["closeMs"] is not None and raw["items"] > 0
     return ActionResult(
         ran = True,
         expect_ok = ok,
         expect = {
             "items_while_open": raw["items"],
-            # Radix puts the body on the modal layer while the menu is up, which is the fan-out under
-            # suspicion, so this proves the open really took that path.
+            # Radix puts body on the modal layer while open; this proves the open took that path.
             "body_pointer_events_open": raw["bodyPointerEvents"],
             "body_pointer_events_closed": raw["bodyPointerEventsAfterClose"],
-            # In the payload, not only in the log: a run whose cells all waited is a run whose film opens
-            # this slot too early.
             "action_bar_wait_ms": waited_ms,
         },
         timings = {
@@ -2363,8 +2116,6 @@ def message_menu(ctx: ActionContext) -> ActionResult:
         f"items={raw['items']}",
     )
 
-
-# ── 15. delete ──────────────────────────────────────────────────────
 
 DELETE_JS = """
 async (opts) => {
@@ -2446,8 +2197,7 @@ def delete_message(ctx: ActionContext) -> ActionResult:
         return not_run(err)
     if not raw.get("ran"):
         return not_run(raw.get("reason", "the delete action did not run"))
-    # The THREAD TOTAL dropped: a delete that detached the node but left the thread the same length
-    # is a different bug, or on a windowed mount a node the virtualizer recycled.
+    # A detached node with an unchanged thread length is a different bug, or a recycled row.
     ok = raw["ms"] is not None and raw["after"] < raw["before"]
     return ActionResult(
         ran = True,

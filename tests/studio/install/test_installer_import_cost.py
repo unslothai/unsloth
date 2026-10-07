@@ -74,7 +74,6 @@ def test_a_missing_filelock_still_answers_with_the_pid_fallback(tmp_path, monkey
     monkeypatch.setattr(prebuilt_core, "_FILELOCK_CLASSES", (None, None))
     lock_path = tmp_path / "install.lock"
     with prebuilt_core.install_lock(lock_path, timeout = 5):
-        # The fallback writes a real file so a crashed holder can be spotted.
         assert lock_path.is_file()
     assert not lock_path.exists()
 

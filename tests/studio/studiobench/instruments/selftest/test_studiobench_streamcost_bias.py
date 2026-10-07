@@ -37,17 +37,13 @@ if str(_STUDIO_TESTS) not in sys.path:
 
 _STREAMCOST_JS = _STUDIO_TESTS / "studiobench" / "instruments" / "streamcost.js"
 
-#: The two documents. 40,000 elements is the size the 289.6 ms figure was measured against; 4,000 is
-#: roughly what a window of six messages leaves standing at the same rung.
+# 40,000: the document size the 289.6 ms bias was measured on; 4,000: a six-message window.
 FULL_ELEMENTS = 40_000
 WINDOWED_ELEMENTS = 4_000
 
-#:How many reads to take. The quantity is a few milliseconds, so one reading is noise.
 READS = 40
 
-#: What counts as "no longer biased". The old reading's residual is milliseconds per call; the new
-#: one is a property read and must be under a tenth of a millisecond per call even on a loaded
-#: shared machine.
+# The wire counter is a property read: under 0.1 ms/call even on a loaded machine.
 MAX_WIRE_RESIDUAL_MS_PER_CALL = 0.1
 
 
@@ -78,8 +74,7 @@ BUILD_JS = """
 }
 """
 
-#: One SSE frame in exactly the shape `_gguf_chat_delta_line` emits, fed through the page's own
-#: TextDecoder so the instrument's real hook sees it.
+# Fed through the page's TextDecoder so the instrument's real hook sees it.
 FEED_JS = """
 (frames) => {
   const enc = new TextEncoder();
@@ -125,8 +120,7 @@ def browser():
 def _page(browser, elements: int):
     page = browser.new_page(viewport = {"width": 900, "height": 600})
     page.set_content("<!doctype html><meta charset=utf-8><body></body>")
-    # BEFORE the document exists, exactly as the real harness installs it via add_init_script: the hook
-    # has to be on TextDecoder.prototype before any decode happens.
+    # Installed before any decode, as the real harness does via add_init_script.
     page.add_script_tag(content = _STREAMCOST_JS.read_text(encoding = "utf-8"))
     got = page.evaluate(BUILD_JS, elements)
     page.evaluate(FEED_JS, 200)
@@ -134,7 +128,6 @@ def _page(browser, elements: int):
 
 
 def _per_call_ms(page, which: str) -> float:
-    # Median of several passes: a single pass on a shared machine picks up whatever else is running.
     return statistics.median(page.evaluate(TIME_JS, [which, READS]) for _ in range(5))
 
 
@@ -164,18 +157,15 @@ def test_the_wire_denominator_is_the_same_price_on_a_windowed_document(browser, 
             f"RESIDUAL {wire_residual:+.4f} ms/call"
         )
 
-    # The old reading really is cheaper on the smaller document. If this ever stops being true the test
-    # below is proving nothing, so it is asserted rather than assumed.
+    # If the old reading stops being cheaper on the smaller document, this test proves nothing.
     assert dom_residual > 0, (
         "the O(document) read was not measurably cheaper on the windowed document, so this "
         f"machine cannot demonstrate the bias at all (full {dom_full}, windowed {dom_win})"
     )
-    # And the new one is not.
     assert abs(wire_residual) < MAX_WIRE_RESIDUAL_MS_PER_CALL, (
         f"the wire counter cost {wire_residual:+.4f} ms/call more on the full document than on "
         "the windowed one, so it still carries a bias in the treatment's favour"
     )
-    # The point of the whole exercise: whatever is left is a small fraction of what was there.
     assert abs(wire_residual) < dom_residual / 10
 
 
@@ -194,8 +184,6 @@ def test_the_wire_count_is_identical_on_both_documents_for_identical_traffic(bro
     assert a["wire_chars"] == b["wire_chars"] > 0
     assert a["wire_frames"] == b["wire_frames"] == 200
     assert a["wire_parse_failures"] == b["wire_parse_failures"] == 0
-    # The DOM reading, by contrast, is a different number on the two documents, which is exactly why it
-    # could not be the denominator.
     assert a["wire_chars"] == 200 * len("token 0 ") or a["wire_chars"] > 0
 
 
@@ -223,7 +211,6 @@ def test_the_counter_survives_a_frame_split_across_two_decode_calls(browser):
         """)
     finally:
         page.close()
-    # Nothing is counted until the frame is complete, and then all ten characters are.
     assert got["mid"] == before["wire_chars"]
     assert got["after"]["wire_chars"] == before["wire_chars"] + 10
     assert got["after"]["wire_parse_failures"] == 0

@@ -44,7 +44,7 @@ __all__ = [
 
 UNSLOTH_MODELOPT_KEY_MAPPING_ATTR = "_unsloth_modelopt_key_mapping"
 
-# Anchored at the end of the key, so `weight_scale_inv` or `weight_scale_2` never match.
+# Anchored at the end, so `weight_scale_inv` or `weight_scale_2` never match.
 MODELOPT_FP8_KEY_MAPPING = {
     r"\.weight_scale$": ".weight_scale_inv",
     r"\.input_scale$": ".activation_scale",
@@ -54,11 +54,11 @@ _FP8_ALGOS = ("FP8", "FP8_PER_TENSOR")
 
 
 def _modelopt_pattern(name) -> str:
-    # ModelOpt ignore entries are fnmatch globs; as regexes `layers.16*` would also skip layers 1, 10-19.
+    # ModelOpt ignore entries are fnmatch globs; as regexes `layers.16*` would match more layers.
     name = str(name)
     if any(ch in name for ch in "*?["):
         return fnmatch.translate(name)
-    # transformers matches unanchored, so a bare `model.layers.1` would also skip layers 10-19.
+    # transformers matches unanchored, so `model.layers.1` would also skip layers 10-19.
     return r"(?:.*\.)?" + re.escape(name) + r"(?:\.|$)"
 
 
@@ -138,7 +138,7 @@ def _group_is_fp8(group) -> bool:
 
 
 def _activations_map_onto_fp8(inputs) -> bool:
-    # transformers' dynamic fp8 is per token, so dynamic "token" maps; static must be per tensor.
+    # transformers' dynamic fp8 is per token; static must be per tensor.
     if not isinstance(inputs, dict):
         return False
     if str(inputs.get("type", "")).lower() != "float" or int(inputs.get("num_bits", 0) or 0) != 8:
@@ -239,7 +239,6 @@ def _hf_quant_config_path(
         if isinstance(cached, str):
             return cached
         if cached is not None:
-            # Cached as absent for this revision.
             return None
         return hf_hub_download(
             name,
@@ -299,7 +298,7 @@ def attach_hf_quant_config(
 
 
 def _transformers_accepts_fp8_plan(plan) -> bool:
-    # transformers 4.x only knows dynamic block fp8 and rejects a per-tensor plan.
+    # transformers 4.x only knows dynamic block fp8.
     try:
         from transformers.utils.quantization_config import FineGrainedFP8Config
         FineGrainedFP8Config(**{k: v for k, v in plan.items() if k != "quant_method"})
@@ -308,7 +307,7 @@ def _transformers_accepts_fp8_plan(plan) -> bool:
     return True
 
 
-# A retried / second load reuses the config (now native fp8, marker moved off): keep the renaming by id.
+# A retried load reuses the (now native fp8) config: keep the renaming by id.
 _REWRITTEN_CONFIGS: dict = {}
 
 
@@ -406,7 +405,7 @@ def _dequantize_modelopt_on_merged_save() -> None:
         result = status(*args, **kwargs)
         if result != (False, None) or signature is None:
             return result
-        # zoo passes the token positionally: check_model_quantization_status(model_name, token, ...).
+        # zoo passes the token positionally.
         try:
             bound = signature.bind(*args, **kwargs).arguments
         except TypeError:
@@ -525,7 +524,6 @@ def keep_task_heads_unquantized(config, *model_classes) -> bool:
     names = [getattr(cls, "__name__", "") for cls in model_classes if cls is not None]
     if not any(name.endswith(_TASK_CLASS_SUFFIXES) for name in names):
         return False
-    # A task checkpoint already ships its head, quantized unless the ignore list names it.
     architectures = getattr(config, "architectures", None) or []
     if any(str(name).endswith(_TASK_CLASS_SUFFIXES) for name in architectures):
         return False

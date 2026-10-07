@@ -148,13 +148,11 @@ def test_processor_is_unwrapped_to_its_inner_tokenizer():
     tokenizer = _FakeTokenizer()
     namespace = _unwrap(_FakeProcessor(tokenizer))
     assert namespace["tokenizer"] is tokenizer
-    # The padding_side read that used to raise now lands on the tokenizer.
     assert namespace["tokenizer"].padding_side == "right"
 
 
 def test_old_tokenizer_is_the_inner_tokenizer_not_the_processor():
-    # getattr(processor, "pad_token", None) is None on MLX, so binding old_tokenizer
-    # before the unwrap makes the restore at the end blank pad/bos/unk on the tokenizer.
+    # pad_token is None on the MLX processor, so binding old_tokenizer before the unwrap blanks tokens.
     tokenizer = _FakeTokenizer()
     assert _unwrap(_FakeProcessor(tokenizer))["old_tokenizer"] is tokenizer
 
@@ -185,9 +183,7 @@ def test_processor_is_returned_carrying_the_new_tokenizer_and_template():
 
 
 def test_a_remapped_eos_reaches_the_processors_mirrored_copy():
-    # chatml/gemma_chatml rebuild the tokenizer with eos remapped to the stop word. The
-    # loader copied the old eos onto the processor, and that copy is what the collators
-    # and save paths read, so it has to follow the rebuild.
+    # chatml/gemma_chatml remap eos; the collators and saves read the processor's copy, so it must follow.
     processor = _FakeProcessor(_FakeTokenizer(eos_token = "<eos>", eos_token_id = 1))
     rebuilt = _FakeTokenizer(eos_token = "<|im_end|>", eos_token_id = 107)
     _reattach(processor, rebuilt)

@@ -35,8 +35,7 @@ def _config_post_snippet() -> str:
     src = _rl_source()
     match = re.search(r"RLConfig_post = \(\n(.*?)\n    \)\n", src, re.S)
     assert match is not None, "RLConfig_post assignment not found"
-    # The snippet is a concatenation of quoted lines; rebuild it the way the
-    # module does rather than re-implementing the quoting.
+    # Rebuild the snippet the way the module does rather than re-implementing the quoting.
     return eval("(\n" + match.group(1) + "\n)", {"__builtins__": {}})
 
 
@@ -79,9 +78,7 @@ def test_other_checkpoint_kwargs_are_preserved():
 
 
 def test_a_config_asking_for_context_fn_is_left_alone():
-    # torch/utils/checkpoint.py raises "Passing `context_fn` or `debug` is only
-    # supported when use_reentrant=False" as soon as a checkpointed forward
-    # runs, so pinning here would turn a working setup into a crash.
+    # torch raises on `context_fn`/`debug` unless use_reentrant=False, so pinning here would crash.
     sentinel = object()
     config = _run_post(_Config(kwargs = {"use_reentrant": False, "context_fn": sentinel}))
     assert config.gradient_checkpointing_kwargs == {
@@ -102,15 +99,12 @@ def test_a_falsy_debug_does_not_block_the_pin():
 
 
 def test_checkpointing_off_is_left_completely_alone():
-    # transformers never reads these kwargs in that case, so touching them
-    # would only widen the blast radius.
     config = _run_post(_Config(gradient_checkpointing = False, kwargs = None))
     assert config.gradient_checkpointing_kwargs is None
 
 
 def test_the_pin_is_not_gated_on_a_trl_version():
-    # The previous guard only ran for TRL 0.27.0+, which is exactly why older
-    # TRL leaked through to the non-reentrant path.
+    # The previous guard only ran for TRL 0.27.0+, so older TRL leaked through.
     src = _rl_source()
     match = re.search(r"RLConfig_post = \(\n(.*?)\n    \)\n", src, re.S)
     assert match is not None

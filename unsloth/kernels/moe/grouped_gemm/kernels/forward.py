@@ -18,18 +18,15 @@ def _grouped_gemm_forward_kernel(
     x_ptr,
     w_ptr,
     y_ptr,
-    # Variable depending on routed probs
     m_sizes_ptr,
     gather_indices_ptr,
     topk_weights_ptr,
-    # Constant problem shapes
     NUM_EXPERTS: tl.constexpr,
     NUM_TOKENS,
     TOPK: tl.constexpr,
     N: tl.constexpr,
     K: tl.constexpr,
     NUM_SMS,
-    # Tuning params
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
@@ -98,16 +95,13 @@ def _grouped_gemm_forward_kernel(
                     block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
                 )
 
-            # Process tiles for this expert
             while tidx >= processed_tiles and tidx < processed_tiles + num_tiles_per_expert:
                 tile_idx = tidx - processed_tiles
 
-                # Check if L2 cache reuse for this order is optimal
                 tile_m_idx = tile_idx % num_m_tiles
                 tile_n_idx = tile_idx // num_m_tiles
 
                 if SHOULD_PERMUTE_OR_FUSE:
-                    # These will be used for loading and storing in permuted order
                     gather_offsets = tile_m_idx * BLOCK_SIZE_M + m_block_range
                     indices_to_gather = m_start + tl.max_contiguous(
                         tl.multiple_of(gather_offsets % m_size, BLOCK_SIZE_M),
@@ -120,21 +114,17 @@ def _grouped_gemm_forward_kernel(
                     expert_token_offsets = expert_token_idx.to(tl.int64)[:, None]
                     indices_to_gather_64 = indices_to_gather.to(tl.int64)
 
-                    # Masks for permuted load and store
                     row_mask = gather_offsets < m_size
                     row_mask = row_mask[:, None]
 
                 # Only (PERMUTE_X and not PERMUTE_Y) and (not PERMUTE_X and PERMUTE_Y) occur, so load/store offsets
                 # are flipped between the two cases, with the strides adjusted.
                 if PERMUTE_X:
-                    load_idx = (
-                        (expert_token_offsets // TOPK) * K
-                    )  # Permute on load from token to expert order, dividing by TOPK to index the original token count.
+                    load_idx = (expert_token_offsets // TOPK) * K
                     store_idx = indices_to_gather_64[:, None] * N
                 else:
                     off_am = tile_m_idx * BLOCK_SIZE_M
                     if not PERMUTE_Y:
-                        # These will already be computed if permuting y
                         offs_am = off_am + m_block_range
                         row_mask = offs_am[:, None] < m_size
                         row_idx = (m_start + offs_am[:, None]).to(tl.int64)
@@ -173,7 +163,6 @@ def _grouped_gemm_forward_kernel(
                         x = x_desc.load([m_start + off_am, k_offset])
 
                     if FUSE_MUL_PRE:
-                        # Check for correct broadcasting
                         topk_weights = tl.load(topk_weights_ptr + topk_load_idx, mask = row_mask)
                         x *= topk_weights.to(x.dtype)
 

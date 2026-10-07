@@ -46,7 +46,6 @@ BASE_URL = "http://127.0.0.1:1"
 THREAD_URL = f"{BASE_URL}/chat?thread=t1"
 NEW_CHAT_URL = f"{BASE_URL}/chat?new=studiobench"
 
-#:The length of the seeded thread, and the marker the seeder wrote into its last user turn.
 TOTAL = 18
 MARKER = "studiobench turn 8: continue with unit 3"
 
@@ -68,9 +67,7 @@ class _Frame:
     setsize: int = TOTAL
 
 
-#: A rebuild that declares its full length immediately and then takes four more frames to become a
-#: thread. Frame 3 has the whole conversation mounted but is still highlighting, so `elements` is
-#: still moving and the mount is not settled until frame 4 repeats it.
+#: Frame 3 is fully mounted but still highlighting, so the mount only settles at frame 4.
 REBUILD = (
     _Frame(mounted = 3, elements = 1_200, scroll_height = 2_000, spans = 0, marker = False),
     _Frame(mounted = 9, elements = 4_800, scroll_height = 6_400, spans = 120, marker = False),
@@ -79,14 +76,10 @@ REBUILD = (
     _Frame(mounted = 18, elements = 11_900, scroll_height = 12_400, spans = 8_940, marker = True),
 )
 
-#: A rebuild that never arrives: the store keeps declaring eighteen messages and the thread stops
-#: at three, settled, with the end of the conversation nowhere on screen. The exact shape the old
-#: condition scored as a fast, successful re-open.
+#: A rebuild that never arrives: total declared as 18 but only 3 mounted.
 STALLED = (_Frame(mounted = 3, elements = 1_200, scroll_height = 2_000, spans = 0, marker = False),)
 
-#: A correctly windowed rebuild: six rows out of eighteen, anchored at the end, with the last user
-#: turn among them. `full` conditions would refuse this forever, which is why the action picks its
-#: mode from the mount it left.
+#: Windowed rebuild; `full` conditions would refuse it forever.
 WINDOWED = (
     _Frame(mounted = 2, elements = 900, scroll_height = 11_800, spans = 0, marker = False),
     _Frame(mounted = 6, elements = 3_400, scroll_height = 12_400, spans = 2_100, marker = True),
@@ -172,7 +165,7 @@ class _ThreadPage:
         script,
         arg = None,
     ):
-        if "probe_attempted" in script:  # readiness.PROBE_JS
+        if "probe_attempted" in script:
             return self._probe()
         if "threadTotal" in script:
             return self.thread_total()
@@ -182,9 +175,7 @@ class _ThreadPage:
             return MARKER if self.phase != "gone" else None
         if "pre span" in script:
             return self.frame.spans if self.phase == "rebuild" else 0
-        # The hit-test spread and the hover target, both of which report "no reachable point" for an
-        # unclickable control. Returning None sends `_click_or_navigate` down the branch under test
-        # rather than into an off-centre click.
+        # None sends `_click_or_navigate` down the fallback branch under test.
         return None
 
     def query_selector(self, selector):
@@ -203,14 +194,10 @@ class _ThreadPage:
         self._route(url)
 
     def wait_for_timeout(self, _ms):
-        # A REAL, TINY SLEEP. The readiness wait is bounded on the monotonic clock, so a poll that
-        # returned instantly would spin thousands of times inside the timeout instead of walking the
-        # scripted frames.
+        # Real sleep: the wait is bounded on the monotonic clock, so an instant poll would spin.
         time.sleep(0.002)
         if self.phase == "rebuild":
             self.step += 1
-
-    # ── phases ──────────────────────────────────────────────────────
 
     def _route(self, target: str) -> None:
         if "New chat" in target or "new=" in target:
@@ -235,9 +222,6 @@ def _ctx(
         dom = None,
         log = log or (lambda _m: None),
     )
-
-
-# ── defect one: the fallback is declined, not detected ──────────────
 
 
 def test_a_refused_reopen_leaves_the_thread_where_it_found_it():
@@ -320,9 +304,6 @@ def test_a_substituted_navigation_on_the_way_back_repairs_the_scene_but_is_not_t
     assert page.phase == "rebuild", "the thread was not put back for the slots that follow"
 
 
-# ── defect two: a declared total is not a finished rebuild ──────────
-
-
 def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
     """WITHOUT THIS THE TEST BELOW PROVES NOTHING. If the first frame did not already publish
     `aria-setsize = 18`, the old condition would have waited too and both would pass."""
@@ -343,8 +324,7 @@ def test_reopen_waits_for_the_thread_to_be_rebuilt_not_for_it_to_be_declared():
     assert result.expect_ok is True
     assert result.expect["mounted_after"] == 18, "the census was taken off a partly built thread"
     assert result.expect["highlight_spans_after"] == 8_940, "the fences had not been highlighted"
-    # Frame 4 is the earliest one that is both end-present and settled, so nothing short of five
-    # probes can have satisfied the gate.
+    # Frame 4 is the first end-present and settled frame, so at least five probes ran.
     assert page.probes >= 5, page.probes
     assert result.timings["reopen_ms"] is not None
 
@@ -421,11 +401,7 @@ def test_a_thread_whose_end_cannot_be_identified_is_refused_before_it_is_touched
     assert page.phase == "thread" and page.goto_calls == []
 
 
-#: How long the centre click burns before it gives up. `_click_or_navigate` passes `timeout = 2000`
-#: to Playwright and the hit-target check retries for the whole of it against a control it cannot
-#: hit at the centre. Scaled down here; what is asserted is that the timings do not contain it, at
-#: whatever size.
-# ── defect three: the harness's own retry, billed to the rebuild ────
+#: Scaled-down stand-in for the 2000 ms centre-click retry in `_click_or_navigate`.
 
 RETRY_MS = 400
 
@@ -467,7 +443,6 @@ class _HoverRevealedPage(_ThreadPage):
         class _Handle:
             def click(self, timeout = None):
                 if selector in page.slow:
-                    # The retry, faithfully: time passes and then it fails.
                     time.sleep(RETRY_MS / 1000)
                     raise TimeoutError(f"{selector} was not clickable in {timeout}ms")
                 page._route(selector)
@@ -508,7 +483,6 @@ def test_the_failed_click_retry_is_not_charged_to_the_close_or_the_rebuild():
     reopen_ms = result.timings["reopen_ms"]
     assert close_ms < RETRY_MS, f"the retry is still inside close_ms ({close_ms}ms)"
     assert reopen_ms < RETRY_MS, f"the retry is still inside reopen_ms ({reopen_ms}ms)"
-    # ...and it is still in the payload, as the harness's own cost rather than the app's.
     assert result.expect["left_click_retry_ms"] >= RETRY_MS
     assert result.expect["reopen_click_retry_ms"] >= RETRY_MS
 

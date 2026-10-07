@@ -53,8 +53,7 @@ def test_reports_decoder_device_while_offloaded():
 
 
 def test_untouched_model_of_same_class_is_unaffected():
-    # The property lives on the class, so a second instance that never offloaded must
-    # keep the stock answer.
+    # The property lives on the class, so a non-offloaded instance must keep the stock answer.
     class _M(_Base):
         pass
 
@@ -63,7 +62,6 @@ def test_untouched_model_of_same_class_is_unaffected():
 
 
 def test_whole_model_on_cpu_falls_back():
-    # model.to("cpu") after an offload: there is no accelerator parameter left to report.
     class _M(_Base):
         pass
 

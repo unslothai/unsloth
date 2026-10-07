@@ -13,17 +13,8 @@ LOADER_ERROR_MARKERS = (
     "undefined symbol:",
 )
 
-# What a fixture reports as the managed backend's version.
-# Not MIN_DESKTOP_BACKEND_VERSION, which is only the right answer for a build made here.
-# The floor is not the only gate: managed_backend_version_stale_reason() compares against expected_backend_version(),
-# which is option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION) and the release
-# workflow stamps that from the same pypi_version as the updater manifest.
-# v0.1.804-beta is pinned to backend 2026.8.22 and read the floor as `desktop_backend_version_outdated`, so it ran its
-# bundled installer instead of doing what the test was watching for.
-# Every AppImage lane of the nightly failed on that while the pull_request lane, testing an unstamped build of the same
-# commit, passed.
-# It lives here rather than in either test because #10001 fixed only the portability smoke and the model-download E2E
-# kept failing for exactly this.
+# Not MIN_DESKTOP_BACKEND_VERSION: release builds stamp a newer expected backend version, so the
+# floor would read as outdated and trigger the bundled installer.
 FIXTURE_BACKEND_VERSION = "9999.12.31"
 
 

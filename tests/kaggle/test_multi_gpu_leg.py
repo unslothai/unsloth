@@ -116,7 +116,7 @@ def test_short_stream_and_buffer_arrays_each_fail():
         broken = payload.multi_gpu_failures(dict(GOOD, **{key: 1}), expected_cards = 2)
         assert broken, key
         assert "no stream or buffer of its own" in broken[0], key
-        # None is not "fine": a missing array means the attribute is gone.
+        # None means the attribute is gone, not fine.
         assert payload.multi_gpu_failures(dict(GOOD, **{key: None}), expected_cards = 2)
 
 
@@ -175,9 +175,6 @@ def test_the_reading_is_taken_from_the_module_and_not_recomputed():
     assert "DEVICE_COUNT" in body
 
 
-# ------------------------------------------------------------ the leg itself
-
-
 def test_the_leg_asks_for_two_cards_and_the_BUILT_payload_enforces_it():
     """Asserted through the generated notebook, not off the dataclass. A field
     nothing emits reads like coverage and does nothing -- which is exactly how
@@ -216,15 +213,8 @@ def test_the_leg_is_small_enough_to_co_tenant():
     leg = legs.LEGS["multi_gpu"]
     budget = 13.0  # CARD_VRAM_BUDGET_GB in build_kernel.py
 
-    # Expressed against the budget rather than a round number. The first
-    # version of this rule asserted `vram_gb <= 1.0`, which was a figure with no
-    # reasoning behind it, and it went red the moment the declaration was
-    # corrected from a guessed 0.7 to the measured 1.2 -- a guard failing on a
-    # measurement replacing a guess is the guard being wrong.
-    #
-    # What has to hold is that this leg can still SHARE with any ordinary leg,
-    # since running on both cards while excluding everything from both is the
-    # opposite of free.
+    # Expressed against the budget, not a fixed number: the leg must still share a card with any
+    # ordinary leg.
     others = [
         other.vram_gb
         for name, other in legs.LEGS.items()
@@ -267,14 +257,9 @@ def test_it_does_not_export_a_gguf_and_the_reason_is_recorded():
     buy a claim four other legs already make."""
     leg = legs.LEGS["multi_gpu"]
     assert "--export-gguf" not in leg.args
-    # The reason travels with the decision. A leg that simply lacks a flag
-    # invites someone to add it back in the hour they notice.
     source = (ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "legs.py").read_text(encoding = "utf-8")
     entry = source.split('"multi_gpu": Leg(')[1].split('),\n    "')[0]
     assert "backend CPU" in entry or "CPU bundle" in entry
-
-
-# --------------------------------------------------------- driver scheduling
 
 
 def _driver_source() -> str:
@@ -319,7 +304,7 @@ def test_the_reservation_is_all_or_nothing():
     source = _driver_source()
     body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
     check, commit = body.split("for g in range(N_GPU):")[1:3]
-    # Every rejection happens BEFORE any card is charged.
+    # Every rejection happens before any card is charged.
     assert "return False" in check
     assert "return False" not in commit
     assert "card_load[g] += want" in commit
@@ -356,9 +341,7 @@ def test_the_contention_is_global_and_the_vram_is_per_card():
         "the all-card leg is charging a card slot again, which is what put the "
         "two longest payloads on one card and idled the other for 622.6s"
     )
-    # The global bound has to be enforced on BOTH paths. In _admit_all only, the
-    # card queue fills up beside the unpinned leg and puts one more install than
-    # the bound allows onto four cores.
+    # The global bound must be enforced on both admit paths.
     pinned = source.split("def _admit(gpu_index, name):")[1].split("def _release")[0]
     for where, text in (("_admit", pinned), ("_admit_all", body)):
         assert "unpinned_count[0] >= N_GPU * MAX_LEGS_PER_CARD" in text, where
@@ -398,7 +381,6 @@ def test_a_single_leg_dispatch_still_stands_down_on_one_card():
         "a one-leg multi_gpu dispatch accepts a single card, so the leg would "
         "fail inside the payload instead of standing the kernel down"
     )
-    # And an ordinary one-leg dispatch is unchanged.
     other = build_kernel.build_kernel(
         SMOKE_DIR,
         ("default",),
@@ -440,13 +422,8 @@ def test_single_device_reaches_the_child_and_sets_a_device_map():
     body = ast.unparse(train)
     assert "single_device" in body
     assert "'device_map'] = {'': 0}" in body or '"device_map"] = {"": 0}' in body
-    # The CYCLE loads the model, so a parent that parsed this and kept it would
-    # shard anyway and the leg would die exactly as the probe did.
-    #
-    # The APPEND, not the string. `"--single-device" in unparse(main)` was the
-    # first version of this and it survived deleting the forwarding outright,
-    # because `ap.add_argument("--single-device", ...)` is in the same function
-    # -- an assertion satisfied by its own surrounding text.
+    # The cycle loads the model, so the flag must be forwarded. Check the append, not the string:
+    # the add_argument call in main() would satisfy a substring check.
     main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     assert "cmd.append('--single-device')" in ast.unparse(main), (
         "the flag is parsed but never forwarded, so the cycle child loads "
@@ -469,8 +446,7 @@ def test_a_crash_mid_cycle_still_reports_what_was_measured():
     facts = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "multi_gpu_facts"
     )
-    # Stashed as soon as there is anything to stash, not on the way out: a
-    # reading that lives only in a frame being unwound is a reading nobody has.
+    # Stashed immediately, not on the way out, so it survives an unwinding frame.
     published = ast.unparse(facts)
     assert "global _LAST_MULTI_GPU_FACTS" in published
     assert "_LAST_MULTI_GPU_FACTS = facts" in published
@@ -479,9 +455,7 @@ def test_a_crash_mid_cycle_still_reports_what_was_measured():
     child = ast.unparse(main)
     assert "except BaseException as exc" in child
     assert "'multi_gpu': _LAST_MULTI_GPU_FACTS" in child
-    # A partial report must be impossible to mistake for a completed cycle, and
-    # the crash must still propagate -- swallowing it would turn a dead cycle
-    # into a green one.
+    # A partial report must be distinguishable, and the crash must still propagate.
     assert "'partial': True" in child
     assert "'cycle_error'" in child
     assert "\n            raise" in child

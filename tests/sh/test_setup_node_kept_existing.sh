@@ -1,8 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# setup.sh's Node exit handling (extracted from the real script) must report a kept Node
-# and relay its takeown/icacls lines on exit 0 (#9928).
+# setup.sh's Node exit handling must report a kept Node and relay takeown/icacls lines on exit 0.
 set -uo pipefail
 
 HERE="$(CDPATH= cd -P -- "$(dirname "$0")" && pwd -P)"
@@ -23,7 +22,6 @@ check() { # name expected-substring (or !forbidden-substring) actual
     esac
 }
 
-# From the installer call to the log cleanup after the "already matches" check.
 BLOCK="$(awk '
     /^    _NODE_LOG="\$\(mktemp\)"$/ {grab = 1}
     grab {print}

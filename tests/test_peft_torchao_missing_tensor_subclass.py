@@ -175,13 +175,12 @@ def peft_env(monkeypatch, fake_torchao):
     def build(dispatcher, torchao_available = True):
         definer = types.ModuleType("peft.tuners.lora.torchao")
         definer.dispatch_torchao = dispatcher
-        # the degraded path reaches these three where upstream's dispatcher does
         definer.TorchaoLoraLinear = _FakeTorchaoLoraLinear
         tuners_utils = types.ModuleType("peft.tuners.tuners_utils")
         tuners_utils.BaseTunerLayer = _FakeBaseTunerLayer
         import_utils = types.ModuleType("peft.import_utils")
         import_utils.is_torchao_available = lambda: torchao_available
-        # model.py is where the dispatch list is built, so this copy is the one that runs.
+        # model.py builds the dispatch list, so this copy is the one that runs.
         caller = types.ModuleType("peft.tuners.lora.model")
         caller.dispatch_torchao = dispatcher
         pkg = types.ModuleType("peft")
@@ -225,12 +224,10 @@ def test_a_deleted_tensor_subclass_no_longer_ends_dispatch(peft_env, fake_torcha
     fake_torchao(affine = True, linear_activation = False)
     definer, _ = peft_env(_raiser(MISSING))
     assert FIX() is True
-    # A weight of neither class: what plain 16-bit LoRA has, and the case that used to raise.
     assert definer.dispatch_torchao(_Layer("plain"), "default") is None
 
 
 def test_the_module_that_actually_dispatches_is_patched(peft_env, fake_torchao):
-    # model.py holds its own reference, so patching the definer alone leaves the caller raising.
     fake_torchao()
     _, caller = peft_env(_raiser(MISSING))
     FIX()
@@ -251,7 +248,6 @@ def test_both_copies_share_one_wrapper_so_it_warns_once(peft_env, fake_torchao):
 
 
 def test_the_warning_does_not_claim_the_other_class_is_gone_too(peft_env, fake_torchao):
-    # AffineQuantizedTensor is still there and still matched, so only the removed one is gone.
     seen = []
     fake_torchao(affine = True, linear_activation = False)
     definer, _ = peft_env(_raiser(MISSING))
@@ -265,11 +261,8 @@ def test_the_warning_does_not_claim_the_other_class_is_gone_too(peft_env, fake_t
 @pytest.mark.parametrize(
     "message",
     [
-        # peft 0.18.1's wording on torchao 0.18.0.
         "cannot import name 'LinearActivationQuantizedTensor' from 'torchao.quantization'",
-        # Code reaching past the package for the same class.
         "No module named 'torchao.quantization.linear_activation_quantized_tensor'",
-        # torchao main deleted the whole package that defined AffineQuantizedTensor.
         "No module named 'torchao.dtypes'",
     ],
 )
@@ -294,8 +287,7 @@ def test_an_affine_quantized_weight_still_gets_the_torchao_lora_layer(peft_env, 
 
 
 def test_the_third_parameter_is_read_by_position_not_by_name(peft_env, fake_torchao):
-    # peft 0.19 renamed the third parameter lora_config -> config. Read by position, so a rename
-    # cannot leak the config through as a layer kwarg.
+    # peft 0.19 renamed lora_config -> config; read by position so a rename cannot leak it.
     classes = fake_torchao(affine = True, linear_activation = False)
 
     def dispatch_torchao(
@@ -322,7 +314,6 @@ def test_a_weight_of_neither_class_still_declines(peft_env, fake_torchao):
 
 
 def test_the_mirror_case_matches_the_other_class(peft_env, fake_torchao):
-    # If torchao ever drops AffineQuantizedTensor instead, the surviving class must still match.
     classes = fake_torchao(affine = False, linear_activation = True)
     gone = ImportError("cannot import name 'AffineQuantizedTensor' from 'torchao.dtypes'")
     definer, _ = peft_env(_raiser(gone))
@@ -365,10 +356,8 @@ def test_is_torchao_available_is_still_honoured(peft_env, fake_torchao):
 @pytest.mark.parametrize(
     "message",
     [
-        # half-installed torchao
         "No module named 'torchao.quantization'",
         "No module named 'torchao'",
-        # built against a different torch
         "libtorchao_ops_cuda.so: cannot open shared object file: No such file or directory",
         "/site-packages/torchao/_C.so: undefined symbol: _ZN3c105ErrorC1E",
     ],
@@ -382,7 +371,6 @@ def test_a_broken_torchao_still_raises(peft_env, fake_torchao, message):
 
 
 def test_a_torchao_that_vanishes_under_us_still_raises(peft_env, fake_torchao):
-    # The dispatcher blamed the missing class but no torchao is there at all: broken, not newer.
     definer, _ = peft_env(_raiser(MISSING))
     FIX()
     fake_torchao.absent()
@@ -475,7 +463,6 @@ def test_no_peft_is_not_an_error(monkeypatch):
 
 
 def test_a_peft_without_the_dispatcher_is_not_an_error(monkeypatch):
-    # renamed or removed upstream: nothing to wrap, and nothing to crash over
     saved = {k: v for k, v in sys.modules.items() if k.startswith("peft")}
     for k in saved:
         monkeypatch.delitem(sys.modules, k, raising = False)
@@ -753,7 +740,6 @@ def test_an_earlier_dispatcher_short_circuits_before_the_torchao_one():
         assert isinstance(built.base_model.model.q_proj, StandIn)
         assert not reached, "an earlier match must skip the torchao dispatcher entirely"
 
-        # and with nothing matching earlier the torchao dispatcher really is reached
         get_peft_model(build(), LoraConfig(r = 4, target_modules = ["q_proj"]))
         assert reached, "plain LoRA must fall through to the torchao dispatcher"
     finally:
@@ -782,7 +768,6 @@ def test_mixed_module_types_all_resolve_under_the_patch():
         for name in ("q_proj", "emb", "conv")
     }
     assert resolved == {"q_proj": "Linear", "emb": "Embedding", "conv": "Conv2d"}
-    # An untargeted module of a third type is left exactly as it was.
     assert isinstance(built.base_model.model.norm, torch.nn.LayerNorm)
 
 
@@ -797,7 +782,6 @@ def test_a_surviving_stub_class_cannot_silently_match_a_real_weight():
     except (ImportError, AttributeError):
         pytest.skip("this torchao does not ship AffineQuantizedTensor at all")
     if issubclass(AffineQuantizedTensor, torch.Tensor):
-        # torchao < 0.18: a real subclass, so the degraded path can genuinely match.
         assert not isinstance(torch.zeros(2), AffineQuantizedTensor)
     else:
         assert AffineQuantizedTensor.__bases__ == (object,)

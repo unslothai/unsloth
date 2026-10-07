@@ -47,11 +47,7 @@ RL_PY = REPO_ROOT / "unsloth" / "models" / "rl.py"
 SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-# ---- the premise ---------------------------------------------------------
-#
-# Every check drives torch.amp.autocast(device_type = DEVICE_TYPE_TORCH), pinned to "cuda" in the namespaces below,
-# and on a CPU runner torch hands back a no-op instead.
-# Claiming the device is present is what lets these run anywhere; only torch's dispatch decisions are needed.
+# autocast is a no-op on CPU, so pretend CUDA is present; only torch's dispatch decisions matter.
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 
@@ -82,9 +78,6 @@ def test_disabling_autocast_skips_that_check():
     with _pretend_cuda(has_bf16 = False):
         with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16, enabled = False):
             pass
-
-
-# ---- _prepare_inputs, which is injected as source ------------------------
 
 
 def _prepare_inputs_snippet() -> str:
@@ -133,8 +126,7 @@ def test_the_injected_snippet_is_valid_python():
 @pytest.mark.parametrize(
     "precision,has_bf16,expect_enabled",
     [
-        # The T4/V100 case, where the bug bites. accelerate never asks for bf16 on this hardware, so that pairing is not
-        # a case.
+        # The T4/V100 case; accelerate never asks for bf16 on this hardware.
         ("no", False, False),
         ("fp16", False, True),
         (None, False, True),
@@ -175,9 +167,6 @@ def test_no_autocast_call_pins_the_device_type_to_cuda():
     assert pinning == [], pinning
     typed = [c for c in calls if "device_type" in c]
     assert typed, "expected the autocast call sites to still choose a device_type"
-
-
-# ---- _get_per_token_logps and friends, which run as ordinary code --------
 
 
 def test_every_autocast_call_passes_enabled():

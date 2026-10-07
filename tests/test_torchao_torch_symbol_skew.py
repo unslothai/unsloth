@@ -45,9 +45,6 @@ from unsloth.import_fixes import (  # noqa: E402
 GPU_INIT = ROOT / "unsloth" / "_gpu_init.py"
 
 
-# ---- the placeholder ------------------------------------------------------
-
-
 def test_it_can_be_imported():
     """The whole point: satisfy `from torch.nn.functional import X`."""
     ph = _make_torch_symbol_placeholder("ScalingType", "detail here")
@@ -87,9 +84,6 @@ def test_repr_is_honest():
 def test_it_is_marked_as_ours():
     ph = _make_torch_symbol_placeholder("ScalingType", "d")
     assert getattr(ph, "__unsloth_placeholder__", False) is True
-
-
-# ---- the gating -----------------------------------------------------------
 
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
@@ -137,9 +131,6 @@ def test_calling_it_twice_is_stable():
     assert second is False or first == second
 
 
-# ---- the wiring -----------------------------------------------------------
-
-
 def test_it_runs_before_unsloth_zoo_is_imported():
     """unsloth_zoo pulls in transformers and therefore torchao, so calling the
     fix after that import would be pointless."""
@@ -183,27 +174,21 @@ def test_symbols_torch_already_provides_are_never_replaced():
     assert F.scaled_dot_product_attention is real
 
 
-# ---- the fix actually unblocks the import --------------------------------
-
-
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     """The decisive test: run torchao 0.18's own import line on this torch and
     show it goes from raising to succeeding. Everything above is gating."""
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
-    # conftest.py imports unsloth, so on an affected environment the placeholders are already on F. Drop them, or
-    # the "before" half cannot raise, this test skips itself, and the guard test after it fails.
+    # conftest may have installed placeholders already; drop them so the before half can raise.
     for n in _TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
-    # Gate on the two symbols the line below imports: `any` over the whole tuple is always true
-    # (scaled_dot_product_attention always exists), which made this test skip on every machine.
+    # Gate on these two: `any` over the tuple is always true via scaled_dot_product_attention.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")
 
-    # the line as torchao 0.18 ships it
     line = "from torch.nn.functional import ScalingType, SwizzleType"
 
     with pytest.raises(ImportError):
@@ -214,11 +199,11 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     )
     try:
         assert IF.fix_torchao_torch_symbol_skew() is True
-        exec(line, {})  # must not raise now
+        exec(line, {})
         from torch.nn.functional import ScalingType
 
         with pytest.raises(RuntimeError):
-            ScalingType.DYNAMIC  # still refuses to be used
+            ScalingType.DYNAMIC
     finally:
         for n in _TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
@@ -235,8 +220,6 @@ def test_the_cleanup_in_the_test_above_is_real():
             obj, "__unsloth_placeholder__", False
         ), f"a placeholder for {n} leaked out of a test"
 
-
-# ---- the Mac / MLX path ---------------------------------------------------
 
 INIT = ROOT / "unsloth" / "__init__.py"
 
@@ -291,9 +274,6 @@ def test_the_mlx_call_cannot_break_the_import():
     i = src.index("_fix_torchao()")
     window = src[max(0, i - 400) : i + 200]
     assert "except Exception" in window and "pass" in window
-
-
-# ---- version gating across the strings that actually ship ----------------
 
 
 @pytest.mark.parametrize(

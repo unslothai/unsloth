@@ -116,16 +116,14 @@ FENCES = int(os.environ.get("SMOKE_FLICKER_FENCES", "3"))
 LINES_PER_FENCE = int(os.environ.get("SMOKE_FLICKER_FENCE_LINES", "22"))
 CHUNK_CHARS = int(os.environ.get("SMOKE_FLICKER_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_FLICKER_GAP_MS", "8"))
-# Sampling kept alive past `done`: the re-render that causes the flicker lands a frame or two
-# after the generator returns, so stopping on `done` stops just short of it.
+# The flicker re-render lands a frame or two after the generator returns, so keep sampling past done.
 TAIL_MS = int(os.environ.get("SMOKE_FLICKER_TAIL_MS", "2500"))
 
 
 MUST_FLICKER = {"streamdown", "released"}
 MUST_NOT_FLICKER = {"tree", "legacy"}
 
-# The positive control is what makes a clean run mean anything: without a variant REQUIRED to flicker, "no collapses
-# anywhere" is equally consistent with a detector that measured nothing.
+# Without a variant required to flicker, a clean run is consistent with a detector that measured nothing.
 if not MUST_FLICKER & set(VARIANTS):
     raise SystemExit(
         "SMOKE_FLICKER_VARIANTS="
@@ -135,11 +133,7 @@ if not MUST_FLICKER & set(VARIANTS):
         + ", or a run that reports no collapses proves only that nothing was measured."
     )
 
-# What each variant must have computed to on a settled block, checked before anything is measured.
-# Without this guard: the tree's override lives in `@layer utilities`, and for IMPORTANT declarations the cascade
-# REVERSES layer order, so an unlayered `!important` variant silently loses to it. All four then
-# computed `visible`/`none`, reported zero collapses, and the run read as "nothing flickers
-# anywhere" having measured one stylesheet four times.
+# Check computed styles first: !important reverses layer order, so an unlayered variant can silently lose.
 EXPECTED_COMPUTED = {
     "streamdown": {"contentVisibility": "auto"},
     "released": {"contentVisibility": "auto"},
@@ -148,10 +142,7 @@ EXPECTED_COMPUTED = {
     "lastmessage": {"contentVisibility": "auto"},
 }
 
-# The same guard WHILE THE STREAM IS RUNNING, on the block being streamed. The settled check
-# alone is not enough, and that is not hypothetical: the pre-override variant passed it while
-# losing the cascade during streaming (the tree only holds while the thread builds, and both agree
-# once quiet), then reported zero flickers, reading as "there was never anything to fix".
+# The settled check alone is not enough: a variant can lose the cascade only while streaming.
 EXPECTED_COMPUTED_RUNNING = {
     "tree": {"contentVisibility": "visible"},
     "legacy": {"contentVisibility": "visible"},
@@ -223,7 +214,6 @@ def run_case(page, variant: str) -> dict:
             "park": PARK,
         },
     )
-    # Mid-stream cascade guard, on the block being written: the check the settled one cannot make.
     page.wait_for_function("window.__flicker.results().streamStartedAt !== null", timeout = 120_000)
     page.wait_for_timeout(400)
     running_computed = page.evaluate(
@@ -248,7 +238,6 @@ def run_case(page, variant: str) -> dict:
         raise RuntimeError(f"variant {variant}: stream failed: {results['error']}")
     stats = analyse_stream(results["frames"])
 
-    # Phase two, on the thread the stream left behind: scroll bottom to top, record any movement.
     page.evaluate("window.__flicker.startSampling()")
     sweep_meta = page.evaluate(
         "(a) => window.__flicker.sweepUp(a.steps, a.px)",

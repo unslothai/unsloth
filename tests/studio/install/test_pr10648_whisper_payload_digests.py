@@ -146,7 +146,6 @@ def _server_key(install_dir: Path) -> str:
     return WHISPER.installed_server_path(install_dir, LINUX).relative_to(install_dir).as_posix()
 
 
-# ── PART 1: what the marker records ──────────────────────────────────────────────────
 def test_the_marker_records_the_server_it_installed(tmp_path, monkeypatch):
     """The update path decides "already matches" without ever starting whisper-server,
     so the recorded digest is what stands in for "it launched once"."""
@@ -156,8 +155,7 @@ def test_the_marker_records_the_server_it_installed(tmp_path, monkeypatch):
     assert record["size"] == len(SERVER_BYTES)
     assert record["sha256"] == WHISPER.sha256_file(server)
     assert isinstance(record["mtime_ns"], int)
-    # Relative POSIX keys, so a marker stays valid when the install dir is moved or read
-    # on a host that spells separators the other way.
+    # Relative POSIX keys keep the marker valid if the dir moves or separators differ.
     assert all(not Path(key).is_absolute() for key in _marker(install_dir)["runtime_files"])
 
 
@@ -184,7 +182,6 @@ def test_the_record_has_the_same_shape_as_the_llama_one(tmp_path, monkeypatch):
     assert set(record) == {"size", "mtime_ns", "sha256"}
 
 
-# ── PART 2: the corruptions that must now be rejected ────────────────────────────────
 def test_a_truncated_server_is_rejected(tmp_path, monkeypatch):
     """A whisper-server left half-written by a full disk or an interrupted extract.
 
@@ -292,7 +289,6 @@ def test_an_unreadable_server_is_rejected_rather_than_skipped(tmp_path, monkeypa
     assert _intact(install_dir) is True
 
 
-# ── PART 3: backwards compatibility, the hard requirement ────────────────────────────
 def _legacy(install_dir: Path) -> dict:
     """The marker every existing user has: byte-identical to what this installer writes,
     minus the key that did not exist when it was written."""
@@ -333,7 +329,6 @@ def test_the_legacy_marker_is_backfilled_once_and_fast_after(tmp_path, monkeypat
     assert record["size"] == server.stat().st_size
     assert _fast_path(install_dir) is True
     assert WHISPER.kept_install_needs_settling(install_dir) is False
-    # And the record it just wrote is load-bearing from here on.
     server.write_bytes(SERVER_BYTES[:4])
     assert _intact(install_dir) is False
 
@@ -381,8 +376,7 @@ def test_the_backfill_replaces_the_marker_atomically(tmp_path, monkeypatch):
     WHISPER.settle_kept_install(install_dir)
 
     after = marker_path.stat()
-    # A different inode is the observable signature of temp-and-replace: the live marker
-    # was swapped, never truncated in place.
+    # A new inode proves temp-and-replace, never an in-place truncate.
     assert after.st_ino != before.st_ino
     assert after.st_mode == before.st_mode
     assert [p.name for p in install_dir.iterdir() if ".tmp-" in p.name] == []
@@ -448,11 +442,9 @@ def test_an_upgrade_does_not_re_download_and_settles_under_the_lock(tmp_path, mo
     )
     assert result == WHISPER.EXIT_SUCCESS
     assert downloads["n"] == 0
-    # The injection fired: the settle really went through the patched lock and backfill.
     assert depth == {"now": 0, "backfills_under_lock": 1, "backfills_outside": 0}
     assert _marker(install_dir)["runtime_files"]
 
-    # Nothing left to settle: the next update takes no lock to write.
     depth["backfills_under_lock"] = 0
     assert (
         WHISPER.core.install_selected_prebuilt(
@@ -485,12 +477,10 @@ def test_a_backfill_that_cannot_hash_writes_nothing(tmp_path, monkeypatch):
     WHISPER.settle_kept_install(install_dir)
     assert fired["n"] > 0, "the injected hasher never ran; the test proves nothing"
     assert "runtime_files" not in _marker(install_dir)
-    # Still kept, still no download: it simply stays on the full path.
     assert _intact(install_dir) is True
     assert _reuse(install_dir) is True
 
 
-# ── PART 4: what must deliberately NOT reject ────────────────────────────────────────
 def test_a_changed_mtime_alone_does_not_reject(tmp_path, monkeypatch):
     """A restore from backup, an rsync, a container layer or a `tar -x` without
     --touch: the timestamps move, not a byte changes. mtime_ns is recorded (it is what
@@ -517,7 +507,6 @@ def test_an_unrecorded_file_appearing_beside_the_payload_does_not_reject(tmp_pat
     assert _fast_path(install_dir) is True
 
 
-# ── PART 5: forward compatibility against a really released module ───────────────────
 _OLD_TAG = "v0.1.808-beta"
 _OLD_MODULES = ("install_whisper_prebuilt.py", "prebuilt_core.py", "install_llama_prebuilt.py")
 
@@ -588,8 +577,7 @@ def test_a_released_older_studio_ignores_the_new_key(tmp_path, monkeypatch):
         }
     )
     env = dict(os.environ)
-    # The old copies first, the live studio/ behind them for the support packages those
-    # modules import (backend.utils.prebuilt.*), which are not part of this marker's story.
+    # Old copies first; live studio/ behind them for the support packages they import.
     env["PYTHONPATH"] = os.pathsep.join([str(old_dir), str(STUDIO_DIR)])
     completed = subprocess.run(
         [sys.executable, "-c", _OLD_READER, payload],
@@ -606,13 +594,11 @@ def test_a_released_older_studio_ignores_the_new_key(tmp_path, monkeypatch):
     assert result["module_file"].startswith(str(old_dir))
     assert result["core_file"].startswith(str(old_dir))
     assert result["knows_the_key"] is False
-    # It read the whole marker, new key included, and kept the install.
     assert "runtime_files" in result["marker_keys"]
     assert result["matches"] is True
 
 
-# The ROCm kernel catalogs. installed_tree_is_intact asks only that each linked directory hold
-# ANY file, so the offline keep blessed an install whose catalog no longer loads.
+# installed_tree_is_intact only asked each linked dir for ANY file.
 ROCM_DIRS = ("rocblas", "hipblaslt")
 
 
@@ -630,8 +616,7 @@ def _rocm_install(tmp_path: Path, monkeypatch) -> Path:
     for directory in ROCM_DIRS:
         library = bin_dir / directory / "library"
         library.mkdir(parents = True)
-        # Two blobs, so removing one leaves the directory non-empty and the old
-        # "contains at least one file" check satisfied.
+        # Two blobs, so removing one leaves the dir non-empty.
         (library / "TensileLibrary_gfx1100.dat").write_bytes(b"kernel-catalog-gfx1100" * 8)
         (library / "TensileLibrary_gfx90a.dat").write_bytes(b"kernel-catalog-gfx90a" * 8)
     monkeypatch.setattr(WHISPER, "installed_llama_ggml_tree", lambda *_a, **_k: GGML_TREE)
@@ -695,10 +680,7 @@ def test_a_marker_naming_a_traversing_runtime_directory_records_nothing_outside(
     assert all(not name.startswith("..") for name in records), sorted(records)
 
 
-# ── PART 5: which llama INSTALL the hardlinks point into ─────────────────────────────
-# The gap these close: a release publishes one llama bundle per gfx target, so re-selecting ROCm
-# for another GPU swaps the asset while ggml_tree, a SOURCE-tree identity, stays put. The
-# hardlinks survive llama's directory swap on purpose, so the old GPU's kernels stay wired.
+# One llama bundle per gfx target: re-selecting ROCm swaps the asset while ggml_tree stays put.
 LLAMA_ID_GFX1100 = "f" * 64
 LLAMA_ID_GFX1151 = "e" * 64
 
@@ -793,11 +775,7 @@ def test_a_recorded_pairing_against_a_vanished_llama_install_is_rejected(tmp_pat
     assert _intact(install_dir) is False
 
 
-# The pairing backfill must not record a pairing it has not verified
-# A legacy slim marker carries no pairing identity, so a llama replaced before whisper's first
-# migration -- or by another installer holding llama's own per-directory lock during this one --
-# leaves the hardlinks pointing at the previous libraries. Recording the LIVE llama identity there
-# writes a FALSE pairing, and the runtime-id check then believes it forever.
+# A legacy slim marker cannot prove its pairing; recording the live llama id would be false forever.
 def _slim_with_live_llama(
     tmp_path,
     monkeypatch,

@@ -56,30 +56,18 @@ ART.mkdir(parents = True, exist_ok = True)
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# The wall this suite did not have. Its siblings (playwright_chat_ui.py, playwright_extra_ui.py) have carried one
-# since a `page.evaluate` -- which takes no `timeout=` at all -- hung a job for 27 minutes in #5387. This suite has
-# four raw `page.evaluate` calls of its own and is the LAST thing the Windows chat lane runs, so a wedge here used to
-# be indistinguishable from the job simply never finishing. Same 720s default and same env knob as the siblings, so a
-# slow runner is tuned in one place.
+# page.evaluate takes no timeout, and this suite runs last on the Windows chat lane.
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 
-# The card polls every 5s; two ticks plus slack is enough to see a change land. Used as the
-# timeout of the waits for a change, and as the length of the windows in which nothing may change.
+# The card polls every 5s; two ticks plus slack.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_INDICATOR_SETTLE_MS", "12000"))
-# The card reads four /status endpoints per poll.
 READS_PER_POLL = 4
-# Per-section ceiling. A section is a handful of boots and waits of at most SETTLE_MS or 30s each,
-# a few seconds in all on a hosted runner; the budget is generous next to that, and a section
-# that overruns it stops the run there, named, instead of every later section waiting out its
-# own timeouts. STUDIO_PW_STEP_BUDGET_SCALE stretches it on a slow lane.
 STEP_BUDGET_S = step_budget_s(240)
 
 CARD = 'text="Loaded models"'
 EJECT = '[aria-label^="Eject "]'
 HANDLE = '[aria-label="Drag to move"]'
-# The collapsed form of the same card. Named up here because a failed presence check has to say which of the two it
-# found: "no card at all" and "no card but a pill" are different bugs, and a local string cannot be read from the
-# diagnostic below.
+# Named here so a failed presence check can say whether it found a pill instead of the card.
 PILL = 'button[aria-label*="Show details"]'
 POSITION_KEY = "unsloth_loaded_models_position"
 COLLAPSED_KEY = "unsloth_loaded_models_collapsed"
@@ -87,9 +75,7 @@ SHOW_KEY = "unsloth_show_loaded_models_indicator"
 
 failures: list[str] = []
 checks = [0]
-_watchdog = None  # armed in main()
-# Whatever the page logged, newest last. Module level, as `failures` and `checks` are: the presence checks run after a
-# hard navigation, where a bundle that threw and a card that is merely slow are indistinguishable from the outside.
+_watchdog = None
 console_errors: list[str] = []
 
 
@@ -159,8 +145,6 @@ def api(
         return json.loads(response.read().decode())
 
 
-# ── Stub payloads, straight from the backend's own response models ───────
-
 NOTHING_CHAT = {
     "active_model": None,
     "loaded": [],
@@ -209,8 +193,7 @@ class Runtime:
         self.hang: set[str] = set()
         self.status_reads = 0
         self.unloads: list[str] = []
-        # Routes deliberately left unanswered, kept so teardown can settle them instead of cancelling them out from
-        # under the handler.
+        # Kept so teardown can settle them instead of cancelling them under the handler.
         self.parked: list = []
 
 
@@ -219,7 +202,6 @@ def install_routes(context, state: Runtime) -> None:
         def handler(route):
             state.status_reads += 1
             if key in state.hang:
-                # Accept the connection and never answer: the read must time out rather than wedge the card forever.
                 state.parked.append(route)
                 return
             route.fulfill(
@@ -269,17 +251,13 @@ def install_routes(context, state: Runtime) -> None:
 
 
 def rows(page) -> list[str]:
-    # One round trip, deliberately. Reading count() and then indexing nth(i) races the very thing the eject checks
-    # watch for: the row disappears between the two calls, and nth(1) then blocks for the whole locator timeout.
-    # evaluate_all snapshots the list in a single evaluation.
+    # One round trip: count() then nth(i) races the row disappearing and blocks for the full timeout.
     return page.locator(EJECT).evaluate_all(
         "els => els.map((el) => el.getAttribute('aria-label') || '')"
     )
 
 
 def card_text(page) -> str:
-    # Bounded and absence-tolerant rather than count()-then-read, which has the same race as rows() when the card is
-    # mid-change.
     try:
         return page.locator(CARD).locator("xpath=ancestor::div[3]").first.inner_text(timeout = 5000)
     except Exception:
@@ -313,9 +291,7 @@ def why_no_card(
             return "<unreadable>"
 
     def nodes(selector: str):
-        # Attached, not visible: a card that rendered off screen is a position bug, not a missing card, and the two
-        # have to read differently here. A page that cannot be asked reports so rather than a number, since every
-        # number here is a claim about the DOM and "unreadable" is not one.
+        # Attached, not visible: an off-screen card is a position bug, not a missing card.
         count = counted(page, selector)
         return "<unreadable>" if count is None else count
 
@@ -389,8 +365,7 @@ def boot(
 ) -> None:
     """Reload with a known localStorage, then wait for the card to settle."""
     page.goto(BASE, wait_until = "domcontentloaded")
-    # The indicator ships off, so every check that wants the card has to switch it on. Pass show = False to
-    # exercise the default.
+    # The indicator ships off, so checks that want the card switch it on.
     seeded = dict(seed or {})
     if show:
         seeded.setdefault(SHOW_KEY, "true")
@@ -403,9 +378,6 @@ def boot(
         [seeded, [POSITION_KEY, COLLAPSED_KEY, SHOW_KEY]],
     )
     page.reload(wait_until = "domcontentloaded")
-    # Wait for the app to land somewhere, not for SETTLE_MS // 2 of clock: the chat composer
-    # mounts once the auth guard has let the page through, and an auth slip lands on /login.
-    # Callers that want the card wait for it themselves; the "no card" checks watch a window.
     try:
         page.wait_for_function(
             """() => /^\\/(login|change-password)/.test(location.pathname)
@@ -413,9 +385,8 @@ def boot(
             timeout = 30_000,
         )
     except Exception:
-        pass  # the path check below still decides
-    # The card is deliberately hidden on /login, so an auth slip would make every "no card" check pass for the wrong
-    # reason.
+        pass
+    # The card is hidden on /login, so an auth slip would make every "no card" check pass.
     path = page.evaluate("location.pathname")
     if path.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {path}")
@@ -423,7 +394,6 @@ def boot(
 
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
-    # Bootstrap exactly as the other suites do: the first login forces a change.
     token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     try:
         api("/api/auth/change-password", {"current_password": OLD, "new_password": NEW}, token)
@@ -435,8 +405,7 @@ def main() -> int:
         info("FAIL bootstrap left must_change_password set")
         return 1
 
-    # add_init_script takes raw source, not a function to call: an arrow expression here would evaluate to a function
-    # nobody invokes, the SPA would find no token, and every check would silently run against /login.
+    # add_init_script takes raw source: an arrow expression would never be invoked.
     seed_js = (
         "(() => {"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
@@ -451,8 +420,7 @@ def main() -> int:
 
     with sync_playwright() as p:
         global _watchdog
-        # total_deadline_s keeps the 720s an absolute wall: begin_step() kicks the watchdog,
-        # and without the cap each section would restart it.
+        # total_deadline_s keeps 720s an absolute wall; begin_step() would otherwise restart it.
         _watchdog = install_wall_clock_watchdog(
             WALL_TIMEOUT_S,
             label = "ui-indicator",
@@ -479,8 +447,6 @@ def main() -> int:
         install_routes(context, state)
         page = context.new_page()
         page.set_default_timeout(60_000)
-        # Recorded rather than printed: a passing run must stay quiet, and only a failed presence check reads them
-        # back. Truncated per message, since one React error carries a whole component stack.
         page.on(
             "console",
             lambda message: console_errors.append(f"{message.type}: {message.text}"[:200])
@@ -492,8 +458,7 @@ def main() -> int:
             run(page, state)
         finally:
             page.screenshot(path = str(ART / f"final-{PLAYWRIGHT_BROWSER}.png"))
-            # Settle the deliberately-hung routes before tearing down: closing over a parked one dumps a
-            # CancelledError traceback that reads like a failure.
+            # Closing over a parked route dumps a CancelledError traceback that reads like a failure.
             for parked in state.parked:
                 try:
                     parked.abort()
@@ -520,7 +485,6 @@ def run(page, state: Runtime) -> None:
     boot(page, state)
     check("no card when nothing is loaded", not appears_within(page, CARD, SETTLE_MS // 2))
 
-    # ── The common two-runtime host ─────────────────────────────────────
     step("two runtimes, and the card across routes")
     state.chat = chat(
         active_model = "unsloth/Qwen3-4B-GGUF",
@@ -537,26 +501,14 @@ def run(page, state: Runtime) -> None:
     check("dictation row is distinguished", "Dictation" in text)
 
     for route in ("/hub", "/train", "/images"):
-        # Scoped to this navigation, so a failure names what THIS route logged rather than everything since boot.
         console_errors.clear()
         reads_before = state.status_reads
         page.goto(BASE + route, wait_until = "domcontentloaded")
-        # Wait for the card, not for the clock. This is a hard navigation: a
-        # full SPA reload plus a loaded-models poll, and 3000ms was the only
-        # fixed budget in this file that was not derived from SETTLE_MS. On a
-        # loaded runner the first route overran it and all three then failed
-        # together, which is what a fixed budget looks like when it is the
-        # thing that is wrong. The check below is unchanged and still fails if
-        # the card genuinely does not survive the navigation -- this only stops
-        # a slow render from being read as a missing card.
+        # Hard navigation: wait for the card rather than a fixed budget.
         waited = await_selector(page, CARD, SETTLE_MS)
-        # Asked so that a page which cannot answer still reaches the check below with the
-        # name of what went wrong, rather than raising the same error a second time.
         nodes = counted(page, CARD)
         present = bool(nodes)
-        # `count` is attached nodes and the wait above is visible ones, so this pair can disagree. It is not a
-        # failure -- the card is there -- but a card that is present and never became visible is a position or
-        # stacking bug wearing a pass, and it would otherwise leave no trace at all.
+        # `count` is attached nodes and the wait is visible ones; present-but-invisible is a stacking bug.
         if waited and present:
             info(
                 f"NOTE card survives {route}: attached but not visible in {SETTLE_MS}ms ({waited})"
@@ -567,7 +519,6 @@ def run(page, state: Runtime) -> None:
             "" if present else why_no_card(page, state, waited, reads_before),
         )
 
-    # ── Hardware shapes a CUDA runner never produces ────────────────────
     step("hardware shapes, audio VLM, 404 and hung runtimes")
     matrix = [
         (
@@ -606,7 +557,7 @@ def run(page, state: Runtime) -> None:
             ),
             "flux · FP16 · xpu",
         ),
-        # sd.cpp has no model_kind key at all and puts "gguf" in dtype.
+        # sd.cpp has no model_kind key and puts "gguf" in dtype.
         (
             "the sd.cpp engine on a CPU-only host",
             dict(
@@ -627,7 +578,7 @@ def run(page, state: Runtime) -> None:
         page.wait_for_selector(CARD, timeout = 30_000)
         check(name, expected in card_text(page), card_text(page).replace("\n", " | "))
 
-    # An audio VLM answers prompts, so it is a chat model that happens to listen -- neither Speech nor Dictation.
+    # An audio VLM is a chat model, neither Speech nor Dictation.
     state.diffusion = dict(NOTHING_DIFFUSION)
     state.chat = chat(active_model = "unsloth/gemma-3n-E4B-it", is_audio = True, audio_type = "audio_vlm")
     boot(page, state)
@@ -651,17 +602,13 @@ def run(page, state: Runtime) -> None:
     check("a 404 video route does not blank the other rows", len(rows(page)) == 1, str(rows(page)))
     install_routes(page.context, state)
 
-    # ── A runtime that accepts the connection and never answers ─────────
     state.hang = {"video"}
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     check("a hung runtime still lets the other rows render", len(rows(page)) == 1, str(rows(page)))
     state.hang = set()
 
-    # ── A blip on a runtime that IS holding something ───────────────────
-    # A failed read is not evidence the runtime is empty. Dropping the rows for it takes a loaded model off the card,
-    # and on a remote Unsloth a blip can take all four at once, so the whole card would go while everything stayed
-    # resident. The row must survive the failure and outlive it.
+    # A failed read is not evidence the runtime is empty; the row must survive it.
     step("a failed status read keeps the row, a readable empty one retires it")
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     boot(page, state)
@@ -676,9 +623,6 @@ def run(page, state: Runtime) -> None:
         )
 
     page.context.route("**/api/inference/status", fail_chat_status)
-    # Several failed polls, so this is the steady state rather than a single unlucky read: wait
-    # for the second failed read (two ticks of the 5s cadence), not for 12s of clock. A row that
-    # drops ends the wait at once and the check below reports it.
     watch(
         page,
         lambda: failing["count"] >= 2 or len(rows(page)) != 1,
@@ -692,9 +636,7 @@ def run(page, state: Runtime) -> None:
     )
     install_routes(page.context, state)
 
-    # ── And a readable empty answer still clears it ─────────────────────
     state.chat = chat()
-    # The next poll retires it; wait for that rather than 8s.
     watch(page, lambda: len(rows(page)) == 0, SETTLE_MS / 1000, "the chat row to retire")
     check(
         "a readable empty status still retires the row",
@@ -704,10 +646,9 @@ def run(page, state: Runtime) -> None:
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     state.hang = set()
 
-    # ── The position restore: the bug this suite exists for ─────────────
+    # The position restore: the bug this suite exists for.
     step("position restore, drag, released pointer")
     state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
-    # As if dragged to the corner of a 2560x1440 monitor, then reopened here.
     boot(page, state, seed = {POSITION_KEY: json.dumps({"left": 2300, "top": 1300})})
     page.wait_for_selector(CARD, timeout = 30_000)
     box = page.locator(HANDLE).first.bounding_box()
@@ -718,14 +659,12 @@ def run(page, state: Runtime) -> None:
     )
     page.screenshot(path = str(ART / f"restore-{PLAYWRIGHT_BROWSER}.png"))
 
-    # And it keeps up with a window that shrinks under it.
     page.set_viewport_size({"width": 720, "height": 560})
 
     def handle_inside(width, height):
         b = page.locator(HANDLE).first.bounding_box()
         return b is not None and 0 <= b["x"] < width and 0 <= b["y"] < height
 
-    # Until the ResizeObserver has pulled it in, not for 3s.
     watch(page, lambda: handle_inside(720, 560), SETTLE_MS / 1000, "the card inside 720x560")
     box = page.locator(HANDLE).first.bounding_box()
     check(
@@ -733,10 +672,8 @@ def run(page, state: Runtime) -> None:
         box is not None and 0 <= box["x"] < 720 and 0 <= box["y"] < 560,
         f"handle={box}",
     )
-    # No wait: nothing is measured before boot() below navigates.
     page.set_viewport_size({"width": 1440, "height": 900})
 
-    # ── Drag, and the pointer release the window never sees ─────────────
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
     box = page.locator(HANDLE).first.bounding_box()
@@ -748,24 +685,19 @@ def run(page, state: Runtime) -> None:
     def stored_position():
         return page.evaluate(f"localStorage.getItem({json.dumps(POSITION_KEY)})")
 
-    # The drag is stored when it settles on pointerup; wait for the write, not 1.5s.
     watch(page, lambda: stored_position() is not None, SETTLE_MS / 1000, "the drag to be stored")
     stored = stored_position()
     check("a drag is persisted", stored is not None, str(stored))
     page.reload(wait_until = "domcontentloaded")
     page.wait_for_selector(CARD, timeout = 30_000)
-    # Kept as a 2s window, watched: the restored position must not be rewritten after the
-    # reload, and a rewrite ends the window at once.
     watch(page, lambda: stored_position() != stored, 2.0, "a rewrite of the stored position")
     check(
         "the dragged position survives a reload",
         stored_position() == stored,
     )
 
-    # A move with no button held must not keep dragging the card.
     before = page.locator(HANDLE).first.bounding_box()
     page.mouse.move(before["x"] + 200, before["y"] + 200, steps = 10)
-    # Kept: a "nothing may happen" window after the move; there is no event to wait for.
     page.wait_for_timeout(500)
     after = page.locator(HANDLE).first.bounding_box()
     check(
@@ -774,7 +706,6 @@ def run(page, state: Runtime) -> None:
         f"{before} -> {after}",
     )
 
-    # ── Collapse ────────────────────────────────────────────────────────
     step("collapse, close, and a load nobody announced")
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
@@ -784,9 +715,6 @@ def run(page, state: Runtime) -> None:
     console_errors.clear()
     reads_before = state.status_reads
     page.reload(wait_until = "domcontentloaded")
-    # The last hard-navigation-plus-fixed-budget left in this file, and the same shape the /hub loop above was fixed
-    # for: a reload has to re-parse the bundle and re-read the stored preference before the pill can exist, so wait
-    # for the pill rather than for 6000ms of clock. Still fails if the collapse genuinely did not survive.
     waited = await_selector(page, PILL, SETTLE_MS)
     restored = bool(counted(page, PILL))
     check(
@@ -795,11 +723,7 @@ def run(page, state: Runtime) -> None:
         "" if restored else why_no_card(page, state, waited, reads_before),
     )
 
-    # ── Closed, then a load nobody announced ────────────────────────────
-    # "Back on the next model load" is what the close tooltip promises, and a
-    # load through the OpenAI-compatible API or auto-switch raises no lifecycle
-    # event at all: the poll is the only witness. Closing must also not be
-    # undone by whatever is already resident, or the card could never be shut.
+    # A load via the OpenAI API or auto-switch raises no lifecycle event; the poll is the only witness.
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
@@ -809,8 +733,6 @@ def run(page, state: Runtime) -> None:
         "closing hides the card while a model is still resident",
         page.locator(CARD).count() == 0,
     )
-    # Several polls with nothing new: it must stay closed. A closed card keeps polling, so count
-    # two polls' worth of status reads rather than 11s, and end at once if the card comes back.
     reads_before = state.status_reads
     watch(
         page,
@@ -822,7 +744,6 @@ def run(page, state: Runtime) -> None:
         "a closed card stays closed over what was already loaded",
         page.locator(CARD).count() == 0,
     )
-    # Now a second model appears with no announcement, as a server-side load does.
     state.diffusion = dict(
         NOTHING_DIFFUSION,
         loaded = True,
@@ -831,7 +752,6 @@ def run(page, state: Runtime) -> None:
         device = "cuda",
         dtype = "bfloat16",
     )
-    # The next poll reopens it; wait for the card, not 11s.
     await_selector(page, CARD, SETTLE_MS)
     check(
         "a load nobody announced reopens the closed card",
@@ -840,10 +760,8 @@ def run(page, state: Runtime) -> None:
     )
     state.diffusion = NOTHING_DIFFUSION
 
-    # The expanded grip and the collapsed pill share one drag sentinel, but only the pill has a click to consume it.
-    # Drag by the grip, collapse, then click the pill ONCE: without the sentinel being dropped when a click-less handle
-    # finishes its drag, that first click reads someone else's drag and refuses to expand, so the user has to click
-    # twice. No reload in between, since a reload would clear the in-memory flag and hide the bug.
+    # Grip and pill share one drag sentinel; without dropping it after a click-less drag, the first pill
+    # click is swallowed. No reload, which would clear the flag.
     step("grip drag, collapse, one click reopens")
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
@@ -852,8 +770,6 @@ def run(page, state: Runtime) -> None:
     page.mouse.down()
     page.mouse.move(grip["x"] - 120, grip["y"] - 80, steps = 12)
     page.mouse.up()
-    # The drag sentinel is a flag, not a timer (use-drag-position.ts justDragged), so the card
-    # only has to finish moving; SETTLE_MS // 2 of clock was never part of the bug.
     try:
         wait_for_settled(page.locator(HANDLE), timeout_ms = SETTLE_MS)
     except Exception:
@@ -863,7 +779,6 @@ def run(page, state: Runtime) -> None:
     collapsed_ok = page.locator(CARD).count() == 0 and page.locator(PILL).count() > 0
     check("the grip drag still collapses to a pill", collapsed_ok)
     page.locator(PILL).first.click()
-    # A first click that is swallowed never shows the card, and the wait runs out into the check.
     await_selector(page, CARD, SETTLE_MS)
     check(
         "one click reopens the pill after dragging by the grip",
@@ -871,7 +786,6 @@ def run(page, state: Runtime) -> None:
         "the grip's drag was still held against the pill's first click",
     )
 
-    # ── Eject ───────────────────────────────────────────────────────────
     step("eject, replaced and stale rows")
     state.chat = chat(active_model = "unsloth/Qwen3-4B-GGUF", is_gguf = True, gguf_variant = "Q4_K_M")
     state.diffusion = dict(
@@ -889,8 +803,7 @@ def run(page, state: Runtime) -> None:
     check("the chat row is present before ejecting", index is not None, str(labels))
     if index is not None:
         page.locator(EJECT).nth(index).click()
-        # Watch across more than one poll: a read already in flight when the eject lands used to put the row
-        # straight back.
+        # A read in flight when the eject lands used to put the row back.
         reappeared = False
         gone = False
         for _ in range(60):
@@ -899,9 +812,7 @@ def run(page, state: Runtime) -> None:
                 gone = True
             elif gone:
                 reappeared = True
-                break  # the verdict is in; the rest of the window cannot undo it
-            # Kept: the poll interval of a 12s observation window, which has to span more than one
-            # 5s status poll to catch a read in flight bringing the row back.
+                break
             page.wait_for_timeout(200)
         check("the ejected row disappears", gone)
         check("the ejected row does not come back", not reappeared)
@@ -911,7 +822,7 @@ def run(page, state: Runtime) -> None:
             str(state.unloads),
         )
 
-    # A row the runtime has already replaced must not unload the replacement.
+    # A row the runtime already replaced must not unload the replacement.
     state.reset()
     state.diffusion = dict(
         NOTHING_DIFFUSION,
@@ -923,10 +834,8 @@ def run(page, state: Runtime) -> None:
     )
     boot(page, state)
     page.wait_for_selector(CARD, timeout = 30_000)
-    # Swap the model behind the card's back, as a load from another tab would.
     state.diffusion = dict(state.diffusion, repo_id = "Qwen/Qwen-Image")
     page.locator(EJECT).first.click()
-    # Kept as a 4s window, watched: no image unload may be sent, and one that is ends it at once.
     watch(page, lambda: "image" in state.unloads, 4.0, "an image unload")
     check(
         "a replaced image row is not ejected on the replacement's behalf",
@@ -934,9 +843,7 @@ def run(page, state: Runtime) -> None:
         str(state.unloads),
     )
 
-    # A row over a runtime that is already idle: nothing is unloaded, so the toast must not report an eject. The row
-    # is up to one poll old and the dictation sidecars release themselves, so this is reached without anyone doing
-    # anything.
+    # An already-idle runtime: nothing is unloaded, so the toast must not report an eject.
     state.reset()
     state.diffusion = dict(
         NOTHING_DIFFUSION,
@@ -950,8 +857,6 @@ def run(page, state: Runtime) -> None:
     page.wait_for_selector(CARD, timeout = 30_000)
     state.diffusion = dict(NOTHING_DIFFUSION)
     page.locator(EJECT).first.click()
-    # Up to the same 4s, but done as soon as the eject has answered with a toast, or has sent the
-    # unload the check below forbids.
     watch(
         page,
         lambda: "image" in state.unloads or counted(page, "[data-sonner-toast]"),
@@ -967,23 +872,20 @@ def run(page, state: Runtime) -> None:
         f"unloads={state.unloads} toasts={said!r}",
     )
 
-    # ── The preference ────────────────────────────────────────────────────
     step("the preference: off by default, and off stops the poll")
     state.reset()
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
-    # Nothing stored: a fresh install shows no card even with a model resident.
+    # A fresh install shows no card even with a model resident.
     boot(page, state, show = False)
     check("the card is off by default", not appears_within(page, CARD, SETTLE_MS // 2))
     state.status_reads = 0
-    # Kept at SETTLE_MS, watched: over two polls' worth of time no poll may run, and a second
-    # read ends the window at once.
     watch(page, lambda: state.status_reads > 1, SETTLE_MS / 1000, "status reads while off")
     check(
         "the default stops the poll",
         state.status_reads <= 1,
         f"{state.status_reads} status reads while off",
     )
-    # What the old default wrote when it was turned down; still off.
+    # What the old default wrote when turned down; still off.
     boot(page, state, seed = {SHOW_KEY: "false"}, show = False)
     check(
         "an older explicit false still hides the card",

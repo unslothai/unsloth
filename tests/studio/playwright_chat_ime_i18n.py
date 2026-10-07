@@ -35,11 +35,9 @@ ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 
-# Wall-clock cap: 5 min leaves cold-launch headroom over the 30-60s run.
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_IME_WALL_TIMEOUT_S", "300"))
 
 
-# One greeting + arithmetic per script; each catches a distinct Unicode class.
 I18N_SAMPLES = [
     ("en", "English", "Hello, 1+1=2"),
     ("zh-CN", "Chinese (Simplified)", "你好，1+1=2"),
@@ -120,20 +118,14 @@ with sync_playwright() as p:
     console_errors: list[str] = []
     expected_probe_cancel_500s = [0]
 
-    # A send answers "does this thread / message row exist yet" with a GET that 404s until the row lands (#8136 replaced
-    # a full listing with that read), and the browser logs every 404 as a console.error with no URL in its text.
-    # The URL alone does not identify them: a persistence PUT or PATCH to the very same path 404s on exactly these
-    # patterns, and silently exempting that would hide a real failure to save. So the exemption is resolved against
-    # the response ledger below: a console 404 is forgiven only if an actual GET 404 was observed at that URL, and
-    # each observed GET is spent by at most one console error.
+    # Console 404s carry no URL; one is forgiven only if a matching GET 404 was observed, spent once each,
+    # so a failed persistence PUT/PATCH to the same path still fails the run.
     EXPECTED_404_URL_RES = (
         re.compile(r"/api/chat/threads/[^/?#]+$"),
         re.compile(r"/api/chat/threads/[^/?#]+/messages/[^/?#]+$"),
     )
 
-    # url -> count of GET responses that returned 404 and are not yet spent.
     unspent_get_404s: dict[str, int] = {}
-    # (text, url) for console 404s whose URL matched; resolved after the run.
     deferred_404_console: list[tuple[str, str]] = []
 
     def _url_is_exemptible(url: str) -> bool:
@@ -199,7 +191,6 @@ with sync_playwright() as p:
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
-    # Bootstrap auth via /change-password; retry absorbs React form-detach races.
     step("change-password through UI (Setup your account)")
     form_err: Exception | None = None
     for _form_attempt in range(3):
@@ -247,7 +238,6 @@ with sync_playwright() as p:
     if form_err is not None:
         raise form_err
 
-    # Wait for composer mount (no GGUF; the bug is React state, not inference).
     step("wait for composer to mount")
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -284,7 +274,6 @@ with sync_playwright() as p:
     composer.click()
     shoot("02-composer-focused")
 
-    # Main composer must carry dir="auto" so RTL flows right-to-left.
     dir_attr = composer.evaluate("(el) => el.getAttribute('dir')")
     if dir_attr != "auto":
         soft_fail(
@@ -293,7 +282,6 @@ with sync_playwright() as p:
     else:
         info('composer dir="auto" present')
 
-    # Source-level guard: grep the unmounted edit/compare composers' JSX for dir="auto".
     _repo_root = Path(__file__).resolve().parents[2]
     _thread_src = (_repo_root / "studio/frontend/src/components/assistant-ui/thread.tsx").read_text(
         encoding = "utf-8"
@@ -377,7 +365,6 @@ with sync_playwright() as p:
     shoot("03-baseline-ascii")
     clear()
 
-    # Multilingual paste round-trip; byte-for-byte readback required.
     step(f"multilingual paste round-trip ({len(I18N_SAMPLES)} samples)")
     paste_failures: list[tuple[str, str, str, str]] = []
     for code, label, text in I18N_SAMPLES:
@@ -432,8 +419,7 @@ with sync_playwright() as p:
     shoot("05-normal-composition")
     clear()
 
-    # 6. Stuck IME repro (#5318): duplicate compositionstart wedges
-    #    isComposing=true; PR #5327 clears it on non-composing input.
+    # Stuck IME repro (#5318): duplicate compositionstart wedges isComposing=true.
     step("BUG REPRO: stuck IME composition recovery (issue #5318)")
     clear()
     composer.click()
@@ -447,8 +433,6 @@ with sync_playwright() as p:
             el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
         }"""
     )
-    # On the broken build React drops 'abcd' and reconciles el.value to ''.
-    # wait_for_function crosses the microtask boundary to see committed state.
     page.keyboard.type("abcd")
     try:
         page.wait_for_function(
@@ -468,8 +452,6 @@ with sync_playwright() as p:
             "likely still stuck in isComposing=true (issue #5318 / before "
             "PR #5327)."
         )
-    # Cross-check isComposing via the Send button: it stays disabled while
-    # isComposing is true (PR #5327).
     send_btn = page.locator('button[aria-label="Send message"]')
     if send_btn.count() == 0:
         soft_fail("Send button not found after stuck-composition recovery")
@@ -485,9 +467,7 @@ with sync_playwright() as p:
     info("stuck-composition recovery PASS")
     clear()
 
-    # 6b. WSL+Chrome repro (#5546): Chrome never emits compositionend after the
-    #     IME commit, so the watchdog must release the composing flag once events
-    #     go silent.
+    # WSL+Chrome never emits compositionend; the watchdog must release the composing flag.
     step("BUG REPRO: stuck compositionend recovery (issue #5546)")
     clear()
     composer.click()
@@ -514,7 +494,6 @@ with sync_playwright() as p:
     if send_btn_5546.count() == 0:
         soft_fail("Send button not found for #5546 repro")
     else:
-        # Watchdog is 2500ms; allow generous slack for slow CI.
         try:
             expect(send_btn_5546).not_to_be_disabled(timeout = 8_000)
             info("Send button enabled after compositionend never fired")
@@ -531,9 +510,7 @@ with sync_playwright() as p:
     info("compositionend watchdog recovery PASS")
     clear()
 
-    # 6c. Watchdog-race repro: after the watchdog clears composingRef, a later
-    #     IME keydown (keyCode 229) must not slip preedit text through submit.
-    #     The onKeyDown gate re-pins composingRef so handleSubmit refuses.
+    # After the watchdog clears composingRef, an IME keydown (229) must re-pin it so submit refuses.
     step("BUG REPRO: keydown re-pin after watchdog cleared composing (issue #5546 follow-up)")
     clear()
     composer.click()
@@ -553,13 +530,10 @@ with sync_playwright() as p:
         }"""
     )
     send_btn_keydown = page.locator('button[aria-label="Send message"]')
-    # Wait past the watchdog so composingRef has cleared.
     try:
         expect(send_btn_keydown).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before keydown re-pin test")
-    # Fire IME-confirm Enter (keyCode 229) then submit synchronously: the keydown
-    # gate re-pins composingRef before handleSubmit, so preedit text is retained.
     submit_probe = composer.evaluate(
         """(el) => {
             el.focus();
@@ -584,9 +558,7 @@ with sync_playwright() as p:
     info("keydown re-pin gate PASS")
     clear()
 
-    # Keydown re-pin must also re-arm the watchdog: on the WSL+Chrome
-    # stuck-compositionend path no follow-up event arrives, so after re-pin the
-    # watchdog must clear composingRef again or Send re-locks forever.
+    # Keydown re-pin must re-arm the watchdog, or Send re-locks forever on the stuck-compositionend path.
     step("BUG REPRO: keydown re-pin re-arms watchdog (#5546 follow-up regression)")
     clear()
     composer.click()
@@ -606,13 +578,10 @@ with sync_playwright() as p:
         }"""
     )
     send_btn_rearm = page.locator('button[aria-label="Send message"]')
-    # First watchdog cycle: wait for it to clear composingRef.
     try:
         expect(send_btn_rearm).not_to_be_disabled(timeout = 8_000)
     except Exception:
         soft_fail("watchdog did not clear before re-arm test (first cycle)")
-    # IME-confirm keydown re-pins composingRef; without the re-arm fix the watchdog never runs again and Send stays
-    # blocked forever.
     composer.evaluate(
         """(el) => {
             el.focus();
@@ -622,16 +591,8 @@ with sync_playwright() as p:
             }));
         }"""
     )
-    # Second watchdog cycle: requestSubmit() after the re-armed window must be allowed; the buggy build stays gated
-    # forever.
-    #
-    # The flush has to be read off the composer that is on screen when the submit settles, not off the node captured
-    # before it. A send in a new chat swaps the empty-thread view for the thread view, so React unmounts the textarea
-    # this step composed into and mounts a fresh one. Since #8136 rendered the send without waiting on persistence,
-    # that swap lands inside the 250ms settle window, and the detached node keeps '你好' forever -- which reads as
-    # "Send never unlocked" on a build that sent the message correctly. `sent` is the corroboration that the flush
-    # came from a real send and not from the composer being replaced: a blocked submit leaves the text in the live
-    # composer and adds no user message.
+    # Read the flush off the composer on screen: a new-chat send remounts the textarea, so the old node
+    # keeps its text. `sent` proves the flush came from a real send.
     rearm_probe = page.evaluate(
         """async (selector) => {
             const ta = document.querySelector(selector);
@@ -686,31 +647,21 @@ with sync_playwright() as p:
     restore_idle_composer_after_probe("06d-keydown-rearm")
     clear()
 
-    # 6e. Mac input-method switch - onKeyDown immediate recovery.
-    #     A Mac IME switch fires compositionstart but never compositionend; the
-    #     first English keydown (isComposing=false) must clear composingRef via
-    #     the onKeyDown else-if branch, before the 2500ms watchdog fires.
-    #     To isolate that path (not onChange) we dispatch a synthetic keydown with
-    #     NO follow-up input event, so onChange never fires.
+    # Mac IME switch: compositionstart without compositionend; a keydown alone (no input event) must
+    # clear composingRef via onKeyDown before the 2500ms watchdog.
     step("BUG REPRO: Mac IME switch - onKeyDown immediate recovery")
     clear()
     composer.click()
-    # Seed sendable content so Send's state reflects composition only, not empty-content gating (insertFromPaste leaves
-    # composingRef false).
     set_value_via_setter("hello")
-    # Switch TO Chinese: compositionstart fires but compositionend never arrives.
     composer.evaluate(
         """(el) => {
             el.focus();
             el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
         }"""
     )
-    # Let React process compositionstart and update isComposing.
     page.wait_for_timeout(200)
     send_btn_mac_kd = page.locator('button[aria-label="Send message"]')
-    # Dispatch ONLY a keydown (no input event) so onChange never fires and the onKeyDown else-if branch is the only path
-    # that can clear composingRef.
-    # page.keyboard.type() would fire onChange too and mask a regression.
+    # page.keyboard.type() would also fire onChange and mask a regression.
     composer.evaluate(
         """(el) => {
             el.focus();
@@ -724,8 +675,6 @@ with sync_playwright() as p:
         soft_fail("Send button not found for Mac IME switch (onKeyDown) repro")
     else:
         try:
-            # 1500ms < 2500ms watchdog: only the onKeyDown else-if path can
-            # clear composingRef this quickly.
             expect(send_btn_mac_kd).not_to_be_disabled(timeout = 1_500)
             info(
                 "Send button enabled within 1500ms after Mac IME switch + "
@@ -742,10 +691,7 @@ with sync_playwright() as p:
     info("Mac IME switch onKeyDown recovery PASS")
     clear()
 
-    # 6f. Candidate-confirming Enter must not unblock submit.
-    #     Some IMEs report it as isComposing=false/keyCode=13 while composingRef
-    #     is still pinned; it must be swallowed and keep Send disabled, else it
-    #     submits before the candidate is committed.
+    # Some IMEs send candidate-confirming Enter as isComposing=false/keyCode 13; it must not submit.
     step("BUG REPRO: Mac IME switch - Enter must not unblock submit")
     clear()
     composer.click()
@@ -795,13 +741,10 @@ with sync_playwright() as p:
     info("Mac IME switch Enter guard PASS")
     clear()
 
-    # 6g. Mac input-method switch - onBlur immediate recovery.
     step("BUG REPRO: Mac IME switch - onBlur immediate recovery")
     clear()
     composer.click()
-    # Seed sendable content so Send's state reflects composition only.
     set_value_via_setter("hello")
-    # Switch TO Chinese: compositionstart fires, compositionend never comes.
     composer.evaluate(
         """(el) => {
             el.focus();
@@ -810,16 +753,12 @@ with sync_playwright() as p:
     )
     page.wait_for_timeout(200)
     send_btn_mac_blur = page.locator('button[aria-label="Send message"]')
-    # Blur to simulate the OS stealing focus during an IME switch.
     composer.evaluate("(el) => el.blur()")
-    # onBlur clears composition; re-focus so React renders the updated Send state.
     composer.click()
     if send_btn_mac_blur.count() == 0:
         soft_fail("Send button not found for Mac IME switch (onBlur) repro")
     else:
         try:
-            # 1500ms < 2500ms watchdog: only onBlur can clear composingRef this
-            # quickly when no keydown is fired.
             expect(send_btn_mac_blur).not_to_be_disabled(timeout = 1_500)
             info(
                 "Send button enabled within 1500ms after Mac IME switch + "
@@ -836,7 +775,6 @@ with sync_playwright() as p:
     info("Mac IME switch onBlur recovery PASS")
     clear()
 
-    # Final state: filter benign 401 noise via is_benign_*; fail on real errors.
     shoot("07-final")
     _resolve_deferred_404s()
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]

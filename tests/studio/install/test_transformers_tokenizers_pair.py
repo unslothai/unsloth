@@ -48,21 +48,16 @@ EXTRAS_NO_DEPS = REQ_ROOT / "extras-no-deps.txt"
 CONSTRAINTS = SINGLE_ENV / "constraints.txt"
 DARWIN_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
 
-# Files uv never installs FROM: constraints only narrow a resolve, overrides only replace
-# requirements. They carry no pairing duty, which is why they are exempt from the "pin the
-# pair" rule -- and why the override is the one file that can silently widen it.
+# uv never installs FROM these, so they are exempt; overrides can still silently widen the pair.
 NON_INSTALLING = {"constraints.txt", "overrides-darwin-arm64.txt", "overrides.txt"}
 
-# The window each pinned transformers release declares. Keyed by version so that bumping a
-# pin fails here until someone confirms the new release's window, rather than silently
-# widening the assertion. Both current pins declare the same one.
+# Keyed by version so a pin bump fails here until the new window is confirmed.
 DECLARED_TOKENIZERS_WINDOW = {
     "5.5.0": ">=0.22.0,<=0.23.0",
     "4.57.6": ">=0.22.0,<=0.23.0",
 }
 
-# The first tokenizers release outside that window, i.e. the version a stranded venv ends
-# up on today. Named rather than computed so the negative control cannot drift with PyPI.
+# Named, not computed, so the negative control cannot drift with PyPI.
 STRANDED_TOKENIZERS = "0.23.2"
 
 
@@ -195,11 +190,7 @@ def test_the_darwin_override_admits_only_the_pinned_transformers():
             f"the override ({req.specifier}) excludes the version constraints.txt pins "
             f"({version})"
         )
-        # Derived from the pin rather than listed, so this keeps asking the question after
-        # the pin moves. A fixed pair of releases goes vacuous the moment the pin passes
-        # them: with 5.16.1 pinned, neither 5.16.1 nor 5.15.1 is above it and nothing is
-        # tested. The two named releases are still probed, since they are the ones that
-        # actually shipped the tokenizers window change.
+        # Derived from the pin so this stays non-vacuous after the pin moves.
         pin = Version(version)
         higher = {f"{pin.major}.{pin.minor + 1}.0", f"{pin.major + 1}.0.0", "5.16.1", "5.15.1"}
         excess = sorted(
@@ -222,11 +213,6 @@ def test_the_checker_rejects_the_pair_that_broke_apple_silicon():
     assert "0.22.2" in window
 
 
-# ---------------------------------------------------------------------------
-# The resolver check: what a fresh macOS arm64 install actually ends with.
-# ---------------------------------------------------------------------------
-
-
 def _uv() -> str:
     uv = shutil.which("uv")
     if uv is None:
@@ -234,11 +220,7 @@ def _uv() -> str:
     return uv
 
 
-# uv's wording when the failure is a resolution verdict rather than a trip to the index.
-# Everything else -- a 429, a proxy, a DNS failure, an index 500 -- is not evidence about
-# this repo's pins, so it skips. Fail closed on the resolver's own answer, open on the
-# network: this test runs in the ordinary CPU lane, and a red X there has to mean the pins
-# are wrong, never that PyPI was busy.
+# Fail closed on uv's resolver verdict, skip on network errors.
 _RESOLVER_VERDICT_MARKERS = (
     "no solution found",
     "unsatisfiable",
@@ -261,15 +243,12 @@ def _compile(args: list[str], stdin: str | None = None) -> dict[str, str]:
             text = True,
             timeout = _COMPILE_TIMEOUT_S,
             cwd = REPO_ROOT,
-            # uv resolves aarch64-apple-darwin against macOS 12 by default, and mlx ships
-            # macosx_14_0 wheels only, so the resolve would fail for a reason that has nothing
-            # to do with the pair under test. Pin the deployment target instead of inheriting
-            # whatever the host happens to export.
+            # uv defaults aarch64-apple-darwin to macOS 12 but mlx ships macosx_14_0 wheels only.
             env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"},
         )
     except subprocess.TimeoutExpired:
         pytest.skip(f"uv pip compile exceeded {_COMPILE_TIMEOUT_S}s; treating as index trouble")
-    except OSError as exc:  # uv vanished mid-run, no fd, no memory
+    except OSError as exc:
         pytest.skip(f"uv pip compile could not run: {exc}")
     if proc.returncode != 0:
         stderr = proc.stderr or ""
@@ -293,8 +272,6 @@ def _declared_window(version: str) -> SpecifierSet:
         with urllib.request.urlopen(url, timeout = 30) as response:
             metadata = json.load(response)
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        # Same rule as _compile: an index that is slow, throttling or serving something
-        # that is not JSON says nothing about this repo's pins.
         pytest.skip(f"PyPI unreachable or unreadable: {exc}")
     for raw in metadata["info"].get("requires_dist") or []:
         try:

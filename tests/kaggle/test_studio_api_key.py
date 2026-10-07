@@ -49,11 +49,7 @@ def test_the_session_token_is_set_aside_while_the_key_is_driven():
     assert "saved = self.studio.token" in body
     assert "self.studio.token = saved" in body, "the session token must be restored"
 
-    # Structural, not a substring. `self.studio.token = raw_key[:-4] + "0000"`
-    # CONTAINS the string "self.studio.token = raw_key", so a substring check
-    # passes even when the swap line is deleted and only the corrupted-key
-    # assignment remains -- which is exactly the mutation this guard exists to
-    # catch, and it survived the first version of this test.
+    # Structural, not substring: the corrupted-key assignment contains the swap line's text.
     tree = ast.parse(body)
     swaps = [
         node

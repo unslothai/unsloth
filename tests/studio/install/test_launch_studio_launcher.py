@@ -35,8 +35,7 @@ def test_no_vbs_launcher_generated():
 
 
 def test_legacy_vbs_removed_on_upgrade():
-    # An upgrade must DELETE a pre-existing launch-studio.vbs, not just stop generating it, or AV keeps flagging the
-    # stale file.
+    # Upgrades must DELETE a stale launch-studio.vbs, or AV keeps flagging it.
     text = _text()
     assert re.search(
         r"Remove-Item\s+-LiteralPath\s+\$legacyLauncherVbs", text
@@ -44,13 +43,11 @@ def test_legacy_vbs_removed_on_upgrade():
 
 
 def test_shortcut_target_is_not_wscript():
-    # The .lnk must not launch through wscript.exe (the VBS script host).
     text = _text()
     assert "wscript.exe" not in text.lower()
 
 
 def test_launcher_is_windowless_powershell():
-    # The shortcut runs powershell.exe -WindowStyle Hidden over launch-studio.ps1.
     text = _text()
     assert re.search(
         r"-WindowStyle\s+Hidden", text
@@ -59,9 +56,7 @@ def test_launcher_is_windowless_powershell():
 
 
 def test_hidden_window_never_pairs_with_execution_policy_bypass():
-    # The pair AV detections key on; install.rs already refuses it for the app's own launch.
-    # launch-studio.ps1 is written locally, so it has no mark-of-the-web and RemoteSigned loads it. The hidden
-    # window costs nothing to keep, the Bypass costs a detection.
+    # Bypass plus hidden window is the pair AV keys on; a local .ps1 loads under RemoteSigned anyway.
     text = _text()
     for line in text.splitlines():
         if re.search(r"-WindowStyle\s+Hidden", line):

@@ -10,7 +10,6 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
-# Load studio/install_llama_prebuilt.py the same way the sibling suite does.
 _MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 _SPEC = importlib.util.spec_from_file_location(
     "studio_install_llama_prebuilt_followups", _MODULE_PATH
@@ -87,16 +86,12 @@ def _run_detect_host(
     for p in patches:
         p.start()
     try:
-        # Don't let the host's CUDA_VISIBLE_DEVICES leak in unless the scenario sets it.
         if env is None or "CUDA_VISIBLE_DEVICES" not in env:
             prebuilt_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         return detect_host()
     finally:
         for p in patches:
             p.stop()
-
-
-# ── install_llama_prebuilt.detect_host(): /proc NVIDIA fallback ──────────────
 
 
 class TestDetectHostProcFallback:
@@ -142,9 +137,6 @@ class TestDetectHostProcFallback:
         assert host.has_physical_nvidia is False
 
 
-# ── install_llama_prebuilt.detect_host(): NVIDIA precedence over ROCm ────────
-
-
 class TestDetectHostNvidiaPrecedence:
     def test_rocm_probe_skipped_when_proc_nvidia_present(self):
         """rocminfo reports gfx1100, but a proc-detected NVIDIA GPU wins."""
@@ -165,9 +157,6 @@ class TestDetectHostNvidiaPrecedence:
         )
         assert host.has_usable_nvidia is False
         assert host.has_rocm is True
-
-
-# ── _apply_host_overrides: forwarded --rocm-gfx / --has-rocm still win ───────
 
 
 class TestOverridesStillWin:
@@ -192,9 +181,6 @@ class TestOverridesStillWin:
         assert overridden.has_rocm is False
 
 
-# ── setup.sh source-level guarantees ────────────────────────────────────────
-
-
 class TestSetupShHardening:
     @pytest.fixture(scope = "class")
     def setup_src(self) -> str:
@@ -204,7 +190,6 @@ class TestSetupShHardening:
         assert "_setup_has_usable_nvidia_gpu()" in setup_src
 
     def test_helper_uses_proc_fallback(self, setup_src):
-        # The fallback lives in the physical probe, which the usable one delegates to.
         start = setup_src.find("_setup_has_physical_nvidia_gpu()")
         end = setup_src.find("\n}", start)
         body = setup_src[start:end]
@@ -244,7 +229,6 @@ class TestSetupShHardening:
         assert (
             '[ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_physical" = true ]' in window
         ), "the masked retry must come after ROCm and require a physically present card"
-        # ROCm gets its turn between the two passes.
         assert window.index("hipcc") < window.rindex("_select_nvcc")
 
     def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
@@ -265,9 +249,7 @@ class TestSetupShHardening:
         ), "ROCm toolkit search must require a detected AMD GPU, not just hipcc"
 
     def test_compute_cap_probe_timeout_wrapped(self, setup_src):
-        # nvidia-smi is now a variable ($_smi_bin), so check the wrapper precedes
-        # the probe rather than matching a literal. The string also appears in a
-        # comment, so scan all occurrences and accept if any is wrapped.
+        # nvidia-smi is $_smi_bin and also appears in a comment, so accept any wrapped occurrence.
         wrapped = False
         start = 0
         while True:
@@ -287,9 +269,6 @@ class TestSetupShHardening:
         assert "_setup_run_smi nvidia-smi" in body
 
 
-# TEST: install.sh -- UNSLOTH_TORCH_BACKEND classified on the final path segment
-
-
 class TestBackendExportLeafClassification:
     """A mirror base path containing "rocm"/"gfx" must not mislabel a cu*/cpu index; classification uses TORCH_INDEX_URL's leaf only."""
 
@@ -300,8 +279,6 @@ class TestBackendExportLeafClassification:
     def test_export_block_uses_leaf(self, install_src):
         anchor = install_src.find("_torch_index_leaf=")
         assert anchor >= 0, "backend export must classify on the final path segment"
-        # Wide enough to clear the provenance check that now sits between the leaf normalisation
-        # and the case arms.
         window = install_src[anchor : anchor + 1600]
         assert 'export UNSLOTH_TORCH_BACKEND="rocm"' in window
         assert 'export UNSLOTH_TORCH_BACKEND="cpu"' in window
@@ -314,7 +291,6 @@ class TestBackendExportLeafClassification:
         src = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         anchor = src.find("_torch_index_leaf=")
         block = src[anchor : src.find("esac", anchor) + 4]
-        # Drive the extracted block with adversarial mirror URLs.
         script.write_text(
             "#!/bin/sh\n"
             'TORCH_INDEX_URL="$1"\n' + block + "\n"
@@ -334,9 +310,6 @@ class TestBackendExportLeafClassification:
                 ["sh", str(script), url], capture_output = True, text = True, timeout = 30
             ).stdout.strip()
             assert out == expected, f"{url} classified as {out!r}, expected {expected!r}"
-
-
-# TEST: CUDA_VISIBLE_DEVICES=""/-1 hides NVIDIA in every usable-GPU helper
 
 
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
@@ -532,7 +505,6 @@ class TestSetupShSourceBuildBackendChoice:
             f"_setup_nvidia_physical={physical}\n"
             f"_setup_amd_detected={amd}\n"
             'GPU_BACKEND=""\nNVCC_PATH=""\nROCM_HIPCC=""\n'
-            # Stub the two toolchain lookups; everything else in the block is real.
             f'command() {{ if [ "$2" = nvcc ]; then {nvcc}; '
             f'elif [ "$2" = hipcc ]; then {hipcc}; else return 1; fi; }}\n'
             "ls() { return 1; }\n"
@@ -559,7 +531,6 @@ class TestSetupShSourceBuildBackendChoice:
         assert self._decide(tmp_path, usable, physical, amd, hipcc) == expected
 
     def test_a_toolkit_without_any_gpu_never_selects_cuda(self, tmp_path):
-        # The guard the physical gate was written for: nvcc present, no GPU at all.
         assert self._decide(tmp_path, "false", "false", "false", nvcc = "true") == "cpu"
 
 
@@ -594,7 +565,6 @@ class TestRedactInstallOutput:
         assert out == "https://host/whl/cu128?token=<redacted>#<redacted> done"
 
     def test_bare_hash_comment_untouched(self):
-        # The fragment redaction is URL-anchored: a shell comment in tool output survives.
         assert (
             stack_mod._redact_install_output("# retrying with --no-cache-dir")
             == "# retrying with --no-cache-dir"

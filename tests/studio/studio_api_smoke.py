@@ -25,8 +25,6 @@ _section = [0]
 _failed: list[str] = []
 _warned: list[str] = []
 
-# When 1, audit-finding assertions become hard fails.
-# Off by default: surfaced as WARN.
 STRICT_AUDIT = os.environ.get("STUDIO_API_STRICT_AUDIT", "0") == "1"
 
 
@@ -101,19 +99,8 @@ def http(
         except (json.JSONDecodeError, UnicodeDecodeError):
             return exc.code, raw
     except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
-        # A transport failure is a failed check, not a crashed run. Only
-        # HTTPError was caught here, so a socket timeout propagated out of
-        # http() and killed the script at module level: the traceback named
-        # urlopen and the line number, and nothing about which endpoint had
-        # been slow or what the rest of the suite would have said. Observed on
-        # three unrelated PRs whose /v1/embeddings call hit the 30s ceiling.
-        # Returned as status 0 so every existing `if code == 200 ... else
-        # fail(...)` site reports it with its own diagnosis and the run
-        # continues to the remaining sections.
-        #
-        # Emitted here as well as returned: the call sites report the status
-        # code and not the body, so status 0 on its own would say a request
-        # failed without saying that it timed out or after how long.
+        # A transport failure is a failed check, not a crashed run: return status 0 so each call site reports
+        # it, and print the detail here since call sites only show the status.
         detail = f"{type(exc).__name__}: {exc}"
         _emit("  NET   ", f"{method} {path} failed after {timeout}s -- {detail}")
         return 0, {"error": detail, "timeout": timeout}
@@ -131,10 +118,8 @@ def login(password: str) -> tuple[int, str | None]:
     return code, None
 
 
-# ─────────────────────────────────────────────────────────────────────────
 section("CORS hardening")
 
-# Cross-origin OPTIONS preflight.
 req = urllib.request.Request(
     f"{BASE}/api/auth/login",
     method = "OPTIONS",
@@ -155,7 +140,6 @@ try:
 except Exception as exc:
     ok(f"CORS preflight unreachable (acceptable): {exc!r}")
 
-# GET / cross-origin must NOT leak the bootstrap password in the served HTML.
 boot_path = AUTH_DIR / ".bootstrap_password"
 if boot_path.exists():
     bootstrap_pw = boot_path.read_text(encoding = "utf-8").strip()
@@ -180,9 +164,6 @@ else:
     ok("(bootstrap pw file already cleared, skipping leak check)")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 2. /api/system + /api/system/hardware require auth
-# ─────────────────────────────────────────────────────────────────────────
 section("/api/system endpoints require auth")
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint)
@@ -192,7 +173,6 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
         fail(f"GET {endpoint} unauthenticated returned {code} (expected 401/403)")
 
 
-# Rotate password to NEW for a working bearer: bootstrap login -> change-password -> login NEW.
 section("Rotate bootstrap password for downstream tests")
 code, old_token = login(OLD)
 if code != 200 or not old_token:
@@ -242,7 +222,6 @@ if code != 200:
 ok(f"loaded {GGUF_REPO}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
 section("Auth state machine")
 
 code, _ = login(OLD)
@@ -251,7 +230,6 @@ if code == 401:
 else:
     fail(f"login with OLD returned {code} (expected 401)")
 
-# /api/auth/refresh requires a refresh-token body.
 code, _ = http("POST", "/api/auth/refresh")
 if code in (400, 422):
     ok(f"/api/auth/refresh without body -> {code}")
@@ -259,8 +237,7 @@ else:
     fail(f"/api/auth/refresh without body returned {code} (expected 400/422)")
 
 
-# Wrong-password burst: 401 until the per-IP bucket fills, then 429 with Retry-After.
-# Bucket can't be reset between tests, so assert the invariant, not a fixed transition index.
+# The per-IP bucket cannot be reset between tests, so assert the invariant, not a fixed index.
 def _login_with_headers(password: str) -> tuple[int, str | None]:
     """Like ``login`` but returns ``(status, retry_after_header)``."""
     url = f"{BASE}/api/auth/login"
@@ -300,9 +277,7 @@ else:
     ok(f"login burst -> 401x{codes.count(401)} then 429 with Retry-After={retry_after}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
 section("JWT expiry")
-# Forge a JWT with exp=now-1 using the install's signing secret.
 # get_user_and_secret('unsloth') returns (salt, hash, jwt_secret, must_change_pw).
 try:
     sys.path.insert(
@@ -345,7 +320,6 @@ except Exception as exc:
     ok(f"(skipped JWT-forge: {exc.__class__.__name__})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
 section("API key lifecycle")
 
 code, body = http(
@@ -357,8 +331,7 @@ code, body = http(
 if code != 200 or not isinstance(body, dict):
     fail(f"POST /api/auth/api-keys -> {code}: {_shape(body)}")
 else:
-    # Flat "key" is the one-time bearer;
-    # the "api_key" sub-dict carries metadata.
+    # Flat "key" is the one-time bearer; "api_key" carries metadata.
     api_key = body.get("key")
     api_meta = body.get("api_key") if isinstance(body.get("api_key"), dict) else {}
     api_id = api_meta.get("id") or body.get("id")
@@ -419,9 +392,6 @@ else:
             fail(f"deleted API key still works: {code}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# 6. Auth file-mode hardening (Linux only)
-# ─────────────────────────────────────────────────────────────────────────
 section("Auth file-mode hardening")
 import platform as _platform
 
@@ -447,7 +417,6 @@ else:
             audit(f"{path} mode={oct(actual_mode)} (expected {oct(expected_mode)})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
 section("Inference lifecycle")
 
 code, body = http("GET", "/v1/models", headers = AUTH_HEADER)
@@ -460,19 +429,13 @@ if code == 200 and isinstance(body, dict):
 else:
     fail(f"/v1/models -> {code}: {_shape(body)}")
 
-# /v1/embeddings returns an embedding OR a structured 4xx (501 OK for non-embedding models).
+# 501 is OK for non-embedding models.
 code, body = http(
     "POST",
     "/v1/embeddings",
     body = {"model": GGUF_REPO, "input": "hello"},
     headers = AUTH_HEADER,
-    # This is the first request in the section that forces a model load, so it
-    # pays the load on top of the embedding. Measured at 23.8s on a healthy
-    # macOS runner against a 30s ceiling, i.e. 79% of budget, which is not a
-    # margin: three unrelated PRs timed out here at exactly 30.0s on the same
-    # base while main passed. Raised to leave room for a loaded runner rather
-    # than to hide a slow endpoint -- if this starts taking 90s that is a real
-    # regression and it will still be reported, now as a failed check.
+    # The first request that forces a model load; ~24s on a healthy macOS runner.
     timeout = 90,
 )
 if code == 200 and isinstance(body, dict) and body.get("data"):
@@ -498,7 +461,7 @@ if code == 200 or 400 <= code < 500:
 else:
     fail(f"/v1/responses -> {code} (expected 200 or 4xx)")
 
-# Bogus variant must be rejected with 4xx. Backend currently 500s; surface as AUDIT until fixed.
+# Backend currently 500s; surface as AUDIT until fixed.
 code, _ = http(
     "POST",
     "/api/inference/load",
@@ -519,7 +482,6 @@ else:
     fail(f"bogus gguf_variant returned {code} (expected 4xx)")
 
 
-# Force-reload of the same repo: the child PID must change.
 def _llama_pid() -> int | None:
     code, body = http("GET", "/api/inference/status", headers = AUTH_HEADER)
     if code != 200 or not isinstance(body, dict):
@@ -551,9 +513,8 @@ else:
         ok(f"force-reload -> 200 (PID change check skipped: {before_pid}/{after_pid})")
 
 
-# ─────────────────────────────────────────────────────────────────────────
 section("Endpoint auth audit")
-# Pin the EXPECTED auth posture per route; a new unlisted route fails the audit.
+# A new unlisted route fails the audit.
 PUBLIC = {
     ("GET", "/api/health"),
     ("GET", "/api/auth/status"),
@@ -575,7 +536,7 @@ EXPECTED_AUTH_ENDPOINTS = [
 for method, path in EXPECTED_AUTH_ENDPOINTS:
     if (method, path) in PUBLIC:
         continue
-    # Don't actually shut Unsloth down: an unauthenticated call must 401/403 before the trigger fires.
+    # Unauthenticated on purpose: it must 401/403 before shutdown fires.
     if path == "/api/shutdown":
         code, _ = http(method, path)
         if code in (401, 403):
@@ -590,7 +551,7 @@ for method, path in EXPECTED_AUTH_ENDPOINTS:
         fail(f"{method} {path} unauthenticated returned {code} (expected 401/403)")
 for method, path in PUBLIC:
     code, _ = http(method, path)
-    if 200 <= code < 500:  # public endpoints: 200 or 4xx, never connection-refused
+    if 200 <= code < 500:
         ok(f"{method} {path} public -> {code}")
     else:
         fail(f"{method} {path} public returned unexpected {code}")

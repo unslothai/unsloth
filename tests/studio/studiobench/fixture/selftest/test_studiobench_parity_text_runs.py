@@ -40,17 +40,12 @@ def reasoning_trigger(seconds: str) -> dict:
     }
 
 
-# ── the volatile has to vanish ───────────────────────────────────────
-
-
 def test_a_duration_split_across_text_nodes_is_normalised():
-    # The exact regression. Before the fix these two differed by one character and the digest moved;
-    # the two arms are the same build and the only difference is wall clock.
+    # A duration split across text nodes must normalise like a single node.
     assert sig(reasoning_trigger("3")) == sig(reasoning_trigger("2"))
 
 
 def test_the_same_duration_in_one_text_node_still_normalises():
-    # The path that already worked must keep working, and must agree with the split one.
     one_node = {
         "tag": "span",
         "attrs": {"data-slot": "reasoning-trigger-label"},
@@ -73,12 +68,8 @@ def test_a_split_relative_time_is_normalised():
     assert sig(stamp("2")) == sig(stamp("9"))
 
 
-# ── and the things that share its shape must NOT vanish ──────────────
-
-
 def test_a_bare_number_with_no_unit_still_moves_the_signature():
-    # A message count, a row count, a badge. No time unit follows it, so it is content and the digest
-    # has to see it change. This is the false-negative direction and it is the worse one.
+    # A bare number with no time unit is content and must move the digest.
     def badge(n: str) -> dict:
         return {"tag": "span", "children": [{"tag": "b", "children": [n, " messages"]}]}
 
@@ -86,8 +77,7 @@ def test_a_bare_number_with_no_unit_still_moves_the_signature():
 
 
 def test_an_element_boundary_still_breaks_a_text_run():
-    # Joining must not reach ACROSS an element, or two separate labels weld into one string and a
-    # difference in where the boundary sits stops being visible.
+    # Joining must not cross element boundaries.
     split = {
         "tag": "div",
         "children": [
@@ -97,8 +87,6 @@ def test_an_element_boundary_still_breaks_a_text_run():
     }
     joined = {"tag": "div", "children": [{"tag": "span", "children": ["3", " seconds"]}]}
     assert sig(split) != sig(joined)
-    # And the genuinely-split-across-elements case keeps its number, because nothing there proves the
-    # two spans are one rendered phrase.
     other = {
         "tag": "div",
         "children": [

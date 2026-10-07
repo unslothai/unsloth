@@ -48,18 +48,12 @@ def test_there_is_no_fallback_to_the_bootstrap_password():
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "authenticate"
     )
-    # Find the `if self.args.studio_password:` branch and assert it RETURNS
-    # rather than falling through into the bootstrap path below it.
     branch = next(
         node
         for node in func.body
         if isinstance(node, ast.If) and "studio_password" in ast.dump(node.test)
     )
-    # The LAST statement of the branch, unconditionally, and not merely "a
-    # Return somewhere inside". `if not failures: return ...` contains a Return
-    # and still falls through on the failure path -- which is the single case
-    # this guard exists for. That mutation survived the first version of this
-    # assertion, so the rule is now about the branch always returning.
+    # The branch must end in a Return: `if not failures: return` still falls through on failure.
     assert isinstance(branch.body[-1], ast.Return), (
         "the --password branch must END in an unconditional return; a "
         "conditional one falls through to the bootstrap path on failure and "

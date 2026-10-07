@@ -99,9 +99,9 @@ class TestOverrideParsing:
     @pytest.mark.parametrize(
         "value,expected",
         [
-            ("11.0.0", "gfx1100"),  # the circulated Strix workaround
-            ("11.5.1", "gfx1151"),  # Strix Halo, naming its own arch
-            ("10.3.0", "gfx1030"),  # the documented RX 6800 override
+            ("11.0.0", "gfx1100"),
+            ("11.5.1", "gfx1151"),
+            ("10.3.0", "gfx1030"),
             ("9.0.10", "gfx90a"),  # stepping 10 renders as 'a', not "gfx9010"
             ("  11.0.0  ", "gfx1100"),
             ("", None),
@@ -109,7 +109,7 @@ class TestOverrideParsing:
             ("11.0", None),
             ("11.0.0.0", None),
             ("-1.0.0", None),
-            ("11.0.16", None),  # stepping wider than one hex nibble
+            ("11.0.16", None),
             ("11.10.0", None),
         ],
     )
@@ -210,8 +210,7 @@ class TestTheLaunchPathActuallyCallsIt:
     def test_called_before_every_launch_path(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
         call = source.find("_clear_hsa_override_contradicting_install(")
-        # The definition comes first;
-        # find the CALL, which follows it.
+        # The definition comes first; find the call that follows it.
         call = source.find("_clear_hsa_override_contradicting_install(", call + 1)
         assert call != -1, "the CLI must clear a contradicting override before launching"
         for marker in (

@@ -34,10 +34,9 @@ from typing import Any
 from ..analysis import CellFailure
 from ..analysis.cpuprofile import CallFrame, CpuProfile, Sample
 
-# V8's own default is 1000 us. 100 us resolves a sub-millisecond frame without the sampler becoming the workload.
+# V8 default is 1000 us; 100 us resolves sub-ms frames without dominating the workload.
 DEFAULT_SAMPLING_INTERVAL_US = 100
 
-# Minimum non-synthetic samples on BOTH sides before the two extraction routes may be declared to agree or disagree.
 MIN_JS_SAMPLES_FOR_COMPARISON = 200
 
 
@@ -53,7 +52,7 @@ class StandaloneProfiler:
         if self._running:
             raise RuntimeError("StandaloneProfiler.start called twice")
         self.cdp.send("Profiler.enable")
-        # Order matters: the interval is latched at start.
+        # The interval is latched at start, so set it first.
         self.cdp.send("Profiler.setSamplingInterval", {"interval": int(self.sampling_interval_us)})
         self.cdp.send("Profiler.start")
         self._running = True
@@ -158,10 +157,8 @@ def compare_with_trace_profile(
             1 for s in p.samples if (f := p.nodes.get(s.node_id)) is not None and not f.is_synthetic
         )
 
-    # A comparison built on a handful of JS samples cannot distinguish the two parsers from sampling
-    # noise, so it declines to rule. And V8 has ONE CpuProfiler: if the trace carried the profiler
-    # categories, the 'standalone' profile IS the in-trace profile and comparing them always agrees.
-    # Detected structurally rather than trusted to the caller.
+    # Too few JS samples cannot distinguish the parsers from noise. With profiler trace categories
+    # the standalone profile is the in-trace one (V8 has one CpuProfiler), so comparing is vacuous.
     if (
         len(standalone.samples) == len(in_trace.samples)
         and len(standalone.nodes) == len(in_trace.nodes)
@@ -217,18 +214,7 @@ def compare_with_trace_profile(
 
 
 # Harness adapter (INTERFACES.md section 3)
-# MEASURED, NOT ASSUMED, and it changed this design: V8 HAS ONE CPU PROFILER. Starting
-# `Profiler.start` while a trace with `disabled-by-default-v8.cpu_profiler` is running returns THE
-# SAME SAMPLES: on a real capture both routes reported 2169 samples over 17 nodes, because the
-# inspector and tracing profilers share one `CpuProfiler` on the isolate.
-# Two consequences: `compare_with_trace_profile` must refuse to compare a profile with itself,
-# since a cross-check that can never fail reads as corroboration; and this instrument is only
-# meaningful at level 1, where the trace carries NO profiler categories and it gives stacks
-# without the ProfileChunk volume that dominates an L2 buffer (a real L1 capture had 1748 of 1748
-# standalone samples inside the trace's own `RunTask` span, so the standalone profile covers the
-# same interval the trace does; it still carries no task tree, and `_summarise` ranks samples over
-# the whole profile interval rather than per task window). At level 2 and above it stands down
-# and says so.
+# V8 has one CpuProfiler, so this is only meaningful at level 1; at level 2+ it stands down.
 
 import time  # noqa: E402
 

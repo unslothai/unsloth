@@ -92,10 +92,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert any(
         step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
     )
-    # publish-release deliberately does not `needs: build`, so the wait step is
-    # the whole of the gate. It must cover every matrix leg by name, refuse to
-    # publish on a leg that did not succeed, and refuse to publish a leg whose
-    # job record never appeared, rather than defaulting to "finished".
+    # publish-release does not `needs: build`, so the wait step is the whole gate.
     assert publish["needs"] == ["prepare-version"]
     wait = next(
         step for step in publish["steps"] if step.get("name") == "Wait for the build matrix"
@@ -103,11 +100,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     wait_run = wait["run"]
 
     matrix_legs = {f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]}
-    # Legs outnumber the tauri-action steps: the two Windows legs (x64 and the
-    # cross-compiled ARM64) share one `build_windows` step and differ only by
-    # matrix.args. What matters is that every leg is named in the wait list, which
-    # the loop below asserts, and that every build step is still reachable from
-    # some leg's platform.
+    # Both Windows legs share one build_windows step, so legs can outnumber tauri steps.
     assert len(matrix_legs) >= len(tauri_steps)
     leg_platforms = {entry["platform"] for entry in build["strategy"]["matrix"]["include"]}
     for step in tauri_steps:
@@ -117,27 +110,21 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
 
     assert "refusing to publish, these build jobs did not succeed" in wait_run
     assert "refusing to publish without confirming they ran" in wait_run
-    # Every one of those refusals has to be terminal.
     assert wait_run.count("exit 1") >= 3
 
-    # Assert the mechanism, not just the error strings: those survive a step that no longer loops or
-    # no longer reads a conclusion, and then the download races the matrix. Everything below is
-    # checked inside the loop body, because a one-shot `gh api` read beside a dead `while` would
-    # satisfy the same substrings while waiting for nothing.
+    # Assert inside the loop body: a one-shot read beside a dead `while` matches the same strings.
     loop_body = _poll_loop_body(wait_run)
     assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
     assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
     # Not finished yet is "keep waiting"; finished but not `success` is a refusal.
     assert re.search(r'!=\s*"completed"', loop_body), wait_run
     assert re.search(r'!=\s*"success"', loop_body), wait_run
-    # A loop that never sleeps is a spin, and one that never breaks never ends.
     assert re.search(r"^\s*sleep\b", loop_body, re.MULTILINE), wait_run
     assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index("Publish release assets")
-    # And it has to clear before the assets are pulled, or the download races the legs and publish-release dies on
-    # artifacts that do not exist yet.
+    # It must clear before the download, or publish-release races the legs.
     download = next(
         index
         for index, step in enumerate(publish["steps"])
@@ -145,16 +132,12 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert names.index("Wait for the build matrix") < download, names
 
-    # The guard refuses a release that already carries desktop assets, so a
-    # version is never published twice.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
     assert 'gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}"' in release_step["run"]
     assert "already carries desktop assets" in release_step["run"]
 
-    # The release is the maintainer's: assets are uploaded onto it, but the
-    # release itself is never created and its notes are never rewritten.
     assert not any("gh release create" in step.get("run", "") for step in publish["steps"])
     assert not any("gh release edit" in step.get("run", "") for step in publish["steps"])
 
@@ -179,7 +162,6 @@ def test_post_publish_scan_job_holds_no_release_credentials():
         assert "GH_TOKEN" not in env, step.get("name")
         if step.get("uses", "").startswith("actions/checkout@"):
             assert step["with"]["persist-credentials"] is False
-        # No `gh` calls: the job has no token to make them with.
         assert "gh release" not in (step.get("run") or "")
 
     secrets = {
@@ -211,7 +193,6 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
     assert "build" not in workflow["jobs"]
     assert job["permissions"] == {"contents": "write"}
     assert "startsWith(inputs.release_tag, 'v')" in job["if"]
-    # The job runs for a mistakenly flagged prerelease so validation fails visibly.
     assert "prerelease" not in job["if"]
     assert not any("actions/checkout" in step.get("uses", "") for step in job["steps"])
     assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])
@@ -245,7 +226,6 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
         if step.get("name") == "Bridge legacy desktop-latest clients once"
     )
     assert "inputs.bridge_legacy_channel" in bridge["if"]
-    # Without it the bridge reads a manifest that the gated download step never fetched.
     assert "steps.gate.outputs.proceed == 'true'" in bridge["if"]
     assert "gh release create desktop-latest" not in bridge["run"]
     assert "gh release upload desktop-latest" in bridge["run"]
@@ -273,11 +253,7 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     # A repair dispatch must never be turned away by the state it exists to repair.
     assert "[ \"$REPAIR_POINTER\" = 'true' ]" in gate["run"]
     assert "grep -q '^Unsloth-Desktop-'" in gate["run"]
-    # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
-    # Completeness is judged over the four public downloads, in whichever naming scheme the release was built with.
-    # tests/security/test_desktop_updater_pointer.py executes the classification; these only pin that all three steps
-    # share it.
     for step_name in (
         "Check for desktop bundles",
         "Validate updater metadata",
@@ -287,8 +263,6 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
         for suffix in ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe"):
             assert suffix in run, (step_name, suffix)
         assert "Unsloth-Desktop" in run, step_name
-        # Every release published before the rename carries the version in each filename; refusing those would make the
-        # workflow unusable on all of them.
         assert "version" in run, step_name
 
     for name in (
@@ -315,7 +289,6 @@ def test_the_updater_workflow_validates_the_target_before_deleting_its_assets():
     remove = order.index("Remove standalone signature assets")
     for name in ("Validate updater metadata", "Prevent GitHub latest downgrade"):
         assert order.index(name) < remove, name
-    # Still ahead of the promotion, which points clients here and reads the JSON it refreshes.
     assert remove < order.index("Mark published release as GitHub latest")
 
 
@@ -333,7 +306,6 @@ def test_the_updater_workflow_is_manual_dispatch_only():
     for condition in conditions:
         assert "github.event" not in condition, condition
 
-    # Dropping the release trigger is only safe while the pointer repair stays reachable.
     restore = next(
         step
         for step in job["steps"]

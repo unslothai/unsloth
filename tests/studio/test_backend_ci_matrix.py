@@ -38,11 +38,8 @@ FLOOR_CHECK = REPO / "tests" / "test_python39_compatibility.py"
 BACKEND = REPO / "studio" / "backend"
 
 
-# The interpreter the full suite runs on.
-# Written down rather than derived, so moving to 3.14 is a decision somebody makes and defends here, not something that
-# follows silently from an edit elsewhere.
-# Asserting only "newer than the floor" was not enough: 3.11 and 3.12 satisfy that too, and either would quietly give up
-# the removals-and-deprecations coverage that is the whole reason the single leg is the newest one.
+# Written down, not derived, so moving to 3.14 is a deliberate decision; the single leg is the
+# newest for removals-and-deprecations coverage.
 CEILING = "3.13"
 
 
@@ -195,7 +192,7 @@ def _boundaries() -> dict[str, Path]:
     """
     found: dict[str, Path] = {}
     for path in sorted(BACKEND.rglob("*.py")):
-        if "vendor" in path.parts:  # third-party, pinned to its own support range
+        if "vendor" in path.parts:
             continue
         text = path.read_text(encoding = "utf-8", errors = "replace")
         for match in re.finditer(r"version_info\s*[<>]=?\s*\((\d+),\s*(\d+)\)", text):
@@ -360,7 +357,6 @@ def test_the_floor_lint_covers_every_tree_the_matrix_legs_run():
     spec.loader.exec_module(module)
 
     workflow = WORKFLOW.read_text(encoding = "utf-8")
-    # What it would hand to vermin, not what its source says it aims at.
     scanned = [str(Path(name).relative_to(REPO).as_posix()) for name in module.targets()]
     for tree in ("studio/backend", "unsloth_cli"):
         assert (

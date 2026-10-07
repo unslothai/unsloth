@@ -169,7 +169,6 @@ def _load_gate():
 
 
 def test_revision_survives_when_the_repo_is_unchanged():
-    # The reported case: a user's own repo is never in the mapper tables.
     gate = _load_gate()
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
@@ -181,14 +180,13 @@ def test_revision_survives_a_spelling_only_change():
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
-        ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),  # prequant mirror
-        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),  # suffix strip
-        ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),  # fp8 temp dir
+        ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),
+        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),
+        ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),
     ],
 )
 def test_revision_is_dropped_once_the_repo_is_remapped(model_name, old_model_name):
-    # The ref only exists on the repo the caller named: elsewhere it 404s or, worse, resolves a same-named branch on a
-    # different repo.
+    # The ref only exists on the named repo; elsewhere it 404s or hits a same-named branch.
     assert _load_gate()("abc123", model_name, old_model_name) is None
 
 
@@ -213,7 +211,6 @@ def test_the_gate_warns_exactly_once_when_it_drops_a_revision():
     gate("abc123", "unsloth/x-bnb-4bit", "org/x", True)
     assert len(warnings) == 1
     message = warnings[0]
-    # Both repos have to be named or the user cannot tell which load was silently redirected.
     assert "abc123" in message and "org/x" in message and "unsloth/x-bnb-4bit" in message
 
 
@@ -266,7 +263,7 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             assert probe.lineno > early.lineno, "the gate must precede the config probes"
             keyword = _revision_kwarg(probe)
             if keyword is None:
-                continue  # the PEFT base-model probe deliberately pins nothing
+                continue
             assert getattr(keyword.value, "id", None) in (
                 "base_revision",
                 "adapter_revision",
@@ -274,7 +271,6 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             gated += 1
         assert gated >= 2, f"{class_name} must gate its AutoConfig and PeftConfig probes"
 
-        # The late gate feeds on base_revision so an already-dropped one warns only once.
         assert getattr(late.args[0], "id", None) == "base_revision"
 
 
@@ -328,7 +324,7 @@ def test_a_pinned_load_does_not_mix_refs_with_vllm(path, flag):
         and n.value.value is None
     ]
     assert clears, f"{path.name} never drops the revision on the vLLM path"
-    # It must happen before the config load, or the config is pinned and the weights are not.
+    # Must happen before the config load, or only the config is pinned.
     configs = [
         c
         for c in _calls(function, "from_pretrained")
@@ -449,7 +445,6 @@ def test_an_adapter_ref_never_reaches_the_base_tokenizer():
     """On a PEFT load the late gate is skipped, so the gated value still names the
     adapter. The base repo's tokenizer must take the model load's ref, which is None."""
     gate = _load_tokenizer_gate()
-    # Remote adapter, no explicit tokenizer_name: the tokenizer follows the base model.
     assert gate(None, "org/base", "org/adapter", "v2", None) is None
 
 
@@ -477,7 +472,6 @@ def test_a_case_only_tokenizer_name_keeps_the_model_ref():
 def test_a_plain_load_gives_the_tokenizer_the_model_ref():
     gate = _load_tokenizer_gate()
     assert gate(None, "org/model", "org/model", "v2", "v2") == "v2"
-    # A third-party tokenizer repo is pinned by neither.
     assert gate("other/tok", "org/model", "org/model", "v2", "v2") is None
 
 
@@ -596,9 +590,7 @@ def _simulate_loader():
             None,
             None,
         ),
-        # The adapter's ref is not the base repo's, and the tokenizer follows the base.
         ("PEFT, remote adapter", "org/ad", "org/base", True, None, "v2", False, None, None),
-        # ... unless the tokenizer is the adapter itself, which the caller did pin.
         (
             "PEFT, adapter-hosted tokenizer",
             "org/ad",
@@ -621,7 +613,6 @@ def _simulate_loader():
             "v2",
             None,
         ),
-        # Naming the requested repo back does not survive the remap: the weights moved.
         (
             "remapped, tokenizer named as the requested repo",
             "org/m",
@@ -743,7 +734,6 @@ def test_the_vllm_drop_happens_before_the_config_probe():
     assert drops[0].end_lineno < min(
         c.lineno for c in probes
     ), "the probe would read a ref the weights will not be at"
-    # The probed config goes down untouched again, so nothing may re-gate it at dispatch.
     dispatches = [
         c
         for c in _calls(function, "from_pretrained")

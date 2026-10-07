@@ -90,7 +90,6 @@ DEFAULT_MODEL = "unsloth/Qwen3-4B-Base"
 
 SYSTEM_PROMPT = "You are given a question. Answer it as briefly as you can."
 
-# Every completion the reward functions were shown, in order.
 SEEN_COMPLETIONS: list[list[str]] = []
 
 
@@ -111,9 +110,7 @@ def _texts(completions) -> list[str]:
     return out
 
 
-# Chosen so the reward can never saturate. len/(len+SCALE) is strictly
-# increasing on [0, inf), maps into (0, 1), and equals 0.5 at SCALE characters,
-# so it stays informative at every length instead of only below a cap.
+# len/(len+SCALE) never saturates and is 0.5 at SCALE characters.
 _LENGTH_SCALE = 200.0
 
 
@@ -189,9 +186,7 @@ def vllm_facts() -> dict:
         facts["capability"] = str(current_platform.get_device_capability())
     except Exception as exc:  # noqa: BLE001
         facts["platform_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
-    # The backend enum has moved between releases, and its absence is a finding rather than a crash.
-    # Both names are recorded, not asserted: at the version this leg installs, xformers is EXPECTED missing and
-    # TRITON_ATTN is where the ladder should land, so which world we are in is answerable from the report alone.
+    # The backend enum moved between releases; xformers is expected missing at this version.
     for path in (
         "vllm.attention.backends.registry",
         "vllm.attention.selector",
@@ -262,13 +257,7 @@ def train(args, report: dict | None = None) -> dict:
     record("load_seconds", round(time.time() - t0, 1))
     record("engine_built", True)
 
-    # `unsloth/Qwen3-4B-Base` is a BASE model and ships no chat template, so TRL's `maybe_apply_chat_template` raises on
-    # the first training step: ValueError: Cannot use chat template functions because tokenizer.chat_template is not set
-    # Measured on kernel unsloth-t4-ci-27b0dc2e, the first probe to get that far (the vLLM engine had built and the
-    # trainer was inside `_run_epoch`). The notebook solves this with an SFT priming stage that installs a template
-    # before GRPO; this leg has no priming stage, so it sets a minimal ChatML template directly.
-    # The base model is the RIGHT choice and is not what to change: GRPO on an instruct model would measure the
-    # instruct tuning as much as the run, and these format-and-digit rewards are learnable inside three steps.
+    # The base model ships no chat template and TRL raises without one; set a minimal ChatML one.
     if not getattr(tokenizer, "chat_template", None):
         tokenizer.chat_template = (
             "{% for message in messages %}"
@@ -339,11 +328,7 @@ def train(args, report: dict | None = None) -> dict:
         train_dataset = dataset,
     )
 
-    # The adapter before a single step, so whether the optimizer applied anything is a subtraction rather than a reading
-    # of what TRL chose to log.
-    # Under fp16 here every step can overflow and be skipped while loss, reward and reward_std are still logged, and
-    # grad_norm was the only field that used to say so.
-    # See training_evidence.py.
+    # Fingerprint before training: under fp16 every step can be skipped while metrics still log.
     adapter_before = adapter_fingerprint(model)
     _log(f"adapter before training: {json.dumps(adapter_before)}")
 
@@ -379,14 +364,8 @@ def train(args, report: dict | None = None) -> dict:
     result["memory_peak"] = memory()
     _log(f"trained in {result['train_seconds']}s; log {json.dumps(result['log_history'])[:1500]}")
 
-    # Generation through the vLLM path after training.
-    # `fast_generate` is what the notebook uses and is a different code path from the trainer's own rollouts, so a
-    # failure here is not covered above.
-    # WITH the trained adapter: `fast_generate` is the engine's own generate, and the trained LoRA reaches it only
-    # through a lora_request built by `save_lora` + `load_lora`.
-    # Passing None generates from the base weights and passes whether or not the adapter can be transferred at all,
-    # which is the second question this leg answers, so the request is built, recorded, and asserted on in
-    # `failures_for`.
+    # fast_generate is a separate path from the trainer's rollouts, and the trained LoRA reaches
+    # it only via save_lora + load_lora; generating with None would not test adapter transfer.
     lora_state: dict = {"requested": True, "applied": False}
     lora_request = None
     try:
@@ -425,8 +404,7 @@ def failures_for(result: dict, args) -> list[str]:
     """The GRPO assertions. See this file's docstring for why not the loss."""
     failures: list[str] = []
     history = result.get("log_history") or []
-    # The training steps, not every row: `train()` appends a summary entry with
-    # the run totals and no loss, which is not a step.
+    # train() appends a summary entry with no loss, which is not a step.
     steps = [e for e in history if "loss" in e]
     rewards = [e["reward"] for e in history if e.get("reward") is not None]
     if not rewards:
@@ -437,9 +415,6 @@ def failures_for(result: dict, args) -> list[str]:
     elif any(r != r or r in (float("inf"), float("-inf")) for r in rewards):
         failures.append(f"non-finite reward: {rewards}")
     else:
-        # ON EVERY STEP, as this file's docstring claims. Any nonempty subset
-        # used to satisfy it, so a step whose reward functions never ran was
-        # filtered out and the rest covered for it.
         missing = [e.get("step") for e in steps if e.get("reward") is None]
         if missing:
             failures.append(
@@ -473,12 +448,8 @@ def failures_for(result: dict, args) -> list[str]:
     if len(metrics) != args.max_steps:
         failures.append(f"expected {args.max_steps} logged steps, got {len(metrics)}")
 
-    # Under fp16 here every step can overflow and be skipped while loss, reward and reward_std are still logged and
-    # base-model generation still returns text, so the length check above is satisfied by a run that applied no
-    # optimizer update at all.
-    # The earlier spelling `if norms and not applied` passes on an EMPTY list: a TRL version that stops logging
-    # grad_norm removes the only instrument this leg had, and it saves no adapter to read back either.
-    # See training_evidence.py.
+    # Under fp16 steps can be skipped while metrics still log, and an empty grad_norm list must not
+    # pass. See training_evidence.py.
     update = update_verdict(metrics, result.get("adapter_update"))
     if update["verdict"] == "not_applied":
         failures.append(
@@ -494,8 +465,7 @@ def failures_for(result: dict, args) -> list[str]:
             f"text either way."
         )
     elif update["verdict"] != "applied":
-        # Not `== "unverifiable"`: any verdict this file has not been taught about is a failure rather than a silent
-        # pass.
+        # Any unknown verdict fails rather than passing silently.
         failures.append(
             f"whether the optimizer applied anything could not be established: "
             f"{update['detail']}. Every other number this leg reports is produced "
@@ -511,8 +481,6 @@ def failures_for(result: dict, args) -> list[str]:
         )
 
     if result.get("fast_generate") is None:
-        # Not `== "unverifiable"`: any verdict this file has not been taught about is a failure rather than a silent
-        # pass.
         failures.append(
             "fast_generate (the vLLM inference path the notebook uses after "
             f"training) failed: {result.get('fast_generate_error')}"
@@ -556,9 +524,7 @@ def make_libcuda_linkable() -> dict:
         import ctypes.util
         import subprocess
 
-        # ONLY the directories flashinfer passes with -L. Measured on kernel unsloth-t4-ci-d0d480b6: an earlier version
-        # also accepted /usr/local/cuda/compat, found libcuda.so there, concluded "already linkable" and did nothing,
-        # and the link failed anyway because compat is not on the link command line.
+        # Only directories flashinfer passes with -L; the compat dir is not on the link line.
         link_dirs = ["/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"]
         for d in link_dirs:
             if os.path.exists(os.path.join(d, "libcuda.so")):
@@ -567,7 +533,6 @@ def make_libcuda_linkable() -> dict:
         facts["needed"] = True
         facts["searched"] = link_dirs
 
-        # Where the real driver lives.
         real = None
         try:
             out = subprocess.run(
@@ -583,8 +548,7 @@ def make_libcuda_linkable() -> dict:
             found = ctypes.util.find_library("cuda")
             real = found if found and os.path.exists(found) else None
         if real is None:
-            # The compat tree is the usual place on Kaggle: useless as a -L target since nothing passes it, fine as a
-            # symlink TARGET.
+            # The compat tree is useless as a -L target but fine as a symlink target.
             for candidate in (
                 "/usr/local/cuda/compat/libcuda.so",
                 "/usr/local/cuda/compat/libcuda.so.1",
@@ -621,23 +585,20 @@ def main() -> int:
     ap.add_argument("--num-generations", type = int, default = 4)
     ap.add_argument("--lora-rank", type = int, default = 32)
     ap.add_argument("--gpu-memory-utilization", type = float, default = 0.9)
-    # The switch the probe exists to decide.
-    # The notebook says False: ~8GB of 16-bit weights plus an engine plus a trainer on a 16GB card.
+    # The notebook uses False: 16-bit weights plus engine plus trainer on a 16GB card.
     ap.add_argument("--load-in-4bit", dest = "load_in_4bit", action = "store_true", default = False)
     ap.add_argument("--no-load-in-4bit", dest = "load_in_4bit", action = "store_false")
     ap.add_argument("--probe", action = "store_true", help = "record everything, assert nothing")
-    # An illegal memory access surfaces at whatever CUDA call synchronises next, which on the first T4 GRPO run was
-    # `empty_cache()` inside vLLM standby, nowhere near the faulting kernel.
+    # Illegal memory accesses surface at the next synchronising CUDA call, not the faulting kernel.
     ap.add_argument("--cuda-launch-blocking", action = "store_true")
     args = ap.parse_args()
 
     if args.cuda_launch_blocking:
-        # Must precede any CUDA context creation, so before this process's first `import torch` rather than merely
-        # before `train()`.
+        # Must precede the first `import torch`, before any CUDA context.
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
-    # Before anything imports vLLM: flashinfer JITs on first use and the link step is what fails on this image.
+    # Before vLLM imports: flashinfer JIT linking fails on this image otherwise.
     libcuda = make_libcuda_linkable()
     _log(f"libcuda link shim: {libcuda}")
 
@@ -659,7 +620,6 @@ def main() -> int:
                 "lora_rank",
                 "gpu_memory_utilization",
                 "load_in_4bit",
-                # Reported because it changes what a timing or a traceback means.
                 "cuda_launch_blocking",
             )
         },
@@ -699,8 +659,7 @@ def main() -> int:
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, KeyboardInterrupt):
             raise
-        # Head AND tail: the last probe's 6000-char tail was entirely ninja's output, dropping the Python frames that
-        # named the caller.
+        # Head and tail: a long ninja log can push the Python frames out of the tail.
         _tb = traceback.format_exc()
         report["traceback"] = (
             _tb if len(_tb) <= 12000 else _tb[:6000] + "\n...[middle elided]...\n" + _tb[-6000:]

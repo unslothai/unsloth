@@ -43,7 +43,6 @@ from studiobench.runtime.session import (  # noqa: E402
 )
 from studiobench.sweep.ui_parity import incomplete_cells  # noqa: E402
 
-#:The coverage actually observed on the run this carve-out was derived from, not a round number.
 OBSERVED_COVERAGE = 0.481
 
 
@@ -167,10 +166,7 @@ def test_low_coverage_does_not_launder_a_real_pinning_failure(tmp_path) -> None:
     assert refused
 
 
-#: Every shape a failed `follows_the_stream` row can take, and whether it must still be fatal. The
-#: two admission lists have to agree on all of them: `INVALIDATING_CELL_GATES` was centralised so
-#: the scorers could not disagree about what invalidates a cell, and a predicate copied into both
-#: consumers reintroduces that drift one level down, where each copy reads correctly on its own.
+# Both admission lists must agree on every case, or the scorers drift on what invalidates a cell.
 _AGREEMENT_CASES: list[tuple[str, dict, bool]] = [
     ("coverage-only shortfall", _coverage_short(OBSERVED_COVERAGE), False),
     ("sliver", _coverage_short(0.13), False),
@@ -235,9 +231,7 @@ _AGREEMENT_CASES: list[tuple[str, dict, bool]] = [
         True,
     ),
     ("absent instrument", {"follow_attempted": False, "reason": "sampler is not installed"}, False),
-    # The narrowing that must survive the refactor: `probe_attempted: False` has two producers and only
-    # one is an absent instrument. A missing thread viewport is the ARM missing the surface under
-    # test, and waiving it once let a real failure ride the instrument allowance.
+    # A missing thread viewport is the arm's failure, not an absent instrument, so it stays fatal.
     ("no thread viewport", {"probe_attempted": False, "reason": "no thread viewport"}, True),
 ]
 
@@ -257,13 +251,7 @@ def test_both_admission_lists_agree_on_every_shape(tmp_path) -> None:
     assert not wrong, "wrong verdict: " + "; ".join(wrong)
 
 
-# the WRITER. Everything above drives the two consumers with a hand-built gate detail, which cannot
-# see a defect in the thing that PRODUCES that detail: a `follow_verdict` that set
-# `stream_coverage_unmeasured` on every low reading would waive real follow failures and every
-# consumer test would still pass.
-
-
-# ---------------------------------------------------------------------------------------
+# Tests the writer: consumer tests cannot catch a follow_verdict that waives every low reading.
 
 
 def _sampled(
@@ -299,15 +287,12 @@ def test_writer_waives_only_a_lone_coverage_shortfall() -> None:
     assert passed is False, "the gate row must still read as failed"
     assert rec["stream_coverage_unmeasured"] is True
 
-    # a bad pinned fraction alongside the same shortfall must NOT be waived
     _, rec = follow_verdict(_sampled(0.30, 0.20))
     assert rec["stream_coverage_unmeasured"] is False
 
-    # nor may falling behind
     _, rec = follow_verdict(_sampled(1.0, 0.20, fell_behind = True))
     assert rec["stream_coverage_unmeasured"] is False
 
-    # nor an absent pinned reading while the sampler was present
     _, rec = follow_verdict(_sampled(None, 0.20))
     assert rec["stream_coverage_unmeasured"] is False
 

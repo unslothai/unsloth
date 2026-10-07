@@ -68,7 +68,7 @@ def test_a_divergent_second_run_is_a_failure_not_a_warning(script):
     fine and weakening it is not.
     """
     clean = ["1 is 2", "you asked about 2", "paris", "paris"]
-    script.check("ok", clean, list(clean))  # the baseline passes, or nothing below means anything
+    script.check("ok", clean, list(clean))
 
     with pytest.raises(AssertionError, match = "non-deterministic"):
         script.check("drift", clean, ["1 is 2", "you asked about 2", "paris", "london"])
@@ -98,7 +98,6 @@ def test_an_empty_reply_is_a_failure_in_either_run(script):
         script.check("first", ["", "b", "paris", "paris"], ["", "b", "paris", "paris"])
     with pytest.raises(AssertionError, match = "empty turn"):
         script.check("second", clean, ["", "b", "paris", "paris"])
-    # The exact pair the stripped comparison is blind to.
     with pytest.raises(AssertionError, match = "empty turn"):
         script.check(
             "whitespace vs nothing", ["\n", "b", "paris", "paris"], ["", "b", "paris", "paris"]
@@ -112,8 +111,7 @@ def test_history_grounding_is_still_checked(script):
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
 
-    # The gap #10009 found:
-    # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because turn 3 supplies it on its own.
+    # 'paris' in the joined transcript proves nothing: turn 3 supplies it on its own.
     lost_after_3 = ["1 is 2", "b", "paris", "Okay, I'm ready."]
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("joined-is-not-enough", lost_after_3, list(lost_after_3))
@@ -128,11 +126,9 @@ def test_grounding_is_asserted_on_a_turn_a_270m_model_can_carry(script):
     ("Repeat the city name") cannot produce without turn 3. So an unhelpfully worded
     turn 2 must not fail, while a last turn that cannot name the city must.
     """
-    # Exactly the macOS transcript, which is a healthy server.
     macos = ["58 + 27 = 95", "You haven't provided the previous question.", "paris", "paris"]
     script.check("macos", macos, list(macos))
 
-    # And the measured reply of a server sent the last prompt with no history at all.
     no_history = ["58 + 27 = 95", "the answer was 95", "paris", "Okay, I'm ready."]
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("dropped", no_history, list(no_history))
@@ -175,7 +171,6 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
 
     def always_divergent():
         calls["n"] += 1
-        # A different last turn every call, so no two replays ever agree.
         return ["58 + 27 = 95", "the answer was 95", "paris", f"paris {calls['n']}"]
 
     monkeypatch.setattr(script, "assert_reproducible_backend", lambda: None)
@@ -183,14 +178,13 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
     monkeypatch.setattr(script, "run_anthropic", always_divergent)
     with pytest.raises(AssertionError, match = "non-deterministic"):
         script.main()
-    # Bounded: two runners per attempt, and it must not have looped past ATTEMPTS.
     assert calls["n"] == 2 * script.ATTEMPTS, calls["n"]
 
     calls["n"] = 0
 
     def flips_once():
         calls["n"] += 1
-        if calls["n"] == 2:  # the second replay of the first attempt
+        if calls["n"] == 2:
             return ["58 + 27 = 95", "the answer was 95", "paris", "paris!"]
         return list(clean)
 
@@ -235,8 +229,7 @@ def test_every_leg_pins_the_probe_load_to_a_reproducible_backend():
     """
     for name in LEGS:
         text = _workflow(name)
-        # rsplit, not split: two of the legs also name the script in their `paths:`
-        # filter, long before the step that runs it.
+        # rsplit: some legs also name the script in their `paths:` filter.
         probe = text.rsplit("studio_smoke/multi_turn_chat.py", 1)[0]
         assert '\\"speculative_type\\":\\"off\\"' in probe, (
             f"{name} loads the multi-turn probe's model without pinning "

@@ -45,9 +45,6 @@ from unsloth import import_fixes
 _UNSLOTH = pathlib.Path(import_fixes.__file__).resolve().parent
 
 
-# ---------------------------------------------------------------- #8933
-
-
 def _access_from(module_name, attribute):
     """Read `torch.<attribute>` from a frame that belongs to `module_name`.
 
@@ -76,8 +73,7 @@ def patched_torch(monkeypatch):
     try:
         yield torch
     finally:
-        # Restore whatever was there, so an idempotence check in another test
-        # still measures a first install.
+        # Restore whatever was there, so another test's idempotence check measures a first install.
         installed = torch.__dict__.get("__getattr__")
         if getattr(installed, "__unsloth_patched__", False):
             torch.__getattr__ = installed.__unsloth_original__
@@ -88,8 +84,7 @@ def test_a_dependency_reaching_for_a_missing_dtype_gets_the_upgrade(patched_torc
         _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
 
     message = str(raised.value)
-    # The original wording stays first, so anything already matching on it, and
-    # anyone searching the web for it, still finds what they expect.
+    # The original wording stays first, so existing matches and web searches still work.
     assert message.startswith("module 'torch' has no attribute 'unsloth_probe_dtype'")
     assert "transformers==" in message
     assert patched_torch.__version__ in message
@@ -112,7 +107,6 @@ def test_an_unknown_attribute_is_diagnosed_without_prescribing_a_direction(patch
     assert "first appears in torch" not in message
     assert "so this torch is the older half" not in message
     assert "either newer than this torch or removed by it" in message
-    # Both remedies are offered, neither as the answer.
     assert 'pip install --upgrade "torch"' in message
     assert "install a transformers that matches this torch" in message
 
@@ -294,14 +288,11 @@ def test_a_failed_probe_does_not_re_read_the_installed_metadata(patched_torch, m
     try:
         for _ in range(25):
             assert not hasattr(patched_torch, "unsloth_probe_dtype")
-        # transformers is not in the frames above (hasattr here is attributed to
-        # this test module), so drive the diagnosing path explicitly too.
+        # transformers is not in the frames above, so drive the diagnosing path explicitly too.
         for _ in range(25):
             with pytest.raises(import_fixes.UnslothTorchTooOldError):
                 _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
-        # The message also names the companion packages that have to move with torch, and
-        # each of those is a lookup too. What must hold is ONE lookup per package across 50
-        # failed accesses, not one lookup in total.
+        # The message names companion packages too; one lookup per package, not one in total.
         assert "transformers" in calls
         assert set(calls) <= {"transformers", "torchvision", "torchaudio"}, calls
         assert len(calls) == len(set(calls)), (
@@ -437,9 +428,6 @@ def test_a_pip_triton_in_a_conda_prefix_still_gets_pip(monkeypatch, tmp_path):
     message = logger.warnings[0]
     assert "conda installed this Triton" not in message
     assert '--force-reinstall --no-cache-dir "triton==3.2.0"' in message
-
-
-# ---------------------------------------------------------------- #2760
 
 
 _UNGUARDED_SHIM = textwrap.dedent(
@@ -642,15 +630,12 @@ def test_the_installed_triton_is_not_flagged():
         ("#define PY_SSIZE_T_CLEAN\n#undef PY_SSIZE_T_CLEAN\n", "", True),
         ("", "#define PY_SSIZE_T_CLEAN\n", True),
         ('const char *why = "PY_SSIZE_T_CLEAN";\n', "", True),
-        # The compiler strips comments before the preprocessor sees a directive, so a
-        # define that exists only inside one is not a definition at all.
+        # The compiler strips comments before the preprocessor, so a commented define is not a definition.
         ("/*\n#define PY_SSIZE_T_CLEAN\n*/\n", "", True),
         ("/* x */ /*\n#  define PY_SSIZE_T_CLEAN 1\n*/\n", "", True),
         ("//#define PY_SSIZE_T_CLEAN\n", "", True),
-        # A real define followed by an UNDEF hidden in a comment is still defined, which
-        # is the control for blanking too much.
+        # Control: a real define with a commented-out undef is still defined.
         ("#define PY_SSIZE_T_CLEAN\n/*\n#undef PY_SSIZE_T_CLEAN\n*/\n", "", False),
-        # A comment between the define and the include changes nothing.
         ("#define PY_SSIZE_T_CLEAN\n/* now include it */\n", "", False),
     ],
 )
@@ -723,14 +708,12 @@ def test_the_plain_triton_distribution_is_still_named(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "distribution, triton_version, torch_version, expected",
     [
-        # The ordinary CUDA install: PyPI carries this wheel, so only the pin is added.
         (
             "triton",
             "3.2.0",
             "2.6.0+cu124",
             'pip install --force-reinstall --no-cache-dir "triton==3.2.0"',
         ),
-        # Windows builds also come from PyPI, and are not a pytorch-triton-* provider.
         (
             "triton-windows",
             "3.3.1.post19",
@@ -752,8 +735,7 @@ def test_the_plain_triton_distribution_is_still_named(monkeypatch, tmp_path):
             "pip install --force-reinstall --no-cache-dir"
             ' --index-url https://download.pytorch.org/whl/xpu "pytorch-triton-xpu==3.3.0"',
         ),
-        # NEGATIVE CONTROL: no version to pin, so the command stays bare rather than
-        # inventing a pin that would resolve to no wheel at all.
+        # NEGATIVE CONTROL: no version to pin, so the command stays bare.
         ("triton", "unknown", "2.6.0+cu124", "pip install --force-reinstall --no-cache-dir triton"),
     ],
 )
@@ -777,9 +759,6 @@ def test_the_triton_probe_is_wired_into_gpu_init():
         "in _gpu_init.py."
     )
     assert "del check_triton_py_ssize_t_clean" in source
-
-
-# ---------------------------------------------------------------- #3130
 
 
 class _CollectingLogger:
@@ -823,8 +802,7 @@ def test_a_patch_that_raises_is_skipped_not_fatal():
     called = []
 
     def raises_syntax_error():
-        # What patch_merge_quantization_configs did: exec'd
-        # `from transformers.quantizers.auto import ()`.
+        # What patch_merge_quantization_configs did: exec'd `from transformers.quantizers.auto import ()`.
         raise SyntaxError("invalid syntax")
 
     def later_patch():
@@ -859,8 +837,7 @@ def test_a_patch_is_called_once_and_gets_its_phase():
 
     run("pre_compile")
 
-    # The ValueError one used to be retried without its argument, because the
-    # signature probe and the call shared an except clause.
+    # The signature probe and the call must not share an except clause.
     assert calls == [
         ("takes_phase", "pre_compile"),
         ("takes_nothing", None),
@@ -871,8 +848,7 @@ def test_a_patch_is_called_once_and_gets_its_phase():
 
 def test_a_callable_with_no_readable_signature_is_still_called():
     logger = _CollectingLogger()
-    # inspect.signature raises ValueError for some builtins, which is the case the
-    # original except clause existed for.
+    # inspect.signature raises ValueError for some builtins.
     run = _isolated_run_temporary_patches([print], logger)
     run("init")
     assert logger.warnings == []
@@ -882,9 +858,7 @@ def test_a_callable_with_no_readable_signature_is_still_called():
     "installed, version",
     [
         ("pytorch-triton-rocm", "3.3.0"),
-        # download.pytorch.org renamed both accelerator providers. pytorch-triton-rocm
-        # stops at 3.5.1 and triton-rocm carries 3.7 onwards, the same split the XPU
-        # provider has, so a current ROCm host is only found under the new name.
+        # pytorch-triton-rocm stops at 3.5.1 and triton-rocm carries 3.7 onwards.
         ("triton-rocm", "3.8.0"),
         ("triton-xpu", "3.7.1"),
     ],
@@ -1023,7 +997,6 @@ def test_a_file_claimed_by_two_providers_is_settled_by_torchs_backend(monkeypatc
     monkeypatch.setattr(
         metadata,
         "distribution",
-        # Both RECORDs list the same file, which is the coexistence case.
         _fake_distribution({"triton": [str(driver)], "triton-xpu": [str(driver)]}),
     )
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "3.7.1")
@@ -1156,7 +1129,6 @@ def test_the_upgrade_moves_the_companions_that_pin_torch_exactly(patched_torch, 
             _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
         message = str(raised.value)
         assert 'pip install --upgrade "torch>=2.7.0" "torchvision"' in message
-        # NEGATIVE CONTROL: torchaudio is not installed in this case, so it is not named.
         assert "torchaudio" not in message
     finally:
         import_fixes._installed_version.cache_clear()
@@ -1181,8 +1153,7 @@ def test_a_bare_torch_install_gets_the_plain_upgrade(patched_torch, monkeypatch)
 @pytest.mark.parametrize(
     "distribution, torch_version, expect_index",
     [
-        # torch 2.10 renamed pytorch-triton-xpu to triton-xpu, and pyproject pins the new
-        # name straight from download.pytorch.org, where the old prefix no longer matches.
+        # torch 2.10 renamed pytorch-triton-xpu to triton-xpu.
         ("triton-xpu", "2.10.0+xpu", True),
         ("pytorch-triton-xpu", "2.7.0+xpu", True),
         ("pytorch-triton-rocm", "2.7.0+rocm6.3", True),

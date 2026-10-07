@@ -99,20 +99,19 @@ def test_utf8_replace_decodes_non_cp1252_subprocess_output():
     """Reproduce the bug and fix with a real subprocess: the child emits U+201D
     (UTF-8 E2 80 9D, byte 0x9D undefined in cp1252) so cp1252 decode raises while
     the fix's utf-8/replace kwargs read it cleanly."""
-    # All-ASCII argv; the child builds the non-ASCII char so it's locale-independent.
+    # All-ASCII argv; the child builds the non-ASCII char so it is locale-independent.
     child = (
         "import sys; "
         "sys.stdout.buffer.write(('tensor ' + chr(0x201D) + ' x\\n').encode('utf-8'))"
     )
 
     raw = subprocess.run([sys.executable, "-c", child], capture_output = True).stdout
-    assert b"\x9d" in raw  # precondition: output carries the cp1252-undefined byte
+    assert b"\x9d" in raw
 
-    # Before the fix: cp1252 (the Windows default) cannot decode this output.
+    # cp1252 (the Windows default) cannot decode this output.
     with pytest.raises(UnicodeDecodeError):
         raw.decode("cp1252")
 
-    # Correct behaviour after the fix: the exact kwargs save.py now uses.
     result = subprocess.run(
         [sys.executable, "-c", child],
         capture_output = True,

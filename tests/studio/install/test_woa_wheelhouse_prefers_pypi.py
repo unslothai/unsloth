@@ -93,7 +93,6 @@ def test_interpreter_agnostic_wheels_still_count(source):
     exact-tag test would call them foreign and go on shipping ours forever."""
     body = _function_body(source, "Test-WoaWheelTagsUsable")
     assert '"abi3"' in body and '"none"' in body
-    # Free-threaded venvs are the exception the exact-tag helper exists for.
     assert '$AbiTag -like "*t"' in body
 
 
@@ -108,10 +107,7 @@ def test_pyarrow_keeps_its_own_pypi_first_path(source):
     ), "the generic loop must leave pyarrow to Get-WoaPyarrowSource"
 
 
-# The default wheelhouse URL had no test at all: changing it to a working but wrong host left
-# the whole suite green. It is the only source for the pyarrow that gates the native path, so a
-# typo sends every Windows on ARM host back to the emulated x64 stack, and it is fetched over
-# the network, so a wrong host is a wrong download.
+# Only source of the pyarrow gating the native WoA path; a wrong host means a wrong download.
 DEFAULT_WHEELHOUSE = "https://github.com/unslothai/unsloth/releases/download/Windows-ARM64"
 
 PWSH = shutil.which("pwsh")
@@ -187,8 +183,7 @@ def test_the_wheelhouse_override_is_normalised(source, configured, expected, why
         + _wheelhouse_assignment(source).strip()
         + '; Write-Output "<<<$script:WoaWheelhouse>>>"'
     )
-    # run_pwsh, not subprocess.run: one shared $XDG_CACHE_HOME/powershell startup cache
-    # across xdist workers kills ~1 startup in 500 before it reaches the script.
+    # run_pwsh: a shared powershell startup cache across xdist workers kills ~1 start in 500.
     done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

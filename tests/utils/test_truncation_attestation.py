@@ -160,9 +160,6 @@ def test_splits_within_cap_honours_the_attestation_per_split():
     assert rl.splits_within_cap({"a": good, "b": bad}, 2048) is False
 
 
-# ------------------------------------------------- the copy rl.py inlines
-
-
 def _inlined_within_cap(cap):
     """Build `_unsloth_within_cap` out of the codegen string and return it.
 
@@ -174,7 +171,6 @@ def _inlined_within_cap(cap):
     start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
     end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
     body = "".join(re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE))
-    # Strip the indentation the literals carry for the generated `__init__`.
     body = textwrap.dedent(body.encode().decode("unicode_escape"))
     namespace = {"_unsloth_cap": cap}
     exec(body, namespace)
@@ -225,9 +221,6 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
 
-# ------------------------------------------- the generated block must still parse
-
-
 def test_the_generated_max_length_block_is_valid_python():
     """The block only exists as string literals, so a stray indent or unclosed
     bracket stays invisible until a user gets a `SyntaxError` from a generated
@@ -241,7 +234,7 @@ def test_the_generated_max_length_block_is_valid_python():
     end = source.index("            extra_args += max_length_check")
     literals = re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE)
     block = "".join(literals).encode().decode("unicode_escape")
-    # The generator emits this at one indent level inside the trainer's __init__.
+    # The generator emits this one indent level inside __init__.
     ast.parse(textwrap.dedent(block))
 
 

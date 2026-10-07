@@ -64,8 +64,6 @@ class _Model:
 def _run(block, config):
     namespace = {
         "model_config": config,
-        # The real readers, not stubs: a stub would pass while the shipped fallback drops
-        # a field. The soft-cap one takes a model, so hand it one carrying this config.
         "model": _Model(config),
         "_unsloth_get_final_logit_softcapping": rl._unsloth_get_final_logit_softcapping,
         "_unsloth_resolve_logit_scales": rl._unsloth_resolve_logit_scales,

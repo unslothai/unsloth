@@ -98,7 +98,7 @@ def test_a_key_resolves_by_its_full_path(sample, key, expected):
 
 @pytest.mark.parametrize("terminator", ["\n", "\r\n", "\r", "\u2028", "\u2029"])
 def test_a_continuation_over_any_line_terminator_contributes_nothing(terminator):
-    # Decoded directly: reading a file with read_text folds CR LF to LF before the tokenizer.
+    # Decoded directly: read_text folds CR LF to LF before the tokenizer.
     assert _decode(f'"a\\{terminator}b"') == "ab"
 
 
@@ -160,7 +160,6 @@ def test_a_comment_is_not_read_as_a_key(sample):
 def test_the_shipped_catalog_resolves():
     assert en_string("composerSettings.showContext")
     assert en_string("settings.chat.showResponseModel")
-    # Single-quoted in en.ts because it contains double quotes.
     assert en_string("shell.dialog.deleteChat.description").endswith('"{name}"?')
 
 
@@ -214,19 +213,15 @@ def test_both_import_forms_mark_a_catalog_driver(tmp_path, source, imports):
 COMPOSER_WORKFLOW = HERE.parents[1] / ".github" / "workflows" / "studio-composer-compatibility.yml"
 
 
-# Where each catalog driver runs, pinned literally: the step's `if:` and the matrix leg it
-# needs. A new driver, or a restructured workflow, updates this table with it.
 DRIVER_STEPS = {
     "playwright_composer_settings.py": (
         "matrix.suite == 'browsers'",
         {"suite": "browsers"},
-        # Continues `run_driver "<log>" \`, whose failure the loop turns into the exit status.
         "python tests/studio/playwright_composer_settings.py || status=1",
     ),
     "selenium_composer_safari.py": (
         "${{ !cancelled() && matrix.suite == 'safari' }}",
         {"os": "macos-latest", "suite": "safari"},
-        # Last command of a bash -e step, so its exit status is the step's.
         "python tests/studio/selenium_composer_safari.py",
     ),
 }

@@ -36,7 +36,7 @@ try:
     from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
 
     HAS_CT = True
-    # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
+    # compressed-tensors 0.19 dropped GPTQ activation ordering: its compressor ignores weight_g_idx.
     CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
 except Exception:
     HAS_CT = CT_HONOURS_G_IDX = False
@@ -203,7 +203,6 @@ def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
     checkpoint = W.clone()
     qs = _qs(ip, packed, (out_f, 1024), 4, gs)
     assert ip.int4_repack_(W, qs) == layout
-    # Replaced in place (no second copy), same shape; training dequantizes the exact same weights; saves unchanged.
     assert W.shape == checkpoint.shape and not torch.equal(W, checkpoint)
     assert torch.equal(ip.int4_dequantize(W, qs), ref)
     assert torch.equal(ip.int4_unpack(W, qs), checkpoint)
@@ -220,7 +219,7 @@ def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
         got = ip.int4_matmul(x[:1].view(1, 1, 1024), W, qs, out = out)
         want = ip.int4_matmul(x[:1], W, qs)
     assert got.data_ptr() == out.data_ptr() and torch.equal(got.view(1, -1), want)
-    # With grad enabled every row count decodes + cuBLAS: training numerics are those of the checkpoint layout.
+    # With grad enabled every row count decodes + cuBLAS, matching the checkpoint numerics.
     assert torch.equal(ip.int4_matmul(x, W, qs), x @ ref.t())
 
 
@@ -285,10 +284,8 @@ def test_packed_linear_state_dict_round_trips_through_the_checkpoint_layout():
     state = model.state_dict()
     assert torch.equal(state["0.weight_packed"], packed["weight_packed"])
     assert torch.equal(lin.dequantize_weight(), ref)
-    # Training takes the exact dequantize + matmul whatever the layout; only inference uses the fused kernel.
     x = torch.randn(4, 1024, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
     assert torch.equal(lin(x), x @ ref.t())
-    # Loading checkpoint-layout words resets the layer to that layout; unrelated loads leave it alone.
     model.load_state_dict({}, strict = False)
     assert lin.quant_state.layout is not None
     model.load_state_dict(state)
@@ -320,7 +317,7 @@ def _repacked_linear():
 @needs_sm80
 @pytest.mark.parametrize("cast", ["float", "half"])
 def test_repacked_linear_infers_after_a_dtype_cast(cast):
-    # The fused layout was picked for bf16; after a cast inference must take the exact dequantize path.
+    # The fused layout was picked for bf16; after a cast inference must take the exact path.
     lin, _, ref = _repacked_linear()
     getattr(lin, cast)()
     dtype = lin.quant_state.dtype
@@ -352,7 +349,6 @@ def test_adapter_saves_skip_unpacking_repacked_words(monkeypatch, tmp_path):
     monkeypatch.setattr(ip, "int4_unpack", lambda *a: calls.append(1) or real(*a))
     model.save_pretrained(tmp_path)
     assert calls == [] and (tmp_path / "adapter_model.safetensors").exists()
-    # A plain state_dict() still writes the checkpoint layout.
     assert torch.equal(
         model.state_dict()["base_model.model.proj.weight_packed"], packed["weight_packed"]
     )
@@ -362,7 +358,7 @@ def test_adapter_saves_skip_unpacking_repacked_words(monkeypatch, tmp_path):
 @needs_gpu
 @needs_ct
 def test_jit_launch_fallback_matches_the_compiled_launcher(monkeypatch):
-    # Triton < 3.7 launchers reject CompiledKernel[grid](*runtime_args); the JIT launch must give the same bits.
+    # Triton < 3.7 launchers reject CompiledKernel[grid](*runtime_args).
     import unsloth.kernels.int4_packed as ip
 
     torch.manual_seed(0)
@@ -519,10 +515,9 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     skipped, _ = adopt_int4_packed_linears(
         copy.deepcopy(model), ct_config, [path], torch.bfloat16, skip_modules = ["proj"]
     )
-    assert skipped == []  # a caller-skipped module stays with the decompress converter
+    assert skipped == []
     swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
     assert swapped == ["proj"] and leftover == ["gate"]
-    # The stacked expert is not in the checkpoint's layout any more, so a full save must not claim it is.
     assert model.__dict__.get("_unsloth_int4_stacked_experts") is True
     assert isinstance(model.proj, Int4PackedLinear)
     assert model.proj.weight_packed.dtype == torch.int32 and model.proj.weight_packed.shape == (
@@ -531,7 +526,6 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     )
     assert model.proj.weight_scale.dtype == torch.float32
     assert type(model.gate) is Router
-    # The leftover converter pattern renames only the router's keys, and only the suffix.
     patterns = [f"(?<={re.escape(n)}\\.){s}$" for n in leftover for s in _PACKED_SUFFIXES]
     rx = re.compile("|".join(patterns))
     m = rx.search("gate.weight_packed")
@@ -545,7 +539,7 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
 )
 @pytest.mark.usefixtures("restore_llama_patches")
 def test_a_full_save_of_the_packed_route_reloads(tmp_path, monkeypatch):
-    # The saved tensors stay packed, so the saved config must be the checkpoint's, not the runtime bnb one.
+    # The saved tensors stay packed, so the saved config must be the checkpoint's.
     import json
     from transformers import AutoModelForCausalLM
     from unsloth import FastLanguageModel
@@ -577,7 +571,6 @@ def test_a_full_save_of_the_packed_route_reloads(tmp_path, monkeypatch):
     ).merge_and_unload()
     merged.save_pretrained(str(tmp_path / "merged"))
     tokenizer.save_pretrained(str(tmp_path / "merged"))
-    # A permanent merge must not keep the packed weights stashed for an unmerge that can never come.
     assert not any("_unsloth_int4_packed_state" in m.__dict__ for m in merged.modules())
     ignore = json.load(open(f"{tmp_path}/merged/config.json"))["quantization_config"]["ignore"]
     assert (
@@ -633,7 +626,7 @@ def test_a_mixed_packed_layout_refuses_a_full_save():
 @needs_gpu
 @needs_ct
 def test_training_single_row_forward_uses_the_backward_weights():
-    # fast = False is the autograd forward: it must multiply the same rounded weights int4_matmul_t uses.
+    # fast = False must multiply the same rounded weights int4_matmul_t uses.
     from unsloth.kernels.int4_packed import Int4QuantState, int4_dequantize, int4_matmul
 
     packed, _, gs = _packed_layer(200, 512, 4, 128, True, True, torch.bfloat16)
@@ -701,8 +694,7 @@ def test_marlin_gemm_arguments_follow_the_op_schema(schema):
 @needs_ct
 @needs_sm80
 def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
-    # Gradient checkpointing runs its first forward under no_grad in train mode: it must use the same exact
-    # dequantize + matmul as the recompute, and must not build the fused kernel's per-layer scale cache.
+    # Checkpointing's first forward runs under no_grad in train mode: it must match the recompute.
     from unsloth.kernels.int4_packed import int4_dequantize
 
     lin, _, _ = _repacked_linear()
@@ -713,12 +705,11 @@ def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
     lin.train()
     with torch.no_grad():
         y = lin(x)
-        # The fast LoRA kernels call int4_matmul directly (default fast = True) inside their autograd forward.
+        # The fast LoRA kernels call int4_matmul directly inside their autograd forward.
         from unsloth.kernels.utils import matmul_lora
         z = matmul_lora(x, lin.weight, lin.quant_state, None, None, None)
     assert qs._fast is None and torch.equal(y, want) and torch.equal(z, want)
 
-    # Eval keeps the fused kernel (and its cache); going back to training frees it.
     lin.eval()
     with torch.no_grad():
         matmul_lora(x, lin.weight, lin.quant_state, None, None, None)

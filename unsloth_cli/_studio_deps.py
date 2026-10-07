@@ -194,8 +194,6 @@ def _venv_site_packages(root: Path) -> List[Path]:
         if versioned.is_dir():
             return [versioned]
 
-    # Test fixtures and incomplete venvs may not have a runnable interpreter or version entry yet.
-    # One directory is unambiguous; several are not.
     candidates = sorted(root.glob("lib/python*/site-packages"))
     return candidates if len(candidates) == 1 else []
 
@@ -237,9 +235,7 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
             if name:
                 canonical = _canonical(name)
                 version = dist.version or ""
-                # pip renames the outgoing record to a `~` sibling while laying the replacement down, so a kill
-                # there can leave the backup as the only record: it reads as one healthy version, but pip calls
-                # it an invalid distribution and the payload is renamed with it.
+                # pip renames the outgoing record to a `~` sibling mid-install; pip calls that invalid.
                 if not version or canonical in found or stem.startswith("~"):
                     conflicts.add(canonical)
                 if canonical not in found:
@@ -259,9 +255,7 @@ def _requirements_root_in(root: Path) -> Optional[Path]:
         reqs = path / "studio" / "backend" / "requirements"
         if reqs.is_dir():
             return reqs
-    # An editable install can keep studio/ only in its source checkout. Ask the foreign interpreter
-    # to follow its .pth/finder instead of treating the absent site-packages copy as an incomplete
-    # environment.
+    # An editable install can keep studio/ only in its source checkout; ask the interpreter.
     probe = (
         "import json, pathlib, studio; "
         "print(json.dumps(str(pathlib.Path(studio.__file__).resolve().parent / "
@@ -315,7 +309,6 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
             "missing": [],
             "reason": "studio_install_manifest_missing",
         }
-    # The requested managed venv is the subject, even though the helper above came from this CLI's own tree.
     root = _managed_root(extra_roots) or _venv_root_for_module(module)
     foreign = root is not None and _resolved(root) != _resolved(Path(sys.prefix))
     foreign_distributions = _distributions_in(root) if foreign else None
@@ -323,9 +316,7 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
     installed_conflicts = foreign_distributions[1] if foreign_distributions is not None else set()
     req_root = _requirements_root_in(root) if foreign else None
     if foreign and (foreign_distributions is None or req_root is None):
-        # Never answer for the caller when the requested environment cannot be inspected: that can turn
-        # a torn or ambiguous managed venv into a healthy result merely because the external CLI has
-        # matching packages.
+        # Never answer for an uninspectable environment: that could report a torn venv as healthy.
         return {
             "ok": False,
             "manifest_ok": False,
@@ -345,19 +336,17 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
                 kwargs["installed_conflicts"] = installed_conflicts
             if deep and _verify_install_supports(module, "deep"):
                 kwargs["deep"] = True
-                # Without that venv's site-packages the scan answers for this interpreter's tree. Guarded
-                # separately: a module new enough for `deep` may predate `scan_paths`.
+                # Guarded separately: a module new enough for `deep` may predate `scan_paths`.
                 if _verify_install_supports(module, "scan_paths"):
                     paths = [str(path) for path in _venv_site_packages(root)]
                     if paths:
                         kwargs["scan_paths"] = paths
             return module.verify_install(**kwargs)
-        # Off for `desktop-capabilities`: the Tauri preflight times it out at 10s and a probe that
-        # overruns repairs a healthy venv. `verify-install` is untimed, so it opts in.
+        # Off for `desktop-capabilities`: its 10s preflight timeout would repair a healthy venv.
         deep_kwargs = {"deep": True} if (deep and _verify_install_supports(module, "deep")) else {}
         state = module.verify_install(root = root, **deep_kwargs)
         if foreign and not state["deps_ok"]:
-            # The manifest came from another venv but the dependency walk ran here, so it says nothing about that venv.
+            # The dependency walk ran here, so it says nothing about that venv.
             state = dict(state, deps_ok = True, missing = [])
             state["ok"] = state["manifest_ok"]
             state["reason"] = None if state["ok"] else state["reason"]
@@ -404,10 +393,8 @@ def _scan_paths() -> Dict[str, list]:
     return {"path": paths} if paths else {}
 
 
-# Top-level dirs several wheels write into, so one uninstall deletes another's files and the
-# survivor's RECORD describes a file nothing recreates. einx and torchao both ship
-# test/conftest.py and install_python_stack.py force-reinstalls torchao every update;
-# unsloth_zoo <= 2026.8.5 shipped tests/ and scripts/ into the same squatted namespace.
+# Top-level dirs several wheels write into (einx and torchao both ship test/conftest.py), so one
+# uninstall deletes another's files.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
     (
         "test",
@@ -424,9 +411,7 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 
-# Rewritten in place by our own setup: setup.ps1/setup.sh run `npm install` inside the installed
-# tree, and npm dedupes hoisted entries under legacy-peer-deps, shrinking the lockfile below its
-# recorded size.
+# setup.ps1/setup.sh run `npm install` inside the installed tree, shrinking the lockfile.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
 
@@ -484,8 +469,6 @@ def _installed_distribution_groups():
                 version = None
             groups.setdefault(_canonical(name), []).append((dist, name, bool(version)))
             continue
-        # Wheel metadata directory names escape name separators as underscores, so splitting off the
-        # final version is unambiguous.
         path = getattr(dist, "_path", None)
         stem = os.path.basename(os.fspath(path)) if path is not None else ""
         path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
@@ -580,24 +563,20 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     entries: List[tuple] = []
     owners: Dict[str, int] = {}
     for records in _installed_distribution_groups().values():
-        # An unreadable record cannot be trusted to describe the package tree any more than a duplicated one can.
         ambiguous = len(records) > 1 or not all(readable for _dist, _name, readable in records)
         for dist, name, _readable in records:
             try:
                 record = dist.read_text("RECORD")
             except Exception:
-                # An unreadable or absent RECORD says nothing about damage: editable installs and system
-                # packages legitimately have none.
+                # Editable installs and system packages legitimately have no RECORD.
                 continue
             if not record:
                 continue
             for row in csv.reader(io.StringIO(record)):
                 rel = row[0] if row else ""
-                # A trailing slash is a directory entry, which has nothing to check.
                 if not rel or rel.endswith("/"):
                     continue
-                # Installer-owned metadata is rewritten in place and drifts from the size recorded inside
-                # itself; .pyc is regenerated from source.
+                # Installer-owned metadata drifts from its recorded size; .pyc is regenerated.
                 if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                     continue
                 try:
@@ -605,13 +584,11 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
                 except Exception:
                     continue
                 key = os.path.normcase(str(target))
-                # Before either filter: a row we cannot verify still owns the path it claims, so another
-                # distribution's size is ambiguous too.
+                # Before either filter: an unverifiable row still owns its path.
                 owners[key] = owners.get(key, 0) + 1
                 if ambiguous or _shared_non_runtime(rel):
                     continue
-                # The size field is optional and real wheels do leave it blank. Keep the row with an unknown
-                # size: existence is still checkable, and dropping it meant a deletion went unreported.
+                # The size field is optional; keep the row so existence is still checked.
                 recorded: Optional[int] = None
                 if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
                     try:
@@ -625,13 +602,11 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
         try:
             info = target.stat()
         except OSError:
-            # Multiple ownership makes the recorded SIZES ambiguous; it cannot explain the file being gone,
-            # so this branch runs for shared paths too.
+            # Shared paths too: shared ownership makes sizes ambiguous, not a missing file.
             found.append(f"{name}: {rel} is missing")
         else:
             if not stat.S_ISREG(info.st_mode):
-                # A directory standing in for a recorded module still imports as something else, and on POSIX
-                # its st_size (commonly 4096) can sail past the shrinkage test.
+                # A directory in place of a module imports as something else, and its st_size can pass.
                 found.append(f"{name}: {rel} is not a regular file")
             elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
                 found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
@@ -647,9 +622,7 @@ def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
     anything answered from this interpreter would then describe the wrong tree.
     """
     if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
-        # Not a venv at all. On Colab setup.sh deliberately installs the backend into the system Python,
-        # whose distro-packaged RECORDs legitimately list files the distro never installed (PEP 627), so
-        # a file check here describes the distro rather than Unsloth.
+        # Not a venv: on Colab the backend lives in the system Python, whose distro RECORDs lie (PEP 627).
         return True
     return _managed_root(extra_roots) is not None
 
@@ -665,9 +638,7 @@ def _missing_studio_packages() -> List[str]:
         return []
 
 
-# studio.txt names distributions, ModuleNotFoundError names the import. Only pairs differing by
-# more than PEP 503 normalisation need an entry, and each import name below is itself a real but
-# unrelated PyPI project.
+# Only pairs differing beyond PEP 503 normalisation; each import name is an unrelated PyPI project.
 _IMPORT_TO_DISTRIBUTION = {
     "jwt": "pyjwt",
     "docx": "python-docx",
@@ -694,11 +665,9 @@ def studio_backend_imports(feature: str = "This command", *, studio_only: bool =
         yield
     except ModuleNotFoundError as exc:
         studio_missing = _missing_studio_packages()
-        # The failed import may not be a studio dependency at all: `train` reaches torch through the same
-        # wrapper, so only offer the extra when it helps.
+        # The failed import may not be a studio dependency: only offer the extra when it helps.
         trigger = exc.name or ""
-        # Match on the owning distribution, never the import: `pip install jwt` (or fastmcp.server)
-        # installs the wrong thing or nothing at all.
+        # Match on the owning distribution: `pip install jwt` installs the wrong thing.
         top = trigger.split(".", 1)[0]
         needed = _IMPORT_TO_DISTRIBUTION.get(top, top)
         wanted = _canonical(needed)

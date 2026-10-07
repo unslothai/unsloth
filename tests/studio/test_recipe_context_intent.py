@@ -63,7 +63,6 @@ def test_only_mlx_reads_a_positive_context_echo_as_a_pin():
             """
         )
     )
-    # MLX: a pinned resident and an unpinned recipe are different loads.
     assert out["mlxPinned"] == 32768
     assert out["mlxAuto"] is None
     assert out["mlxUnset"] is None

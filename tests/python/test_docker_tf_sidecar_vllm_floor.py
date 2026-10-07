@@ -23,7 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 COMPAT_PATH = REPO_ROOT / "docker" / "unsloth_nb_compat.py"
 
-# every distinct pin across the shipped notebooks -> the sidecar it must resolve to
 SHIPPED_PINS = [
     "4.48",
     "4.52.3",
@@ -100,7 +99,7 @@ def test_build_verifies_every_sidecar_against_the_baked_vllm(sidecar_block: str)
 
 
 def test_build_verification_needs_no_gpu(sidecar_block: str):
-    # `import unsloth` raises on the GPU-less build host, so it cannot be the gate
+    # `import unsloth` raises on the GPU-less build host, so it cannot be the gate.
     assert (
         "import unsloth" not in sidecar_block
     ), "the sidecar gate must not import unsloth: the build host has no GPU"
@@ -129,7 +128,6 @@ def test_build_fails_when_no_sidecar_survives(sidecar_block: str):
 
 
 def test_build_skips_the_gate_when_vllm_is_absent(sidecar_block: str):
-    # the vLLM install is fail-soft per arch, and with no vLLM there is no constraint
     assert "HAVE_VLLM" in sidecar_block
 
 
@@ -179,7 +177,6 @@ def test_no_shipped_pin_can_reach_an_incompatible_sidecar(stale_root):
 
 
 def test_model_tier_fallback_is_clamped_too(stale_root):
-    # a model TIER must not reach an ineligible sidecar either
     compat = _load_compat(stale_root)
     tier = compat.tier_for_model("unsloth/Qwen3-Next-80B-A3B")
     assert tier == "5.3.0"
@@ -187,7 +184,6 @@ def test_model_tier_fallback_is_clamped_too(stale_root):
 
 
 def test_an_unrecorded_floor_keeps_the_old_ceiling_behaviour(tmp_path):
-    # with no recorded floor, selection must not silently start dropping sidecars
     for name in ("t_4_57_6", "t_5_5_0"):
         (tmp_path / name).mkdir()
     compat = _load_compat(tmp_path)

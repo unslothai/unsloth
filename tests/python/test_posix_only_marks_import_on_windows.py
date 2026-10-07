@@ -62,9 +62,7 @@ def _is_os_geteuid(node: ast.AST) -> bool:
         and node.attr == "geteuid"
         and isinstance(node.value, ast.Name)
         and node.value.id == "os"
-        # `os.geteuid = lambda: 0` CREATES the attribute rather than reading it. An
-        # augmented target is a Store in the AST but reads before it writes, so it is
-        # admitted by _geteuid_sites instead.
+        # An augmented target is a Store but reads first; _geteuid_sites admits it.
         and not isinstance(node.ctx, ast.Store)
     ):
         return True
@@ -119,8 +117,7 @@ def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
         for arg, default in zip(lam.args.kwonlyargs, lam.args.kw_defaults)
         if default is None and arg.arg not in by_name
     ]
-    # **kwargs does not satisfy a required keyword-only parameter; Python still wants it
-    # by name, so the call fails whatever the lambda collects
+    # **kwargs cannot satisfy a required keyword-only parameter.
     return not missing_keywords
 
 
@@ -130,7 +127,6 @@ def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
     its word, since whether a name is callable is not decidable from this file."""
     if isinstance(fallback, ast.Lambda):
         return _lambda_accepts(fallback, call)
-    # a literal of any shape: a number, a string, None, a list, a dict, an f-string
     return not isinstance(
         fallback,
         (
@@ -164,16 +160,13 @@ def _geteuid_sites(expr: ast.AST):
     """Every os.geteuid lookup performed when THIS expression is evaluated. A lambda's
     body is not: it runs when the lambda is called, so `helper = lambda: os.geteuid()`
     is as safe as the same line inside a def. Its defaults are evaluated here and stay."""
-    # `(lambda: os.geteuid())()` runs its body right there, so only a lambda that is not
-    # the callee of a call in this expression gets the deferral
-    # `[*(os.geteuid() for _ in xs)]` exhausts the generator right here. Unlike a call
-    # around one, a star says so outright, so this is the one consumption worth reading.
+    # An immediately called lambda is not deferred; a star-unpacked generator is consumed here.
     unpacked = {
         node.value
         for node in ast.walk(expr)
         if isinstance(node, ast.Starred) and isinstance(node.value, ast.GeneratorExp)
     }
-    # a list/set/dict comprehension runs eagerly, so a generator it iterates is advanced
+    # A comprehension runs eagerly, so a generator it iterates is advanced.
     unpacked.update(
         generator.iter
         for node in ast.walk(expr)
@@ -181,7 +174,6 @@ def _geteuid_sites(expr: ast.AST):
         for generator in node.generators
         if isinstance(generator.iter, ast.GeneratorExp)
     )
-    # `ROOT, = (os.geteuid() for _ in xs)` has to advance the generator to unpack it
     unpacked.update(
         node.value
         for node in ast.walk(expr)
@@ -196,8 +188,6 @@ def _geteuid_sites(expr: ast.AST):
         if isinstance(node.func, ast.Lambda):
             invoked.add(node.func)
             continue
-        # `getattr(os, "geteuid", lambda: os.geteuid())()` picks the fallback on Windows
-        # and runs its body there, which is the only platform that ever sees it
         inner = _getattr_geteuid(node.func)
         if inner is not None and len(inner.args) == 3 and isinstance(inner.args[2], ast.Lambda):
             invoked.add(inner.args[2])
@@ -207,7 +197,6 @@ def _geteuid_sites(expr: ast.AST):
         if _is_os_geteuid(node):
             yield node
         elif isinstance(node, ast.AugAssign) and _is_augmented_geteuid(node.target):
-            # `os.geteuid += 1` reads before it writes, and the AST marks the target Store
             yield node.target
         elif (
             isinstance(node, ast.ImportFrom)
@@ -215,14 +204,11 @@ def _geteuid_sites(expr: ast.AST):
             and node.level == 0  # `from .os import geteuid` is a local module, not stdlib
             and any(alias.name == "geteuid" for alias in node.names)
         ):
-            # `from os import geteuid` raises ImportError on Windows at the import
-            # itself, before any decorator gets a chance to skip anything
+            # `from os import geteuid` raises ImportError on Windows at the import itself
             yield node
         elif isinstance(node, ast.Call):
             inner = _getattr_geteuid(node.func)
-            # A three-argument lookup is only a problem when its RESULT is called:
-            # `GETEUID = getattr(os, "geteuid", None)` just binds None on Windows, which
-            # is ordinary feature detection. Called, it has to pick something callable.
+            # A three-arg getattr only matters when its result is called; binding None is fine.
             if (
                 inner is not None
                 and len(inner.args) == 3
@@ -230,9 +216,7 @@ def _geteuid_sites(expr: ast.AST):
             ):
                 yield inner
         if isinstance(node, ast.GeneratorExp) and node not in unpacked:
-            # `GEN = (os.geteuid() for _ in xs)` only builds a generator; nothing but the
-            # first iterable is evaluated until something iterates it, and whether a call
-            # around it does cannot be read off the source: `iter(...)` does not.
+            # A generator expression evaluates only its first iterable until iterated.
             stack.append(node.generators[0].iter)
             continue
         for child in ast.iter_child_nodes(node):
@@ -289,7 +273,7 @@ def _windows_value(node: ast.AST) -> bool | None:
         if _is_os_name(right) and isinstance(left, ast.Constant):
             left, right = right, left
         if _is_os_name(left) and isinstance(right, ast.Constant) and isinstance(right.value, str):
-            equal = right.value == "nt"  # os.name on every Windows CPython
+            equal = right.value == "nt"
             if isinstance(op, ast.Eq):
                 return equal
             if isinstance(op, ast.NotEq):
@@ -307,9 +291,9 @@ def _spared_on_windows(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
             for earlier in parent.values[: parent.values.index(child)]:
                 value = _windows_value(earlier)
                 if isinstance(parent.op, ast.Or) and value is True:
-                    return True  # `os.name != "posix" or geteuid()` never gets there
+                    return True
                 if isinstance(parent.op, ast.And) and value is False:
-                    return True  # `hasattr(...) and geteuid()` never gets there
+                    return True
         elif isinstance(parent, ast.IfExp):
             test = _windows_value(parent.test)
             if child is parent.body and test is False:
@@ -340,8 +324,6 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
     """The parts of a `def` or `class` evaluated where it is written, not where it runs."""
     yield from node.decorator_list
     if isinstance(node, ast.ClassDef):
-        # `class C(Base if os.geteuid() else Other, metaclass = M())` is evaluated where
-        # the class is written, exactly as a decorator is
         yield from node.bases
         yield from (keyword.value for keyword in node.keywords)
         return
@@ -351,20 +333,17 @@ def _definition_expressions(node: ast.AST, eager_annotations: bool):
     yield from args.defaults
     yield from (default for default in args.kw_defaults if default)
     if eager_annotations:
-        # `from __future__ import annotations` turns these into strings; without it they
-        # are evaluated at the `def`, so `def helper(uid: os.geteuid()): ...` breaks
-        # collection exactly like a decorator does
+        # Without future annotations these are evaluated at the def, like a decorator.
         if node.returns is not None:
             yield node.returns
         every = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
         yield from (arg.annotation for arg in every if arg is not None and arg.annotation)
 
 
-# ast.match_case is not an ast.stmt, so a `match` would otherwise read as a plain
-# statement; 3.9 has no Match at all, and then nothing can be one.
+# ast.match_case is not an ast.stmt; 3.9 has no Match at all.
 MATCH_CASE = getattr(ast, "match_case", ())
-TYPE_ALIAS = getattr(ast, "TypeAlias", None)  # PEP 695, 3.12+
-LAZY_ANNOTATIONS = sys.version_info >= (3, 14)  # PEP 649
+TYPE_ALIAS = getattr(ast, "TypeAlias", None)
+LAZY_ANNOTATIONS = sys.version_info >= (3, 14)
 MATCH_SYNTAX = sys.version_info >= (3, 10)
 
 
@@ -434,8 +413,7 @@ def _import_time_expressions(tree: ast.Module):
     approximated; the second fails loudly and is one line to fix in the module that
     provokes it, and nothing in this tree does."""
     _normalise_os_aliases(tree)
-    # PEP 649 makes annotations lazy by default from 3.14, and this project's
-    # requires-python is >=3.9,<3.15, so both halves of that range are live
+    # PEP 649 makes annotations lazy from 3.14, and requires-python spans both sides.
     eager_annotations = not _has_future_annotations(tree) and not LAZY_ANNOTATIONS
 
     def block(statements):
@@ -444,7 +422,6 @@ def _import_time_expressions(tree: ast.Module):
 
     def walk(statement):
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # the body is runtime, whatever encloses the def
             yield from _definition_expressions(statement, eager_annotations)
             return
         if isinstance(statement, ast.ClassDef):
@@ -460,14 +437,10 @@ def _import_time_expressions(tree: ast.Module):
                 yield from block(statement.orelse)
             return
         if TYPE_ALIAS is not None and isinstance(statement, TYPE_ALIAS):
-            # `type UID = os.geteuid()` (3.12+) is lazy: the value is not evaluated until
-            # something reads UID.__value__, which importing the module does not
+            # `type X = ...` (3.12+) is lazy: the value is not evaluated on import.
             return
         if isinstance(statement, ast.AnnAssign) and not eager_annotations:
-            # `x: os.geteuid() = 1` under `from __future__ import annotations` stores the
-            # annotation as a string; the value beside it is still evaluated, and so is a
-            # target that is not a plain name: `slots[os.geteuid()]: int` runs the
-            # subscript whatever the annotation does
+            # The value and a non-name target are evaluated even when the annotation is a string.
             if statement.value is not None:
                 yield statement.value
             if not isinstance(statement.target, ast.Name):
@@ -477,10 +450,8 @@ def _import_time_expressions(tree: ast.Module):
             isinstance(child, (ast.stmt, ast.ExceptHandler, MATCH_CASE))
             for child in ast.iter_child_nodes(statement)
         ):
-            return  # unmodelled control flow, skipped whole; see the docstring
-        # a plain statement holds only expressions, and the WHOLE statement is yielded
-        # rather than its parts: a guard lives in the enclosing `or`, and yielding the
-        # bare call too would report every guarded site as unguarded
+            return
+        # Yield the whole statement so a guard in an enclosing `or` is still seen.
         yield statement
 
     yield from block(tree.body)
@@ -493,7 +464,7 @@ def test_no_test_module_calls_os_geteuid_unguarded_at_import():
         try:
             tree = ast.parse(path.read_text(encoding = "utf-8"))
         except (SyntaxError, UnicodeDecodeError):
-            continue  # not ours to parse; the lint job owns syntax
+            continue
         checked += 1
         for node in _offending_sites(tree):
             offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
@@ -600,7 +571,6 @@ def test_an_os_name_guard_is_read_for_polarity_not_presence():
         '@pytest.mark.skipif(os.name != "posix" and os.geteuid() == 0, reason = "x")\n'
         "def test_b(): pass\n"
     )
-    # the two that do spare it, and the mirrored and negated spellings of each
     for guard in (
         'os.name != "posix" or os.geteuid() == 0',
         '"posix" != os.name or os.geteuid() == 0',
@@ -619,8 +589,6 @@ def test_an_annotation_is_import_time_only_without_the_future_import():
     """Without `from __future__ import annotations` an annotation is evaluated at the
     `def`; with it, it is a string and cannot raise."""
     body = "import os\ndef helper(uid: os.geteuid() = 1) -> os.geteuid():\n    return uid\n"
-    # the default beside it is evaluated whatever the annotation does, so this is flagged
-    # on every version; the annotation-only case below is the one PEP 649 changes
     assert _flagged(body)
     assert not _flagged("from __future__ import annotations\n" + body)
     annotation_only = "import os\ndef helper(uid: os.geteuid()):\n    return uid\n"
@@ -636,7 +604,6 @@ def test_a_nested_definition_is_not_import_time():
         '    @pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
         "    def inner(uid = os.geteuid()): pass\n"
     )
-    # but a method of a class defined at module level still is
     assert _flagged(
         "import os, pytest\n"
         "class TestA:\n"
@@ -671,7 +638,6 @@ def test_a_statement_level_platform_guard_is_honoured():
     assert not _flagged(
         'import os\nif os.name == "nt":\n    pass\nelse:\n    ROOT = os.geteuid() == 0\n'
     )
-    # the wrong polarity is still reached, and so is an undecidable test
     assert _flagged('import os\nif os.name == "nt":\n    ROOT = os.geteuid() == 0\n')
     assert _flagged("import os\nif is_ci():\n    ROOT = os.geteuid() == 0\n")
 
@@ -726,7 +692,6 @@ def test_the_os_module_is_found_under_an_alias():
     guard spelling moves with it."""
     assert _flagged("import os as _os\nROOT = _os.geteuid() == 0\n")
     assert not _flagged('import os as _os\nROOT = _os.name != "posix" or _os.geteuid() == 0\n')
-    # a name that is not the alias is left alone
     assert not _flagged("import os\nROOT = shutil.geteuid() == 0\n")
 
 
@@ -762,11 +727,10 @@ def test_unmodelled_control_flow_is_skipped_whole():
         "import os\nwith open('x') as fh:\n    ROOT = os.geteuid() == 0\n",
     ):
         assert not _flagged(source), source
-    if MATCH_SYNTAX:  # `match` is a SyntaxError below 3.10, and requires-python is >=3.9
+    if MATCH_SYNTAX:  # `match` is a SyntaxError below 3.10
         assert not _flagged(
             'import os\nmatch os.name:\n    case "posix":\n        ROOT = os.geteuid() == 0\n'
         )
-    # and a def under one of them is skipped with it, decorator and all
     assert not _flagged(
         "import os, pytest\n"
         "for _ in range(1):\n"
@@ -781,14 +745,12 @@ def test_a_generator_expression_does_not_look_anything_up_yet():
     source, `iter(...)` does not, so the body stays deferred either way."""
     assert not _flagged("import os\nGEN = (os.geteuid() for _ in range(1))\n")
     assert not _flagged("import os\nROOT = any(os.geteuid() == 0 for _ in range(1))\n")
-    # the first iterable IS evaluated where the generator is written
     assert _flagged("import os\nGEN = (x for x in [os.geteuid()])\n")
 
 
 def test_an_annotation_is_a_string_under_the_future_import():
     """`x: os.geteuid() = 1` looks nothing up when the module carries
     `from __future__ import annotations`, though the value beside it is still evaluated."""
-    # PEP 649 makes this lazy from 3.14, where nothing is looked up either way
     assert bool(_flagged("import os\nx: os.geteuid() = 1\n")) is not LAZY_ANNOTATIONS
     assert not _flagged("from __future__ import annotations\nimport os\nx: os.geteuid() = 1\n")
     assert _flagged("from __future__ import annotations\nimport os\nx: int = os.geteuid()\n")
@@ -889,5 +851,4 @@ def test_a_later_read_of_a_module_written_attribute_is_still_reported():
     occurrence, in tests/test_allow_cpu_import_driverless.py, is inside a source string
     that ast.parse never reaches as code."""
     assert _flagged("import os\nos.geteuid = lambda: 0\nROOT = os.geteuid() == 0\n")
-    # the assignment itself is not a lookup, whatever follows it
     assert not _flagged("import os\nos.geteuid = lambda: 0\n")

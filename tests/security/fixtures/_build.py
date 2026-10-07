@@ -16,15 +16,8 @@ _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 HERE = Path(__file__).resolve().parent
 
 
-# IOC literal scan_packages.py must trip on.
-# Keep in sync with KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
-#
-# Split across concatenated pieces, the same way test_scan_packages.py already writes
-# `_ioc_host = "git-tanstack." + "com"`. The assembled string still lands in the built archive
-# byte for byte, so the scanner tests are unaffected; what changes is that this builder is not
-# itself a static match. Cheap insurance only -- the per-file VirusTotal scan in discussion #9577
-# found the .py sources undetected and the two built archives detected, so the archives not being
-# committed is the part that matters.
+# IOC literal the scanners must trip on. Keep in sync with KNOWN_IOC_STRINGS and RE_MAY12_IOC.
+# Split so this builder is not itself a static AV match; the built archive holds it byte for byte.
 _IOC_HOST = "git-tanstack." + "com"
 _IOC_ARTIFACT = "transformers." + "pyz"
 
@@ -76,7 +69,7 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename = name, date_time = _ZIP_DOS_EPOCH)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = (0o644 & 0xFFFF) << 16
-    info.create_system = 3  # Unix
+    info.create_system = 3
     zf.writestr(info, data)
 
 
@@ -141,7 +134,6 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
     """Write a deterministic .tar.gz sdist; a `{name}-0.0.1/` prefix is added automatically."""
     prefix = f"{name}-0.0.1"
     buf = io.BytesIO()
-    # gzip mtime fixed via mtime=0 (gzip member header).
     import gzip
 
     inner = io.BytesIO()
@@ -159,7 +151,6 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
             info.type = tarfile.REGTYPE
             tf.addfile(info, io.BytesIO(data))
     raw = inner.getvalue()
-    # gzip with fixed mtime=0 and explicit compresslevel for stability.
     gz_buf = io.BytesIO()
     with gzip.GzipFile(
         fileobj = gz_buf,
@@ -173,15 +164,10 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
 
 
 def build_all() -> dict[str, Path]:
-    # Deliberately does NOT set os.environ["SOURCE_DATE_EPOCH"]. Nothing here reads it: every writer
-    # below is handed the fixed timestamp directly, and zipfile takes the 1980 DOS tuple. It used to
-    # be assigned anyway, with no teardown, which was harmless while this ran as a script and is not
-    # harmless now that a session fixture calls it inside a broader pytest run: it overwrote any
-    # caller-provided value for the rest of the worker, and every later test and subprocess
-    # inherited the false epoch.
+    # Deliberately does NOT set SOURCE_DATE_EPOCH: this runs inside pytest and would leak it
+    # to every later test and subprocess. Writers get the fixed timestamp directly.
     outputs: dict[str, Path] = {}
 
-    # Malicious wheel: payload setup.py that embeds the May-12 IOC.
     mal_payload = {
         "setup.py": MALICIOUS_SETUP_PY.encode(),
         "malicious_fixture/__init__.py": b"# malicious fixture stub\n",
@@ -197,7 +183,6 @@ def build_all() -> dict[str, Path]:
     _build_wheel(clean_whl, name = "clean_fixture", payload_files = clean_payload)
     outputs["clean_wheel"] = clean_whl
 
-    # Malicious sdist: same setup.py, tar.gz form.
     mal_sdist = HERE / "malicious_sdist.tar.gz"
     _build_sdist(mal_sdist, name = "malicious_fixture", payload_files = mal_payload)
     outputs["malicious_sdist"] = mal_sdist

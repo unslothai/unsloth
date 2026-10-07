@@ -6,7 +6,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.tsx"
-# The monitor has its own page and Settings links to it; the shrink contract covers both.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
@@ -17,9 +16,8 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
     assert "flex h-full min-h-0 min-w-0 w-full" in source
-    # Stacks on the dialog's measured width (`data-stacked`), not a viewport breakpoint: #11648 made the
-    # interface scale work in the browser, and `max-sm:` reads the viewport, which a larger UI does not change.
-    # Tailwind's data variant reads the attribute on the element carrying the class, so both sit in one tag.
+    # Stacks on the dialog's measured width, not a viewport breakpoint, since the UI scale
+    # does not change the viewport. The data variant reads its own element.
     at = source.index("min-w-0 w-full data-stacked:flex-col")
     tag = source[source.rindex("<div", 0, at) : source.index(">", at)]
     assert (
@@ -34,8 +32,7 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     # Flex parents need min-w-0, or a long model id widens the layout past the viewport.
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
-    # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.
-    # Read as tokens: #12431 added scroll-rounded to these boxes, which changes none of this.
+    # Read as tokens.
     text_boxes = [
         set(literal.split())
         for literal in re.findall(r'"([^"\n]*)"', source)
@@ -44,31 +41,25 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     assert text_boxes, "no wrapped, rounded text box in the API monitor"
     for tokens in text_boxes:
         assert {"max-h-72", "overflow-auto", "break-words"} <= tokens, sorted(tokens)
-    # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
 
 
 def test_settings_monitor_link_can_shrink():
     source = MONITOR_LINK.read_text(encoding = "utf-8")
     assert "flex w-full min-w-0 items-center gap-3" in source
-    # The summary line carries a model id, so it truncates instead of widening.
     assert '<span className="truncate text-xs text-muted-foreground">' in source
 
 
 def test_remote_access_card_can_shrink():
     source = REMOTE_ACCESS.read_text(encoding = "utf-8")
-    # The heading and its status sit beside a button, so they need to shrink.
     assert '<div className="flex min-w-0 items-start gap-3">' in source
     assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
-    # A tunnel URL has no spaces to wrap on, so it needs break-all.
     assert "block w-full break-all rounded-md" in source
     assert "<RemoteUrlPanel url={status?.url ?? null} />" in source
 
 
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():
-    # The picker has already moved once, from the General tab to Documents & RAG, and pinning the filename turned that
-    # move into a red build even though both responsive classes came along untouched.
-    # follow the component, since the contract is that the control stacks and fills the row under 360px.
+    # Follow the component, not a filename: the picker has moved tabs before.
     owners = [
         path
         for path in sorted(SETTINGS.rglob("*.tsx"))
@@ -82,8 +73,6 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         if not (
             'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
-            # The fixed width has to give way at the breakpoint: flex-1 for the
-            # combobox, a full row for the picker trigger.
             and ("max-[360px]:w-full" in source or "max-[360px]:flex-1" in source)
         )
     ]

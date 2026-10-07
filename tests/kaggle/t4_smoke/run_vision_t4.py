@@ -126,10 +126,7 @@ def pixel_evidence(trainer) -> dict:
     try:
         batch = next(iter(trainer.get_train_dataloader()))
         record["columns"] = sorted(batch.keys())
-        # The key name varies by processor family (`pixel_values`,
-        # `pixel_values_videos`, and Qwen-style models add `image_grid_thw`), so
-        # this looks for ANY tensor whose name says pixels rather than pinning
-        # one spelling and reporting "no images" on a model that uses another.
+        # Pixel key names vary by processor family, so match any key containing "pixel".
         pixel_keys = [k for k in batch if "pixel" in k.lower()]
         record["pixel_keys"] = pixel_keys
         sizes = {}
@@ -214,7 +211,6 @@ def vision_failures(result: dict, args) -> list:
         sizes = pixels.get("pixel_sizes") or {}
         total = sum(entry.get("numel", 0) for entry in sizes.values())
         if not sizes:
-            # The failure this file exists for.
             failures.append(
                 f"the collated batch carried no pixel tensor at all (columns: "
                 f"{pixels.get('columns')}), so this trained on text and the "
@@ -249,10 +245,7 @@ def vision_failures(result: dict, args) -> list:
 
     update = result.get("adapter_update") or {}
     if not update.get("tensors"):
-        # Refused rather than answered. A marker that matches nothing sums to
-        # zero before AND after, which is exactly what an untrained adapter
-        # looks like, so reporting "did not move" here would name the wrong
-        # defect -- and did, on the first hardware run of this payload.
+        # A marker matching nothing sums to zero both times, which looks like an untrained adapter.
         failures.append(
             f"no parameter name carried the LoRA B marker {LORA_B_MARKER!r}, so "
             f"the adapter question was never asked rather than answered no"
@@ -316,9 +309,7 @@ def run(args) -> dict:
     dataset = load_dataset(args.dataset, split = f"train[:{args.samples}]")
     conversations = conversation_dataset(dataset)
     result["samples"] = len(conversations)
-    # Proof the image survived as a PIL object rather than an Arrow dict. A
-    # dict here is the silent corruption `Dataset.from_list` produces, and the
-    # collator would receive something that is not an image without saying so.
+    # The image must survive as PIL; Dataset.from_list silently turns it into an Arrow dict.
     try:
         first_image = conversations[0]["messages"][0]["content"][1]["image"]
         result["dataset_image_type"] = type(first_image).__name__
@@ -348,11 +339,8 @@ def run(args) -> dict:
             output_dir = str(Path(args.outdir) / "trainer"),
             report_to = "none",
             save_strategy = "no",
-            # The four settings vision training needs, copied from the notebook.
-            # Without skip_prepare_dataset TRL tries to tokenise a column of PIL
-            # images; without remove_unused_columns=False it drops the images
-            # before the collator ever sees them, which is the silent way to
-            # turn this into a text run.
+            # Vision settings from the notebook: without these TRL tokenises the images or drops them
+            # before the collator, silently turning this into a text run.
             remove_unused_columns = False,
             dataset_text_field = "",
             dataset_kwargs = {"skip_prepare_dataset": True},
@@ -360,8 +348,7 @@ def run(args) -> dict:
         ),
     )
 
-    # BEFORE training: the dataloader is consumed by trainer.train(), and a
-    # re-created one is not necessarily the object the trainer used.
+    # Before training: train() consumes the dataloader.
     result["pixels"] = pixel_evidence(trainer)
     _log(f"pixels: {json.dumps(result['pixels'])}")
 
@@ -374,8 +361,7 @@ def run(args) -> dict:
         "before": before["sum"],
         "after": after["sum"],
         "tensors": after["tensors"],
-        # Starts at exactly zero by construction, so any movement is a real
-        # optimizer step rather than a tolerance question.
+        # Starts at exactly zero, so any increase is a real optimizer step.
         "changed": after["sum"] > before["sum"],
     }
     result["metrics"] = [
@@ -386,7 +372,6 @@ def run(args) -> dict:
     result["train_metrics"] = dict(stats.metrics or {})
     result["memory_peak_gb"] = round(torch.cuda.max_memory_reserved() / 1024**3, 2)
 
-    # Inference WITH an image, which is the only kind that tests anything here.
     FastVisionModel.for_inference(model)
     image = dataset[0]["image"]
     messages = [
@@ -396,8 +381,7 @@ def run(args) -> dict:
         }
     ]
     input_text = tokenizer.apply_chat_template(messages, add_generation_prompt = True)
-    # Positional image first, which IS the processor's signature here
-    # (`__call__(self, images, text, ...)`), and is what the notebook does.
+    # Image positional first: this processor's signature is (images, text, ...).
     inputs = tokenizer(
         image,
         input_text,
@@ -418,9 +402,7 @@ def run(args) -> dict:
     _log(f"generated: {result['generated']!r}")
 
     if args.export:
-        # To /tmp, never the artifact volume: /kaggle/working is 21GB and a
-        # merged 2B is a meaningful fraction of it. Measured the hard way on
-        # the gpt-oss leg.
+        # To /tmp: /kaggle/working is only 21GB.
         import tempfile
 
         export_dir = tempfile.mkdtemp(prefix = "vision_export_")
@@ -467,10 +449,8 @@ def main() -> int:
     outdir = Path(args.outdir)
     outdir.mkdir(parents = True, exist_ok = True)
 
-    # The environment BEFORE the run, so a leg that dies still says which
-    # library set it died with. `run_t4_smoke.environment_fingerprint` is not
-    # imported: importing that module pulls its whole payload, and this leg
-    # needs four lines of it.
+    # Environment before the run so a crash still reports versions; run_t4_smoke is not imported
+    # because that pulls its whole payload.
     env: dict = {"python": sys.version.split()[0]}
     try:
         import torch

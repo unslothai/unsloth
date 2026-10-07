@@ -1,8 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# #9651: a recorded uv cache outside every removed root is named, one inside is not. The
-# uninstaller body writes to the registry, so the helpers are lifted out by AST.
+# A recorded uv cache outside every removed root is named, one inside is not.
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_uv_cache_note.ps1
 
 $ErrorActionPreference = "Stop"

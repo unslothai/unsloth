@@ -45,7 +45,7 @@ def test_parallel_option_is_registered():
     assert "parallel" in sig.parameters, "missing `parallel` parameter on run()"
 
     param = sig.parameters["parallel"]
-    opt = param.default  # typer.OptionInfo
+    opt = param.default
     flags = set()
     decls = getattr(opt, "param_decls", None) or []
     for d in decls:
@@ -125,8 +125,7 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     import inspect
     import importlib.util
 
-    # Load llama_server_args.py directly so the test does not need the backend's full runtime chain
-    # installed; the invariant is just about the _DENYLIST_GROUPS tuple.
+    # Load llama_server_args.py directly to avoid the backend's full runtime chain.
     lsa_path = (
         Path(__file__).resolve().parents[2]
         / "studio"
@@ -152,15 +151,6 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
         f"add them to _DENYLIST_GROUPS to keep /load from desyncing "
         f"llama_parallel_slots."
     )
-
-
-# test_in_venv_path_passes_parallel_to_run_server (below) is the runtime equivalent of the retired
-# source-text guard for hardcoded `llama_parallel_slots = 4`.
-
-
-# Re-exec arg-builder coverage. run() re-execs into the studio venv (execvp on POSIX, Popen on
-# Windows), and without explicit forwarding the child reverts to typer defaults and silently drops
-# the user's value.
 
 
 class _ExecCaptured(SystemExit):
@@ -198,7 +188,6 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
-    # Emulate Windows re-exec without calling Win32 APIs on non-Windows hosts.
     monkeypatch.setattr(
         studio_mod,
         "_studio_runtime_launch_guard",
@@ -450,7 +439,6 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     assert (
         _value_after(argv, "--parallel") == "8"
     ), f"-np 8 silently became 4 after re-exec; argv = {argv}"
-    # `-np 8` must not clobber --port (default 8888).
     assert _value_after(argv, "--port") == "8888", argv
 
 
@@ -689,7 +677,6 @@ def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
     studio_mod = _load_run_command()
 
     def urlopen(request, timeout):
-        # Keepalive pad, then the deferred failure: what the wire really carries.
         return BytesIO(
             b"  "
             + json.dumps(
@@ -733,8 +720,7 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use --seed /
-        # --temp here, which remain genuine llama-server pass-through flags.
+        # --top-k is a first-class sampling flag now; --seed / --temp still pass through.
         _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
@@ -765,7 +751,7 @@ def test_context_length_banner_line_omits_unknown_values(value):
     [
         ("--load-in-4bit", "--load-in-4bit"),
         ("--no-load-in-4bit", "--no-load-in-4bit"),
-        (None, "--load-in-4bit"),  # default True
+        (None, "--load-in-4bit"),
     ],
 )
 def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag, expected_in_child):
@@ -781,10 +767,6 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag,
     )
     assert expected_in_child in argv, f"expected {expected_in_child} in child argv; got {argv}"
     assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
-
-
-# Runtime check: fake sys.prefix into the studio venv to bypass re-exec, then assert run_server
-# receives --parallel as llama_parallel_slots.
 
 
 class _RunServerCaptured(SystemExit):
@@ -887,8 +869,7 @@ def test_in_venv_path_passes_parallel_to_run_server(
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
-    # unwritable home aborts the run before run_server is reached.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.
@@ -913,9 +894,7 @@ def test_in_venv_path_passes_parallel_to_run_server(
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
-    # run() loads the backend via _load_run_module() (by file path), which ignores a sys.modules mock
-    # with no matching __file__; inject it as the cached run module so the stubbed run_server is
-    # used.
+    # run() loads the backend by file path; inject the mock as the cached run module.
     monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
@@ -934,16 +913,13 @@ def test_in_venv_path_passes_parallel_to_run_server(
     ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
 
 
-# --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
-
-
 def test_api_only_option_is_registered():
     studio_mod = _load_run_command()
     import inspect
 
     opt = inspect.signature(studio_mod.run).parameters["api_only"].default
     assert "--api-only" in set(getattr(opt, "param_decls", []) or [])
-    assert getattr(opt, "default", None) is False  # opt-in; plain run keeps the UI
+    assert getattr(opt, "default", None) is False
 
 
 @pytest.mark.parametrize(
@@ -983,8 +959,7 @@ def test_in_venv_path_passes_api_only_to_run_server(
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
-    # unwritable home aborts the run before run_server is reached.
+    # A real directory: the launch gate creates STUDIO_HOME and locks inside it.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -1024,7 +999,6 @@ def test_in_venv_path_passes_api_only_to_run_server(
     assert (
         captured.get("api_only") is expected
     ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
-    # Headless serving must suppress the Tauri-only TAURI_PORT line.
     assert (
         captured.get("emit_tauri_port") is False
     ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"

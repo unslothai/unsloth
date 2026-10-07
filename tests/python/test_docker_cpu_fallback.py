@@ -27,7 +27,7 @@ _BASE_DF = os.path.join(_DOCKER, "Dockerfile")
 _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint.sh")
 
 
-# Git Bash satisfies which("bash") on Windows but breaks on path translation and the exec bit; upstream only runs this file on ubuntu.
+# Git Bash breaks on path translation and the exec bit; upstream runs this on ubuntu only.
 _posix_shell = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
     reason = "POSIX shell required",
@@ -57,25 +57,18 @@ def _invoke_run_sh(
     bindir.mkdir()
     argv_log = tmp_path / "argv"
 
-    # `docker run` must not exec anything real; record argv and stop.
     _stub(
         str(bindir / "docker"),
         'if [ "$1" = "info" ]; then echo " Runtimes: io.containerd.runc.v2 runc"; exit 0; fi\n'
         'printf "%s\\n" "$@" > ' + str(argv_log) + "\nexit 0\n",
     )
-    # nvidia-smi is ALWAYS shadowed. /usr/bin has to stay on PATH for cut/grep/getent,
-    # and a CI or dev host with a real GPU there would otherwise make the
-    # "no NVIDIA" case unreachable and pass this test vacuously.
+    # Always shadowed: a real GPU on /usr/bin would make the no-NVIDIA case vacuous.
     if nvidia:
         _stub(str(bindir / "nvidia-smi"), 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n')
     else:
-        # driver present but zero GPUs: the harder of the two no-GPU shapes, and it
-        # covers the missing-binary shape too (same && chain, same outcome)
         _stub(str(bindir / "nvidia-smi"), "exit 1\n")
 
-    # getent is ALWAYS shadowed too, for the same reason as nvidia-smi: this host has
-    # both video and render, so relying on the real one made the missing-group cases
-    # unreachable and the AMD test green for the wrong reason.
+    # Always shadowed: the host's real groups would make missing-group cases unreachable.
     known = {"both": ("44", "992"), "video_only": ("44", None), "none": (None, None)}
     vid, ren = known[groups]
     _stub(
@@ -95,8 +88,6 @@ def _invoke_run_sh(
         (dev_root / "dev" / "dri").mkdir()
 
     env = dict(os.environ)
-    # PATH is replaced, not prepended: a real nvidia-smi on this host would
-    # otherwise make the "no NVIDIA" case unreachable.
     env["PATH"] = str(bindir) + ":/usr/bin:/bin"
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
     env["HOME"] = str(tmp_path / "home")
@@ -114,8 +105,7 @@ def _invoke_run_sh(
         env["UNSLOTH_IMAGE"] = image
     env.update(extra_env or {})
 
-    # absolute: the "absent" case strips /usr/bin from PATH, so `bash` itself would
-    # not resolve either
+    # Absolute: the absent case strips /usr/bin from PATH.
     proc = subprocess.run(
         [shutil.which("bash") or "/bin/bash", _RUN_SH, "true"],
         env = env,
@@ -145,8 +135,7 @@ class TestRunShDegradesWithoutNvidia:
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
         assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
-        # the devices go through, but no part of the image can drive them: torch is
-        # cu128 and the bundled llama.cpp has neither a HIP nor a Vulkan backend
+        # Torch is cu128 and bundled llama.cpp has no HIP/Vulkan backend.
         assert "HIP" in stderr and "runs on the CPU" in stderr, (
             "an AMD host must be told the container still runs on the CPU:\n" + stderr
         )
@@ -180,7 +169,6 @@ class TestRunShDegradesWithoutNvidia:
         before docker run, so the AMD fallback could never start on a host without a
         render group. Degrade to whatever gids exist instead."""
         argv, _ = _invoke_run_sh(tmp_path, nvidia = False, amd = True, groups = groups)
-        # the devices are the point; the gids are best-effort
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         assert "--gpus" not in argv
         gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
@@ -284,8 +272,7 @@ class TestStudioImageAllowsCpu:
         dest = re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", base, re.M)
         assert dest == ["/usr/local/bin/unsloth-entrypoint"], dest
         assert re.findall(r"^COPY\s+entrypoint\.sh\s+(\S+)\s*$", studio, re.M) == dest
-        # The copy alone proves nothing: the base must still RUN that file, or the
-        # inherited ENTRYPOINT no longer translates UNSLOTH_IMAGE_ALLOW_CPU.
+        # The base must still run the copied entrypoint or UNSLOTH_IMAGE_ALLOW_CPU is lost.
         assert re.findall(r"^\s*ENTRYPOINT\s+(.+?)\s*$", base, re.M) == [
             '["/usr/local/bin/unsloth-entrypoint"]'
         ], "base Dockerfile no longer runs the bundled entrypoint"
@@ -328,7 +315,6 @@ def _run_entrypoint(tmp_path, *, gpu, env_extra):
         )
     else:
         _stub(str(bindir / "nvidia-smi"), "exit 1\n")
-    # the GPU path runs two torch heredocs; accept them without torch
     _stub(str(bindir / "python"), "cat > /dev/null\nexit 0\n")
     dump = tmp_path / "child_env"
     env = {

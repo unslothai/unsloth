@@ -106,7 +106,6 @@ def test_activation_qat_matches_module_forward():
     "suffix, blocks", [("down_proj.base_layer", ("mlp",)), ("lora_B.default", ("qkv", "o", "mlp"))]
 )
 def test_selective_activation_qat_matches_module_forward(suffix, blocks):
-    # A quantizer on an inner linear only (not the shared input) is still honoured.
     only = lambda m, fqn: isinstance(m, torch.nn.Linear) and fqn.endswith(suffix)
     _assert_matches_modules(*_qat_block(_int8_act_int4_weight(), only), blocks)
 

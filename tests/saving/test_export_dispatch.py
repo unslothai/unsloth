@@ -34,9 +34,6 @@ class _FakeTokenizer:
         self.saved_to.append(path)
 
 
-# -- merged_*  ->  compressed-tensors dispatch ---------------------------------------------
-
-
 def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw))
@@ -87,9 +84,6 @@ def test_merged_16bit_does_not_route_compressed(monkeypatch, tmp_path):
     )
     assert calls["compressed"] == 0, "merged_16bit must not hit the compressed export"
     assert calls["generic"] == 1, "merged_16bit must go through the normal merge path"
-
-
-# -- save_method='lora'  ->  LoRA GGUF dispatch --------------------------------------------
 
 
 def test_gguf_lora_passes_valid_outtype(monkeypatch, tmp_path):
@@ -282,8 +276,7 @@ def test_gguf_converts_trained_or_supplied_weights_not_source_checkpoint(
     assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(requested)
 
 
-# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work; it is only ever
-# exercised here.
+# The rejection above points users here, and this path is only exercised in this test.
 
 
 def test_push_to_hub_gguf_lora_dispatches(monkeypatch):
@@ -356,9 +349,6 @@ def test_push_to_hub_gguf_preserves_positional_max_shard_size():
     assert "is_main_process" not in bound.arguments
 
 
-# -- torchao PTQ / QAT dispatch ------------------------------------------------------------
-
-
 def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(
@@ -389,7 +379,7 @@ def test_torchao_qat_routes_to_attached_config(monkeypatch, tmp_path):
         lambda **kw: seen.update(attached = True),
     )
     model = _FakeModel()
-    model._torchao_config = object()  # simulates a model trained with qat_scheme
+    model._torchao_config = object()
     save_mod.unsloth_save_pretrained_torchao(
         model,
         str(tmp_path),
@@ -400,7 +390,6 @@ def test_torchao_qat_routes_to_attached_config(monkeypatch, tmp_path):
 
 
 def test_torchao_requires_config_or_qat(tmp_path):
-    # No torchao_config and no attached QAT config is a user error, surfaced eagerly.
     with pytest.raises(AssertionError):
         save_mod.unsloth_save_pretrained_torchao(
             _FakeModel(),
@@ -459,7 +448,7 @@ def test_lora_gguf_converter_is_denied_the_host_token(monkeypatch, tmp_path):
     for key in save_mod._HF_TOKEN_ENV_KEYS:
         assert key not in env, f"{key} survived into a forced-anonymous converter"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1", "the cached token is still implicit"
-    # Scrubbing the env still leaves the operator's token FILE readable by get_token().
+    # Scrubbing env still leaves the operator's token FILE readable by get_token().
     assert env["HF_TOKEN_PATH"] == os.devnull
 
 
@@ -477,8 +466,7 @@ def test_lora_gguf_converter_keeps_the_ambient_token_when_none(monkeypatch, tmp_
 
 
 def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, tmp_path):
-    # get_token() ignores the flag, so a caller who passed nothing holds the token the operator
-    # switched off; only a token they supplied earns clearing it.
+    # get_token() ignores the flag, so only a caller-supplied token may be cleared.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
     assert env["HUGGINGFACEHUB_API_TOKEN"] == "host-legacy-alias"
@@ -496,8 +484,7 @@ def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, 
     ],
 )
 def test_clean_save_token(token, expected):
-    # Blank reaches HfApi as a literal "Bearer " header, which 1.x rejects. False must survive:
-    # collapsing it to None is the ambient token, not anonymity.
+    # Blank becomes a literal "Bearer " header, which hub 1.x rejects; False must not collapse to None.
     result = save_mod._clean_save_token(token)
     assert result is expected if expected in (None, False, True) else result == expected
 
@@ -511,8 +498,7 @@ def test_lora_gguf_converter_reads_a_blank_token_as_absent(monkeypatch, tmp_path
 
 
 def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
-    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrubbing the aliases
-    # alone still lets a denied child mint one.
+    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrub them too.
     monkeypatch.setenv("HF_OIDC_RESOURCE", "https://huggingface.co")
     monkeypatch.setenv("HF_OIDC_ID_TOKEN", "operator-oidc-assertion")
     env = _run_lora_gguf(monkeypatch, tmp_path, token = False)
@@ -521,8 +507,7 @@ def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
 
 
 def test_lora_gguf_converter_honours_token_true(monkeypatch, tmp_path):
-    # True means "use the cached token" and outranks the flag; falling through every branch made
-    # it plain inheritance, which an ambient =1 voided.
+    # True means "use the cached token" and outranks an ambient flag.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = True)
     assert env["HF_TOKEN"] == "host-ambient-token"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
@@ -559,7 +544,7 @@ def test_apply_token_to_child_env(token, explicit, expected):
     else:
         assert env["HF_TOKEN"] == expected["granted"]
         assert env["HUGGING_FACE_HUB_TOKEN"] == expected["granted"]
-    # None means "leave the inherited flag exactly as the operator set it".
+    # None leaves the inherited flag exactly as the operator set it.
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == (expected["implicit"] or "1")
 
 
@@ -573,7 +558,7 @@ def test_every_converter_child_env_goes_through_the_token_boundary():
     import pathlib
 
     def _is_environ_copy(node):
-        # os.environ.copy() exactly -- not os.environ.get(...) next to some other .copy().
+        # Exactly os.environ.copy(), not os.environ.get(...) next to some other .copy().
         return (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)

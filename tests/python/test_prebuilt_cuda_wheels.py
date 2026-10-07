@@ -84,9 +84,6 @@ def triggers(doc: dict) -> dict:
     return doc.get(True) if True in doc else doc.get("on")
 
 
-# ── The two halves agree ──────────────────────────────────────────────────────
-
-
 class TestWorkflowAndResolverAgree:
     def test_every_cell_the_workflow_builds_is_what_the_resolver_asks_for(self):
         """The one test this whole file exists for.
@@ -112,8 +109,7 @@ class TestWorkflowAndResolverAgree:
                     assert url.rsplit("/", 1)[1] == built
                     assert url.startswith(OUR_BASE)
                     checked += 1
-        # 3 packages x 2 torch minors x 3 interpreters. A silently emptied table would
-        # otherwise pass this class without asserting anything.
+        # 3 packages x 2 torch minors x 3 interpreters; guards against an emptied table.
         assert checked == 18
 
     def test_the_versions_published_are_the_versions_resolved(self):
@@ -128,9 +124,6 @@ class TestWorkflowAndResolverAgree:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
         default = triggers(workflow)["workflow_dispatch"]["inputs"]["release_tag"]["default"]
         assert default == wheel_utils.UNSLOTH_PREBUILT_RELEASE_TAG
-
-
-# ── The override fires exactly where it should ────────────────────────────────
 
 
 class TestOverrideScope:
@@ -197,9 +190,6 @@ class TestOverrideScope:
             filename_prefix = "flash_attn", env = env(python_tag = python_tag)
         )
         assert url is not None and f"-{python_tag}-{python_tag}-" in url
-
-
-# ── Nothing that worked before changed ────────────────────────────────────────
 
 
 class TestBackwardsCompatible:
@@ -274,9 +264,6 @@ class TestBackwardsCompatible:
             )
             is None
         )
-
-
-# ── The build plan ────────────────────────────────────────────────────────────
 
 
 class TestMatrix:
@@ -366,9 +353,7 @@ class TestMatrix:
 
     def test_flash_attn_archs_cover_what_we_claim(self):
         archs = prebuilt_wheels.SPECS["flash-attn"]["env"]["FLASH_ATTN_CUDA_ARCHS"].split(";")
-        # 86 and 89 are covered by the 80 cubin, which is forward compatible across the minor
-        # versions of its major. Those two must NOT be listed: each one is a full extra pass
-        # over every kernel for nothing.
+        # 86 and 89 run on the forward-compatible 80 cubin; listing them adds full passes.
         assert archs == ["80", "90", "100", "120"]
 
 
@@ -505,9 +490,6 @@ other = {
         assert result.returncode == 1
 
 
-# ── The workflow itself ───────────────────────────────────────────────────────
-
-
 @pytest.fixture(scope = "module")
 def workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -614,7 +596,6 @@ class TestWorkflow:
         assert '"torch", "flash-attn"' in run and '"mamba-ssm"' in run and '"causal-conv1d"' in run
         assert "--constraint" in run
         assert "pip freeze | grep -E '^(torch|triton)=='" in run
-        # The wheel itself still goes in without dependency resolution.
         assert "--no-deps" in run.split("importlib.import_module")[0]
         lines = run.splitlines()
         start = next(i for i, line in enumerate(lines) if line.endswith("<<'PY'"))
@@ -659,7 +640,6 @@ class TestWorkflow:
 class TestWarmSlices:
     def test_the_slices_compile_every_object_exactly_once(self):
         objects = [f"/src/build/temp/csrc/kernel_{i:03d}.o" for i in range(97)]
-        # ninja lists rules and phony targets too, and nothing guarantees order or uniqueness.
         listing = "\n".join(
             [f"{o}: cuda_compile" for o in reversed(objects)]
             + [f"{objects[0]}: cuda_compile", "/src/build/temp/flash_api.o: compile", "all: phony"]

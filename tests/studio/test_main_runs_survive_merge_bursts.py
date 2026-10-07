@@ -30,7 +30,6 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Kaggle spends an external GPU quota rather than runner minutes.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
-# Phrasings that assert main runs are not cancelled.
 CLAIMS_PROTECTION = re.compile(
     r"never on main|never cancelled on main|not cancelled on main|never cancels on main",
     re.IGNORECASE,
@@ -257,7 +256,6 @@ def test_the_evaluator_reads_which_branch_supplies_the_sha():
     assert not _is_per_commit_on_main(wrong_branch), "the SHA is on the pull request branch"
     assert _is_per_commit_on_main(unconditional)
 
-    # ... and the pull request half, which is what disqualifies the unconditional form.
     def _same_on_a_pull_request(group: str) -> bool:
         return _render(group, ref = A_PULL_REQUEST, sha = "a" * 40) == _render(
             group, ref = A_PULL_REQUEST, sha = "b" * 40

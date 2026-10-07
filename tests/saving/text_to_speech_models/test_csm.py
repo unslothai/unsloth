@@ -1,4 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -108,7 +108,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'='*80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # treat warnings as errors so saving stays clean
+    warnings.simplefilter("error")
     try:
         model.save_pretrained_merged("csm", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")

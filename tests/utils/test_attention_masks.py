@@ -299,8 +299,7 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 
 
 @pytest.mark.skipif(
-    # The spoof answers device_count() with 1, so this skips today only because 1 < 2.
-    # Raise that stub to exercise a multi-GPU path and it un-skips on a box with no card.
+    # The spoof reports 1 device; raising it would un-skip this on a cardless box.
     not has_real_cuda()
     or torch.cuda.device_count() < 2
     or packing_utils._XFormersBlockMask is None,
@@ -365,8 +364,7 @@ def test_real_xformers_packed_mask_validates_on_each_device():
             assert output.device == torch.device(f"cuda:{index}")
             assert bool(torch.isfinite(output).all())
 
-        # Start backward only after the second shard has consumed the shared source mask, matching model-parallel layer
-        # execution.
+        # Backward after the second shard consumed the shared mask, as in model parallel.
         for query, output in zip(queries, outputs):
             output.sum().backward()
             assert query.grad is not None
@@ -378,7 +376,6 @@ def test_real_xformers_packed_mask_validates_on_each_device():
 def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     seq_info = _make_seq_info([3, 2])
     sliding_window = 2
-    # Dense-mask path (UNSLOTH_SDPA_PACKED_SEGMENTS=0).
     monkeypatch.setattr(attention_dispatch, "_SDPA_PACKED_SEGMENTS", False)
 
     original_builder = attention_dispatch.build_sdpa_packed_attention_mask
@@ -686,12 +683,10 @@ def test_run_attention_sdpa_windows_an_unpacked_unmasked_batch(monkeypatch):
     assert mask is not None, "a declared window must not fall through to plain is_causal"
     assert captured["is_causal"] is False
     assert mask.shape == (1, 1, 6, 6)
-    # Row 5 sees 3, 4, 5 and nothing older; the future stays masked either way.
     assert [bool(v) for v in mask[0, 0, 5]] == [False, False, False, True, True, True]
 
 
 def test_run_attention_sdpa_leaves_a_short_sequence_alone(monkeypatch):
-    # Shorter than the window: nothing to clamp, and the cheap is_causal path must survive.
     captured = {}
     monkeypatch.setattr(
         attention_dispatch,
@@ -756,7 +751,6 @@ def test_a_zero_configured_window_is_full_causal_not_a_blank_mask():
 
 
 def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
-    # Belt and braces at the dispatcher: even handed a zero, it must not build a mask that hides everything.
     captured = {}
     monkeypatch.setattr(
         attention_dispatch,
@@ -806,11 +800,9 @@ def test_the_window_mask_is_built_once_per_shape(monkeypatch):
     assert len(built) == calls_after_first, "a cache hit must allocate nothing"
     assert [bool(v) for v in first[0, 0, 5]] == [False, False, False, True, True, True]
 
-    # A different window is a different mask, not a stale hit.
     third = attention_dispatch._windowed_causal_mask(6, 6, 2, torch.device("cpu"))
     assert third is not first
     assert [bool(v) for v in third[0, 0, 5]] == [False, False, False, False, True, True]
-    # ...and so is a different shape.
     assert attention_dispatch._windowed_causal_mask(4, 4, 3, torch.device("cpu")) is not third
     attention_dispatch._WINDOW_MASK_CACHE.clear()
 

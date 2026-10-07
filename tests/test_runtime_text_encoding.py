@@ -30,7 +30,7 @@ failure mode this guard avoids. The one live `ConfigParser.read` (/etc/wsl.conf,
 hub/utils/paths.py) is pinned by hand; a future one has to be caught in review.
 """
 
-# `str | None` below is evaluated at import on Python 3.9 (requires-python >= 3.9).
+# `str | None` below is evaluated at import on Python 3.9.
 from __future__ import annotations
 
 import ast
@@ -39,21 +39,11 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parent.parent
-# Everything that ships.
-# `studio/` covers the installers too: install_python_stack.py reads /sys/class/kfd, the same detection path as
-# utils/hardware/hardware.py.
-# Test trees fall under the narrower import-time rule in test_source_read_encoding.py.
+# `studio/` covers the installers too; test trees use test_source_read_encoding.py.
 ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
-# The frontend tree is TypeScript;
-# node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
-# Reviewed call sites in vendored code that is kept byte-identical to its wheel and pinned
-# by per-file sha256 (studio/backend/vendor/laya_manifest.json), so the line numbers cannot
-# drift. Each is a bare `open()` in a function body of a module laya/__init__.py imports
-# eagerly, which laya_runtime._laya() rebinds to a UTF-8 `open` once exec_module returns;
-# studio/backend/tests/test_text_io_encoding.py runs that path under a non-UTF-8 locale.
-# Pinned by exact site rather than by a rule: a vendor update that adds, moves or drops a
-# call reds this scan until someone re-reviews it, and so does removing the loader rebind.
+# Vendored laya sites pinned by sha256; laya_runtime rebinds their `open` to UTF-8.
+# Pinned by exact site so any vendor change reds this scan until re-reviewed.
 VENDORED_LOADER = REPO / "studio/backend/core/systemone/laya_runtime.py"
 VENDORED_LOADER_REBIND = ".open = _utf8_open"
 REVIEWED_VENDORED_OFFENDERS = {
@@ -86,8 +76,7 @@ UNKNOWN_MODE = object()
 
 def _mode(call: ast.Call, positional_index: int):
     """The call's mode, or UNKNOWN_MODE when it is not a literal."""
-    # A splat hides the mode, so it is unknown rather than absent: falling through to "r" would flag a call that
-    # may resolve to binary, with no compliant way to fix it.
+    # A splat hides the mode: treat as unknown, since it may resolve to binary.
     if any(isinstance(a, ast.Starred) for a in call.args):
         return UNKNOWN_MODE
     if any(kw.arg is None for kw in call.keywords):
@@ -175,7 +164,7 @@ def _imported_names(tree) -> dict:
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            continue  # that function's business, not this scope's
+            continue
         if isinstance(node, ast.Import):
             for a in node.names:
                 bound[(a.asname or a.name).split(".")[0]] = a.name
@@ -258,13 +247,11 @@ def _offender(
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # `Path.read_text(p)` is `p.read_text()` unbound: the instance takes slot 0, so every argument shifts
-        # one place right.
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
-                # Bound read_text takes encoding first, so None or "locale" there is a platform-default read.
+                # Bound read_text takes encoding first, so None or "locale" there is a platform default.
                 if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
                     return "read_text()"
                 return None
@@ -276,13 +263,11 @@ def _offender(
                 )
             compressed = _compressed_key(receiver, modules) if receiver else None
             if compressed is not None:
-                # "rb" by default, so only an explicit text mode is in scope.
                 mode = _mode(call, 1)
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
                     return None
                 return None if _names_encoding(call) else f"{compressed}.open()"
-            # Any other imported receiver is somebody else's opener: tarfile takes a compression mode, Image a
-            # binary file. Neither has an encoding to name.
+            # Other imported receivers (tarfile, Image) are foreign openers with no encoding to name.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
             if _foreign_receiver(func.value, modules) or receiver in foreign:
@@ -386,15 +371,13 @@ def test_shipping_code_names_an_encoding():
     )
 
 
-# The assertion above passes vacuously once the trees are clean, so it cannot tell a working detector from one that
-# always returns None. These pin the detector itself.
+# The assertion above passes vacuously on clean trees; these pin the detector itself.
 def test_detects_the_plain_cases():
     assert _offenders_in("from pathlib import Path\np = Path('x')\ns = p.read_text()\n")
     assert _offenders_in("p.write_text('hi')\n")
     assert _offenders_in("f = open('x')\n")
     assert _offenders_in("f = open('x', 'w')\n")
     assert _offenders_in("f = p.open()\n")
-    # Inside a function body too: shipping reads are not import-time.
     assert _offenders_in("def load(p):\n    return p.read_text()\n")
 
 
@@ -411,14 +394,12 @@ def test_accepts_a_pinned_encoding():
 
 
 def test_skips_binary_handles():
-    # Binary has no encoding to name; passing one is a ValueError.
     assert not _offenders_in("f = open('x', 'rb')\n")
     assert not _offenders_in("f = open('x', mode = 'wb')\n")
     assert not _offenders_in("f = p.open('rb')\n")
 
 
 def test_skips_unknown_modes():
-    # A call that may resolve to "rb" has no compliant way to name an encoding.
     assert not _offenders_in("mode = 'rb' if binary else 'r'\nf = open(path, mode)\n")
     assert not _offenders_in("f = open(path, mode = chosen)\n")
 

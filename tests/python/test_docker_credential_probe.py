@@ -34,7 +34,6 @@ def delete_step() -> str:
     return steps[0]
 
 
-# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
 SECRET = "not-a-secret"
 
 
@@ -51,12 +50,8 @@ def _run(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
-        # The request body does not always travel in argv. #11511 moved the token
-        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
-        # in the process list, and a stub that logs only "$*" then records a call
-        # whose payload is simply absent: every assertion about what was SENT passes
-        # vacuously or fails for the wrong reason. Read it where it actually is, and
-        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        # The token request body is sent on stdin (--data-binary @-), so log it from there;
+        # only read stdin when that flag is present, since cat would hang.
         f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
@@ -73,15 +68,7 @@ def _run(
     env.update(
         REGISTRY_USERNAME = "unsloth", IMAGE_NAME = "unsloth/unsloth", PROBE_TAG = "credential-probe"
     )
-    # Whatever the step declares in its own `env:`, bound here too. #11511 moved the
-    # secret out of the run body and into `env: DOCKER_API_KEY`, read with
-    # `os.environ`, so rewriting the body alone hands the script an environment it
-    # cannot run in and the request goes out with an empty payload.
-    # Only the secret this step is supposed to read is expanded. Standing in for any
-    # `secrets.*` would make the harness agree with a workflow that names the wrong
-    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
-    # Actions would hand the real step an empty value. Anything else is left for the
-    # assertion below to reject by name.
+    # Bind the step's env: too; expand only the expected secret so a wrong name fails.
     for name, value in (step.get("env") or {}).items():
         env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", SECRET, str(value))
         assert "${{" not in env[name], (
@@ -111,8 +98,6 @@ def test_the_delete_uses_the_namespace_route_the_org_token_is_allowed_on(
     assert (
         "/v2/repositories/" not in log
     ), "the legacy route answers every organization token with 403"
-    # A non-empty body first: an empty request carries no identifier either, so the
-    # check below cannot otherwise tell the wrong identity from no request at all.
     assert (
         f'"secret": "{SECRET}"' in log
     ), "the token request carried no body, so this proves nothing about who it authenticates as"
@@ -153,8 +138,6 @@ def test_every_step_that_reads_the_key_is_given_the_key():
             job_env = set(job.get("env") or {})
             for step in job.get("steps") or []:
                 body = step.get("run") or ""
-                # A read, not a mention. The verdict step names the key in a sentence it
-                # prints for a human, which needs no value.
                 reads = (
                     'os.environ["DOCKER_API_KEY"]' in body
                     or "$DOCKER_API_KEY" in body

@@ -16,7 +16,7 @@ import pytest
 import unsloth.save as S
 import unsloth_zoo.llama_cpp as L
 
-# The --imatrix wiring lives in unsloth_zoo's quantize_gguf (a companion change).
+# The --imatrix wiring lives in unsloth_zoo's quantize_gguf.
 _ZOO_HAS_IMATRIX = "imatrix" in inspect.signature(L.quantize_gguf).parameters
 _needs_zoo_imatrix = pytest.mark.skipif(
     not _ZOO_HAS_IMATRIX,
@@ -36,9 +36,6 @@ class _Model:
         self.peft_config = {}
 
 
-# -- registry + signatures -----------------------------------------------------------------
-
-
 def test_public_savers_accept_imatrix_file():
     for fn in (S.unsloth_save_pretrained_gguf, S.unsloth_push_to_hub_gguf):
         assert "imatrix_file" in inspect.signature(fn).parameters, fn.__name__
@@ -53,9 +50,6 @@ def test_imatrix_quants_registry():
     for q in ("iq2_xxs", "iq4_xs", "iq1_s", "iq3_xxs"):
         assert q in S.IMATRIX_QUANTS
         assert q not in S.ALLOWED_QUANTS, f"{q} must be gated, not in the always-on allow-list"
-
-
-# -- _resolve_imatrix_file -----------------------------------------------------------------
 
 
 def test_resolve_none_and_false_return_none(tmp_path):
@@ -88,17 +82,13 @@ def test_resolve_gguf_file_is_renamed_to_gguf(tmp_path):
     assert os.path.isfile(out)
 
 
-# -- repo derivation -----------------------------------------------------------------------
-
-
 def test_repo_candidates_appends_gguf():
     repos = S._gguf_repo_candidates(_Model("unsloth/Llama-3.1-8B-Instruct"))
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
 
 
 def test_repo_candidates_maps_official_base_to_unsloth_org():
-    # The upstream imatrix only lives in unsloth/<base>-GGUF, so an official base id must map onto the unsloth org
-    # rather than deriving a non-existent meta-llama/...-GGUF repo.
+    # The upstream imatrix only lives in unsloth/<base>-GGUF, so official ids map onto the unsloth org.
     repos = S._gguf_repo_candidates(_Model("meta-llama/Llama-3.1-8B-Instruct"))
     assert "unsloth/Llama-3.1-8B-Instruct-GGUF" in repos
     assert not any(r.startswith("meta-llama/") for r in repos)
@@ -113,9 +103,6 @@ def test_repo_candidates_skips_local_dirs(tmp_path):
     assert S._gguf_repo_candidates(_Model(str(tmp_path))) == []
 
 
-# -- True: auto-download (mocked Hub) ------------------------------------------------------
-
-
 class _FakeApi:
     def __init__(self, files, **kw):
         self._files = files
@@ -125,8 +112,7 @@ class _FakeApi:
 
 
 def _patch_hub(monkeypatch, files, downloaded_dir):
-    # HfApi is the module-level name in unsloth.save;
-    # hf_hub_download is imported locally inside the helper, so patch it on huggingface_hub.
+    # hf_hub_download is imported inside the helper, so patch it on huggingface_hub.
     monkeypatch.setattr(S, "HfApi", lambda **kw: _FakeApi(files))
 
     def _fake_download(
@@ -158,7 +144,6 @@ def test_resolve_true_prefers_dat(monkeypatch, tmp_path):
     _patch_hub(monkeypatch, files, str(cache))
     out = S._resolve_imatrix_file(_Model(), True, "tok", str(tmp_path / "dest"))
     assert os.path.basename(out) == "imatrix_unsloth.dat"
-    # downloaded into the caller dest, not left only in the (fake) cache
     assert os.path.dirname(out) == str(tmp_path / "dest")
 
 
@@ -177,9 +162,6 @@ def test_resolve_true_missing_raises(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError) as e:
         S._resolve_imatrix_file(_Model(), True, "tok", str(tmp_path / "dest"))
     assert "imatrix" in str(e.value).lower()
-
-
-# -- IQ gate in save_to_gguf ---------------------------------------------------------------
 
 
 def test_iq_quant_without_imatrix_is_rejected():
@@ -205,18 +187,14 @@ def test_unknown_quant_is_rejected():
         )
 
 
-# -- --imatrix actually reaches llama-quantize ---------------------------------------------
-
-
 @_needs_zoo_imatrix
 def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     captured = {}
 
     def _fake_run(command, *a, **kw):
         captured["command"] = command
-        # llama-quantize would write the output; emulate so the existence check passes.
+        # llama-quantize would write the output; emulate it so the existence check passes.
         out = command.split()[-2] if False else None
-        # output_gguf is the 2nd-to-last token before quant_type/threads; just create it.
         with open(tmp_path / "out.gguf", "wb") as f:
             f.write(b"GGUF")
 
@@ -230,7 +208,7 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
 
     monkeypatch.setattr(L.subprocess, "run", _fake_run)
     imat = str(tmp_path / "imatrix it.dat")  # space in path -> must be shell-quoted
-    with open(imat, "wb") as f:  # quantize_gguf validates the imatrix exists before running
+    with open(imat, "wb") as f:  # quantize_gguf checks the imatrix exists
         f.write(b"\x00")
     L.quantize_gguf(
         input_gguf = str(tmp_path / "in.gguf"),
@@ -244,7 +222,6 @@ def test_quantize_gguf_emits_imatrix_flag(monkeypatch, tmp_path):
     cmd = captured["command"]
     assert "--imatrix" in cmd
     assert "iq4_xs" in cmd
-    # the path with a space must appear shell-quoted (shlex.quote), never bare
     assert f"--imatrix {shlex.quote(imat)}" in cmd
 
 

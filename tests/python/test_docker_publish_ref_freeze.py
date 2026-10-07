@@ -69,8 +69,7 @@ def steps() -> dict:
 
 
 def test_the_workflow_never_pins_a_shell_so_bash_e_has_no_pipefail(steps: dict):
-    # `shell: bash` would switch the runner to `-eo pipefail`; until then the guards
-    # below are the only protection
+    # Without `shell: bash` there is no pipefail; these guards are the only protection.
     doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     assert "shell" not in doc.get("defaults", {}).get("run", {}), (
         "this test models the default `bash -e` shell; update it if a default "
@@ -106,9 +105,8 @@ def test_an_unreachable_remote_never_emits_a_mutable_ref(steps: dict, step_id: s
     assert res.returncode != 0
 
 
-# Same hole in the llama tag step, where `bash -e` without pipefail takes the exit
-# status of the trailing `sed`. `tag=latest` is NOT a pin: every consumer re-resolves
-# it, so a release published mid-run puts two bundles under one manifest.
+# Llama tag step: `bash -e` without pipefail takes sed's status, and `tag=latest`
+# is re-resolved by every consumer, so it is not a pin.
 
 
 @pytest.fixture(scope = "module")
@@ -171,7 +169,7 @@ def _run_llama_step(script: str, tmp_path: Path, *, curl_exit: int):
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["GITHUB_OUTPUT"] = str(out)
-    env["INPUT_TAG"] = ""  # the default (push / schedule) trigger
+    env["INPUT_TAG"] = ""
     path = tmp_path / "llama_step.sh"
     path.write_text(_expand(script), encoding = "utf-8")
     return subprocess.run(
@@ -219,9 +217,7 @@ def _run_with_failing_ls_remote(script: str, tmp_path: Path):
     )
 
 
-# git documents status 2 for "talked to the remote, no matching refs" and any other
-# non-zero for "never reached it", so treating every non-zero as "tag absent" lets a
-# transient DNS/TLS failure pair the unsloth tag with zoo `main`.
+# git ls-remote exits 2 for no matching refs; other non-zero means unreachable.
 
 ZOO_TAG = "v2026.9.1"
 ZOO_MAIN_SHA = "1" * 40
@@ -288,7 +284,6 @@ def test_an_unreachable_zoo_probe_fails_instead_of_taking_main(steps: dict, tmp_
 
 
 def test_a_missing_zoo_tag_still_falls_back_to_main(steps: dict, tmp_path: Path):
-    # git's "reached the remote, no matching refs" status: the common case
     res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 2)
     assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
     assert emitted.strip() == f"ref={ZOO_MAIN_SHA}", emitted
@@ -300,15 +295,12 @@ def test_a_present_zoo_tag_is_mirrored(steps: dict, tmp_path: Path):
     assert emitted.strip() == f"ref={ZOO_TAG_SHA}", emitted
 
 
-# build-studio FROMs the digest this step exports. metadata-action sorts tags by
-# priority (raw=200 above sha=100), so `.tags[0]` on a main push is the MUTABLE
-# `:core`, which an unserialised second run can retag before this inspection.
+# `.tags[0]` on main is the mutable `:core`, which another run can retag.
 
 OTHER_RUN_DIGEST = "sha256:" + "a" * 64
 THIS_RUN_DIGEST = "sha256:" + "b" * 64
 IMAGE = "docker.io/unsloth/unsloth"
 
-# the per-arch digests this run pushed, one file per digest in /tmp/digests
 ARCH_DIGESTS = ("a" * 64, "c" * 64)
 
 
@@ -332,11 +324,8 @@ def _raw_index(children = ARCH_DIGESTS) -> str:
     return '{\\"manifests\\":[' + inner + "]}"
 
 
-# What a build leg really pushes with provenance and SBOM on: not an image manifest
-# but an OCI index per arch, holding the image manifest and its attestation. The
-# merge flattens those children into the published index, so the per-arch index
-# digest (the artifact file name) never appears there. The first publish runs on main
-# failed on exactly that shape against a correct manifest.
+# With provenance/SBOM each arch pushes an OCI index whose children get flattened
+# into the published index, so the per-arch digest never appears there.
 PER_ARCH_CHILDREN = {
     ARCH_DIGESTS[0]: ("a1" * 32, "a2" * 32),
     ARCH_DIGESTS[1]: ("c1" * 32, "c2" * 32),
@@ -423,8 +412,6 @@ def test_the_digest_export_still_works_without_a_handle_tag(
 def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: str, tmp_path: Path):
     """Even under this run's own name, a manifest without the per-arch digests this run pushed must fail rather than hand build-studio another run's base."""
     bin_dir = tmp_path / "bin"
-    # the tag now resolves to a manifest built from somebody else's arches, while
-    # this run's own per-arch indexes still answer with their real children
     _docker_stub(
         bin_dir,
         'case "$4" in\n'

@@ -62,34 +62,24 @@ from tests.studio.studiobench.scoring.from_payload import (  # noqa: E402
     latest_attempt_rows,
 )
 
-# The DECLARED unstable set, each entry carrying its mechanism. It lives in the studiobench
-# package so a test can require a mechanism per entry and this script cannot drift from the null
-# control. Declared is not true: `--null` replaces it with the MEASURED set.
+# Declared unstable set, each with a mechanism; `--null` replaces it with the measured set.
 UNSTABLE_ACTIONS = frozenset(P.UNSTABLE_ACTIONS)
 
-#: THE RUN'S OWN DECLARATION that an arm mounts a window, as `__main__.py` records it. Matched as
-#: literal strings rather than imported, because this script reads payloads from other checkouts.
+#: Matched as literal strings, not imported, because payloads may come from other checkouts.
 # From `runtime/readiness.py`.
 WINDOWED_GATE = "windowed_readiness:"
 MODE_WINDOWED = "windowed"
 
-#: THE CELL'S OWN VERDICT THAT IT LOST MESSAGES, written by `record_completeness_gate` when the
-#: traversal could not establish the arm still holds the whole conversation. `excluded_from_rows`
-#: drops such a cell from the PERFORMANCE score, but this file read no gate rows except the
-#: windowed declaration, so an arm that lost the middle still printed a pass and exited 0.
+#: Written by `record_completeness_gate` when the arm may have lost messages.
 COMPLETENESS_GATE = "thread_complete"
 
-#: THE CELL'S OWN VERDICT THAT IT STOPPED FOLLOWING THE REPLY IT WAS MEASURING, written when the
-#: thread did not stay pinned for enough of the streaming phase. It invalidates the same thing as
-#: the completeness gate: a reply scrolled out and unmounted stops costing anything to render.
+#: Written when the thread did not stay pinned through the stream; an unmounted reply costs
+#: nothing to render.
 FOLLOW_GATE = "follows_the_stream"
 
-#: The per-cell gates whose failure means this cell's action rows are not a reading of the build.
 #: A gate that only qualifies one column (`timer_clamp`) is deliberately NOT here.
 INVALIDATING_GATES: tuple[str, ...] = (COMPLETENESS_GATE, FOLLOW_GATE)
 
-#: How each is named and what its failure means, for the refusal a reader actually sees. Described
-#: rather than spelled with its row name, because a person reads this deciding if a run is usable.
 _GATE_LABEL: dict[str, str] = {
     COMPLETENESS_GATE: "completeness",
     FOLLOW_GATE: "stream-follow",
@@ -99,15 +89,11 @@ _GATE_REASON: dict[str, str] = {
     FOLLOW_GATE: "the arm stopped following the streamed reply",
 }
 
-#: How one action pair is scored. PER PAIR, never per payload: the readiness gate permits fully
-#: mounted small rungs beside windowed large ones, so a payload-wide decision lets one windowed
-#: 100K capture suppress the structural digest on every 1K pair.
+#: Scored per pair, never per payload: small rungs can be fully mounted beside windowed large ones.
 WINDOWED = "windowed"
 STRUCTURAL = "structural"
 
-#: The arms a pair is expected to have, consulted BY NAME rather than by walking the rows present:
-#: an arm that died before emitting an action row leaves `sides` holding only the other one, and
-#: reading off the rows asks the surviving arm whether the missing one was windowed.
+#: Consulted by name: an arm that died before any action row is otherwise never asked about.
 ARMS = ("base", "treatment")
 
 
@@ -285,14 +271,10 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
             if keep is not None and r.get("session_id") not in (None, keep):
                 continue
             detail = r.get("detail") if isinstance(r.get("detail"), dict) else {}
-            # NOT MEASURED IS NOT FAILED, drawn where the performance side draws it:
-            # `gate_detail_is_unmeasured` is THE definition, imported rather than restated. It matters most
-            # for the stream-coverage clause, identical on both arms and untouched by a DOM digest, which
-            # refused 32 of 32 pairs here including the null control.
+            # Not measured is not failed; `gate_detail_is_unmeasured` is the shared definition.
             if gate_detail_is_unmeasured(detail):
                 continue
-            # FIRST FAILURE WINS, so a cell that failed both is not relabelled by whichever row comes second
-            # in the file.
+            # First failure wins.
             if cid in out:
                 continue
             out[cid] = (
@@ -365,35 +347,23 @@ def collect(
     """
     out: dict[tuple, dict] = collections.defaultdict(dict)
     attempted = missing = 0
-    # TWO DIFFERENT "INCOMPLETE"S MEET HERE: `gate_failures` is per cell from a gate the payload
-    # FAILED and those rows are kept, while `dropped_incomplete` counts action rows discarded because
-    # their cell never wrote a `cell` row. One shared name would let the first overwrite the second.
-    # Action rows come from `latest_attempt_rows`.
-    # Which only happens under `require_complete`.
+    # `gate_failures` (failed gates, rows kept) and `dropped_incomplete` (rows of cells with no
+    # `cell` row, only under `require_complete`) must stay separate.
     dropped_incomplete = 0
     no_cell_rows = 0
     for path in paths:
         shard = path.parent.name
         gate_failures = incomplete_cells([path])
         raw_rows = rows(path)
-        # A CELL THAT DID NOT FINISH IS NOT AN OBSERVATION -- ON THE NULL CONTROL ONLY. Action rows are
-        # emitted as the film runs and the `cell` row when it ends, so an interrupted cell leaves a
-        # complete-looking set nothing owns. ON THE NULL they must be dropped: an under-observed action
-        # reads as stable and NARROWS the excuse set (0 false alarms became 5 of 30). ON THE RESULT they
-        # must be kept, because a difference a dead cell observed is still a difference. Read through the
-        # SAME filter as the action rows, or the guard answers about a different attempt. Per file, since
-        # a cell id is reused across shards, so superseding has to be resolved inside the stream that
-        # appended it. The keep-on-the-result direction is held by
-        # test_an_attempt_that_was_never_re_run_still_carries_its_parity_verdict.
+        # Unfinished cells are dropped on the null only: there they would narrow the excuse set, while
+        # on the result a dead cell's difference is still real. Resolved per file via the same filter.
         kept_rows = latest_attempt_rows(raw_rows)
         completed = {
             r.get("cell_id")
             for r in kept_rows
             if r.get("row_type") == "cell" and r.get("completed")
         }
-        # A payload with no `cell` rows predates them, or is a fixture. Falling back is right; falling
-        # back SILENTLY is how a guard stops guarding, so it is counted and said. Asked of the raw
-        # stream: the question is whether this recorder ever wrote cell rows.
+        # No `cell` rows means an older recorder or a fixture; fall back, but count and report it.
         has_cell_rows = any(r.get("row_type") == "cell" for r in raw_rows)
         if not has_cell_rows:
             no_cell_rows += 1
@@ -404,11 +374,9 @@ def collect(
             rep = cid.rsplit(".", 1)[-1]
             sid = str(r.get("session_id") or "")
             key = (shard, rung_of(cid), rep, sid, r.get("action"))
-            # BEFORE the tally, so a selected report's counts are counts of the pairs it scored.
+            # Before the tally, so a selected report counts only the pairs it scored.
             if select is not None and key not in select:
                 continue
-            # And before the tally for the same reason, but after the selection: a row this report never
-            # asked for is not an incomplete observation of it.
             if require_complete and has_cell_rows and r.get("cell_id") not in completed:
                 dropped_incomplete += 1
                 continue
@@ -417,8 +385,7 @@ def collect(
                 attempted += 1
             else:
                 missing += 1
-            # STAMPED, NOT DROPPED: the comparison layer has to be able to say this pair carries no verdict,
-            # and a deleted row would leave the pair looking like an action that never ran.
+            # Stamped, not dropped, or the pair would look like an action that never ran.
             if cid in gate_failures:
                 r = dict(r)
                 r["_incomplete"] = gate_failures[cid]
@@ -543,11 +510,7 @@ def decide_modes(paths: list[Path]) -> dict[tuple, tuple[str, str]]:
         if len(sides) == 2 and all(_mount_measured(r.get("parity")) for r in sides.values()):
             decided[key] = (STRUCTURAL, "")
             continue
-        # EITHER EXPECTED ARM, INCLUDING ONE WITH NO ROW AT ALL. Reading the declaration off the rows a
-        # pair has misses the case one step worse: the arm failed before emitting an action row, so the
-        # loop never asks about it, the pair is scored structurally, and the command exits 0 with no
-        # verdict for that rung. And only this pair's own shard declares it.
-        # See `declared_windowed`.
+        # Check either expected arm, including one with no rows, using only this pair's shard.
         why = ""
         shard = key[0]
         for label in ARMS:
@@ -601,7 +564,7 @@ def build_differences(results: list[tuple], min_reps: int) -> dict[str, list[tup
     for action, shard, cell, r in results:
         if r.get("one_sided"):
             entry = (action, shard, cell, [r.get("idle_detail") or ""], r["one_sided"])
-            # ON THE RECORDED REASON, not the action name; see the same call in `report`.
+            # Keyed on the recorded reason, not the action name; see `report`.
             if P.racy_execution(action, r.get("idle_reason") or ""):
                 racy.append(entry)
             else:
@@ -700,10 +663,7 @@ def behaviour_report(
             )
             continue
         out = B.compare_behaviour(sides["base"], sides["treatment"])
-        # THE SAME TWO QUESTIONS THE STRUCTURAL PATH ASKS, off the same functions: `compare_behaviour`
-        # cannot see either shape, since an action not performed on one arm records no quantities to
-        # disagree about and one that failed its own assertion records ordinary ones.
-        # `compare_all_with` is the other half.
+        # `compare_behaviour` cannot see a not-performed or failed-assertion action, so ask separately.
         idle_ = P.execution_verdict(sides["base"], sides["treatment"])
         out["one_sided"] = (idle_ or {}).get("one_sided") or ""
         out["idle_reason"] = (idle_ or {}).get("idle_reason") or ""
@@ -715,12 +675,9 @@ def behaviour_report(
 
     print(f"\n{label}  (BEHAVIOURAL MODE)")
     print(f"  CLAIM: {P.CLAIM_BEHAVIOURAL}.")
-    # Through the helper, not straight off the table: this mode's line names the coverage band it
-    # enforces, and printing the raw template would emit the placeholders instead of the numbers.
+    # Through the helper so the template placeholders are filled in.
     print(f"  POLICY: {P.behaviour_policy(B.MIN_CLIPBOARD_COVERAGE, B.MAX_CLIPBOARD_COVERAGE)}.")
-    # WHICH REASON, and only if it is true: forced behavioural mode on a fully mounted payload --
-    # which is how a NULL CONTROL is scored -- used to print "one arm mounts a window of the thread"
-    # about a payload where neither does.
+    # Only claim windowing if true: a null control is scored in forced behavioural mode.
     if windowed:
         print(
             "  One arm of this payload mounts a window of the thread, so the structural DOM digest"
@@ -792,23 +749,15 @@ def behaviour_report(
         names = sorted({a for a, _s, _c, _v in idle})
         print(f"\n  NOT EXERCISED: {', '.join(names)}")
 
-    # `not broken` IS THE PRECONDITION THE PARAGRAPH BELOW ARGUES FROM: an all-BROKEN payload reaches
-    # `matched == 0` too, so a run that had just listed its broken invariants went on to say none was
-    # evaluated and it carried no failure, immediately before returning 1. NOT gated on
-    # `build_failed`, which is collected from pairs whose invariants were unreadable.
-    # test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict asserts that pairing.
+    # An all-BROKEN payload also has `matched == 0`; do not then claim nothing was evaluated.
     if matched == 0 and not broken:
-        # NOTHING WAS VALIDATED is not the same as nothing being wrong: with every pair unchecked,
-        # `broken` is empty and the block above has just printed a sentence that is true of an empty set
-        # and reads as a pass. More dangerous here, because behavioural mode REPLACES the digest.
+        # Nothing validated is not nothing wrong; behavioural mode replaces the digest here.
         print(
             "\n  NOTHING WAS COMPARED. Not one behavioural invariant was evaluated on any pair, "
             "so this run carries no UI verdict -- neither a pass nor a failure. Treat it as an "
             "absent result and find out why the actions did not run."
         )
-    # AFTER the diagnosis prints and BEFORE the "could not tell" code: a run can find a real
-    # regression while deciding nothing, and "it failed" is more specific.
-    # The two shapes are what `build_differences` returns.
+    # A real regression outranks the could-not-tell exit code.
     if broken or build_failed:
         return Outcome(1, frozenset(compared), _keys(results))
     if matched == 0:
@@ -853,17 +802,13 @@ def visible_unstable_set(null_paths: list[Path] | None) -> frozenset[tuple[str, 
     """
     if not null_paths:
         return frozenset()
-    # AND ONLY FROM CELLS THAT FINISHED, the same admission rule `unstable_set` and `audit_null`
-    # apply. A null-control cell that died mid-film leaves captures nothing owns, and read raw one
-    # DIFFERING unfinished observation plus one matching completed one is exactly `min_observations`,
-    # so a real visible difference is filed under "differ against an identical build" and exits 0.
+    # Only finished cells, as in `unstable_set`/`audit_null`, or an unfinished differing capture
+    # plus one match reaches `min_observations`.
     results, _got = compare_all_with(
         null_paths, P.compare_visible, "visible", require_complete = True
     )
     by_rung: dict[str, list[tuple[str, dict]]] = collections.defaultdict(list)
     for action, _shard, cell, r in results:
-        # A pair whose action never ran on both arms is not an observation in either direction:
-        # `derive_unstable` refuses to count a verdict it cannot read, and this refuses to hand it one.
         if r.get("_ran"):
             by_rung[rung_of_cell(cell)].append((action, r))
     out: set[tuple[str, str]] = set()
@@ -909,10 +854,7 @@ def visible_report(
     found = build_differences(results, min_reps)
     compared: set[tuple[str, str, str]] = set()
     differing, unstable_bad, blind, idle, matched = [], [], [], [], 0
-    # THE RESIDUE, PRINTED. A message on screen during the action but unmounted by capture time
-    # cannot be digested and `compare_visible` refuses the pair for it, which used to be invisible:
-    # the pair returned MATCH with the ordinals in `not_digested` and nothing read the key. Collected
-    # across every verdict, because a DIFFER pair with a residue is also incomplete.
+    # Messages unmounted by capture time cannot be digested; print the residue for every verdict.
     residue = []
     for action, shard, cell, r in results:
         if r.get("not_digested"):
@@ -922,9 +864,7 @@ def visible_report(
         elif r["verdict"] == P.NOT_COMPARABLE:
             blind.append((action, shard, cell, r))
         elif r["verdict"] == P.DIFFER:
-            # A SEVERE difference is never routed into the noise floor: an action can be in the derived
-            # unstable set for an unrelated attribute and still be the action on which one arm lost the whole
-            # thread. AT THIS PAIR'S OWN RUNG, since an action differing at 100K says nothing about 1K.
+            # A severe difference never goes to the noise floor, and the floor is checked at this rung.
             noise = (rung_of_cell(cell), action) in unstable and not r.get("severe")
             (unstable_bad if noise else differing).append((action, shard, cell, r))
             compared.add((action, shard, cell))
@@ -987,8 +927,7 @@ def visible_report(
             "  so an unfloored count here can rank a real arm below two copies of the same build."
         )
     else:
-        # WHICH RUNG EACH FLOOR ENTRY WAS MEASURED AT, printed, because it is also the only rung it
-        # silences anything at; a bare list of action names would look like it covers the payload.
+        # Print the rung of each floor entry: it only silences that rung.
         keys = sorted(unstable)
         shown = ", ".join(f"{rung or '?'} {action}" for rung, action in keys[:12])
         print(
@@ -1000,14 +939,11 @@ def visible_report(
     build_failed = print_build_differences(found, min_reps)
 
     if matched == 0 and not differing:
-        # The same false green every other mode here has been fixed for: nothing compared is not nothing
-        # wrong, and it must not exit 0.
+        # Nothing compared is not nothing wrong; must not exit 0.
         print(
             "\n  NOTHING WAS COMPARED. Not one action pair yielded a visible-region verdict, so\n"
             "  this run carries no UI verdict at all -- neither a pass nor a failure."
         )
-    # See the same three lines in `behaviour_report` and `report`: the diagnosis prints, then a
-    # failure outranks a refusal.
     if differing or build_failed:
         return Outcome(1, frozenset(compared), _keys(results))
     if matched == 0:
@@ -1075,8 +1011,7 @@ def compare_all_with(
         out = compare(sides["base"].get(key), sides["treatment"].get(key))
         out["_ran"] = ran
         idle = P.execution_verdict(sides["base"], sides["treatment"])
-        # WHICH ARM, not merely that one was idle: `execution_verdict` returns `one_sided` empty for a
-        # missed slot and for the symmetric case, and the arm that DID run otherwise.
+        # `one_sided` is empty for both a missed slot and the symmetric case, else the arm that ran.
         out["one_sided"] = (idle or {}).get("one_sided") or ""
         out["idle_reason"] = (idle or {}).get("idle_reason") or ""
         out["idle_detail"] = (idle or {}).get("reason") or ""
@@ -1103,9 +1038,7 @@ def compare_all(
     for (shard, rung, rep, sid, action), sides in sorted(got["pairs"].items()):
         cell = f"{rung} {rep}"
         if "base" not in sides or "treatment" not in sides:
-            # One arm never produced this row. Recorded rather than skipped: an action that ran on one arm
-            # and not the other is itself a difference. A resumed run lands here too with two session ids, so
-            # the session is named; both carry NOT_COMPARABLE, which is honest for either.
+            # Ran on one arm only is itself a difference; resumed runs land here with two session ids.
             results.append(
                 (
                     action,
@@ -1140,8 +1073,7 @@ def compare_all(
             )
             continue
         out = P.compare_rows(sides["base"], sides["treatment"])
-        # WHAT EACH ARM RENDERED, kept beside the verdict so `swapped_between_arms` can ask whether
-        # another repetition saw the same two renderings on the opposite arms.
+        # Kept so `swapped_between_arms` can find the same renderings on opposite arms.
         out["outcomes"] = (
             rendering_of(sides["base"].get("parity")),
             rendering_of(sides["treatment"].get("parity")),
@@ -1228,8 +1160,7 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[tuple[str
     the verdict already declines to count is a question nobody is going to ask.
     """
     results, _ = compare_all(paths)
-    # AND THE SWAP, for the same reason: `report` never counts a pair whose repetitions swapped two
-    # renderings between the arms, so no excuse can move it either.
+    # `report` never counts swapped pairs, so no excuse can move them either.
     swapped = swapped_between_arms(results, min_reps)
     differing = [
         e for i, e in enumerate(results) if e[3]["verdict"] == P.DIFFER and i not in swapped
@@ -1300,15 +1231,12 @@ def audit_null(
         by_rung[rung_of_cell(cell)].append((action, r))
 
     decided, undecided, differed, excused, out_of_scope = [], [], [], [], []
-    # Decided entries whose every observation came from a settled-match refusal, kept apart from
-    # `decided` because the live tail was never read at all.
+    # Decided only by settled-match refusals; the live tail was never read.
     on_settled = []
     for rung, pairs in sorted(by_rung.items()):
         for action, row in sorted(P.derive_unstable(pairs).items()):
             entry = (rung, action)
-            # OUT OF SCOPE IS NOT AN EXCUSE: an excused action is a HOLE in a question that was asked, while
-            # an out-of-scope one is a question nobody asked, and conflating them made the empty scope read
-            # as a vacuous audit.
+            # Out of scope is not excused: excused is a hole in an asked question.
             if scope is not None and entry not in scope:
                 out_of_scope.append(entry)
                 continue
@@ -1321,13 +1249,8 @@ def audit_null(
             if row["unstable"]:
                 differed.append(entry)
 
-    # AN ACTION THE NULL NEVER MEASURED AT ALL IS UNDECIDED, not absent: the loop can only classify
-    # what `derive_unstable` produced, so a scoped (rung, action) with no rows fell into neither list
-    # and one other decided action was enough to return 0 -- with `unstable_set` unioning the DECLARED
-    # names back in, a corroborated result difference on it then passed. Reproduced end to end: scope
-    # {send_turn, settings}, no send_turn rows, audit 0, verdict 0, regression printed under
-    # "expected to vary". Counted as MISSING as well as undecided, because measured-and-inconclusive
-    # is a different reading from never measured.
+    # A scoped (rung, action) the null never measured is UNDECIDED and also MISSING, or a declared
+    # name could silently excuse a real result difference.
     missing = []
     if scope is not None:
         seen = set(decided) | set(undecided) | set(excused)
@@ -1344,14 +1267,11 @@ def audit_null(
         "missing": missing,
         "decided_on_settled_thread": on_settled,
     }
-    # NOTHING TO DECIDE IS A PASS, and only when a scope said so: a result whose every action matched
-    # asks the null for no excuses, and there is no way to fail a question never put. The scope is
-    # computed from the result, so an empty one is a statement about the result.
+    # An empty scope (computed from the result) asks nothing, so it passes.
     if scope is not None and not scope:
         report_["reason"] = "the result needs no excuse from this null control"
         return 0, report_
-    # Everything excused is not a decided null control but one that measured nothing while naming a
-    # reason for each blank; passing it would let the excuse list grow until the audit is vacuous.
+    # Everything excused means nothing was measured; do not pass it.
     if not decided:
         report_["reason"] = "no (rung, action) reached min_observations"
         return 1, report_
@@ -1377,7 +1297,6 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
     print(f"  decided (rung, action):     {len(report_['decided'])}")
     print(f"  of which differed:          {len(report_['differed'])}  (the MEASURED unstable set)")
     if report_.get("decided_on_settled_thread"):
-        # A narrower claim than the line above, so it is said out loud.
         print(
             f"  of which on the settled thread only: "
             f"{len(report_['decided_on_settled_thread'])}  (a reply was still arriving on every "
@@ -1390,8 +1309,6 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
             f"({', '.join(sorted(allow_undecided))}) -- each one a hole"
         )
     if report_.get("out_of_scope"):
-        # Counted apart from the excused, because it is not a hole: no excuse could have moved the
-        # result's verdict on these.
         print(
             f"  not audited, out of scope:  {len(report_['out_of_scope'])}  "
             "(the result's verdict for these does not turn on an excuse)"
@@ -1403,7 +1320,6 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
         )
         return
     if rc == 0 and not report_["differed"]:
-        # Said explicitly, because this is the reading a naive gate treats as breakage.
         print(
             "\n  Every action this run exercised reached the observation count and NONE of them"
             "\n  differed against itself. The measured unstable set is empty because there was"
@@ -1416,8 +1332,6 @@ def print_null_audit(rc: int, report_: dict, allow_undecided: frozenset) -> None
             print("\n  These (rung, action) pairs never reached min_observations:")
             _missing = set(report_.get("missing") or ())
             for rung, action in report_["undecided"][:12]:
-                # Said apart from the rest: measured and inconclusive means the null tried and could not decide,
-                # while NO ROWS means it never measured the action at all.
                 tail = "  -- NO ROWS in the null at all" if (rung, action) in _missing else ""
                 print(f"    {action}@{rung}{tail}")
         print(
@@ -1462,14 +1376,11 @@ def unstable_set(paths: list[Path] | None) -> tuple[frozenset, dict, dict]:
             derived[f"{action}@{rung}"] = row
             if row["unstable"]:
                 measured.add((rung, action))
-    # The cross-check stays pooled ON PURPOSE: it audits the DECLARED list, whose entries claim to
-    # hold at every rung, so the question is action-level. Advisory output, carrying no verdict.
+    # Pooled on purpose: it audits the declared list, whose entries claim every rung. Advisory.
     checks = P.cross_check(
         P.derive_unstable([(a, r) for a, _s, _c, r in results]), UNSTABLE_ACTIONS
     )
-    # UNION, not replacement: an action the null could not reach (`image_upload` has no attachments
-    # button on this fixture) would otherwise move from "declared unstable" to "stable" on a
-    # measurement that never happened.
+    # Union, not replacement: an unreachable action must not flip from declared unstable to stable.
     return frozenset(measured) | frozenset(UNSTABLE_ACTIONS), derived, checks
 
 
@@ -1514,7 +1425,7 @@ def in_arm_repeatability(paths: list[Path]) -> tuple[set, set]:
             P.compare(by_rep[reps[0]].get("parity"), by_rep[r].get("parity"))["verdict"]
             for r in reps[1:]
         ]
-        # A capture that failed is blind, not agreement. Only a real MATCH earns "stable".
+        # A failed capture is blind, not agreement.
         if any(v == P.DIFFER for v in verdicts):
             unstable.add((rung, action))
         elif all(v == P.MATCH for v in verdicts):
@@ -1590,21 +1501,15 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
         by_action[(entry[0], rung_of_cell(entry[2]), direction)].append(entry)
     firm, weak = [], []
     for group in by_action.values():
-        # DISTINCT repetitions, not rows: one repetition seen twice is one observation. DELIBERATELY NOT
-        # KEYED ON THE SHARD -- two shards carrying the same (rung, rep) cannot be told from one film
-        # recorded twice, where counting both lets a single flake corroborate itself. Keying on the cell
-        # alone can only under-count; keying on the shard manufactures corroboration.
-        # test_one_repetition_seen_twice_is_not_two_observations holds this direction.
+        # Distinct repetitions, deliberately not keyed on shard: a film recorded twice in two shards
+        # would otherwise let one flake corroborate itself.
         reps = {e[2] for e in group}
         (firm if len(reps) >= min_reps else weak).extend(group)
     return firm, weak
 
 
-#: The capture fields that together are one arm's rendering of one action, for `rendering_of`.
-#: Deliberately wider than what `compare` decides on: a field left out can only make two renderings
-#: look equal, which is the direction that excuses, so everything the capture carries about the
-#: thread root, the overlays and the style probe is in. `shot` and `shot_scroll_top` are not: the
-#: first names the arm, so no rendering could ever equal the other arm's.
+#: Deliberately wider than `compare`, since an omitted field can only make renderings look
+#: equal. `shot` and `shot_scroll_top` name the arm, so they are excluded.
 RENDERING_FIELDS: tuple[str, ...] = (
     "root_kind",
     "digest",
@@ -1676,12 +1581,8 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
         if base is None or treat is None or base == treat:
             continue
         groups[(action, rung_of_cell(cell))].append((i, cell, base, treat))
-    # ONE-TO-ONE, BY REPETITION. `corroborated` counts a repetition (cell) once, so a repetition is
-    # the unit here too: all its rows are excused together or not at all, and it takes part in at
-    # most one swap. A repetition recorded with BOTH directions of the same pair (two shards that
-    # disagree) is ambiguous and is never excused, since it cannot say which side it saw. Each
-    # reversed repetition then excuses exactly one repetition in the other direction, so three
-    # repetitions of (R1, R2) against one (R2, R1) leave two (R1, R2) for `corroborated` to count.
+    # One-to-one by repetition: each reversed rep excuses one rep in the other direction, and a rep
+    # recorded in both directions is ambiguous and never excused.
     out: set[int] = set()
     for group in groups.values():
         by_cell: dict[str, dict[tuple[str, str], list[int]]] = collections.defaultdict(
@@ -1689,7 +1590,6 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
         )
         for i, cell, base, treat in group:
             by_cell[cell][(base, treat)].append(i)
-        # One direction per repetition and pair; a repetition holding both is set aside whole.
         seen: dict[str, tuple[str, str]] = {}
         for cell, directions in by_cell.items():
             if len(directions) == 1:
@@ -1728,8 +1628,7 @@ def report(
     """
     results, got = compare_all(paths, select)
     if not results:
-        # An empty result is reported as an empty result: "No mismatches found" when nothing was compared
-        # is the exact shape of a check that silently does nothing.
+        # Say when nothing was compared instead of "No mismatches found".
         print(
             f"\n{label}: NO PARITY DATA in {len(paths)} payload(s). "
             f"{got['missing']} action rows carried no digest. "
@@ -1746,43 +1645,27 @@ def report(
     swapped = swapped_between_arms(results, min_reps)
     swapped_bad: list[tuple] = []
     for i, (action, shard, cell, r) in enumerate(results):
-        # COLLECTED BEFORE THE VERDICT BRANCHES AND OUTSIDE THE EXEMPTION, because it is not a digest: an
-        # action can produce two digests the instability exemption excuses and still have failed its own
-        # assertion on one arm only, which is the one shape `ran` cannot see. `stop_generation` is the
-        # live example: `ran = True, expect_ok = stopped_ms is not None`, and it is on the declared
-        # unstable list, so a head that no longer stops generation was excused twice over.
-        # The fifth element is the DIRECTION, and `corroborated` keys on it: a treatment
-        # failure in one repetition and a base failure in the next is a race, not one finding twice.
+        # Collected before the verdict branches and outside the digest exemption: an action can fail
+        # its own assertion on one arm (e.g. `stop_generation`). The fifth element is the direction.
         if r.get("expect_regressed"):
             expect_bad.append(
                 (action, shard, cell, [r.get("expect_reason", "")], r["expect_regressed"])
             )
         if r["verdict"] == P.NOT_APPLICABLE:
-            # NEITHER A PASS NOR A FAIL: the digest is the wrong question for this pair, so it is bucketed
-            # separately and `--mode behaviour` answers it instead. BELOW the assertion collection above,
-            # and that ordering is the merge's one real decision: this branch `continue`s, so putting it
-            # first would drop a failed assertion whenever the pair was also a windowed mount.
+            # Must stay below the assertion collection: this branch `continue`s.
             inapplicable.append((action, shard, cell, [r.get("reason", "")]))
             continue
         if r["verdict"] == P.NOT_EXERCISED:
-            # Same, for which arm stayed live: `one_sided` names the arm that DID run.
             entry = (action, shard, cell, [r.get("reason", "")], r.get("one_sided") or None)
             if r.get("one_sided"):
-                # ONE ARM RAN IT AND THE OTHER COULD NOT, which is not the missed-slot case: a missed slot costs
-                # coverage, while an action that runs on one build and cannot be performed on the other is the
-                # one regression shape that leaves no digest to differ. Held to the SAME corroboration bar as a
-                # differing digest. EXEMPTED BY `RACY_EXECUTION`, NOT BY THE DIGEST SET: every UNSTABLE_ACTIONS
-                # mechanism describes what makes the CAPTURE move, so keyed on that list nine of sixteen actions
-                # were permanently exempt. ON THE RECORDED REASON, not the action name.
+                # Ran on one build and could not on the other: same corroboration bar as a digest difference,
+                # exempted only by `RACY_EXECUTION` on the recorded reason.
                 _racy = P.racy_execution(action, r.get("idle_reason") or "")
                 (one_sided_unstable if _racy else one_sided).append(entry)
             else:
                 idle.append(entry)
             continue
-        # THE STYLE VERDICT IS COLLECTED BEFORE THE STRUCTURAL REFUSAL IS BUCKETED, because it is an
-        # INDEPENDENT reading: the bounded computed-style probe is the only thing here that sees
-        # `display`, `visibility` or `pointer-events`, and a pair refused for landing at two points in
-        # one stream can still carry a real CSS regression.
+        # Collected before the structural refusal: the style probe is independent and sees CSS changes.
         if r.get("style_verdict") == P.DIFFER:
             style_bad.append((action, shard, cell, [r.get("style_reason", "")]))
         if r["verdict"] == P.NOT_COMPARABLE:
@@ -1797,14 +1680,12 @@ def report(
         if is_unstable(unstable, action, cell):
             unstable_bad.append(entry)
         elif i in swapped:
-            # Each build rendered both states; see `swapped_between_arms`. Never corroborates.
+            # See `swapped_between_arms`; never corroborates.
             swapped_bad.append(entry)
         else:
             stable_bad.append(entry)
 
-    # SPLIT BEFORE THE COUNTS ARE PRINTED: "stable actions differing: 1" above a verdict of 0 is how
-    # a reader concludes the tool is lying, so the headline number must be the one the exit code
-    # comes from.
+    # Split before printing so the headline count matches the exit code.
     stable_bad, uncorroborated = corroborated(stable_bad, min_reps)
     one_sided, one_sided_weak = corroborated(one_sided, min_reps)
     expect_bad, expect_weak = corroborated(expect_bad, min_reps)
@@ -1829,8 +1710,7 @@ def report(
             f"cell rows, so completion could not be checked"
         )
     print(f"  matched:                    {matched}")
-    # SAID, not silent: a pair that matched only once fence latch state was set aside is a weaker
-    # match than one whose every byte agreed, and a reader should be able to count them.
+    # Report matches that only held after setting fence latch state aside.
     latch_normalised = sum(
         1 for _a, _s, _c, r in results if r.get("verdict") == P.MATCH and r.get("fence_latch")
     )
@@ -1876,8 +1756,7 @@ def report(
         f"pointer-events)"
     )
 
-    # THE SAME SET, COUNTED TWICE, checked rather than assumed, so a later edit to either branch
-    # cannot make the coverage floor answer about a different set than the summary does.
+    # Checked, so the coverage floor and the summary count the same set.
     scored = matched + len(stable_bad) + len(uncorroborated) + len(swapped_bad) + len(unstable_bad)
     assert len(compared) == scored, (len(compared), scored)
     shortfall = coverage_shortfall(scored, len(results), min_compared)
@@ -1926,18 +1805,14 @@ def report(
         for action, shard, cell, why, *_dir in one_sided_unstable[:8]:
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
-    # A DEMOTED DIFFERENCE IS STILL A COMPARISON: `corroborated` moves a sub-`min_reps` difference out
-    # of `stable_bad`, and reading `matched` alone a payload whose every difference was uncorroborated
-    # exited 2 "NOTHING WAS COMPARED" over a run that compared everything it had.
+    # Demoted (uncorroborated) differences are still comparisons.
     decided = matched + len(uncorroborated) + len(swapped_bad) + len(one_sided_weak)
     if stable_bad:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
         for action, shard, cell, moved in stable_bad:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:4])}")
     elif decided == 0:
-        # NOT A PASS, and it must not print like one: with no pair producing a digest verdict, "no stable
-        # action rendered differently" is true, reassuring and about nothing. The guard used to require
-        # `inapplicable`, so a run whose parity probes all failed exited 0 under a clean-looking heading.
+        # No pair produced a digest verdict: must not print like a pass.
         print(
             f"\n  NOTHING WAS COMPARED. Not one of the {len(results)} pair(s) here yielded a "
             f"structural verdict ({len(inapplicable)} windowed, {len(blind)} not comparable, "
@@ -1957,8 +1832,6 @@ def report(
         )
 
     if uncorroborated:
-        # Printed in full: one repetition out of two is evidence of the run rather than of the build, but
-        # it is still a reading a reader chasing an intermittent regression needs to see.
         print(
             f"\n  UNCORROBORATED -- differed in only one repetition, so not counted as a "
             f"regression:"
@@ -1967,7 +1840,6 @@ def report(
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
 
     if swapped_bad:
-        # Printed for the same reason: a race is still a reading, and it names the surface.
         print(
             "\n  UNCORROBORATED -- the repetitions SWAPPED the same two renderings between the"
             "\n  arms, so each build produced both and the difference is not a property of either:"
@@ -1981,8 +1853,6 @@ def report(
             print(f"    {action:<26} {shard} {cell}: {why[0]}")
 
     if idle:
-        # Named surfaces, deduplicated: what matters is WHICH actions this run never opened, not that it
-        # failed to open one of them sixteen times.
         names = sorted({entry[0] for entry in idle})
         print(
             f"\n  NOT EXERCISED -- {len(idle)} pair(s) over {len(names)} action(s) that did not "
@@ -2001,14 +1871,10 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    # A one-sided action is a failure on the same footing as a differing digest: the two builds
-    # behaved differently and the difference leaves no digest to compare.
-    # `expect_bad` is collected ahead of the verdict branches.
+    # A one-sided action fails like a differing digest; `expect_bad` is collected earlier.
     if stable_bad or one_sided or expect_bad:
         return Outcome(1, frozenset(compared), _keys(results))
-    # 2, the same code the empty-payload path uses: the tool was asked a question it could not
-    # answer, and exiting 0 would let CI go green on a run structurally incapable of firing.
-    # `decided`, not `matched`. AFTER the failure return, since "it failed" is more specific.
+    # Exit 2 when nothing was decided, checked after the failure return.
     if decided == 0:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
@@ -2162,9 +2028,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--mode",
-        # `structural` and `behavior` are ALIASES, not extra modes: the report header prints
-        # "(STRUCTURAL MODE)" and the PR template asks for "the structural digest", so a reader who types
-        # either should not be told it is not a choice.
+        # `structural` and `behavior` are aliases users may type from the header and PR template.
         choices = ("auto", "digest", "structural", "visible", "behaviour", "behavior"),
         default = "auto",
         help = (
@@ -2225,16 +2089,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     args.mode = {"structural": "digest", "behavior": "behaviour"}.get(args.mode, args.mode)
 
-    # THE MODE DECISION FIRST, before the unstable set is derived, or a windowed payload prints a
-    # page of scoring apparatus with no bearing on the report. PER ACTION PAIR: per invocation scored
-    # a normal run behaviourally because an unrelated payload on the same command line was windowed,
-    # and per payload let one windowed 100K capture suppress the digest on every mounted pair.
+    # Decide the mode per action pair before deriving the unstable set.
     plan: list[dict] = []
     for pattern in args.payloads:
         paths = shards_of(pattern)
         if not paths:
-            # Kept with no pairs: the structural loop below is what reports a pattern that matched no
-            # payload, and it exits 2 for it.
+            # Kept with no pairs so the structural loop reports the unmatched pattern and exits 2.
             plan.append({"pattern": pattern, "paths": [], "windowed": set(), "structural": None})
             continue
         if args.mode == "digest":
@@ -2259,8 +2119,7 @@ def main(argv: list[str] | None = None) -> int:
                 "pattern": pattern,
                 "paths": paths,
                 "windowed": windowed,
-                # None, not an empty set, when the payload holds no action pairs at all: `report` is what says
-                # NO PARITY DATA and exits 2, and it has to be reached to say it.
+                # None, not empty, when there are no pairs, so `report` reaches NO PARITY DATA.
                 "structural": (set(decided) - windowed) if decided else None,
                 "why": next((w for _k, (m, w) in sorted(decided.items()) if m == WINDOWED), ""),
             }
@@ -2268,9 +2127,7 @@ def main(argv: list[str] | None = None) -> int:
 
     worst = 0
     scored_windowed = 0
-    # THE COVERAGE FLOOR'S OWN BOOKKEEPING, per payload pattern and across every mode. A SET rather
-    # than a running total because `--mode auto` scores each windowed pair twice; keyed by pattern
-    # because the floor is a question about one film.
+    # A set per pattern: `--mode auto` scores windowed pairs twice, and the floor is per film.
     compared_pairs: dict[str, set[tuple]] = {}
     seen_pairs: dict[str, set[tuple]] = {}
 
@@ -2299,35 +2156,26 @@ def main(argv: list[str] | None = None) -> int:
                 f"{len(struct)} fully mounted pair(s) are scored structurally further down."
             )
         for key in sorted(win)[:8]:
-            # shard, rung, rep and the action. The session term is left out of the line: it is part of a
-            # pair's identity, not part of naming it to a reader.
+            # The session term is identity, not part of the display name.
             print(f"    windowed:   {key[0]} {key[1]} {key[2]} {key[4]}")
         if len(win) > 8:
             print(f"    ... and {len(win) - 8} more windowed pair(s)")
         scored_windowed += len(win)
-        # Per pattern, and reset here rather than outside the loop: two payload patterns are two films
-        # and must not pool their coverage.
+        # Reset per pattern: two patterns are two films.
         windowed_compared: Optional[frozenset[tuple]] = None
         windowed_seen: set[tuple] = set()
-        # BOTH, and in this order. Visible-region parity is the verdict the off-screen exemption asks for
-        # and can FAIL a windowed arm for something a user would see; the behavioural invariants catch
-        # what a viewport comparison cannot, such as a clipboard that no longer carries the thread.
+        # Both, in this order: visible parity catches what users see, behaviour what a viewport cannot.
         if args.mode in ("auto", "visible"):
             if vis_unstable is None:
-                # The floor, derived from the null control the caller passed; without it an identical pair of
-                # builds outscores the arm under test. Derived once: it is a property of the null control.
+                # Derived once from the caller's null control.
                 vis_null: list[Path] = []
                 for pat in args.null:
                     vis_null.extend(shards_of(pat))
                 vis_unstable = visible_unstable_set(vis_null)
                 vis_null_tiers = one_tier(vis_null, "null control")
                 vis_null_corpora = one_corpus(vis_null, "null control")
-            # A FLOOR FROM ANOTHER FILM IS NOT THIS PAYLOAD'S FLOOR, ON EITHER AXIS. Slot spacing decides
-            # which actions land inside a live stream, and `--tier fast` then `--tier standard` is the
-            # documented way to work, which is how a stale fast null control reaches a standard run; the
-            # corpus axis is quieter, since a re-recorded payload leaves an older null in the globbed
-            # directory. `one_tier`/`one_corpus` refuse an internally mixed null, `cross_side_mismatch`
-            # refuses a consistent one belonging to a different film. Refused rather than applied.
+            # A floor from another tier or corpus is refused, whether the null is mixed (`one_tier`,
+            # `one_corpus`) or consistent but from another film (`cross_side_mismatch`).
             floor = vis_unstable
             mismatch = cross_side_mismatch(
                 one_tier(paths, "payload"),
@@ -2357,25 +2205,17 @@ def main(argv: list[str] | None = None) -> int:
                 min_reps = args.min_reps,
             )
             worst = max(worst, int(beh))
-            # Only where behavioural mode is the ONLY mode, i.e. `--mode behaviour`. Under `--mode auto` it
-            # adds nothing to the numerator; see below.
+            # Only under `--mode behaviour`; under `auto` it adds nothing to the numerator.
             if windowed_compared is None:
                 windowed_compared = frozenset(beh.compared)
             windowed_seen |= set(beh.seen)
-        # NOT UNIONED ACROSS THE TWO WINDOWED MODES. The union is right for the structural set below,
-        # which is DISJOINT; here the two are two verdicts on the SAME pairs, and unioned one stood in
-        # for the other -- behavioural mode reaching all 16 pairs while visible capture succeeded on 1
-        # still cleared `--min-compared 16`. Not an intersection either: a behavioural invariant only
-        # exists for the few actions that declare one, so intersecting fails a run for pairs it had no
-        # opinion about. So in `auto` the numerator is the visible verdict; `seen` stays a union.
+        # Not unioned: both windowed modes judge the same pairs, so in `auto` the numerator is the
+        # visible verdict. Not intersected either, since few actions declare behavioural invariants.
         if windowed_compared is not None:
             compared_pairs.setdefault(pattern, set()).update(windowed_compared)
             seen_pairs.setdefault(pattern, set()).update(windowed_seen)
 
-    # AHEAD OF THE STRUCTURAL EARLY RETURN, because this mode does not read the plan at all: it takes
-    # shards from `args.payloads`, audits each AS a null control and returns unconditionally. Below
-    # the return it was unreachable whenever `remaining` came out empty, which `--mode visible` and
-    # `--mode behaviour` guarantee, so `--audit-null` with either silently skipped the audit.
+    # Before the structural early return, which `--mode visible`/`behaviour` always take.
     if args.audit_null:
         allow = frozenset(a.strip() for a in args.allow_undecided.split(",") if a.strip())
         scope = None
@@ -2408,16 +2248,11 @@ def main(argv: list[str] | None = None) -> int:
             worst = max(worst, rc)
         return worst
 
-    # THE STRUCTURAL EARLY RETURN, and why there is now a floor check on both sides of it. Everything
-    # below is the structural half, which a payload with no fully mounted pair has none of, but
-    # `--min-compared` is a COVERAGE floor asking whether the film ran, and a windowed run's film runs
-    # exactly as much. The FOURTH cross-cutting enforcement found sitting below it, so the floor goes
-    # through `coverage_shortfall` on BOTH exits.
+    # `--min-compared` is a coverage floor, so it is checked via `coverage_shortfall` on both exits.
     remaining = [e for e in plan if e["structural"] is None or e["structural"]]
     if not remaining:
         return _floored(worst, compared_pairs, seen_pairs, args.min_compared)
     if scored_windowed:
-        # The rest still get the digest they were owed, in the same run.
         print(
             f"\n  {len(remaining)} payload(s) still hold fully mounted pairs, which are scored "
             "structurally below and not behaviourally."
@@ -2445,9 +2280,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print("  pass --null OUTDIR of a base-vs-base run to derive it instead.")
 
-    # `null_tiers` is the set `one_tier` already refused a mixed null control for. NOT reassigned
-    # from `tier_of` here, which would be the same set without the refusal in front of it, and `worst`
-    # is NOT reset either: a windowed failure above may not be dropped by the structural pass.
+    # `null_tiers` comes from `one_tier`; do not reassign it, nor reset `worst` (keeps windowed failures).
     scored_structural = 0
     for entry in remaining:
         pattern, paths, select = entry["pattern"], entry["paths"], entry["structural"]
@@ -2456,18 +2289,14 @@ def main(argv: list[str] | None = None) -> int:
             worst = max(worst, 2)
             continue
         tiers = one_tier(paths, "payload")
-        # REFUSED, NOT WARNED: a tier or corpus the null was not recorded against makes its unstable set
-        # inapplicable, and a warning printed above a verdict is read as a verdict. `cross_side_mismatch`
-        # covers the tier this used to warn about and the corpus it did not check at all.
+        # Refused, not warned: a warning above a verdict is read as a verdict.
         corpora = one_corpus(paths, "payload")
         mismatch = cross_side_mismatch(tiers, null_tiers, corpora, null_corpora)
         if mismatch:
             print(f"\n  REFUSING to score {pattern}: {mismatch}")
             worst = max(worst, 2)
             continue
-        # CONFINED TO THE RUNNER BEING SCORED, and only ever downward: the exemptions above were measured
-        # in another matrix job on another machine, while side A of THIS payload is the same build in
-        # every repetition. One it positively contradicts is dropped; one it could not decide is kept.
+        # Confined to this runner and only downward: drop exemptions side A contradicts, keep undecided.
         effective = unstable
         if derived:
             local_unstable, local_stable = in_arm_repeatability(paths)
@@ -2481,25 +2310,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
         label = f"UI PARITY: {pattern}"
         if select is not None and entry["windowed"]:
-            # WHICH PAIRS THESE ARE, in the heading: a structural section that silently covered part of a
-            # payload would read as a verdict on all of it.
+            # Name the covered pairs so a partial section is not read as covering the whole payload.
             label += (
                 f"  ({len(select)} fully mounted pair(s) of "
                 f"{len(select) + len(entry['windowed'])})"
             )
         scored_structural += len(select) if select is not None else 0
-        # BOTH SIDES OF THE MERGE, and the argument list is why this had to be read rather than chosen:
-        # `select` is the FOURTH positional and the incoming call omitted it, which would have bound
-        # `args.min_reps` to `select` and left the coverage floor at 0. `min_compared` is deliberately NOT
-        # passed down any more: a floor applied inside each report is checked per report, so a run
-        # comparing nine windowed and nine structural pairs would fail a floor of sixteen twice over.
-        # `args.min_compared` was the argument that went missing.
-        # `report` (`elif decided == 0`) and `visible_report` (`and not not_run`) each check their own.
+        # `select` is the fourth positional. `min_compared` is not passed down: it is applied once
+        # across reports, not per report.
         struct = report(paths, label, effective, select, args.min_reps)
         worst = max(worst, int(struct))
         note(pattern, struct)
-    # COMBINED, and the worst outcome wins: a behavioural failure on one payload is not cancelled by
-    # a structural pass on another.
+    # Worst outcome wins across payloads.
     if scored_windowed and scored_structural:
         print(
             f"\nCOMBINED EXIT STATUS {worst}: {scored_windowed} pair(s) scored on the visible "

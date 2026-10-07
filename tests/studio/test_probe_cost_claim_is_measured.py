@@ -42,7 +42,7 @@ WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "runn
 
 _TIMEOUT = re.compile(r"^\s*timeout-minutes:\s*(\d+)\s*$", re.M)
 
-# Spelled out as well as in digits: the claim that started this was in words.
+# The original claim was in words.
 _AS_A_WORD = {
     5: "five",
     10: "ten",
@@ -52,15 +52,12 @@ _AS_A_WORD = {
     60: "sixty",
 }
 
-# "median 4s" or "median 4 seconds": what the comment reports having observed.
 _MEDIAN = re.compile(r"\bmedian\s+(?P<value>\d+)\s*(?:s\b|seconds?\b)", re.I)
 
 _NUMBER = r"\d+|one|two|three|four|five|six|seven|eight|nine|ten"
 
-# Any figure in seconds, however spelled.
 _IN_SECONDS = re.compile(rf"(?<![\w-])(?P<value>{_NUMBER})\s*(?:s\b|seconds?\b)", re.I)
 
-# Any figure in minutes or hours, which an occupancy sentence has no business carrying.
 _COARSER = re.compile(
     rf"(?<![\w-])(?P<value>{_NUMBER})\s*(?P<unit>minutes?\b|mins?\b|hours?\b|hrs?\b)",
     re.I,
@@ -187,9 +184,7 @@ def test_the_timeout_is_still_explained_as_the_hung_cell_bound():
         f"{WORKFLOW.name} no longer says what timeout-minutes is for, so the next reader "
         f"has nothing to stop them reading it as the expected cost again"
     )
-    # After the key itself, and only to the end of its clause: `timeout-minutes` contains
-    # "timeout", so reading from the start let the name of the thing stand in for the
-    # explanation of it, and a wider window found negations belonging to other clauses.
+    # After the key and only to its clause end: the key's name contains "timeout".
     start = rationale.index("timeout-minutes") + len("timeout-minutes")
     stop = min(
         (offset for offset in (rationale.find(mark, start) for mark in (".", ";")) if offset != -1),

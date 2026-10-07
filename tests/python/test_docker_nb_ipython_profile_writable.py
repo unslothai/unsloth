@@ -44,7 +44,6 @@ _IPY_DIR = "/opt/unsloth-nb/ipython"
 def _profile_setup_commands() -> list[str]:
     """The `mkdir` / `cp` / `chmod` steps of the RUN layer that builds the profile."""
     text = DOCKERFILE.read_text(encoding = "utf-8")
-    # the layer is a single `RUN set -eux \` ... continuation block
     start = text.index("COPY unsloth_nb_compat.py")
     block = text[start : text.index("\nENV PATH=", start)]
     joined = block.replace("\\\n", "\n")
@@ -68,7 +67,7 @@ def _as_foreign_uid(root: Path) -> None:
     and `os.access` answers on the OWNER bits, so copy other->owner to make the
     question the same one.
     """
-    # deepest first: dropping a directory's owner bits would hide its children
+    # Deepest first: dropping a directory's owner bits would hide its children.
     paths = sorted([root, *root.rglob("*")], key = lambda p: len(p.parts), reverse = True)
     for path in paths:
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -106,7 +105,7 @@ def staged_profile(tmp_path_factory):
     subprocess.run(["bash", "-c", script], check = True)
     _as_foreign_uid(root / "ipython")
     yield root / "ipython"
-    # hand the owner bits back, or pytest cannot remove its own tmp tree
+    # Restore owner bits so pytest can remove its tmp tree.
     for path in sorted(root.rglob("*"), key = lambda p: len(p.parts), reverse = True):
         try:
             path.chmod(stat.S_IMODE(path.stat().st_mode) | 0o700)
@@ -157,8 +156,7 @@ def test_the_shared_startup_hook_stays_read_only(staged_profile: Path):
             f"{path} is writable by other uids; the shared hook runs in every kernel "
             "and must not be replaceable from a notebook"
         )
-    # profile_default has to be world-writable for the test above to pass; without
-    # the sticky bit that also lets any uid rename startup/ out of the way
+    # A world-writable profile_default needs the sticky bit to protect startup/.
     parent = stat.S_IMODE((staged_profile / "profile_default").stat().st_mode)
     if parent & 0o002:
         assert parent & stat.S_ISVTX, (

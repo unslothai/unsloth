@@ -98,8 +98,7 @@ def test_a_stall_in_the_first_sample_does_not_fail_a_linear_path():
     """
     run, clock, calls = _shaped(1.0, stalls = {1: 40.0, 3: 40.0})
     assert assert_linear(run, _build, "stalled but linear", 2, clock = clock) == _build(8)
-    # It really did take the retry: three pairs is six legs, so anything past six is the
-    # second sample. A row that passed on the first reading would prove nothing about it.
+    # Three pairs is six legs, so anything past six proves the retry ran.
     assert calls["n"] > 6, "the first sample did not trip the bar, so the retry was not exercised"
 
 
@@ -192,7 +191,6 @@ def test_a_confirmation_it_can_only_partly_afford_is_still_taken():
     """
     run, clock, calls = _shaped(1.0, stalls = {1: 30.0, 3: 30.0, 5: 30.0})
     assert assert_linear(run, _build, "affordable in part", 2, clock = clock) == _build(8)
-    # Six legs of the first sample, then four pairs rather than seven.
     assert calls["n"] == 6 + 8, f"the confirmation ran {(calls['n'] - 6) // 2} pairs"
 
 

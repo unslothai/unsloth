@@ -52,8 +52,7 @@ LC_ALL=C is the cheapest way to find them, since ASCII rejects every byte cp1252
 does and more.
 """
 
-# `str | None` below is evaluated at import on Python 3.9 without this, and pyproject declares requires-python =
-# ">=3.9,<3.15".
+# `str | None` below is evaluated at import on Python 3.9 without this.
 from __future__ import annotations
 
 import ast
@@ -65,9 +64,7 @@ import pytest
 
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
-# Both trees ship to Windows contributors, and separate CI jobs collect them (repo-cpu-tests and the studio-backend
-# matrix), so the rule covers both. Not a hand-written list: studio/backend/hub/tests and unsloth/kernels/moe/tests are
-# already here, and the next one has to be covered the day it lands.
+# Walk every tree, not a hand list, so new test dirs are covered the day they land.
 SKIP_DIRS = {".git", ".venv", "build", "dist", "frontend", "node_modules", "site-packages"}
 
 
@@ -112,16 +109,8 @@ SOURCES = _tracked_test_files(REPO)
 if SOURCES is None:
     SOURCES = _walked_test_files(REPO)
 
-# The rules below re-walk the same subtrees many times over: a fixed-point pass
-# repeats until it stops learning, and each pass walks every function again.
-# That is ~170M iter_child_nodes calls across the tree, and the traversal, not
-# the rules, is most of the runtime. The AST is never mutated while a file is
-# scanned, so a walk of a node is the same tuple every time it is asked for.
-#
-# Keyed on id(), which is only sound while the node is alive, so each entry
-# keeps a reference to the node it was keyed on and _scan clears both caches
-# when it is done with a file. The results are identical either way; this only
-# stops the work being repeated.
+# Walks are cached: fixed-point passes re-walk the same unmutated AST ~170M times.
+# Keyed on id(), so entries hold the node and _scan clears the cache per file.
 _WALKS: dict = {}
 _KIDS: dict = {}
 _CONSUMED: dict = {}
@@ -142,14 +131,10 @@ def _kids(node):
 
 
 GUARDED_METHODS = {"read_text", "write_text"}
-# Openers that are somebody else's are recognised by the file's own imports rather than a fixed list, so `import tarfile
-# as tf` and `from PIL import Image` are both covered without naming either. These wrap their stream in a TextIOWrapper
-# for a "t" mode, which takes the platform default exactly like builtin open. Unlike open they default to "rb", so only
-# an explicit text mode is in scope. lzma takes encoding keyword-only.
+# Foreign openers are found via the file's imports. They default to "rb"; lzma takes
+# encoding keyword-only.
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
-# Wrappers that stay lazy, so draining one drains what it was given.
 LAZY_ADAPTERS = {"enumerate", "filter", "islice", "map", "reversed", "zip"}
-# Callables that drain a generator argument immediately.
 EAGER_CONSUMERS = {
     "all",
     "any",
@@ -164,18 +149,12 @@ EAGER_CONSUMERS = {
     "sum",
     "tuple",
 }
-# Values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
-# `Path.read_text(p)` is the unbound spelling of `p.read_text()`: same API, same platform default, but the instance
-# takes the first slot so every argument shifts one place right.
+# `Path.read_text(p)` is the unbound `p.read_text()`: arguments shift one place right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
-# Modules whose `open` IS the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
-# Receivers `self.SOURCE` and `cls.SOURCE` reach a class attribute through.
 SELF_NAMES = {"cls", "self"}
-# A module-level name is normally an anchor, since a fixture cannot reach one.
-# These build a directory the run owns, so a name rooted in one is temp I/O however it is spelled, and the platform
-# default there is harmless.
+# Module-level names are normally anchors, but names rooted in these are temp I/O.
 TEMP_FACTORIES = {
     "NamedTemporaryFile",
     "TemporaryDirectory",
@@ -183,7 +162,6 @@ TEMP_FACTORIES = {
     "mkdtemp",
     "mkstemp",
 }
-# Functions that hand back a path still pointing at their first argument.
 PATH_FUNCTIONS = {
     "abspath",
     "dirname",
@@ -195,7 +173,6 @@ PATH_FUNCTIONS = {
     "relpath",
     "str",
 }
-# Path methods that hand back another path, so the receiver is still the anchor.
 PATH_METHODS = {
     "absolute",
     "as_posix",
@@ -209,12 +186,10 @@ PATH_METHODS = {
     "with_stem",
     "with_suffix",
 }
-# Where each API takes its encoding positionally, for the bound call.
+# Positional encoding slot for each API's bound call.
 ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
-# Stand-in for a file whose imports are not to hand, so every helper can be called on its own without pretending it
-# knows what was imported.
 NO_MODULES: dict = {}
 
 
@@ -240,7 +215,6 @@ def _live_branches(node: ast.AST):
             return None
         return [node.test, node.body if taken else node.orelse]
     if isinstance(node, ast.BoolOp) and node.values:
-        # `and` stops at the first false operand, `or` at the first true one.
         stops = isinstance(node.op, ast.Or)
         live = []
         for value in node.values:
@@ -267,7 +241,6 @@ def _is_main_guard(node: ast.AST) -> bool:
     if not all(isinstance(op, ast.Eq) for op in node.test.ops):
         return False
     operands = [node.test.left, *node.test.comparators]
-    # Either spelling: `__name__ == "__main__"` or `"__main__" == __name__`.
     has_name = any(isinstance(o, ast.Name) and o.id == "__name__" for o in operands)
     has_main = any(isinstance(o, ast.Constant) and o.value == "__main__" for o in operands)
     return has_name and has_main
@@ -305,9 +278,7 @@ def _import_time_calls(tree: ast.Module):
     so that is walked), and non-name calls, which are left unresolved rather
     than guessed at.
     """
-    # Defs reachable from a scope that executes at import: module body, any class body, and (added when the helper is
-    # entered) any def nested inside a helper we follow.
-    # `class F: def _load(): ...; DATA = _load()` runs _load while the class is constructed.
+    # Defs reachable from import-time scopes: module body, class bodies, and nested helpers.
     helpers: dict = {}
 
     def _collect(body):
@@ -328,7 +299,7 @@ def _import_time_calls(tree: ast.Module):
         while stack:
             node = stack.pop()
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # The body waits for a call; these two run right now.
+                # The body waits for a call; decorators and defaults run right now.
                 stack.extend(node.decorator_list)
                 stack.extend(d for d in node.args.defaults if d is not None)
                 stack.extend(d for d in node.args.kw_defaults if d is not None)
@@ -343,23 +314,22 @@ def _import_time_calls(tree: ast.Module):
                     stack.append(node.generators[0].iter)
                 continue
             if _is_main_guard(node):
-                stack.extend(node.orelse)  # the else arm runs at import
+                stack.extend(node.orelse)
                 continue
             live = _live_branches(node)
             if live is not None:
-                stack.extend(live)  # the dead arm never runs, so nothing in it does
+                stack.extend(live)
                 continue
             if isinstance(node, ast.Call):
                 yield node
                 func = node.func
                 if isinstance(func, ast.Name) and func.id in helpers and func.id not in entered:
                     helper = helpers[func.id]
-                    # `READS = _load(paths)` on a generator function only builds the generator, so its body waits for a
-                    # consumer just as a genexp does.
+                    # Calling a generator function only builds the generator; its body waits for a consumer.
                     if not _is_generator(helper) or id(node) in consumed:
                         entered.add(func.id)
                         body = list(helper.body)
-                        _collect(body)  # a def nested here is now callable
+                        _collect(body)
                         frontier.append(body)
             stack.extend(_kids(node))
 
@@ -379,8 +349,7 @@ def _eagerly_consumed_uncached(tree: ast.Module) -> set:
     generator function. Neither runs its body until something pulls from it, so
     an unconsumed one has not happened yet.
     """
-    # `texts = (p.read_text() for p in ...)` then `list(texts)` consumes the generator through a name, so the name has
-    # to lead back to it.
+    # A generator consumed through a name must lead back to its definition.
     named: dict = {}
     for node in _walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -399,7 +368,7 @@ def _eagerly_consumed_uncached(tree: ast.Module) -> set:
             consumed.update(id(_resolve(a)) for a in node.args)
             consumed.update(id(_resolve(k.value)) for k in node.keywords)
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            consumed.add(id(_resolve(node.iter)))  # the loop pulls every item
+            consumed.add(id(_resolve(node.iter)))
     # `list(enumerate(_paths()))` drains _paths() as well, one wrapper down.
     by_id = {id(n): n for n in _walk(tree)}
     queue = [by_id[i] for i in list(consumed) if i in by_id]
@@ -466,7 +435,6 @@ def _module_level_names(tree: ast.Module) -> set:
     """Names assigned at module scope."""
 
     def _bound(target):
-        # `SOURCE, CONFIG = Path(...), Path(...)` binds both.
         if isinstance(target, ast.Name):
             yield target.id
         elif isinstance(target, (ast.Tuple, ast.List)):
@@ -492,8 +460,7 @@ def _module_level_names(tree: ast.Module) -> set:
                 continue
             names.update(_bound(node.target))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at its own module scope, so the import is
-            # an anchor like any constant.
+            # An imported module-scope path from another module is an anchor like any constant.
             names.update((a.asname or a.name).split(".")[0] for a in node.names)
     return names
 
@@ -513,8 +480,7 @@ def _local_names(func) -> set:
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            # A comprehension target binds in its own scope, so it shadows nothing out here; the rest of the
-            # comprehension still does.
+            # A comprehension target binds in its own scope, so it shadows nothing out here.
             for gen in node.generators:
                 stack.append(gen.iter)
                 stack.extend(gen.ifs)
@@ -580,8 +546,7 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
             visible.update(_import_bindings(node))
             return
         if isinstance(node, ast.If):
-            # Only a branch that certainly runs may bind a name for the code after it; the others are explored with a
-            # copy that is thrown away.
+            # Only a branch that certainly runs may bind a name for later code; others use a copy.
             taken = _static_truth(node.test)
             walk(node.test, visible)
             for arm, runs in ((node.body, taken is not False), (node.orelse, taken is not True)):
@@ -593,7 +558,7 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
             return
         for child in _kids(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                walk(child, dict(visible))  # its own scope, so its own copy
+                walk(child, dict(visible))
             else:
                 walk(child, visible)
 
@@ -717,15 +682,13 @@ def _path_root(node: ast.AST) -> ast.AST:
             node = node.value
         elif isinstance(node, ast.Call):
             func = node.func
-            # `p.rglob("*.py")` anchors on p, not on the pattern, while Path(x), str(x) and os.path.join(x, ...) anchor
-            # on the argument.
+            # `p.rglob(...)` anchors on p; Path(x), str(x), os.path.join(x, ...) anchor on the argument.
             if isinstance(func, ast.Attribute) and func.attr in PATH_METHODS:
                 node = func.value
             elif _is_path_preserving(func) and node.args:
                 node = node.args[0]
             else:
-                # An unrecognised call says nothing about where its result points, so tempfile.mkdtemp() and a helper
-                # that copies its argument into a temp dir both stop here.
+                # An unrecognised call says nothing about where its result points.
                 return node
         else:
             return node
@@ -740,8 +703,6 @@ def _is_checked_in_root(
 ) -> bool:
     """True when a path expression anchors on something that ships in the repo."""
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        # `for path in (MODEL_SELECTOR, APP_SIDEBAR)` is checked in when every element is, which is what makes the loop
-        # variable one too.
         return bool(node.elts) and all(
             _is_checked_in_root(
                 e.value if isinstance(e, ast.Starred) else e,
@@ -754,8 +715,7 @@ def _is_checked_in_root(
         )
     root = _path_root(node)
     if isinstance(root, ast.Constant) and isinstance(root.value, str):
-        # A relative literal naming something that exists here is checked in; a path the test creates at runtime is not
-        # in the tree to be found.
+        # A runtime-created path is not in the tree, so only existing relative literals count.
         value = root.value
         if not value or "\n" in value or "\0" in value or os.path.isabs(value):
             return False
@@ -764,7 +724,6 @@ def _is_checked_in_root(
         except OSError:
             return False
     if isinstance(root, ast.Attribute):
-        # `self.SOURCE`, where the class body bound SOURCE to a checked-in path.
         return root.attr in attrs
     if not isinstance(root, ast.Name):
         return False
@@ -792,8 +751,7 @@ def _class_path_attrs(tree: ast.Module, module_names: set) -> set:
             else:
                 continue
             bound = {t.id for t in targets if isinstance(t, ast.Name)}
-            # One attribute name, two classes, two meanings: only one of them is provable, so neither is claimed.
-            # Same rule as the local walk.
+            # One attribute name with two meanings in two classes: neither is claimed.
             found = attrs if _is_checked_in_root(stmt.value, module_names, ()) else mixed
             found.update(bound)
     return attrs - mixed
@@ -853,10 +811,8 @@ def _checked_in_locals(
         paired = False
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
-            paired = True  # `A, B = P1, P2` lines its sides up element by element
+            paired = True
         elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            # `for p in SRC_DIR.rglob("*.py")` binds p to a checked-in path too, and `for name, path in CASES` binds
-            # both to the same iterable.
             target, value = node.target, node.iter
         else:
             continue
@@ -871,7 +827,6 @@ def _checked_in_locals(
                 bad.add(node.id)
     args = func.args
     bad.update(a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs])
-    # A parameter every caller hands a checked-in path is the exception.
     bad -= set(seed)
     good: set = set(seed)
     while True:
@@ -880,8 +835,7 @@ def _checked_in_locals(
             for name, value in assignments
             if name not in bad and _is_checked_in_root(value, module_names, shadowed, good)
         }
-        # A name assigned a checked-in path somewhere and something else elsewhere stays out, since only one of the two
-        # is provable.
+        # A name assigned both a checked-in path and something else stays out.
         grown -= {
             name
             for name, value in assignments
@@ -942,8 +896,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     `_read` helper are two different functions, and merging them would let the
     one handed a tmp_path rule out what the other proves.
     """
-    # Every definition, plus which scope it was written in, so a call resolves to the nearest enclosing `def` of that
-    # name the way Python resolves it.
+    # Record each def's scope so calls resolve to the nearest enclosing def, as Python does.
     scope_of: dict = {}
     defs_in: dict = {}
 
@@ -968,8 +921,6 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
             scope = scope_of.get(id(scope))
         return None
 
-    # Which function each call sits in, so a parameter already known to hold a checked-in path can be passed on to the
-    # next helper.
     owner: dict = {}
 
     def _mark(node, owning):
@@ -980,8 +931,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
             _mark(child, child if nested else owning)
 
     _mark(tree, None)
-    # Which class body each call sits in, so `self._read(...)` resolves to that class's method and not a same-named one
-    # in a sibling class.
+    # So `self._read(...)` resolves to this class's method, not a sibling class's.
     in_class: dict = {}
 
     def _mark_class(node, cls):
@@ -1007,8 +957,7 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
             for argname, values in _parametrized_values(fnode).items():
                 ok = all(_is_checked_in_root(v, module_names, ()) for v in values)
                 (grown if ok else bad).add((id(fnode), argname))
-        # What the calling function itself can prove, recomputed each pass so a parameter resolved last time can feed a
-        # local this time.
+        # Recomputed each pass so a parameter resolved last time can feed a local this time.
         scope: dict = {}
         for call in _walk(tree):
             if not isinstance(call, ast.Call):
@@ -1022,7 +971,6 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
                 and isinstance(callee.value, ast.Name)
                 and callee.value.id in SELF_NAMES
             ):
-                # `self._read(ROOT / "x.py")` seeds `_read`'s path parameter too.
                 func, bound = _method(in_class.get(id(call)), callee.attr), True
             else:
                 continue
@@ -1039,7 +987,6 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
             positional = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
             if bound:
                 positional = positional[1:]  # the receiver already fills `self`
-            # A keyword-only parameter never takes a positional slot, so it is matched by name alone.
             params = positional + [a.arg for a in func.args.kwonlyargs]
             supplied = dict(zip(positional, call.args))
             supplied.update({k.arg: k.value for k in call.keywords if k.arg in params})
@@ -1084,12 +1031,10 @@ def _checked_in_path_calls(
     ):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _local_names(node)
-            # Seed with the parameters first: `p = root / "x.py"` is only derivable once `root` is known to hold a
-            # checked-in path.
+            # Seed parameters first: `p = root / "x.py"` needs `root` known as checked-in.
             seeded = {p for f, p in params if f == id(node)}
             derived = _checked_in_locals(node, module_names, shadowed, seeded)
         elif _is_main_guard(node):
-            # Never runs under pytest, so rule 1 skips it for the same reason.
             for child in node.orelse:
                 yield from visit(child, shadowed, derived)
             return
@@ -1178,23 +1123,19 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
     func = call.func
     if isinstance(func, ast.Attribute):
         receiver = func.value.id if isinstance(func.value, ast.Name) else None
-        # An unbound `Path.read_text(p)` puts the instance in slot 0, and `pathlib.Path.read_text(p)` is the same call
-        # fully qualified.
+        # Unbound `Path.read_text(p)` (or `pathlib.Path...`) puts the instance in slot 0.
         shift = 1 if _is_path_class(receiver, modules) or _is_path_attr(func.value) else 0
         if func.attr in GUARDED_METHODS:
             if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
-                # Bound read_text takes encoding first, so None or "locale" there is a platform-default read.
-                # Any other positional means the receiver is importlib.metadata's Distribution, whose argument is a
-                # filename and which takes no encoding at all.
+                # Bound read_text takes encoding first; any other positional is importlib.metadata's
+                # Distribution, which takes a filename and no encoding.
                 if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
                     return "read_text()"
                 return None
             position = ENCODING_POSITION[func.attr] + shift
             return None if _pins_encoding(call, position) else f"{func.attr}()"
         if func.attr == "open":
-            # io.open and builtins.open ARE the builtin, so they take the builtin's argument positions and the same
-            # platform default.
             if receiver is not None and _origin_root(receiver, modules) in BUILTIN_OPEN_MODULES:
                 if not _is_text(call, 1) or _pins_encoding(call, ENCODING_POSITION["open"]):
                     return None
@@ -1203,14 +1144,13 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
             if compressed is not None:
                 mode = _open_mode(call, 1)
                 if mode is UNKNOWN_MODE or "t" not in str(mode):
-                    return None  # "rb" default, so binary unless asked otherwise
+                    return None
                 return (
                     None
                     if _pins_encoding(call, COMPRESSED_OPENERS[compressed])
                     else f"{compressed}.open()"
                 )
-            # Any other module receiver is somebody else's opener: tarfile.open takes a compression mode, Image.open
-            # takes a binary file.
+            # Other module receivers are foreign openers: tarfile takes a compression mode, Image binary.
             if (
                 receiver is not None
                 and receiver in modules
@@ -1227,13 +1167,12 @@ def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
         return None
     if isinstance(func, ast.Name):
         alias = _open_alias(func.id, modules)
-        # Binary handles have no encoding to name.
         if alias == "builtin" and _is_text(call, 1):
             return None if _pins_encoding(call, ENCODING_POSITION["open"]) else "open()"
         if alias is not None and alias != "builtin":
             mode = _open_mode(call, 1)
             if mode is UNKNOWN_MODE or "t" not in str(mode):
-                return None  # "rb" default, so binary unless asked otherwise
+                return None
             position = COMPRESSED_OPENERS[alias]
             return None if _pins_encoding(call, position) else f"{alias}.open()"
     return None
@@ -1244,8 +1183,7 @@ def _scan(tree: ast.Module, rel: str):
     try:
         yield from _scan_one(tree, rel)
     finally:
-        # This file's nodes are about to become unreachable, and a later file's
-        # node could then land on one of their ids.
+        # Freed nodes' ids can be reused by a later file's nodes.
         _WALKS.clear()
         _KIDS.clear()
         _CONSUMED.clear()
@@ -1276,10 +1214,7 @@ def _scan_one(tree: ast.Module, rel: str):
             yield f"{rel}:{call.lineno}: {name}"
 
 
-# Scanning every file was one test, and a single test is one xdist worker, so
-# it set the floor for the whole suite however many workers were free. The
-# files are independent, so the same scan splits into batches that run in
-# parallel. Every file is still scanned exactly once, by exactly one batch.
+# Batched so the scan spreads across xdist workers; each file is still scanned once.
 _BATCHES = 16
 
 

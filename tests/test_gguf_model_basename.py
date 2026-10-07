@@ -51,11 +51,9 @@ def _load_helper():
     )
 
 
-# Table A: the basename contract.
-# (label, config._name_or_path, expected model_name) Rows marked REGRESSION must be byte-identical to the old
-# .split("/")[-1].
+# (label, config._name_or_path, expected model_name). REGRESSION rows must match the old
+# .split("/")[-1] byte for byte.
 _TABLE_A = [
-    # -- REGRESSION rows: behaviour must not change -------------------------
     ("hf_id", "unsloth/Qwen3-8B", "Qwen3-8B"),
     ("hf_id_nested", "meta-llama/Llama-2-7b-hf", "Llama-2-7b-hf"),
     ("bare_name", "Qwen3-8B", "Qwen3-8B"),
@@ -63,7 +61,6 @@ _TABLE_A = [
     ("posix_rel", "./models/MyModel", "MyModel"),
     ("wsl_mount", "/mnt/d/Models/MyModel", "MyModel"),
     ("win_forward_slashes", "D:/Models/MyModel", "MyModel"),
-    # -- BUG rows: broken today ---------------------------------------------
     ("posix_trailing_sep", "/home/u/models/MyModel/", "MyModel"),
     ("win_drive_abs", r"D:\Models\Merged Models\MyModel", "MyModel"),
     ("win_drive_trailing", "D:\\Models\\MyModel\\", "MyModel"),
@@ -77,7 +74,7 @@ _TABLE_A = [
     ("win_short_name", r"C:\Models\MYMODE~1", "MYMODE~1"),
     ("win_double_dot_name", r"C:\Models\MyModel..v2", "MyModel..v2"),
     ("repeated_seps", "D:\\Models\\\\MyModel", "MyModel"),
-    # -- degenerate rows: must never yield "" (a hidden .Q4_K_M.gguf) --------
+    # degenerate rows: must never yield "" (a hidden .Q4_K_M.gguf)
     ("drive_root", "D:\\", "model"),
     ("bare_drive", "D:", "model"),
     ("empty", "", "model"),
@@ -143,7 +140,6 @@ def test_helper_is_idempotent():
         assert helper(once) == once
 
 
-# The join arithmetic this protects (real ntpath, no mocking).
 _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
 
 
@@ -236,8 +232,7 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
                     return True
         return False
 
-    # Locals bound before `arguments = dict(locals())`. Names bound only in a branch
-    # that always returns/raises (the save_method="lora" early exit) never reach it.
+    # Names bound only in a branch that always returns (save_method="lora") never reach `arguments`.
     bound: set[str] = set()
     saw_snapshot = False
     for stmt in fn.body:
@@ -254,7 +249,6 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
         "if that changed, this guard needs updating"
     )
 
-    # Names deleted from `arguments` before the splat.
     deleted = set(re.findall(r'del\s+arguments\[[\'"](\w+)[\'"]\]', body))
 
     params = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}

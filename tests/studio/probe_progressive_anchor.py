@@ -37,7 +37,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from playwright_heavy_thread import RECORDER_INIT  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - the message IS the behaviour
-    # #9016 is not merged, so its fixture files are absent and this import is where that becomes visible.
     raise SystemExit(
         "probe_progressive_anchor needs #9016's heavy-thread harness, which is not on this "
         "branch yet: tests/studio/playwright_heavy_thread.py plus "
@@ -60,7 +59,6 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/progressive-anchor"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# How far up to scroll on the frame the thread comes back.
 SCROLL_UP_PX = int(os.environ.get("SMOKE_ANCHOR_SCROLL_PX", "4000"))
 SETTLE_MS = int(os.environ.get("SMOKE_ANCHOR_SETTLE_MS", "8000"))
 
@@ -69,8 +67,7 @@ def info(message: str) -> None:
     print(f"[anchor] {message}", flush = True)
 
 
-# Stage 1, in the page: unmount and re-open, returning as soon as the first row paints so the caller can scroll up while
-# the widening is still in flight.
+# Returns once the first row paints so the caller can scroll while widening is in flight.
 REOPEN_JS = """
 async () => {
   const api = window.__heavyThread;
@@ -104,7 +101,6 @@ async () => {
 }
 """
 
-# Stage 3, in the page: pick an on-screen message and sample its position every frame until the thread converges.
 SAMPLE_JS = """
 async ([before, settleMs]) => {
   const api = window.__heavyThread;
@@ -177,8 +173,7 @@ def main() -> int:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless = True, args = chromium_launch_args())
             context = browser.new_context(viewport = {"width": 1280, "height": 900})
-            # Reuse #9016's instrumentation: __nextPaint is the double-rAF this samples on, and it must be the SAME
-            # clock the re-open column uses or the numbers are not comparable.
+            # __nextPaint must be the same clock the re-open column uses.
             context.add_init_script(RECORDER_INIT)
             page = context.new_page()
             page.goto(PAGE, wait_until = "domcontentloaded")
@@ -196,10 +191,8 @@ def main() -> int:
                 if opened is None:
                     info("fixture did not land")
                     return 1
-                # A REAL wheel from the input pipeline, over a message rather than the scroll container. A synthetic
-                # dispatchEvent on the viewport does not detach: the hook asks innerScrollWillConsumeUpward(e.target)
-                # whether something nested will consume the gesture, and an event dispatched ON the viewport answers
-                # about the viewport itself. The first version did that and its own guard caught it.
+                # A real wheel over a message: a synthetic event dispatched on the viewport never detaches, since
+                # innerScrollWillConsumeUpward(e.target) then answers about the viewport itself.
                 if not opened["widenedBeforeScroll"]:
                     info("no widening landed before the scroll; the fixture is not long enough")
                     return 1
@@ -245,7 +238,6 @@ def main() -> int:
     print()
     info(f"wrote {OUT / f'{LABEL}.json'}")
 
-    # The only failure asserted: it must have caught what it claims to measure.
     if not any(r["caughtWidening"] for r in results):
         info(
             "PROBE-BROKEN the thread was already whole at the first paint in every repetition, so "

@@ -60,22 +60,14 @@ FAILED = "failed"
 OK = "ok"
 NOT_BUILT = "not_built"
 
-# A function whose counts are all this small carries almost no information and collides with
-# everything. Excluded from matching, and the exclusion is reported so the bridge's coverage is
-# visible.
+# Low-count functions collide with everything; excluded and reported.
 MIN_INFORMATIVE_COUNT = 2
 
-# Above this share of resolved mappings being name-identical (`push` -> `push`), the two arms are
-# almost certainly the same build. Some identity is EXPECTED: React's release minifier leaves
-# scheduler entry points alone and `keepNames` preserves others, so a genuine bridge on a real
-# React 19.2.4 pair came in at roughly 0.1 against exactly 1.0 for a same-build pair.
-# Untouched: `push`, `peek` and `performWorkUntilDeadline`.
+# Some identity is expected (React leaves scheduler entry points unminified): ~0.1 for a real
+# pair against 1.0 for a same-build pair.
 MAX_IDENTITY_MAPPING_FRACTION = 0.5
 
-# NOTE FOR THE NEXT PERSON: you cannot detect 'is this the development build?' from function-name
-# length. Measured on the real pair, the development bundle had a median react-dom name length of
-# 19 with 97.6% of names four characters or more, and the PRODUCTION bundle a median of 19 with
-# 95.4%. The checks below are structural instead.
+# Function-name length cannot detect a development build (medians were equal); checks are structural.
 
 
 @dataclass(frozen = True)
@@ -112,13 +104,11 @@ class Bridge:
     rungs: tuple[str, ...] = ()
     # prod function key -> dev function name
     mapping: dict[str, str] = field(default_factory = dict)
-    # prod function key -> the count vector that matched it, for auditing
     evidence: dict[str, list[int]] = field(default_factory = dict)
     ambiguous_prod: list[str] = field(default_factory = list)
     ambiguous_dev: list[str] = field(default_factory = list)
     unmatched_prod: int = 0
-    # Resolved functions whose dev name equals their prod name. Expected to be small and non-zero;
-    # near 100% means both arms were the same build.
+    # Near 100% means both arms were the same build.
     identity_mappings: int = 0
     anchors_checked: int = 0
     anchor_failures: list[str] = field(default_factory = list)
@@ -126,8 +116,7 @@ class Bridge:
 
     @staticmethod
     def prod_key(url: str, start_offset: int, end_offset: int) -> str:
-        # The URL is reduced to its basename because an Unsloth install serves the same bundle from a
-        # hashed path that changes per install, while the offsets inside it do not.
+        # Basename only: the bundle's hashed path changes per install, its offsets do not.
         return f"{os.path.basename(url)}:{start_offset}:{end_offset}"
 
     def resolve(self, url: str, start_offset: int, end_offset: int) -> str | None:
@@ -359,7 +348,6 @@ def build_bridge(
         rungs = tuple(rungs),
     )
 
-    # ---- anchor validation, on our own app code, both sides named ----------
     dev_all = vectors_from_snapshots(dev_snapshots, "dev", url_filter = anchor_url_filter)
     prod_all = vectors_from_snapshots(prod_snapshots, "prod", url_filter = anchor_url_filter)
     dev_by_name: dict[str, list[FunctionVector]] = {}
@@ -401,12 +389,7 @@ def build_bridge(
         )
         return bridge
 
-    # The two arms must actually be two different builds. THE FAILURE THIS CLOSES: if both arms are
-    # pointed at the same server, every count vector matches trivially, EVERY ANCHOR PASSES because
-    # an anchor genuinely does map to itself, and the bridge reports `ok` with a mapping of `Zk` to
-    # `Zk`. The anchor check cannot catch it: anchors test invariance and same-build is perfectly
-    # invariant.
-    # ---- the two arms must actually be two different builds -----------------
+    # The arms must be different builds: same-build arms pass every anchor trivially.
     dev_all_keys = {v.key for v in dev_all if v.informative}
     prod_all_keys = {v.key for v in prod_all if v.informative}
     if dev_all_keys and dev_all_keys == prod_all_keys:
@@ -419,7 +402,6 @@ def build_bridge(
         )
         return bridge
 
-    # ---- the actual matching, restricted to react-dom ----------------------
     dev_react = vectors_from_snapshots(dev_snapshots, "dev", url_filter = react_url_filter)
     prod_react = vectors_from_snapshots(prod_snapshots, "prod", url_filter = react_url_filter)
     dev_index, dev_ambiguous = _index_unique(dev_react)
@@ -450,8 +432,7 @@ def build_bridge(
         )
         return bridge
 
-    # Second guard on the same failure, for arms that differ in offsets but are still the same code:
-    # if nearly every resolved name maps to itself, no minification was undone.
+    # Second guard: same code at different offsets maps nearly every name to itself.
     fraction = identical_names / matched
     if fraction > MAX_IDENTITY_MAPPING_FRACTION:
         bridge.status = FAILED

@@ -30,9 +30,7 @@ from studiobench.scene import actions as A  # noqa: E402
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 
-#: A Radix Collapsible reduced to the two things `dom.js` reads: `data-state` on the ROOT, and a
-#: trigger that flips it. The content stays mounted when collapsed, exactly as Radix leaves it, so a
-#: presence check would read every pane as open and the assertion could never fail.
+#: Radix keeps collapsed content mounted, so only root `data-state` tells open from closed.
 BODY_TEMPLATE = """<!doctype html><meta charset=utf-8><title>t</title>
 <div class="aui-thread-root"><div class="aui-thread-viewport" id="vp"></div></div>
 <script>
@@ -106,7 +104,7 @@ def make_page(browser):
             "__SPANS__", str(spans_per_pane)
         )
         page.set_content(body)
-        # `set_content` does not reliably run an init script, so the module is attached after.
+        # `set_content` does not reliably run init scripts, so attach the module after.
         page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
         opened.append(page)
         return page
@@ -135,8 +133,6 @@ def test_it_opens_exactly_one_pane_and_leaves_the_rest_shut(make_page):
     assert got.expect_ok is True, got.reason
     assert got.expect["open_after_expand"] == 1
     assert got.expect["open_after_collapse"] == 0
-    # The thread's pane count is reported as CONTEXT beside a fixed gesture; without it the reading
-    # cannot be told apart from the thread-wide one in a payload.
     assert got.expect["panes"] == 8
     assert got.expect["panes_opened"] == 1
 
@@ -149,7 +145,6 @@ def test_the_cost_does_not_scale_with_thread_length(make_page):
     small = A.reasoning_toggle_one(_ctx(make_page(panes = 2, spans_per_pane = 4)))
     large = A.reasoning_toggle_one(_ctx(make_page(panes = 40, spans_per_pane = 4)))
     assert small.ran and large.ran
-    # Twentyfold the thread, the same number of spans revealed.
     assert small.expect["highlight_spans_added"] == large.expect["highlight_spans_added"] == 4
 
 

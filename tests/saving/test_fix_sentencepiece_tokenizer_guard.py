@@ -6,10 +6,7 @@ os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import transformers
 
-# Same accessor unsloth.tokenizer_utils uses.
-# The legacy `transformers.utils.sentencepiece_model_pb2` is generated against protobuf 3.x and raises on protobuf >= 4
-# ("Descriptors cannot be created directly"), or collides with sentencepiece's own copy ("duplicate file name
-# sentencepiece_model.proto") once that one is loaded first.
+# Same accessor as unsloth.tokenizer_utils: the legacy sentencepiece_model_pb2 breaks on protobuf >= 4.
 from transformers.convert_slow_tokenizer import import_protobuf
 
 sentencepiece_model_pb2 = import_protobuf()
@@ -129,7 +126,7 @@ def test_token_mapping_is_applied_to_the_sentencepiece_model(tmp_path, monkeypat
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    # Hold the returned tokenizer so its scratch dir survives until we read it.
+    # Hold the tokenizer so its scratch dir survives until we read it.
     tok = fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
 
     assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")
@@ -182,7 +179,6 @@ def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
     assert work1 != work2, "two calls reused the same directory"
     assert os.path.dirname(work1) == location and os.path.dirname(work2) == location
     assert os.path.isdir(work1) and os.path.isdir(work2)
-    # Nothing the caller left behind is deleted, and it never leaks into a work dir.
     assert os.path.isfile(marker), "a pre-existing scratch file was deleted"
     assert not os.path.isfile(os.path.join(work1, "leftover.json"))
     assert not os.path.isfile(os.path.join(work2, "leftover.json"))
@@ -304,7 +300,7 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
     old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"aa": 1, "bb": 2})
     new = _FakeTokenizer("new")
 
-    # Caller skipped aa->X (X already exists) and applied bb->Y, so only bb->Y is passed.
+    # The caller skipped aa->X (X exists), so only bb->Y is passed.
     tok = fix_sentencepiece_tokenizer(old, new, {"bb": "Y"}, temporary_location = location)
 
     result = _read_pieces(f"{loaded[-1]}/tokenizer.model")

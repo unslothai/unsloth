@@ -146,26 +146,15 @@ def _ignore_glob_hits(pattern: str, path: str) -> bool:
     return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, f"*/{pattern}")
 
 
-# Two different trees are run in parallel now, and the isolation below belongs to exactly one of them. The repo-root
-# job runs `tests/` from the checkout; the matrix job runs the backend's own suite with
-# `working-directory: studio/backend`, so `tests/studio/...` is not a path that exists for it.
-# Told apart by the selection they carry. This used to be one flag, `--ignore=tests/qlora`, which only the repo-root
-# run had; the repo-root run is three shards now and only one of them carries that flag, so the test is membership of
-# the matrix instead. The backend matrix run is not in it.
-#
-# Both sides are membership now. The backend run used to be told apart by one of its --ignore flags, which stopped
-# identifying it once it was sharded the same way and its flags moved onto a shared step. Reading each side out of its
-# own job's matrix is the same question asked the same way twice, and it cannot start matching the other job by
-# accident the way a shared flag can; the shape test below asserts the two sets stay disjoint.
+# The repo-root and backend matrix jobs are told apart by membership of each job's own matrix
+# selection; the shape test below keeps the two sets disjoint.
 
 
 def _over_the_repo_tests(command: str) -> bool:
     return any(selection in command for selection in _selections("repo-cpu-tests"))
 
 
-# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and running it again serially is
-# two edits held together by nothing, and dropping the second is silent: the job stays green while the tests stop
-# running.
+# Ignored in the parallel run and rerun serially; dropping the rerun would be silent.
 BACKEND_ISOLATED = [
     ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
@@ -178,25 +167,17 @@ BACKEND_ISOLATED = [
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
     ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
-    # Found by staging rather than by the scan, and the scan cannot find it: see below.
+    # Found by staging; the scan cannot find it (see below).
     (
         "tests/test_tunnel_safe_long_post.py",
         ":101 requires len(chunks) > 2, which one 100ms stall falsifies",
     ),
     ("tests/test_scan_loras_off_event_loop.py", "counts heartbeats during a 0.3s sleep"),
     ("tests/test_anthropic_messages.py", "counts SSE keepalives emitted during a 0.24s stall"),
-    # The tick count is not the tight part of this file: it has 5x margin. :400 is,
-    # `assert elapsed < 0.2` around a join that already costs 0.03s on an idle box.
+    # Tight at :400: `assert elapsed < 0.2` around a 0.03s join.
     ("tests/test_profile_stats.py", ":400 asserts elapsed < 0.2 around a 0.03s join"),
-    # Was ignored by the parallel run and rerun serially and named in NEITHER direction
-    # here, so the file was the one thing this guard cannot see: deleting it from the
-    # serial step would have left it running nowhere with the job green. It qualifies
-    # twice over. Timing-tight at :1101 `assert started.is_set()` under a patched
-    # _SWITCH_BUDGET_S = 0.3, against a cold path the file itself records at 1.98s -- and
-    # like test_tunnel_safe_long_post, the assertion is on a RESULT rather than on a
-    # duration, so the scan below cannot reach it. State-mutating as well: it writes
-    # keepwarm globals directly at :2628-2630. It has already failed this way once on
-    # 3.13 while 3.10 passed the same commit.
+    # Timing-tight on a result at :1101 (patched _SWITCH_BUDGET_S = 0.3 vs a 1.98s cold path), and
+    # it mutates keepwarm globals at :2628-2630.
     (
         "tests/test_media_auto_switch.py",
         ":1101 asserts started.is_set() under a patched 0.3s budget on a 1.98s cold path, "
@@ -204,35 +185,12 @@ BACKEND_ISOLATED = [
     ),
 ]
 
-# What the scan above does NOT cover, recorded because the gap is structural rather than a missing case. It finds
-# assertions that COMPARE clock-derived values. A test can depend on timing without any clock in it at all:
-# test_tunnel_safe_long_post patches the keepalive threshold to 0.05s and makes the work sleep 0.2s, then asserts on
-# the RESULT -- that the response starts with padding -- so whether it passes turns on which of two timers fired
-# first, and nothing in the expression is a duration. It failed exactly that way on a staging 3.13 leg that had been
-# green.
-#
-# test_scan_loras_off_event_loop is the same shape from the other direction: it counts how many times a heartbeat
-# coroutine ticked during a 0.3s sleep and requires at least three. Descheduling the worker costs ticks without the
-# scan being wrong, and the assertion compares a COUNT, so again there is no duration to find.
-#
-# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the threshold was not enough
-# margin for the one that failed, so the ratio is not a usable rule, and flagging all ten would serialise a large part
-# of the suite on a guess.
-#
-# So this class is found by reading rather than by scanning. The first arrived from a staging failure, the second from
-# review, and the third from reading the other eight candidates once the shape was clear: test_anthropic_messages
-# counts SSE keepalives emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as the
-# heartbeat test loses ticks.
-#
-# That same pass turned up one false positive worth naming, because the grep that finds these is crude:
-# test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but `staged` is a list comprehension over cached
-# filenames and has no timing in it at all. It also costs 152s, so isolating it on the strength of a pattern match
-# would have been expensive as well as wrong. Read the assertion before adding a file here.
+# The scan only finds assertions comparing clock-derived values. Tests that race timers but
+# assert a result or a count (test_tunnel_safe_long_post, test_scan_loras_off_event_loop,
+# test_anthropic_messages) are found by reading. Read the assertion before adding a file:
+# test_diffusion_backend looks timing-related but is not.
 
-# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so under four workers on four
-# vCPUs it measures the scheduler as much as the code. Above it there is enough headroom to survive being descheduled.
-# Twenty-two backend files assert some elapsed bound and serialising all of them would give back most of what -n 4
-# buys, so the line is drawn where the measurement stops being about the code.
+# Below this an elapsed bound is within one scheduler quantum under -n 4 on four vCPUs.
 TIGHT_BOUND_S = 0.1
 
 
@@ -244,39 +202,23 @@ BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "te
 _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 
 
-# Sites the scan finds and a human has read. The scan looks for a comparison between two clock-derived quantities,
-# which is the right net to cast, but not every such comparison is a performance claim. None of these can be broken
-# by descheduling:
-#
-#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two reads. Widening the gap cannot
-#   falsify it.
-#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the pattern that replaces a
-#   guessed sleep. Its 5s budget is a timeout, not a measurement.
-#   a SENTINEL, `stamp < 0.0`, compares against a magic value rather than a duration.
-#
-# Keyed on the enclosing function rather than a line number, so an edit above it does not silently move the exemption
-# onto something else.
+# Scan hits a human has read and found benign: sandwiches (`before <= t <= after`), poll
+# deadlines, and sentinels. Keyed on the enclosing function, not a line number.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
-    # A 10 s poll deadline: descheduling only delays the poll, it cannot make the condition false.
     ("test_npu_chat_route.py", "_wait_for"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
-    # A 600-second expiry checked against the wall clock.
-    # Reading both sides of that gap late by whole seconds still leaves it true, and it only reaches this scan at all
-    # because the widened operand walk now reads `x > time.time()` as a bound.
+    # A 600-second expiry vs the wall clock; late reads cannot make it false.
     (
         "test_openai_codex_subscription.py",
         "test_account_claim_and_token_response_are_validated_without_returning_raw_body",
     ),
-    # A precondition, not a measurement: the snapshot is back-dated by _CACHE_TTL_S + 1s and the window is
-    # max(_CACHE_TTL_S, 0.0 * duty) because the last scan duration is pinned to 0.0, so the age starts a whole second
-    # past the bound and a descheduled worker only makes it older.
+    # A precondition: the snapshot is back-dated past the TTL, so descheduling only ages it more.
     (
         "test_account_local_model_resolver.py",
         "test_a_warm_scan_queues_behind_another_accounts_scan",
     ),
-    # A poll deadline: FakeSmi.wait_for_call loops until the fake nvidia-smi has logged the expected children and only
-    # asserts `time.monotonic() < deadline` against a 30s budget, so a descheduled worker just polls longer.
+    # A poll deadline with a 30s budget.
     ("test_gpu_query_cache.py", "wait_for_call"),
 }
 
@@ -322,8 +264,7 @@ def _timing_helpers(tree: ast.AST) -> set:
         for node in functions:
             if node.name in helpers:
                 continue
-            # With the helpers found so far, not without them: `value = base()` inside a wrapper only counts as
-            # timed once `base` is known, and the pass that learns `base` is not the pass that reads the wrapper.
+            # A wrapper only counts as timed once `base` is known from an earlier pass.
             local = _timed_names(node, helpers)
             for inner in ast.walk(node):
                 if not isinstance(inner, ast.Return) or inner.value is None:
@@ -416,7 +357,6 @@ def _fragile_timing_asserts(path: Path) -> list:
     except SyntaxError:
         _FRAGILE_CACHE[key] = []
         return []
-    # Helpers first: a name can hold a duration only because a helper returned one.
     helpers = _timing_helpers(tree)
     names = _timed_names(tree, helpers)
     enclosing = {}
@@ -434,16 +374,11 @@ def _fragile_timing_asserts(path: Path) -> list:
         for cmp_node in ast.walk(node.test):
             if not isinstance(cmp_node, ast.Compare):
                 continue
-            # Every adjacent pair, not just the one starting at cmp_node.left.
-            # A chained `0.3 <= elapsed < 2.0` is a single Compare whose first operand is a literal, so requiring the
-            # leftmost operand to be timed skipped the `elapsed < 2.0` link and let the file stay in the -n 4 run with
-            # the guard still green.
-            # test_llama_cpp_wait_for_vram_settle.py already writes bounds that way.
+            # Every adjacent pair: a chained `0.3 <= elapsed < 2.0` starts with a literal.
             operands = [cmp_node.left, *cmp_node.comparators]
             for index, op in enumerate(cmp_node.ops):
                 lower, upper = operands[index], operands[index + 1]
                 if isinstance(op, (ast.Gt, ast.GtE)):
-                    # `0.05 > elapsed` bounds the same thing from the same side.
                     lower, upper = upper, lower
                 elif not isinstance(op, (ast.Lt, ast.LtE)):
                     continue
@@ -504,9 +439,7 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
         f"expected the three backend shards, got {backend}. Same reason: the backend "
         f"isolation checks apply to those."
     )
-    # The two jobs are told apart by whose matrix a command's paths came out of, so the sets have to be disjoint or
-    # each job's isolation rules would be applied to the other's runs -- which is how tests/studio/... would come to be
-    # asked of a run whose working directory is studio/backend.
+    # The two jobs' sets must be disjoint or each job's isolation rules apply to the other.
     assert not set(root) & set(
         backend
     ), f"a command reads as belonging to both jobs: {set(root) & set(backend)}"
@@ -514,16 +447,14 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
         f"a parallel run belongs to neither job's matrix, so nothing below checks it: "
         f"{[command for command in parallel if command not in root + backend]}"
     )
-    # The line joins and the matrix substitution both have to be resolved, or a shard command reads as
-    # `pytest ${{ matrix.selection }} -q` with no paths at all and the first test above passes on nothing.
+    # Line joins and matrix substitution must be resolved, or a command has no paths.
     assert all("${{" not in command for command in root + backend)
     assert any("--ignore=" in command for command in root)
     assert {command for command in root} == set(root), "a shard selection appears twice"
     assert len(set(backend)) == 3, "a backend shard selection appears twice"
-    # Non-vacuous for the backend side too: the shards between them must reach the backend suite.
+    # Non-vacuous for the backend side too.
     assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
-    # Non-vacuous the other way too: the shards between them must reach the repo's test root, or "not collected by any
-    # parallel run" would be true of every path in the repo.
+    # Non-vacuous for the repo root too.
     assert any(_collects(command, "tests/test_model_registry.py") for command in root)
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 
@@ -559,8 +490,7 @@ def test_a_backend_isolated_path_is_ignored_by_the_parallel_run(path, reason):
         if " -n " in f" {command} " and _over_the_backend(command)
     ]
     assert parallel, "the backend parallel run is gone or was renamed past this scan"
-    # Asked of EVERY shard, as "does this run reach the path" rather than "does it spell
-    # this --ignore", so a shard that quietly grew its own root still has to get past it.
+    # Asked of every shard as "does it reach the path", not "does it spell this --ignore".
     for command in parallel:
         assert not _collects(command, path), (
             f"{path} ({reason}) is back in a backend parallel run, where its measurements "
@@ -664,7 +594,7 @@ def test_the_scan_finds_all_three_shapes(tmp_path):
             "could carry a 50ms bound into the -n 4 run unnoticed"
         )
 
-    # And quiet on a bound with headroom, or every anti-hang ceiling goes serial for nothing.
+    # Quiet on a bound with headroom, or every anti-hang ceiling goes serial.
     roomy = tmp_path / "test_roomy.py"
     roomy.write_text(
         "import time\n"
@@ -677,8 +607,7 @@ def test_the_scan_finds_all_three_shapes(tmp_path):
     )
     assert not _fragile_timing_asserts(roomy), _fragile_timing_asserts(roomy)
 
-    # Deliberately nothing about the live suite: the synthetic files cover every shape, and
-    # asserting the suite still has some would turn cleaning the last one into a failure.
+    # Nothing about the live suite: cleaning the last offender must not fail this.
 
 
 def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():

@@ -45,7 +45,6 @@ def tree(tmp_path: Path):
     for name in ("Llama3_2_(1B_and_3B)_Conversational.ipynb", "Gemma3_(4B).ipynb"):
         (dest / "nb" / name).write_text("{}", encoding = "utf-8")
     (dest / "README.md").write_text(README, encoding = "utf-8")
-    # the user's own notebook inside the checkout, plus their own shortcut folder
     (dest / "my_work").mkdir()
     (dest / "my_work" / "experiment.ipynb").write_text("{}", encoding = "utf-8")
     return dest, view
@@ -88,7 +87,6 @@ def test_the_tools_own_stale_links_are_still_cleaned_up(view_mod, tree):
     generated = view / "02 Gemma" / "Gemma3_(4B).ipynb"
     assert os.path.islink(generated)
 
-    # upstream drops the notebook: the stale link and its emptied folder must go
     (dest / "nb" / "Gemma3_(4B).ipynb").unlink()
     (dest / "README.md").write_text(
         "### Main Notebooks\n[Llama](nb/Llama3_2_%281B_and_3B%29_Conversational.ipynb)\n",
@@ -108,10 +106,7 @@ def test_a_rebuild_is_stable_for_the_links_it_owns(view_mod, tree):
     assert sorted(str(p.relative_to(view)) for p in view.rglob("*")) == first
 
 
-# The view is built as root while /workspace is a host bind mount, so every directory
-# the tool creates has to be handed back to whoever owns the mount. The tests run
-# unprivileged, where a chown to the anchor's own uid is a no-op and therefore
-# invisible in the result, so record the calls instead of inspecting st_uid.
+# Unprivileged chown to the same uid is a no-op, so record calls instead of st_uid.
 
 
 @pytest.fixture
@@ -131,7 +126,7 @@ def test_the_view_root_and_every_category_folder_are_handed_to_the_host_user(
     view_mod, tree, chowns
 ):
     dest, view = tree
-    view.rmdir()  # first boot: the tool creates the view root itself
+    view.rmdir()
     anchor = os.stat(view.parent)
 
     view_mod.build_view(str(dest), str(view))
@@ -145,7 +140,7 @@ def test_the_view_root_and_every_category_folder_are_handed_to_the_host_user(
 def test_an_existing_directory_is_left_alone(view_mod, tree, chowns):
     """Only directories this run created are re-owned. Chowning one the user already
     had would take their view away rather than give it to them."""
-    dest, view = tree  # the fixture already created the view root
+    dest, view = tree
     view_mod.build_view(str(dest), str(view))
     assert str(view) not in [c[0] for c in chowns], chowns
 

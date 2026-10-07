@@ -37,8 +37,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-# The selector and everything it calls, in source order. Sliced rather than copied, so a change to
-# install.ps1 that this file does not expect fails here instead of passing against a stale paste.
+# Sliced from install.ps1 rather than copied, so an unexpected change there fails here.
 _FIRST = "    function Resolve-StudioUvCachePath {"
 _LAST = "    function Restore-StudioUvCacheEnvironment {"
 
@@ -47,7 +46,7 @@ def _selector_source() -> str:
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     start = source.index(_FIRST)
     end = source.index(_LAST)
-    # Dedented one level: the functions live inside Install-UnslothStudio in the real file.
+    # Dedented: these functions live inside Install-UnslothStudio in the real file.
     return "\n".join(
         line[4:] if line.startswith("    ") else line for line in source[start:end].splitlines()
     )
@@ -99,8 +98,7 @@ def _select(
     env: dict | None = None,
 ) -> dict:
     studio_root.mkdir(parents = True, exist_ok = True)
-    # A .ps1 rather than a shell script, so this runs on the Windows agents too; `exit 0` so
-    # $LASTEXITCODE is set, which is what the selector reads before trusting the answer.
+    # A .ps1 stub so this runs on Windows agents; `exit 0` sets $LASTEXITCODE, which the selector reads.
     stub = studio_root.parent / "uv-stub.ps1"
     stub.write_text(f"Write-Output {_ps_literal(uv_answer)}\nexit 0\n", encoding = "utf-8")
     merged = {
@@ -109,8 +107,7 @@ def _select(
         if key not in ("UV_CACHE_DIR", "UV_NO_CACHE")
     }
     merged.update(env or {})
-    # run_pwsh, not subprocess.run: a pwsh that dies at startup would read here as the selector
-    # answering the wrong mode. See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh: a pwsh that dies at startup must not read as a wrong selector answer.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script(studio_root, stub, isolated)],
         check = True,
@@ -140,9 +137,6 @@ def _record(studio_root: Path, cache: Path) -> None:
     (studio_root / "cache" / "uv-cache-dir").write_text(f"{cache}\n", encoding = "utf-8")
 
 
-# ── the modes that already worked, so a regression in the port is visible ──────────────────
-
-
 @requires_pwsh
 def test_a_warm_default_is_reused_and_the_launch_repoints(tmp_path):
     default = _warm(tmp_path / "uvdefault")
@@ -150,9 +144,8 @@ def test_a_warm_default_is_reused_and_the_launch_repoints(tmp_path):
     verdict = _select(root, str(default))
     assert verdict["mode"] == "shared", verdict
     assert verdict["dir"] == str(default), verdict
-    # The install fills the shared cache; the launch must not leave the backend pointed at it.
     assert verdict["launch"] == str(root / "cache" / "uv"), verdict
-    # And the marker names what the INSTALL used, which is what the update reads.
+    # The marker names what the INSTALL used, which is what the update reads.
     assert verdict["marker"] == str(default), verdict
 
 
@@ -179,7 +172,6 @@ def test_a_caller_override_still_outranks_everything(tmp_path):
     )
     assert verdict["mode"] == "custom", verdict
     assert verdict["dir"] == str(mine), verdict
-    # No repoint for a cache the caller chose.
     assert verdict["launch"] == str(mine), verdict
 
 
@@ -220,9 +212,6 @@ def test_the_same_two_branches_do_record_without_uv_no_cache(tmp_path, isolated)
     assert verdict["marker"] != "", verdict
 
 
-# ── the four rules install.sh gained and install.ps1 did not ───────────────────────────────
-
-
 @requires_pwsh
 def test_a_warm_recorded_cache_outranks_uvs_default(tmp_path):
     """The rerun case. One unrelated wheel in uv's default must not cost a Torch redownload."""
@@ -230,7 +219,6 @@ def test_a_warm_recorded_cache_outranks_uvs_default(tmp_path):
     studio_cache = _warm(root / "cache" / "uv")
     _record(root, studio_cache)
     verdict = _select(root, str(_warm(tmp_path / "uvdefault")))
-    # studio, not shared: the launch repoint only has to move a cache that is not already ours.
     assert verdict["mode"] == "studio", verdict
     assert verdict["dir"] == str(studio_cache), verdict
 
@@ -257,7 +245,7 @@ def test_uv_no_cache_stands_the_selection_down(tmp_path, value):
     root = tmp_path / "studio"
     verdict = _select(root, str(_warm(tmp_path / "uvdefault")), env = {"UV_NO_CACHE": value})
     assert verdict["mode"] == "studio", verdict
-    # Nothing recorded: a marker written here would name a cache this install never filled.
+    # A marker written here would name a cache this install never filled.
     assert verdict["marker"] == "", verdict
 
 
@@ -324,8 +312,7 @@ def test_an_intact_studio_cache_is_still_the_ordinary_answer(tmp_path):
 def test_a_marker_naming_a_deleted_cache_is_no_more_evidence_than_none(tmp_path):
     """A stale pointer is not a decision, so it gets the same ordering as an absent marker:
     behind uv's default when that is warm, ahead of it when it is cold."""
-    # A fresh root per half: the selector RECORDS its choice, so a second call against the
-    # same root is no longer reading a stale marker.
+    # A fresh root per half: the selector RECORDS its choice, so reusing a root reads a stale marker.
     warm_root = tmp_path / "studio-warm"
     _warm(warm_root / "cache" / "uv")
     (warm_root / "cache" / "uv-cache-dir").write_text(
@@ -484,9 +471,6 @@ def test_a_bucket_that_is_not_a_directory_is_refused(tmp_path):
     assert _select(tmp_path / "studio", str(default))["mode"] == "studio"
 
 
-# ── the installed base, and the ways the candidate loop can be knocked over ────────────────
-
-
 @requires_pwsh
 def test_an_unmarked_warm_studio_cache_is_kept_when_the_default_is_cold(tmp_path):
     """An install from before the marker can hold gigabytes of Torch and CUDA in the Studio
@@ -633,9 +617,6 @@ def test_a_writable_studio_cache_still_wins_over_a_refused_one(tmp_path):
         (default / "builds-v0").chmod(0o755)
     assert verdict["mode"] == "studio", verdict
     assert verdict["dir"] == str(tmp_path / "studio" / "cache" / "uv"), verdict
-
-
-# ── the harness's own guard ────────────────────────────────────────────────────────────────
 
 
 @requires_pwsh

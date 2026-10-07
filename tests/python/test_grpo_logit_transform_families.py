@@ -50,7 +50,6 @@ def _grpo_transforms(config):
     )
 
 
-# (name, config, (softcapping, multiply, divide), why)
 _COVERED = [
     (
         "granite",
@@ -84,8 +83,6 @@ def test_stable_families(name, config, expected, why):
     assert _grpo_transforms(config) == expected, why
 
 
-# Families the helper only bucketed recently. Each entry records what the GRPO path
-# used to apply, so the behaviour change stays legible.
 _RECENT = [
     (
         "muse_glimmer",

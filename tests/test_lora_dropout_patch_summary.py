@@ -111,11 +111,8 @@ def test_the_summary_call_carries_the_reason():
     assert "MLP layers.{unfused_reason}" in source
 
 
-# has_real_accelerator(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py
-# patches the latter True process-wide and never puts it back, and a skipif is evaluated at
-# import, so sharing a session with tests/version_compat or tests/vllm_compat would un-skip
-# this on a CPU-only box. tests/_shared/real_accelerator.py records the answer before any
-# spoof can run. Enforced by tests/python/test_accelerator_skip_guards.py.
+# has_real_accelerator(), not torch.cuda.is_available(): the zoo CUDA spoof patches the
+# latter True process-wide before skipif runs.
 @pytest.mark.gpu
 @pytest.mark.skipif(
     not has_real_accelerator(),
@@ -141,9 +138,7 @@ def test_summary_reason_is_logged_for_a_real_model():
     # warning_once (patched onto logging.Logger by transformers) dedupes process wide.
     getattr(llama_module.logger.warning_once, "cache_clear", lambda: None)()
 
-    # Attach to the logger llama.py actually writes to. Naming it here rather than the
-    # root logger keeps the test correct whether or not transformers has switched off
-    # propagation on its own library logger.
+    # The logger llama.py writes to, so transformers disabling propagation does not matter.
     handler = _Capture()
     target = llama_module.logger
     target.addHandler(handler)

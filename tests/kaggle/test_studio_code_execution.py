@@ -105,7 +105,6 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
     """
     func = _func("assert_code_execution")
 
-    # Every `failures.append` that decides the verdict, and what it is guarded by.
     guarded_by_written = False
     for node in ast.walk(func):
         if not isinstance(node, ast.If):
@@ -130,7 +129,6 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
         "would pass on a reply that merely claimed the code ran"
     )
 
-    # And the reply is recorded but never judged.
     for node in ast.walk(func):
         if isinstance(node, ast.If) and "reply" in ast.unparse(node.test):
             raise AssertionError(

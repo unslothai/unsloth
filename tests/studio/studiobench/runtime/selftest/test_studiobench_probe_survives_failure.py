@@ -119,14 +119,10 @@ class _Pacer:
 
 
 class _Seeder:
-    #:`None`, so `measure_chars_per_token` cannot reach for the network from a unit test.
     auth = None
 
     def seed(self, plan):
-        # No messages, so the mount wait is the selector and not a count that never arrives, and both
-        # markers `SeededThread` declares are present and `None`: `_wait_for_thread` reads `last_marker`
-        # unconditionally, and a stub that omits it fails on the attribute rather than on the failure
-        # these tests are about.
+        # No messages, and both markers present as None: _wait_for_thread reads last_marker unconditionally.
         return types.SimpleNamespace(
             thread_id = "t-1",
             seconds = 0.0,
@@ -210,13 +206,10 @@ def test_a_cell_that_dies_after_the_probe_still_reports_the_attribution(tmp_path
     assert row["completed"] is False
     assert row["failure"]["kind"] == "TimeoutError"
 
-    # Out of the payload, not the returned dict: the file is what a failed run leaves behind, and where
-    # the diagnostic has to be readable from.
     cells = _cell_rows(paths)
     assert len(cells) == 1
     attribution = cells[0]["click_attribution"]
     assert attribution["click_attribution_attempted"] is True
-    # The two readings the flag exists to produce: what the driver pays and what a user pays.
     assert "click_ms" in attribution and "mouse_ms" in attribution
 
 
@@ -232,7 +225,6 @@ def test_the_attribution_of_one_cell_never_lands_on_the_next(tmp_path):
     runner, paths, recorder = _runner(tmp_path, click_probe = True)
     runner.run(_cell(), _plan())
 
-    # The same runner, and this time the page is gone before the probe can run.
     runner.session.ctx.page = _Page(fail_on = "goto")
     runner.run(_cell("r500K.A0.rep1"), _plan())
     recorder.close()

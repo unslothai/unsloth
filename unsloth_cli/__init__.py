@@ -4,7 +4,7 @@
 import os as _os
 import sys as _sys
 
-# Entry-point-only behaviour (stream guard, -np<N> rewrite): must not reach a host that imports us.
+# Entry-point-only behaviour must not reach a host that imports us.
 _entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
 _is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
 _windows_studio_mutation_entry = (
@@ -54,7 +54,7 @@ if _is_entry_point:
     _reconfigure_entry_point_streams()
 
 # Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
-# `-m` alone could be a host package that imports us, so name the module it runs.
+# `-m` alone could be a host package importing us.
 _orig_argv = getattr(_sys, "orig_argv", [])
 _runs_unsloth_cli = "-munsloth_cli" in _orig_argv or any(
     a == "-m" and b == "unsloth_cli" for a, b in zip(_orig_argv, _orig_argv[1:])
@@ -65,15 +65,13 @@ if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.arg
     from unsloth_cli._install_kernels import main as _install_kernels_main
     from unsloth_cli._ssl_keylog import drop_unwritable_ssl_keylog_file
 
-    # The availability probe and the installers open HTTPS clients.
     drop_unwritable_ssl_keylog_file()
     _sys.exit(_install_kernels_main(_sys.argv[2:]))
 
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
-# Running from System32 or a subdir breaks commands; move out before the command imports, since
-# commands.studio resolves STUDIO_HOME at import time (issue #8510).
-# A relative UNSLOTH_STUDIO_HOME would otherwise resolve against System32.
+# Move out of System32 before the command imports: commands.studio resolves STUDIO_HOME at import
+# time (issue #8510).
 _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
@@ -82,8 +80,7 @@ from unsloth_cli._ssl_keylog import (
     drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
 )
 
-# After the move out of System32, so a relative path is judged where ssl will open it, and
-# before any command module builds an HTTPS client; the Studio backend's workers inherit it.
+# After the move, so a relative path is judged where ssl opens it; before any HTTPS client.
 if _is_entry_point:
     _drop_unwritable_ssl_keylog_file()
 
@@ -127,11 +124,11 @@ def _prepare_entry_point():
     _reconfigure_entry_point_streams()
     _drop_unwritable_ssl_keylog_file()
     _expand_attached_np_short()
-    # Set last, so a raise leaves the work retryable rather than silently skipped.
+    # Set last, so a raise leaves the work retryable.
     _entry_point_prepared = True
 
 
-# Canonicalise `-np<N>` only under the console-script; imports keep their argv intact.
+# Only under the console-script; imports keep their argv intact.
 if _is_entry_point:
     _prepare_entry_point()
 del _entry_base, _is_entry_point, _orig_argv, _runs_unsloth_cli
@@ -241,7 +238,6 @@ if not _windows_studio_mutation_entry:
         help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
         "against Unsloth.",
     )
-    # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
     app.add_typer(
         start_app,
         name = "connect",
@@ -249,7 +245,7 @@ if not _windows_studio_mutation_entry:
         help = "Deprecated alias for `unsloth start`.",
     )
 
-    # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
+    # Same context so unknown flags pass through to llama-server.
     app.command(
         "run",
         context_settings = {

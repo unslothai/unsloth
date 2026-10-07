@@ -127,7 +127,6 @@ def test_the_guard_reads_every_row_not_only_the_first():
             _unsloth_reject_grpo_image_list(rows)
         assert "3605" in str(excinfo.value)
 
-    # Nothing that works today starts failing, including shapes the guard must not choke on.
     for rows in (
         [{"image": a}, {"image": a}],
         [{"image": [a]}, {"image": [a]}],
@@ -187,7 +186,6 @@ def test_guard_stays_off_a_trl_whose_reference_calls_do_take_the_counts():
     )
     assert "_unsloth_reject_grpo_image_list(inputs)" not in patched
     if 'pixel_values=prompt_inputs.get("pixel_values")' in source:
-        # A legacy TRL: every reference call site must have taken the counts.
         assert 'pixel_values=prompt_inputs.get("pixel_values")' not in patched
         assert "**_unsloth_legacy_vision," in patched
 
@@ -325,13 +323,11 @@ def test_the_guard_refuses_a_multi_image_row_only_in_legacy_vllm_server_mode():
         _unsloth_reject_grpo_image_list(rows, _VllmTrainer(True, "server"))
     assert "3605" in str(excinfo.value)
 
-    # The modes that do carry it: no refusal.
     _unsloth_reject_grpo_image_list(rows, _VllmTrainer(True, "colocate"))
     _unsloth_reject_grpo_image_list(rows, _VllmTrainer(False, "server"))
     _unsloth_reject_grpo_image_list(rows, _VllmTrainer(False, None))
     _unsloth_reject_grpo_image_list(rows, object())
 
-    # A single image row is carried by every mode, server included.
     _unsloth_reject_grpo_image_list([{"image": a}], _VllmTrainer(True, "server"))
 
     # No trainer means the anchors did not land at all, so nothing is known to carry it.
@@ -382,7 +378,6 @@ def test_demoting_an_all_empty_column_also_clears_the_image_flag():
     assert namespace["has_images"] is False
     assert namespace["kwargs"] == {}
 
-    # An image bearing batch keeps the flag, so the vLLM paths still run for it.
     namespace = {
         "inputs": [{"image": _Img("a")}, {"image": _Img("b")}],
         "prompts": [[{"role": "user", "content": "x"}] for _ in range(2)],

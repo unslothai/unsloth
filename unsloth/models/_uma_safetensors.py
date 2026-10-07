@@ -92,7 +92,6 @@ def patch_unified_memory_safetensors_load():
         return True
 
     def _clone_move(tensor, device):
-        # Clone into a regular CPU allocation to restore fast pinned-DMA, then move.
         try:
             return tensor.clone().to(device, non_blocking = False)
         except (MemoryError, RuntimeError):
@@ -122,7 +121,6 @@ def patch_unified_memory_safetensors_load():
 
         def __init__(self, args, kwargs):
             self._device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
-            # Open on CPU; move ourselves.
             if len(args) > 2:
                 args = args[:2] + ("cpu",) + tuple(args[3:])
             else:

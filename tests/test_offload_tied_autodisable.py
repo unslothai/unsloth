@@ -16,9 +16,7 @@ from contextlib import contextmanager
 import pytest
 from real_accelerator import has_real_cuda
 
-# Skip rather than error where torch is absent. Only `nn.Embedding` / `nn.Linear` / `torch.device` are wanted here, no
-# GPU, but a bare module-level import turns a machine without torch into a collection error, which aborts the whole
-# pytest session instead of leaving one skipped module behind.
+# importorskip so a host without torch skips this module instead of aborting collection.
 torch = pytest.importorskip("torch")
 nn = pytest.importorskip("torch.nn")
 
@@ -33,16 +31,12 @@ _DISTRIBUTED = [False]
 
 def _load(*names):
     mod = ast.parse(_SRC)
-    # The sentinel lives in loader_utils;
-    # importing that module would drag in torch's CUDA stack, so mirror the one value these functions read.
-    # `is_distributed` is driven explicitly so the assertions never depend on whether the host happens to have
-    # torchrun's env vars set.
+    # Mirror the sentinel: importing loader_utils would drag in torch's CUDA stack.
     ns = {
         "torch": torch,
         "os": os,
         "OFFLOAD_EMBEDDING_AUTO": "auto",
         "is_distributed": lambda: _DISTRIBUTED[0],
-        # An unsloth_zoo without the reserve estimate: "auto" keeps the size rule tested below.
         "_zoo_reserve_estimate": None,
     }
     wanted = set(names)
@@ -53,8 +47,7 @@ def _load(*names):
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "").startswith(
             "_OFFLOAD_EMBEDDING_"
         ):
-            # The size thresholds the auto decision reads; taken from the source so the
-            # tests below cannot drift from the shipped numbers.
+            # Taken from the source so the tests cannot drift from the shipped thresholds.
             exec(ast.get_source_segment(_SRC, node), ns)
     if wanted:
         raise AssertionError(f"not found in vision.py: {sorted(wanted)}")
@@ -147,15 +140,11 @@ def test_tied_model_disables_offload_instead_of_raising():
 
 
 def test_opaque_model_disables_offload():
-    # Used to return the request unchanged, which is the one answer that crashes: the caller
-    # acts on True by calling get_input_embeddings() unguarded, the same call that raised here.
     with _as_platform("posix"):
         assert resolve(_Opaque(), True) is False
 
 
 def test_wsl_and_windows_disable_offload():
-    # Neither can offload, and the flag also gates the multi-device hook attach, so it has to read False rather than
-    # pass through.
     for var in _WSL_VARS:
         with _as_platform("posix"):
             os.environ[var] = "1"
@@ -175,8 +164,6 @@ def test_wsl_and_windows_disable_offload():
 
 
 def test_platform_gate_lives_in_one_place():
-    # The offload block used to re-test os.name itself; the copies drifted apart and only Windows noticed.
-    # _resolve_offload_embedding owns it now.
     helper = _SRC[_SRC.index("def _offload_embedding_unsupported_platform(") :]
     helper = helper[: helper.index("\n\n\ndef ")]
     for probe in ('os.name == "nt"', "WSL_DISTRO_NAME", "WSL_INTEROP"):
@@ -185,9 +172,8 @@ def test_platform_gate_lives_in_one_place():
 
 
 def test_resolved_before_multidevice_hooks():
-    # Hook attach returns early while offload_embedding is still True.
     call = _SRC.index("offload_embedding = _resolve_offload_embedding(")
-    # Anchor on the indented CALL, not the module-level `def`.
+    # Anchor on the indented call, not the module-level def.
     hooks = _SRC.index("\n                    _attach_bnb_multidevice_hooks(")
     assert call < hooks, "offload_embedding must be resolved before hook attach"
 
@@ -208,27 +194,24 @@ def _dispatched_model(execution_device = torch.device("cuda", 0)):
 
 
 def test_dispatch_device_reads_the_accelerate_hook():
-    assert dispatch_device(nn.Embedding(32, 8)) is None  # no hook at all
+    assert dispatch_device(nn.Embedding(32, 8)) is None
     assert dispatch_device(_dispatched_model().get_input_embeddings()) is not None
     assert dispatch_device(_dispatched_model(None).get_input_embeddings()) is None
-    assert dispatch_device(None) is None  # embeddings not exposed
+    assert dispatch_device(None) is None
 
 
 def test_dispatched_model_disables_offload():
-    # accelerate re-sends the ids to its recorded device after the offload pre-hook has
-    # sent them to the CPU weight, so the lookup gets ids and weight on different devices.
+    # accelerate re-sends ids to its recorded device after the offload pre-hook moved them.
     with _as_platform("posix"):
         assert resolve(_dispatched_model(), True) is False
 
 
 def test_hook_without_execution_device_keeps_offload():
-    # A hook that never moves anything cannot undo the offload.
     with _as_platform("posix"):
         assert resolve(_dispatched_model(None), True) is True
 
 
 def test_undispatched_model_keeps_offload():
-    # The single-GPU path must not lose the VRAM saving.
     with _as_platform("posix"):
         assert resolve(_untied_model(), True) is True
 
@@ -240,10 +223,6 @@ if __name__ == "__main__":
             print(f"[PASS] {name}")
     print("all offload tied auto-disable tests passed")
 
-
-# --------------------------------------------------------------------------------------
-# `offload_embedding = "auto"`: the loader decides, and says nothing when it declines.
-# --------------------------------------------------------------------------------------
 
 worth_offloading = _NS["_embedding_is_worth_offloading"]
 MIN_BYTES = _NS["_OFFLOAD_EMBEDDING_MIN_BYTES"]
@@ -269,7 +248,6 @@ class _FakeWeight:
         return 2
 
     def data_ptr(self):
-        # Distinct per object, so the tied-weights check sees these as untied.
         return id(self)
 
 
@@ -356,7 +334,7 @@ def test_explicit_true_and_false_are_untouched_by_the_auto_default():
     """Backwards compatibility: the size test only ever runs for `"auto"`."""
     model = _untied_model()
     with _as_platform("posix"), _card(80 * 2**30):
-        # 80 GB card, so `"auto"` would decline; an explicit True must not.
+        # 80 GB card, so "auto" would decline; an explicit True must not.
         assert resolve(model, True) is True
         assert resolve(model, False) is False
 
@@ -454,11 +432,9 @@ def test_trainable_or_cpu_model_tables_stay():
     ns, moved = _spare_ns()
     model = _PerLayerModel("cuda")
     with _as_platform("posix"):
-        # get_peft_model: a table still trainable is not offloaded.
         assert ns["offload_spare_embeddings"](model, require_frozen = True) == 0
     model = _PerLayerModel("cpu").requires_grad_(False)
     with _as_platform("posix"):
-        # A model on the CPU has nothing to offload.
         assert ns["offload_spare_embeddings"](model) == 0
     assert moved == []
 
@@ -474,11 +450,9 @@ class _HeadlessPerLayerModel(_PerLayerModel):
 def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
     ns, moved = _spare_ns()
     model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
-    # The block swap load streamed the table to host without hooks; the backbone stays on the card.
     model.per_layer.to("cpu")
     with _as_platform("posix"):
         assert ns["offload_spare_embeddings"](model) == 1
-    # Nothing ties the input embedding without a head, so it may go too.
     assert any(m is model.per_layer for m in moved)
     moved.clear()
     model = _HeadlessPerLayerModel("cpu").requires_grad_(False)

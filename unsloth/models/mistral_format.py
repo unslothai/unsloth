@@ -106,7 +106,6 @@ def _fp8_block_quantization(quant) -> Optional[dict]:
         block = this_block
     if block is None:
         return None
-    # The ignore list already uses transformers module names.
     not_convert = []
     for entry in quant.get("ignore") or []:
         name = str(entry)
@@ -255,11 +254,11 @@ def mistral_format_weight_conversions():
         (r"\.experts\.(\d+)\.w1\.", r".mlp.experts.\1.gate_proj."),
         (r"\.experts\.(\d+)\.w2\.", r".mlp.experts.\1.down_proj."),
         (r"\.experts\.(\d+)\.w3\.", r".mlp.experts.\1.up_proj."),
-        # compressed-tensors' block scale is the multiplier transformers calls weight_scale_inv.
+        # compressed-tensors' block scale is what transformers calls weight_scale_inv.
         (r"\.weight_scale$", ".weight_scale_inv"),
     ]
     conversions = [WeightRenaming(source_patterns = s, target_patterns = t) for s, t in renames]
-    # Scales first: transformers stops at the first match and `.weight` also matches `.weight_scale_inv`.
+    # Scales first: transformers stops at the first match and `.weight` also matches the scales.
     for suffix, merge in (
         (".weight_scale_inv", True),
         (".weight_scale_inv", False),
@@ -623,7 +622,7 @@ def _mistral_format_conversions():
     conversions = mistral_format_weight_conversions()
     for key in keys:
         cm.register_checkpoint_conversion_mapping(key, conversions, overwrite = True)
-    # Dequantizing FP8 folds scales in transformers' `.weight` converters; scale merges must not claim them.
+    # Dequantizing FP8 folds scales in the `.weight` converters; scale merges must not claim them.
     fp8_quantizer, original_update = None, None
     try:
         from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer

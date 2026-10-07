@@ -55,7 +55,6 @@ def api(
 
 def login(page: Page, username: str, password: str) -> None:
     page.goto(f"{BASE_URL}/login")
-    # Wait for the layout the server's login_mode implies rather than sampling before the page settles.
     _, status = api("GET", "/api/auth/status")
     username_field = page.get_by_role("textbox", name = "Username", exact = True)
     if status.get("login_mode") == "multi":
@@ -135,12 +134,9 @@ def run(page: Page, context) -> None:
         expect(page).to_have_url(re.compile(r"/change-password"), timeout = STEP_TIMEOUT_MS)
         assert local(page, "unsloth_e2e_private") is None
         assert local(page, "chat-draft:e2e") is None
-        # Appearance survives the switch; its value may have been replaced by the personalization sync.
         assert local(page, "theme") is not None, "the account switch cleared the theme"
         assert local(page, "unsloth_chat_permission_mode") != "full"
-        # wait_for_function, not a loop of evaluate(): the reload being waited for destroys the
-        # execution context, and an evaluate() that lands mid-navigation raises instead of
-        # reporting that the old document is gone. wait_for_function re-runs in the new document.
+        # evaluate() raises when the reload destroys the context; wait_for_function re-runs in the new one.
         try:
             second_tab.wait_for_function(
                 "() => window.oldAccountDocument === undefined", timeout = STEP_TIMEOUT_MS

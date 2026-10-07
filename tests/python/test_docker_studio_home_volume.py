@@ -27,12 +27,7 @@ STUDIO_DF = DOCKER / "Dockerfile.studio"
 ENTRYPOINT = DOCKER / "entrypoint.sh"
 LEGACY = ".unsloth-studio-legacy"
 
-# The actionable half of the "nothing to restore" refusal, quoted from studio_home.sh. Kept as a
-# named constant because it is asserted twice: once against the script's source, so a copy edit
-# fails naming the file and the line to change, and once against the stderr an actual run
-# produces, so a script that no longer reaches that branch cannot pass on the source check alone.
-# #11254 changed this sentence ("the Studio code" -> "the Unsloth Studio code") and left the
-# expectation behind, which failed as an opaque runtime mismatch in Repo tests (CPU, python).
+# Asserted against both the script source and real stderr.
 RESTORE_NEEDS_APP_HINT = "run --restore under an image that has the Unsloth Studio code in"
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
@@ -155,11 +150,9 @@ def test_restore_puts_the_kept_entries_back_for_an_older_image(tmp_path):
     assert (home / "unsloth_studio" / "VERSION").read_text() == "old\n"
     assert (home / "src" / "studio" / "uncommitted.py").read_text() == "mine"
     assert not (home / LEGACY).exists()
-    # links this image added for entries the old image never had are gone too
     assert not (home / "node").exists()
     assert (home / "auth" / "auth.db").read_text() == "users"
     assert (home / "studio.db").read_text() == "chats"
-    # and the next start of this image migrates again
     assert _link(app, home).returncode == 0
     assert (home / "unsloth_studio").is_symlink()
 
@@ -193,7 +186,6 @@ def test_restore_without_a_legacy_dir_copies_this_images_code_in(tmp_path):
     assert not (home / "llama.cpp").exists() or (home / "llama.cpp").is_symlink()
     assert (home / "outputs" / "model.bin").read_text() == "weights"
     assert "copied this image's code" in res.stderr
-    # and a split image links its own code back in on the next start, keeping the copies aside
     assert _link(app, home).returncode == 0
     assert (home / "src").is_symlink()
     assert (home / LEGACY / "src").is_dir()
@@ -333,7 +325,6 @@ def test_the_same_root_for_app_and_home_is_refused_with_the_install_intact(tmp_p
     assert (app / "unsloth_studio" / "VERSION").read_text() == "new\n"
     assert not (app / "src").is_symlink()
     assert not (app / LEGACY).exists()
-    # through a symlink too: paths are compared as the kernel sees them
     alias = tmp_path / "alias"
     alias.symlink_to(app)
     res = _link(app, alias)
@@ -378,11 +369,9 @@ def test_an_interrupted_migration_never_loses_an_entry(tmp_path):
     assert "cannot link" in res.stderr
     assert "intact at" in res.stderr
     kept = home / LEGACY
-    # src was moved and its link failed: not lost, its kept copy is named in the message
     assert not (home / "src").exists() and not (home / "src").is_symlink()
     assert (kept / "src" / "studio" / "uncommitted.py").read_text() == "mine"
     assert str(kept / "src") in res.stderr
-    # entries after src in the loop were not reached and are still real
     assert not (home / "unsloth_studio").is_symlink()
     assert (home / "studio.db").read_text() == "chats"
     res = _link(app, home)
@@ -425,7 +414,6 @@ def test_a_link_where_the_kept_aside_copies_go_is_refused(tmp_path):
         assert (home / "src" / "studio" / "uncommitted.py").read_text() == "mine"
         assert (home / "unsloth_studio" / "VERSION").read_text() == "old\n"
         assert not (home / "node").exists()
-    # with the link out of the way the migration runs as usual
     os.unlink(home / LEGACY)
     assert _link(app, home).returncode == 0
     assert (home / "src").is_symlink()
@@ -455,7 +443,6 @@ def test_a_restore_copy_that_fails_leaves_the_link_and_no_half_tree(tmp_path):
     assert "rerun --restore" in res.stderr
     assert (home / "src").is_symlink()
     assert not (home / "src.restore-tmp").exists()
-    # the rerun sees the link it left intact and finishes the job
     res = _link(app, home, "--restore")
     assert res.returncode == 0, res.stderr
     assert (home / "src").is_dir() and not (home / "src").is_symlink()
@@ -537,12 +524,10 @@ def test_a_killed_updates_record_is_recovered_before_studio_starts(tmp_path):
     assert log.read_text() == f"UPDATER --recover home={home}\n", log.read_text()
     assert "the previous install is back" in res.stderr, res.stderr
     assert (home / "unsloth_studio").is_symlink(), "recovery must run after the home is linked"
-    # a failed recovery is loud but does not stop the container from starting
     log.unlink()
     res = _link(app, home, env = {**env, "STUB_RC": "1"})
     assert res.returncode == 0, res.stderr
     assert "WARNING" in res.stderr and "--recover" in res.stderr, res.stderr
-    # no record: the updater is not run at all
     (app / ".src-update.rollback").unlink()
     log.unlink()
     res = _link(app, home, env = env)

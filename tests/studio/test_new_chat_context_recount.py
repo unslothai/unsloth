@@ -41,7 +41,6 @@ TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 
 SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME, MESSAGE_ORDER)
 
-# Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {
     "activeThreadId",
     "aui",
@@ -157,9 +156,7 @@ def _resident_fast_path() -> str:
     return slice_between(
         read(RUNTIME),
         "          const confirmedStatus = await readPickStatus();",
-        # The lease claim, which the tail must not run into: the pick here never starts a load.
-        # `lifecycleLease` sits inside a bounded retry loop, so its own declaration is the first
-        # line that is about the load this tail does not start rather than about the adoption.
+        # `lifecycleLease` is the first line about the load this tail does not start.
         "      let lifecycleLease: ModelLifecycleLease | null = null;",
     )
 
@@ -645,7 +642,6 @@ def _run(script: str) -> dict:
     return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
-# The status response that hydrates a resident GGUF; neither field survives a reload.
 LOADED_MODEL = """
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
@@ -665,7 +661,6 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
     hypothetical: #9056 added `findLatestUserVideoBase64` and took 41 tests here red.
     """
     text = read(REFRESH)
-    # The single braced import list this module takes from ../api/chat-adapter.
     block = re.search(r"import \{(.*?)\} from \"\.\./api/chat-adapter\";", text, re.S)
     assert block, "could not find the chat-adapter import block in refresh-context-usage.ts"
     imported = [
@@ -693,8 +688,7 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
 @pytest.mark.parametrize(
     ("before_status", "expected_early_counts"),
     [
-        # Arriving on New Chat with the GGUF already resident. The second render repeats identical
-        # store values (a deferred inventory refresh rewrites the checkpoint) and must not re-price.
+        # The second render repeats identical store values and must not re-price.
         pytest.param(
             LOADED_MODEL
             + """
@@ -706,11 +700,8 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
             1,
             id = "model_already_resident",
         ),
-        # A page RELOAD of /chat?new=<uuid>: nothing is priceable until /api/inference/status answers.
         pytest.param("", 0, id = "reload_before_status_hydrates"),
-        # New Chat opened FROM a populated conversation left running: its runtime stays mounted and
-        # the live branch reader keeps returning its messages until switchToNewThread() settles.
-        # The empty chat must still be priced as a bare template.
+        # The previous runtime keeps returning its messages until switchToNewThread() settles.
         pytest.param(
             LOADED_MODEL
             + """
@@ -972,9 +963,7 @@ NO_LOCAL_MODEL = """
 @pytest.mark.parametrize(
     ("seed_script", "is_loading", "expected_switched"),
     [
-        # No GGUF window means nothing to price; the seeded placeholder must not stick.
         pytest.param(NO_LOCAL_MODEL, "false", 1, id = "no_local_model"),
-        # assistant-ui is still hydrating: both effects bail before touching anything.
         pytest.param(LOADED_MODEL, "true", 0, id = "assistant_ui_still_loading"),
     ],
 )
@@ -1042,7 +1031,6 @@ TWO_STORED_TURNS = """
     ];
 """
 
-# A regenerated last answer: the newest stored leaf is not the branch the runtime is showing.
 RETRY_BRANCH_STORED = """
     world.storedMessages["thread-a"] = [
       { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
@@ -1071,17 +1059,12 @@ LIVE_INCOGNITO_BRANCH = """
 @pytest.mark.parametrize(
     ("world_setup", "expected_sent", "counted_model"),
     [
-        # No runtime branch yet: the stored records are the only source, and both turns count.
         pytest.param(TWO_STORED_TURNS, 2, None, id = "stored_branch"),
-        # An incognito chat persists nothing, so the records would price a bare template.
         pytest.param(LIVE_INCOGNITO_BRANCH, 3, None, id = "incognito_thread_stores_nothing"),
-        # Regenerated, then switched back: the stored leaf is the retry, four turns not sent.
         pytest.param(
             RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id = "runtime_shows_an_older_branch"
         ),
-        # The endpoint counts with whatever is resident, never the model asked for: another tab
-        # loaded a different GGUF, and since this client's checkpoint never moved, the reported
-        # id is the only witness that the total came from the wrong tokenizer.
+        # The endpoint counts with whatever is resident; the reported id is the only witness.
         pytest.param(
             TWO_STORED_TURNS, 2, "unsloth/other-gguf", id = "another_client_swapped_the_model"
         ),
@@ -1093,7 +1076,6 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     send -- the mounted runtime's when it has one, the stored records otherwise -- and reach the
     per-thread cache setActiveThreadId restores from, or the bar blanks on the way back. A total
     counted by another tokenizer is dropped instead, leaving the previous usage in place."""
-    # None means the reply names the model this client already holds, so it is published.
     expected_total = 12 + 25 * expected_sent if counted_model is None else None
     counted_model_setup = (
         "" if counted_model is None else f"world.countedModel = {json.dumps(counted_model)};"
@@ -1140,7 +1122,6 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
 @pytest.mark.parametrize(
     ("send_a_turn", "expected_total"),
     [
-        # Sent mid-count then stopped before any usage, so the snapshot guard cannot see the turn.
         pytest.param(True, None, id = "a_turn_arrives_mid_count"),
         pytest.param(False, 62, id = "branch_unchanged"),
     ],
@@ -1205,11 +1186,9 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 @pytest.mark.parametrize(
     ("running", "grew", "expected_total"),
     [
-        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it ran when the thread was
-        # idle, so only the publish guard is left to drop the total.
+        # A run that begins after the count: only the publish guard can drop the total.
         (True, True, None),
-        # Stopped before the count returned, so runningByThreadId is already false and the usage snapshot is still
-        # equal: only the content makes the branch look different.
+        # Stopped before the count returned: only the content makes the branch look different.
         (False, True, None),
         (False, False, 62),
     ],
@@ -1277,11 +1256,9 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
 @pytest.mark.parametrize(
     ("mutation", "expected_total"),
     [
-        # A tool result landing on an existing tool-call part: no `text`, and no part added.
         ("live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };", None),
-        # An edit to different text of the same length, which a size-based signature cannot see.
+        # Same length, different text: a size-based signature cannot see it.
         ('live[0].content = [{ type: "text", text: "ih" }];', None),
-        # Deleting an attachment: priced, but the handler rewrites `attachments` alone.
         ("live[0].attachments = [];", None),
         ("", 62),
     ],
@@ -1409,7 +1386,6 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
 @pytest.mark.parametrize(
     ("saved", "expect_counts", "expect_total", "expect_completion"),
     [
-        # Exact totals for this very model: recounting would trade them for an estimate.
         (
             "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
             'modelId: "unsloth/gguf-model" }',
@@ -1417,14 +1393,12 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
             900,
             200,
         ),
-        # Another model's tokenizer priced these, so they say nothing about this one (#7450).
         (
             '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
             1,
             12,
             0,
         ),
-        # Nothing stored, which is the case the recount was added for.
         ("null", 1, 12, 0),
     ],
     ids = ["saved_matches_the_model", "saved_is_another_model", "nothing_saved"],
@@ -1467,7 +1441,7 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     ), "the completion half of an exact total must survive hydration"
 
 
-# 400 characters of text is 100 tokens at the estimator's 4 characters a token.
+# 100 tokens at the estimator's 4 characters a token.
 STORED_TURN = (
     '[{ id: "u1", parentId: null, role: "user", createdAt: 1, '
     'content: [{ type: "text", text: "x".repeat(400) }] }]'
@@ -1477,13 +1451,11 @@ STORED_TURN = (
 @pytest.mark.parametrize(
     ("saved", "expect_shown"),
     [
-        # Nothing usable restored: the bar shows the text estimate until the recount answers.
         ("null", {"totalTokens": 100, "completionTokens": 0, "estimated": True}),
         (
             '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
             {"totalTokens": 100, "completionTokens": 0, "estimated": True},
         ),
-        # Exact totals for this model win over the estimate, and nothing is recounted.
         (
             "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
             'modelId: "unsloth/gguf-model" }',
@@ -1590,7 +1562,7 @@ def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> Non
     assert (
         {"msgs", "savedUsage", "store"} <= declared_above
     ), "could not read the loader's locals above the restore; this guard would check nothing"
-    # Code only: the comments in the block name words like "message" that are locals elsewhere.
+    # Code only: the block's comments name words that are locals elsewhere.
     code = re.sub(r"//[^\n]*", "", restore)
     declared_in_slice = _declared_names(code)
     read_from_above = sorted(
@@ -1707,7 +1679,6 @@ def test_a_second_trigger_does_not_duplicate_an_in_flight_count():
     ("pane", "expect_counts"),
     [
         ('{ modelType: "base" }', 1),
-        # Compare panes never own the global bar, so this count could only be discarded.
         ('{ modelType: "base", pairId: "pair-1" }', 0),
         ('{ modelType: "finetuned", pairId: "pair-1" }', 0),
     ],
@@ -1784,7 +1755,7 @@ def test_a_trigger_skipped_behind_an_in_flight_count_is_replayed():
         "the skipped trigger must be replayed once the stale count settles, or it is not "
         "deferred but lost"
     )
-    # 62, not 12: the replay prices the branch as it moved, which is the point of deferring it.
+    # 62, not 12: the replay prices the branch as it moved.
     assert (
         (out["contextUsage"] or {}).get("totalTokens") == 62
     ), "and the replay must publish the current branch, which is why it is deferred not dropped"
@@ -1966,8 +1937,7 @@ def test_status_poll_adoption_reprices_when_a_local_checkpoint_is_already_select
     assert (out["cached"] or {}).get("totalTokens") == 62
 
 
-# Revisiting a thread that was NOT open when the model changed: setCheckpoint emptied
-# contextUsageByThreadId, and the thread is already mounted so its history loader never reruns.
+# setCheckpoint emptied contextUsageByThreadId and the mounted loader never reruns.
 REVISIT_AFTER_A_MODEL_SWITCH = """
     seed({
       activeThreadId: "thread-b",
@@ -1986,8 +1956,7 @@ REVISIT_AFTER_A_MODEL_SWITCH = """
     renderThreadContextUsageRecount();
 """
 
-# A deep link to /chat/:id against a resident GGUF: the history loader's own recount runs before
-# /api/inference/status answers, and status lands before ThreadAutoSwitch writes activeThreadId.
+# The loader's recount runs before status answers, which lands before activeThreadId.
 DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
     renderThreadContextUsageRecount();
     await refreshContextUsage({ threadId: "thread-a" });
@@ -2046,7 +2015,6 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
             """
         )
     )
-    # thread-b still holds a completion's usage: exact, so becoming active must leave it alone.
     assert out["beforeSwitch"] == 0, "nothing to reprice until the thread is the active one"
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "a thread the bar points at with no cached usage stays blank until the next "
@@ -2060,15 +2028,12 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
 @pytest.mark.parametrize(
     ("mount", "expected_total"),
     [
-        # The runtime mounted mid-count after a turn was sent, so the priced branch is a prefix.
         (
             'live = [...stored, { id: "m3", role: "user", createdAt: new Date(3),'
             ' content: [{ type: "text", text: "and another" }] }];',
             None,
         ),
-        # Mounted with the same branch: nothing moved, so the stored count still describes it.
         ("live = stored.slice();", 62),
-        # Never mounted: there is nothing to compare against and nothing to invalidate.
         ("", 62),
     ],
     ids = ["mounted_with_a_new_turn", "mounted_unchanged", "still_unmounted"],
@@ -2125,9 +2090,7 @@ def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount
 @pytest.mark.parametrize(
     ("model_flags", "expected_counts"),
     [
-        # Output only: every send goes to /audio/generate instead of a chat completion.
         ("{ isAudio: true, hasAudioInput: false }", 0),
-        # Audio IN, chat out: a normal completion, so the chat-template total is the right one.
         ("{ isAudio: true, hasAudioInput: true }", 1),
         ("{ isAudio: false, hasAudioInput: false }", 1),
     ],
@@ -2168,10 +2131,9 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
 @pytest.mark.parametrize(
     ("local_runs", "expected_counts"),
     [
-        # Decoding on the local llama-server: the count would share the process with generation.
+        # The count would share the local llama-server with generation.
         ('{ "thread-a": true }', 0),
         ('{ "thread-b": true }', 0),
-        # Control: an idle server is what the count is for.
         ("{}", 1),
     ],
     ids = ["this_thread_running", "another_thread_running", "nothing_running"],

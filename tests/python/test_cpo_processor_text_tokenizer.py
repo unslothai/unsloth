@@ -65,9 +65,7 @@ def _load_pad_rewriter():
 
 
 def test_pad_token_default_routed_through_inner_tokenizer():
-    # TRL 1.x CPO/ORPO __init__ defaults pad_token from eos_token before tokenizing; on a multimodal processor those
-    # live on `.tokenizer`. The rewrite must route both the default and pad_token_id through the inner tokenizer so a
-    # processor without bare pad_token does not AttributeError.
+    # Multimodal processors keep pad/eos on .tokenizer, so the rewrite must route through it.
     rewrite = _load_pad_rewriter()
     init_src = (
         "def __init__(self, model, args, processing_class):\n"
@@ -79,14 +77,12 @@ def test_pad_token_default_routed_through_inner_tokenizer():
     assert "if processing_class.pad_token is None:" not in out
     assert "processing_class.pad_token = processing_class.eos_token" not in out
     assert "_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)" in out
-    # bare pad_token_id must be routed through the getattr fallback, not left raw
     assert "= processing_class.pad_token_id\n" not in out
     ast.parse(out)
 
 
 def test_pad_rewrite_noop_without_bare_pad_block():
-    # Older TRL (the pinned <=0.24.0 range) has no bare pad_token block; the rewrite must only touch pad_token_id and
-    # leave everything else intact.
+    # Older TRL (<=0.24.0) has no bare pad_token block; only pad_token_id may change.
     rewrite = _load_pad_rewriter()
     init_src = (
         "def __init__(self, model, args, processing_class):\n"

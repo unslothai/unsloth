@@ -57,13 +57,11 @@ from transformers.utils import (
     is_torchdynamo_compiling,
 )
 
-# For Pytorch 2.1.1
 try:
     from transformers.models.falcon_h1.modeling_falcon_h1 import (
         FalconH1Attention,
     )
 except ModuleNotFoundError:
-    # FalconH1Attention unavailable or renamed (old transformers).
     raise ImportError(
         "Unsloth: Could not import FalconH1Attention from transformers.models.falcon_h1.modeling_falcon_h1."
     )
@@ -106,7 +104,6 @@ def FalconH1Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Falcon H1 multiplies key states by a multiplier.
     K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)
@@ -116,7 +113,6 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
     if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
@@ -125,7 +121,6 @@ def FalconH1Attention_fast_forward(
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
-    # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -247,7 +242,6 @@ def FalconH1Attention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
-        # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
             self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
@@ -286,7 +280,7 @@ def FalconH1Attention_fast_forward_inference(
     # Must happen 2 steps before hitting full on a short KV cache, or it errors.
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
-    # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
+    # Transformers 5.x may pass full-length position_ids; keep the last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     cos = cos[position_ids].unsqueeze(1)
@@ -312,7 +306,6 @@ def FalconH1Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -323,7 +316,6 @@ def FalconH1Attention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
-    # Grouped query attention.
     _, _, cached_len, _ = Knn.shape
     if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
@@ -333,8 +325,7 @@ def FalconH1Attention_fast_forward_inference(
 
     if bsz == 1:
         Qn *= self.scalar
-        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
-        # (comment 2153349963).
+        # (Q * scalar) @ K overflows less than (Q @ K) * scalar.
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vnn, out = Qn)
@@ -353,7 +344,6 @@ def FalconH1Attention_fast_forward_inference(
     return A, (Kn, Vn)
 
 
-# Ported from transformers models/falcon_h1/modeling_falcon_h1.py
 def FalconH1DecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -444,7 +434,6 @@ def FalconH1DecoderLayer_fast_forward(
 
         hidden_states = mamba_hidden_states + attention_hidden_states
 
-        # Residual connection after attention + Mamba.
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -464,7 +453,6 @@ def _FalconH1_fast_forward_inference(
     attention_fast_forward_inference = FalconH1Attention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
 ):
-    # Makes attention and MLP customisable (qwen3/cohere custom attention).
     def FalconH1Model_fast_forward_inference_custom(
         self,
         input_ids,
@@ -486,7 +474,6 @@ def _FalconH1_fast_forward_inference(
         X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert q_len == 1
-        # Get saved buffers to reduce memory movement
         residual = torch.empty(
             (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
         )
@@ -584,8 +571,7 @@ def _FalconH1_fast_forward_inference(
     return FalconH1Model_fast_forward_inference_custom
 
 
-# Separate prepare_inputs_for_generation for Hybrid FalconH1, which has its own cache type
-# FalconHybridMambaAttentionDynamicCache.
+# FalconH1 has its own cache type, FalconHybridMambaAttentionDynamicCache.
 def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
@@ -597,33 +583,23 @@ def _fast_prepare_inputs_for_generation(
     use_cache = True,
     **kwargs,
 ):
-    # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
 
-    # Slice input_ids through cache_position to keep only unprocessed tokens, except: with
-    # input_embeds input_ids may be missing entries; some generation methods slice input_ids
-    # themselves; and with synced GPUs cache_position may go out of bounds.
+    # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.
     if not empty_past_kv:
-        if (
-            inputs_embeds is not None  # Exception 1
-            or (
-                is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1]
-            )  # Exception 3
+        if inputs_embeds is not None or (
+            is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1]
         ):
             input_ids = input_ids[:, -cache_position.shape[0] :]
-        elif (
-            input_ids.shape[1] != cache_position.shape[0]
-        ):  # Default case (the "else", a no op, is Exception 2)
+        elif input_ids.shape[1] != cache_position.shape[0]:
             input_ids = input_ids[:, cache_position]
 
     if attention_mask is not None and position_ids is None:
-        # create position_ids on the fly for batch generation
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
         if not empty_past_kv:
             position_ids = position_ids[:, -input_ids.shape[1] :]
 
-    # inputs_embeds are only used in the 1st generation step.
     if inputs_embeds is not None and empty_past_kv:
         model_inputs = {"inputs_embeds": inputs_embeds}
     else:
@@ -645,7 +621,6 @@ def _fast_prepare_inputs_for_generation(
 
 
 def fix_prepare_inputs_for_generation(module):
-    # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
 
@@ -683,14 +658,13 @@ class FastFalconH1Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(FalconH1ForCausalLM)
 
-        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
-        # huggingface/transformers#27931), so the old rotary embeddings are retained.
+        # Static KV cache (4.38.0) made training slower, so the old rotary embeddings are kept.
         import transformers.models.falcon_h1.modeling_falcon_h1
 
         transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = (
             LlamaRotaryEmbedding
         )
-        # Avoids the float64 RMSNorm compile kernel that fails on Intel Arc DG2 (#6555).
+        # Avoids the float64 RMSNorm compile kernel that fails on Intel Arc DG2.
         patch_falcon_h1_rms_layernorm()
         return
 

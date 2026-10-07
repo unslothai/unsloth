@@ -27,7 +27,7 @@ import sys
 def test_the_loggers_entry_left_in_sys_modules_is_still_a_package():
     loggers = sys.modules.get("loggers")
     if loggers is None:
-        return  # nothing in this session touched it, so nothing can have shadowed it
+        return
     assert hasattr(loggers, "__path__"), (
         "a test module replaced `loggers` with a non-package stub and left it in "
         "sys.modules; give the stub __path__ = [<studio/backend/loggers>] so submodule "

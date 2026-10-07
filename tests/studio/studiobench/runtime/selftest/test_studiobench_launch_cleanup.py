@@ -58,19 +58,15 @@ def launched(monkeypatch, tmp_path):
         "port_busy": False,
     }
 
-    # `raising = False` so this fixture also builds against a lifecycle without the constant, which
-    # makes the test below fail on the unfixed code for the reason it is about rather than on the way
-    # in.
+    # `raising = False` so the fixture builds against code lacking the constant and fails on the subject.
     monkeypatch.setattr(lifecycle, "PID_DISCOVERY_TIMEOUT_S", 0.0, raising = False)
-    # Stubbed for the same reason and, for every test but the two about it, so that whatever this
-    # machine happens to have on :5399 cannot decide the answer.
+    # Stubbed so whatever this machine has on :5399 cannot decide the answer.
     monkeypatch.setattr(
         lifecycle, "port_is_busy", lambda *a, **k: state["port_busy"], raising = False
     )
     monkeypatch.setattr(lifecycle, "_find_unsloth_bin", lambda install: "/bin/true")
     monkeypatch.setattr(lifecycle, "_read_bootstrap_password", lambda *a, **k: "secret")
     monkeypatch.setattr(lifecycle, "wait_for_healthz", lambda *a, **k: state["healthy"])
-    # Recorded rather than dropped: a launch refused before the spawn has to be shown not to have spawned anything.
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: state["spawned"].append(a))
 
     def fake_run(cmd, *a, **k):
@@ -137,9 +133,6 @@ def test_a_healthy_studio_whose_pid_cannot_be_found_is_still_returned(launched):
     assert launched["signalled"] == []
 
 
-# ── the port somebody else is already on ────────────────────────────────────────────────────
-
-
 def test_a_port_that_is_already_serving_is_refused_before_anything_is_launched(launched):
     """The `--keep-studio` case, which no cleanup covers because retention is what was asked for.
 
@@ -199,8 +192,7 @@ def test_the_probe_itself_gives_both_answers_against_a_real_socket():
         port = listener.getsockname()[1]
         assert lifecycle.port_is_busy(port) is True
 
-    # Closed, so the same port is now the negative case. A port the kernel has just released can linger
-    # in TIME_WAIT for a connect, which is why the assertion below is on a port never bound at all.
+    # A just-released port can linger in TIME_WAIT, so the negative case uses a never-bound port.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         free_port = probe.getsockname()[1]

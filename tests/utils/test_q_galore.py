@@ -21,7 +21,7 @@ import os
 import torch
 import torch.nn as nn
 
-# Import optimizers directly to avoid triggering unsloth.__init__ (heavy deps).
+# Load directly to avoid unsloth.__init__ heavy deps.
 _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _optimizers_dir = os.path.join(_repo_root, "unsloth", "optimizers")
 if _repo_root not in sys.path:
@@ -38,7 +38,6 @@ def _load_module(name, filepath):
     return mod
 
 
-# Projector has no unsloth dependencies; load it first.
 _projector_mod = _load_module(
     "unsloth.optimizers.q_galore_projector",
     os.path.join(_optimizers_dir, "q_galore_projector.py"),
@@ -48,7 +47,6 @@ _quantize = _projector_mod._quantize
 _dequantize = _projector_mod._dequantize
 _quantize_stochastic = _projector_mod._quantize_stochastic
 
-# adamw depends on projector, may skip bitsandbytes.
 _adamw_mod = _load_module(
     "unsloth.optimizers.q_galore_adamw",
     os.path.join(_optimizers_dir, "q_galore_adamw.py"),
@@ -131,10 +129,10 @@ def test_default_optimizer_updates_match_adamw(projected, initial_value, weight_
     if projected:
         group.update(rank = 2, scale = 1.0, quant = False)
     optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = weight_decay)
-    # Unprojected steps delegate to bitsandbytes, whose CUDA kernel decays AFTER the update.
+    # Unprojected steps delegate to bitsandbytes, whose CUDA kernel decays after the update.
     reference_cls = torch.optim.AdamW if projected else bnb.optim.AdamW8bit
     reference_optimizer = reference_cls([reference], lr = 0.1, weight_decay = weight_decay)
-    # A diagonal gradient keeps full-rank projection aligned with the AdamW reference.
+    # A diagonal gradient keeps full-rank projection aligned with AdamW.
     gradient = torch.diag(torch.tensor([2.0, 1.0], device = device))
     for weight, opt in [(param, optimizer), (reference, reference_optimizer)]:
         (weight * gradient).sum().backward()
@@ -202,11 +200,6 @@ def test_projected_step_preserves_full_rank_gradients(out_features, in_features)
         torch.testing.assert_close(model.weight.grad, expected_grad)
 
 
-# ======================================================================
-# Projector tests
-# ======================================================================
-
-
 class TestGaLoreProjector:
     """Tests for the GaLore low-rank gradient projector."""
 
@@ -223,7 +216,7 @@ class TestGaLoreProjector:
     def test_project_and_back_wide(self):
         """Project → project_back preserves shape for wide matrices."""
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1)
-        grad = torch.randn(8, 16)  # wide
+        grad = torch.randn(8, 16)
         low = proj.project(grad, step = 0)
         assert low.shape == (4, 16)
 
@@ -241,7 +234,7 @@ class TestGaLoreProjector:
         assert proj.svd_count == 1
 
         proj.project(grad, step = 100)
-        assert proj.svd_count == 2  # Recomputed
+        assert proj.svd_count == 2
 
     def test_quantized_projection(self):
         """Quantized projection matrix stores and restores with bounded error."""
@@ -258,7 +251,6 @@ class TestGaLoreProjector:
         grad = torch.randn(16, 8)
         proj.project(grad, step = 0)
         assert proj.ortho_matrix.dtype == torch.uint8
-        # INT4 values should be in range [0, 15]
         assert proj.ortho_matrix.max() <= 15
 
     @pytest.mark.parametrize("n_bit", [4, 8])
@@ -277,7 +269,6 @@ class TestGaLoreProjector:
             gamma_proj = 2.0,
             queue_size = 2,
         )
-        # Near-identical gradients keep the subspace, so |cos| stays near 1.
         base_grad = torch.randn(16, 8)
         for i in range(5):
             grad = base_grad + torch.randn_like(base_grad) * 0.001
@@ -297,14 +288,14 @@ class TestGaLoreProjector:
         proj = GaLoreProjector(
             rank = 2, update_proj_gap = 1, cos_threshold = cos_threshold, gamma_proj = 2.0, queue_size = 2
         )
-        grad = torch.zeros(8, 8)  # square -> right-side basis (rank, 8)
+        grad = torch.zeros(8, 8)
         for step in range(len(bases)):
             if step % proj.update_proj_gap == 0:
                 proj.project(grad, step = step)
         return proj.update_proj_gap
 
     def test_adaptive_scheduling_ignores_a_sign_flipped_basis(self, monkeypatch):
-        # A negated basis is the same subspace; a raw dot product reads it as cos = -1.
+        # A negated basis is the same subspace; a raw dot product reads it as -1.
         basis = torch.eye(8)[:2]
         assert self._scheduled_gap(monkeypatch, [basis, -basis, basis], cos_threshold = 0.9) == 2
 
@@ -331,11 +322,6 @@ class TestGaLoreProjector:
         assert abs(ratio - 0.5) < 1e-5, f"Expected ratio ~0.5, got {ratio:.8f}"
 
 
-# ======================================================================
-# Quantization utility tests
-# ======================================================================
-
-
 class TestQuantizationUtils:
     """Tests for _quantize, _dequantize, _quantize_stochastic."""
 
@@ -357,7 +343,7 @@ class TestQuantizationUtils:
         restored = _dequantize(*quantized)
         scales = quantized[1]
         error = (restored - weights).abs().reshape(scales.shape[0], -1)
-        # Stochastic rounding may move by one quantization step, but must not clip a group.
+        # Stochastic rounding may move one step, but must not clip a group.
         assert torch.all(error <= scales + 1e-6)
 
     def test_quantize_dequantize_roundtrip(self):
@@ -366,7 +352,6 @@ class TestQuantizationUtils:
         q, scales, zeros, shape = _quantize(w, n_bit = 8)
         w_hat = _dequantize(q, scales, zeros, shape)
 
-        # Error bounded by the quantization step size.
         error = (w - w_hat).abs().max()
         assert error < 0.1, f"Max error {error} exceeds threshold"
 
@@ -405,11 +390,6 @@ class TestQuantizationUtils:
         assert abs(mean_error) < 0.01, f"Mean error {mean_error} suggests biased rounding"
 
 
-# ======================================================================
-# Param group helper tests
-# ======================================================================
-
-
 class TestParamGroupHelper:
     """Tests for make_q_galore_param_groups."""
 
@@ -424,15 +404,13 @@ class TestParamGroupHelper:
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
 
-        # galore + non-galore.
         assert len(groups) == 2
 
         galore_group = [g for g in groups if "rank" in g][0]
         non_galore_group = [g for g in groups if "rank" not in g][0]
 
-        # q_proj + k_proj in galore group.
         assert len(galore_group["params"]) == 2
-        assert len(non_galore_group["params"]) == 3  # embed weight + norm weight + norm bias
+        assert len(non_galore_group["params"]) == 3
 
     def test_custom_target_modules(self):
         """Custom target_modules narrows GaLore scope."""
@@ -451,12 +429,12 @@ class TestParamGroupHelper:
         )
 
         galore_group = [g for g in groups if "rank" in g][0]
-        assert len(galore_group["params"]) == 1  # Only q_proj
+        assert len(galore_group["params"]) == 1
 
     def test_bias_excluded_from_galore(self):
         """1-D bias params matching target names must be excluded (project needs 2-D grads)."""
         model = nn.Module()
-        model.q_proj = nn.Linear(64, 64, bias = True)  # has .weight AND .bias
+        model.q_proj = nn.Linear(64, 64, bias = True)
         model.embed = nn.Embedding(100, 64)
 
         groups = make_q_galore_param_groups(model, rank = 8, weight_quant = False)
@@ -464,11 +442,9 @@ class TestParamGroupHelper:
         galore_group = [g for g in groups if "rank" in g][0]
         non_galore_group = [g for g in groups if "rank" not in g][0]
 
-        # Only the 2-D q_proj.weight should be in the GaLore group
         assert len(galore_group["params"]) == 1
         assert galore_group["params"][0].dim() == 2
 
-        # q_proj.bias (1-D) + embed.weight should be in non-GaLore
         assert any(p.dim() == 1 for p in non_galore_group["params"])
 
     def test_empty_target_modules_no_galore(self):
@@ -476,7 +452,7 @@ class TestParamGroupHelper:
         model = nn.Module()
         model.q_proj = nn.Linear(64, 64, bias = False)
 
-        # Pass empty list, should NOT fall back to defaults
+        # Empty list must not fall back to defaults.
         groups = make_q_galore_param_groups(
             model,
             rank = 8,
@@ -488,11 +464,6 @@ class TestParamGroupHelper:
         assert len(galore_groups) == 0, "Expected no GaLore groups when target_modules=[]"
 
 
-# ======================================================================
-# Optimizer tests (CPU-only, no bitsandbytes dependency)
-# ======================================================================
-
-
 def test_optimizer_bias_correction_matches_adamw():
     pytest.importorskip("bitsandbytes")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -502,7 +473,6 @@ def test_optimizer_bias_correction_matches_adamw():
     reference = nn.Parameter(param.detach().clone())
     optimizer = _adamw_mod.QGaLoreAdamW8bit([param], lr = 0.1, weight_decay = 0.0)
     expected_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.0)
-    # Non-projected parameters use AdamW; small tensors use full-precision states.
     for values in ([0.1, 0.2], [0.4, -0.2], [-0.05, 0.3]):
         param.grad = torch.tensor(values, device = device)
         reference.grad = param.grad.clone()
@@ -538,7 +508,7 @@ class TestQGaLoreIntegration:
                     low = proj.project(p.grad, step)
                     p._saved = p.data.clone()
                     update = torch.zeros_like(low)
-                    update.add_(low)  # Simplified update
+                    update.add_(low)
                     full_update = proj.project_back(update)
                     p.grad.copy_(full_update)
 
@@ -551,7 +521,7 @@ class TestQGaLoreIntegration:
         torch.manual_seed(42)
         u = torch.randn(32, 4)
         v = torch.randn(4, 16)
-        grad = u @ v  # rank-4 gradient
+        grad = u @ v
 
         proj = GaLoreProjector(rank = 4, update_proj_gap = 1, scale = 1.0)
         low = proj.project(grad, step = 0)
@@ -567,23 +537,20 @@ class TestQGaLoreIntegration:
         QGaLoreAdamW8bit = _adamw_mod_local.QGaLoreAdamW8bit
 
         p = torch.nn.Parameter(torch.randn(16, 16))
-        # Simulate init_weight_quantization tagging.
         p._q_scales = None
         p._q_zeros = None
         p._q_shape = p.data.shape
 
         group = {"weight_quant": True}
 
-        # _has_weight_quant must return True even on first step (_q_scales=None)
+        # Must be True even on the first step, when _q_scales is None.
         assert QGaLoreAdamW8bit._has_weight_quant(p, group) is True
 
-        # Without the tag, it should return False
         p2 = torch.nn.Parameter(torch.randn(16, 16))
         assert QGaLoreAdamW8bit._has_weight_quant(p2, group) is False
 
     def test_embedding_lr_param_group_split(self):
         """Embedding params can be split into a separate group with custom LR."""
-        # make_q_galore_param_groups output can be further split for embedding LR.
         model = nn.Module()
         model.q_proj = nn.Linear(64, 64, bias = False)
         model.embed = nn.Embedding(100, 64)
@@ -599,8 +566,7 @@ class TestQGaLoreIntegration:
             embed_params = []
             other_params = []
             for p in group["params"]:
-                # Real usage checks names; here we split by shape.
-                if p.shape[0] == 100:  # embedding
+                if p.shape[0] == 100:
                     embed_params.append(p)
                 else:
                     other_params.append(p)
@@ -620,7 +586,7 @@ class TestQGaLoreIntegration:
 
     def test_optimizer_hyperparams_forwarded(self):
         """QGaLoreAdamW8bit accepts betas and eps keyword arguments."""
-        # Can't instantiate without bitsandbytes; check the signature instead.
+        # Cannot instantiate without bitsandbytes; check the signature.
         import inspect
 
         _adamw_mod_local = sys.modules["unsloth.optimizers.q_galore_adamw"]
@@ -645,11 +611,9 @@ class TestQGaLoreIntegration:
             "weight_group_size": 16,
         }
 
-        # Re-quantize logic from the end of an optimizer step.
         float_data = p.data.clone()
         q, scales, zeros, shape = _quantize(float_data, q_group_size = group["weight_group_size"])
 
-        # Key check: p.data stays float, _q_data holds uint8.
         p._q_data = q.to(p.data.device)
         p._q_scales = scales
         p._q_zeros = zeros
@@ -667,7 +631,6 @@ class TestQGaLoreIntegration:
         linear = nn.Linear(16, 8, bias = False)
         original = linear.weight.data.clone()
 
-        # Quantize the weight and replace with a placeholder (simulates post-step).
         q, scales, zeros, shape = _projector_mod_local._quantize(
             linear.weight.data.clone(), q_group_size = 16
         )
@@ -678,14 +641,12 @@ class TestQGaLoreIntegration:
         linear.weight.data = torch.zeros(1, dtype = linear.weight.dtype)
         assert linear.weight.data.numel() == 1, "placeholder should be 1 element"
 
-        # Hook should restore float weights on forward.
         handles = install_hook(linear)
         x = torch.randn(2, 16)
-        out = linear(x)  # triggers pre-hook
+        out = linear(x)
 
         assert linear.weight.data.shape == (8, 16), "weight shape not restored"
         assert linear.weight.data.is_floating_point(), "weight not float after hook"
-        # Quantization introduces small error, so allow tolerance.
         assert torch.allclose(
             linear.weight.data, original, atol = 0.15
         ), "dequantized weight too far from original"

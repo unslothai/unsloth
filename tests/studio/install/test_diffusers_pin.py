@@ -27,15 +27,9 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
 PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
-# The commit pin, installed by default ON TOP of the release pin. Exempt from the
-# one-source-of-truth scan below because it is the one deliberate second namer of diffusers: it is
-# installed by the step immediately after the release pin and by nothing else, which the tests here
-# pin down rather than assume.
 MAIN_FILE = REQ_ROOT / "diffusers-main.txt"
 
-# The shape install_python_stack._filter_requirements writes: a dot, the source stem,
-# "-filtered-", then tempfile's random suffix. NamedTemporaryFile's suffixes are
-# [A-Za-z0-9_]{8}, so this cannot swallow a checked-in file that merely starts with a dot.
+# NamedTemporaryFile suffixes are [A-Za-z0-9_]{8}, so checked-in dotfiles are not matched.
 _GENERATED_FILTER = re.compile(r"\.[\w.-]+-filtered-\w{8}\.txt")
 STACK = REPO_ROOT / "studio" / "install_python_stack.py"
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -94,11 +88,6 @@ def test_only_the_pin_file_names_diffusers():
     for path in sorted(REQ_ROOT.rglob("*.txt")):
         if path in (PIN_FILE, MAIN_FILE):
             continue
-        # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt` BESIDE the source on purpose, so
-        # relative -r/-c includes still resolve, and it does not delete it.
-        # Matched by that exact shape rather than by "starts with a dot": a checked-in hidden file such as
-        # .constraints.txt is a real requirements file and a real place the pin could be overridden from, so it stays in
-        # the scan.
         if _GENERATED_FILTER.fullmatch(path.name):
             continue
         named = [line for line in _requirements(path) if line.lower().startswith("diffusers")]
@@ -133,13 +122,10 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
     )
 
     source = _code_only(STACK.read_text(encoding = "utf-8"))
-    # Installed only through its own step, which reads the opt-out.
     assert "diffusers-main.txt" in source
     assert "_diffusers_main_requested" in source
     assert "UNSLOTH_DIFFUSERS_MAIN" in source
-    # And the CALL runs after the release pin install, or the release would overwrite it. Compared
-    # on the call site, not on the filename: the helper is DEFINED earlier in the file than either
-    # install, so a filename compare answers a different question and passes by accident.
+    # Compare on the call site: the helper is defined before either install.
     call = "\n    _diffusers_main_step()\n"
     assert call in source, "the main-build step is never called"
     assert source.index(call) > source.index('req = REQ_ROOT / "diffusers-pin.txt"')
@@ -171,18 +157,14 @@ def test_the_main_build_is_on_by_default_and_opts_out_on_zero(monkeypatch):
         monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", value)
         assert module._diffusers_main_requested() is False, value
 
-    # And opting out really stops the step, rather than only stopping the message.
     monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, **k: pytest.fail("the step ran after opting out")
     )
-    # _progress divides by a total the standalone module never set.
     progressed = []
     monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
     module._diffusers_main_step()
-    # It still spends its slot. The total is fixed before the opt-out is known, so returning early
-    # without a _progress leaves the bar stuck short of its own total for exactly these users.
     assert len(progressed) == 1, progressed
 
 
@@ -280,7 +262,6 @@ def test_the_main_build_keeps_the_release_when_there_is_no_git_and_no_zip(monkey
     notes = []
     monkeypatch.setattr(module, "_note", lambda msg, *a, **k: notes.append(msg))
     module._diffusers_main_step()
-    # And it SAYS so, rather than leaving the install looking like it got the main build.
     assert notes and "no working git" in notes[0].lower()
 
 
@@ -305,8 +286,6 @@ def test_an_archive_install_reads_back_as_resident(monkeypatch):
     )
     assert module._direct_reference_is_installed(MAIN_FILE, "diffusers") is True
 
-    # A zip of a DIFFERENT commit is not this one, which is the whole reason the SHA has to be in
-    # the URL: an archive records no ref, so the URL is the only provenance there is.
     other = f"https://github.com/huggingface/diffusers/archive/{'b' * 40}.zip"
     monkeypatch.setattr(
         module,
@@ -327,15 +306,11 @@ def test_the_zip_route_refuses_anything_it_cannot_pin():
     assert module._github_archive_url("https://www.github.com/a/b/", commit) == (
         f"https://github.com/a/b/archive/{commit}.zip"
     )
-    # A short SHA, a branch and a tag all fail: an archive carries no history, so only a full
-    # commit in the URL can identify the tree afterwards.
     assert module._github_archive_url("https://github.com/a/b", commit[:12]) is None
     assert module._github_archive_url("https://github.com/a/b", "main") is None
     assert module._github_archive_url("https://github.com/a/b", "v1.2.3") is None
-    # Other forges spell archives differently, and ssh carries no https route at all.
     assert module._github_archive_url("https://gitlab.com/a/b", commit) is None
     assert module._github_archive_url("ssh://git@github.com/a/b", commit) is None
-    # A subdirectory is part of the package identity and this URL cannot carry it.
     assert module._github_archive_url("https://github.com/a/b", commit, "sub") is None
 
 
@@ -381,8 +356,6 @@ def test_the_main_build_is_satisfied_without_touching_the_network(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
-    # Provenance AND payload: residency needs both, and a test environment with no installed
-    # Diffusers payload would otherwise fall through to the failing stub below and blame the step.
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
     monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
@@ -414,7 +387,7 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
     for func in ast.walk(tree):
         if not isinstance(func, ast.FunctionDef):
             continue
-        for stmt in func.body:  # top level of the function only, no if/else nesting
+        for stmt in func.body:
             if _installs_pin(stmt):
                 found = True
     assert found, (
@@ -460,7 +433,6 @@ def test_the_ordering_check_reads_installs_not_prose():
         "diffusers-pin.txt"
     ), "a genuine later install must still be caught"
 
-    # A `#` inside a string literal is not a comment and must survive intact.
     kept = _code_only('marker = "extras-no-deps.txt#egg"\n')
     assert "extras-no-deps.txt#egg" in kept
 
@@ -512,10 +484,7 @@ def test_gitignore_covers_the_generated_snapshots():
     assert done.returncode == 0, f"{probe.name} is not ignored; .gitignore needs the pattern"
 
 
-# A win_arm64 floor set above the first release that actually publishes one costs the
-# resolver every wheel in between, and for scikit-learn it cost the only one that exists on
-# a free-threaded 3.13. Each floor below is the earliest release carrying a win_arm64 wheel,
-# read off PyPI's own file list, so the pin can be checked against the index by hand.
+# Each floor is the earliest release with a win_arm64 wheel, per PyPI's file list.
 WIN_ARM64_FLOORS = [
     # scikit-learn 1.9.0 dropped cp313-cp313t; 1.8.0 is the only release with one, so a
     # >=1.9.0 floor leaves a free-threaded 3.13 with no wheel and an sdist to compile.
@@ -534,12 +503,7 @@ WIN_ARM64_FLOORS = [
 def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist, floor):
     text = (REQ_ROOT / relpath).read_text(encoding = "utf-8")
     marker = 'sys_platform == "win32" and platform_machine == "ARM64"'
-    # Either operator satisfies what this test is for. The floor exists so the resolver is not
-    # pushed above the first release carrying a win_arm64 wheel; an exact pin at that same
-    # version is that floor with the ceiling closed too. It is not interchangeable in the other
-    # direction: scan_packages_baseline.json keys its reviewed-benign findings by a hash of the
-    # scanned file's contents, so a dist recorded there has to be pinned exactly or the security
-    # audit reds on whatever unrelated PR is open the day upstream publishes.
+    # An exact pin also works; dists in scan_packages_baseline.json must be pinned exactly.
     wanted = {
         f"{dist}>={floor}; {marker}",
         f"{dist}=={floor}; {marker}",
@@ -547,7 +511,6 @@ def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist
     assert wanted & set(
         line.strip() for line in text.splitlines()
     ), f"{relpath} no longer floors {dist} at {floor}"
-    # And nothing else floors the same dist higher on that marker.
     for line in text.splitlines():
         line = line.strip()
         if (
@@ -573,7 +536,6 @@ def test_the_release_pin_stands_down_once_the_main_build_is_resident(monkeypatch
     monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
     monkeypatch.setattr(module, "_requirements_satisfied", lambda *a, **k: False)
 
-    # Resident and wanted: the step must not run, and must still spend its slot.
     assert (
         module._skip_step(
             module.REQ_ROOT / "diffusers-pin.txt",
@@ -585,7 +547,6 @@ def test_the_release_pin_stands_down_once_the_main_build_is_resident(monkeypatch
     )
     assert len(calls) == 1 and "skipped" in calls[0], calls
 
-    # Not superseded: unchanged, so a first install and an opt-out both still get the release.
     calls.clear()
     assert (
         module._skip_step(
@@ -640,15 +601,12 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
     assert module._diffusers_main_resident() is True
 
-    # The ref still points at the right commit, the files under it are gone.
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
     assert (
         module._diffusers_main_resident() is False
     ), "a damaged payload must not read as installed"
-    # And with it False, the release pin is no longer superseded, so the repair really can run.
     assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
 
-    # The step itself reinstalls rather than reporting satisfied.
     attempted = []
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
@@ -680,14 +638,11 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     progressed: list = []
     monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
     module._diffusers_main_step()
-    # The slot is still spent: the denominator is fixed before the interpreter is consulted.
     assert len(progressed) == 1 and "python 3.10" in progressed[0], progressed
 
-    # And the release pin is NOT superseded there, so 3.9 keeps getting its 0.36.0.
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     assert not (module._diffusers_main_requested() and module._diffusers_main_resident())
 
-    # 3.10 is unaffected.
     attempted: list = []
     monkeypatch.setattr(module.sys, "version_info", _V((3, 10, 0)))
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
@@ -721,15 +676,12 @@ def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
     )
     monkeypatch.delenv(module.DIFFUSERS_MAIN_ENV, raising = False)
 
-    # Without the hatch: resident means skip, and the release pin stands down.
     monkeypatch.delenv(module._FULL_DEPS_ENV, raising = False)
     module._diffusers_main_step()
     assert installed == [], installed
     assert len(calls) == 1 and "satisfied, skipped" in calls[0], calls
     assert module._diffusers_main_supersedes_release() is True
 
-    # With it: the build is reinstalled, and the release pin runs first so the order is the one a
-    # first install takes.
     calls.clear()
     monkeypatch.setenv(module._FULL_DEPS_ENV, "1")
     module._diffusers_main_step()
@@ -737,7 +689,6 @@ def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
     assert calls == ["diffusers main"], calls
     assert module._diffusers_main_supersedes_release() is False
 
-    # Opting out of the main build still wins over the hatch: no source build either way.
     calls.clear()
     installed.clear()
     monkeypatch.setenv(module.DIFFUSERS_MAIN_ENV, "0")
@@ -899,13 +850,11 @@ def test_the_startup_repair_leaves_a_healthy_install_alone(monkeypatch):
 def test_the_startup_repair_waits_out_a_peer_holding_the_pass(monkeypatch):
     """Returning at once would let the backend that started it import diffusers while a sibling
     backend's repair, or an update, is still replacing it."""
-    # The peer installed the build: nothing left to do once it lets go.
     module, ran = _repair_module(
         monkeypatch, needed = [False], resident_after = True, uncontended = [False, False, True]
     )
     assert module._repair_diffusers_main() == 1 and ran == []
     assert module.lock_polls() == 3
-    # The peer's pass ended without the build: install it now.
     module, ran = _repair_module(
         monkeypatch, needed = [True], resident_after = True, uncontended = [False, True]
     )

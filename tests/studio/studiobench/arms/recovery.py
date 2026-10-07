@@ -39,8 +39,7 @@ from typing import Any
 
 from ..scoring.schema import Measure
 
-#: Seeded turns for the loaded phase. 512 is chosen to be well past the point where the reported
-#: symptom appears while still seeding in under a minute through the messages API.
+# Past where the symptom appears while still seeding in under a minute.
 RECOVERY_TURNS = 512
 
 FULL_RECOVERY = 0.90

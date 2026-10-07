@@ -39,21 +39,14 @@ INSTALL_SH = REPO / "install.sh"
 
 needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 
-# What `_render` produces is a pure function of install.sh's bytes and the four values below, so the
-# Linux and macOS legs cover the subject completely and a Windows leg adds no coverage of it. What a
-# Windows leg does add is a different shell: `bash` there is Git Bash or the WSL stub in System32,
-# neither of which install.sh is ever run by -- its WSL arm is gated on /proc/version naming
-# microsoft, so the shell that reads this here-string is always a POSIX one inside the distro. The
-# repository already draws this line the same way for its other bash-driven installer tests
-# (tests/python/test_install_uv_override_space.py:21,
-# tests/studio/install/test_selection_logic.py:4185).
+# `_render` is a pure function of install.sh's bytes, so Linux and macOS cover it; on Windows
+# `bash` is Git Bash or the WSL stub, neither of which ever runs install.sh.
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason = "renders install.sh with bash; POSIX shell installer test",
 )
 
-# Values install.sh would interpolate, chosen to be awkward: a distro name with a space, and the
-# apostrophe the surrounding single-quoted PowerShell literals have to be doubling.
+# Awkward on purpose: a distro name with a space, and an apostrophe PowerShell must double.
 _RENDER_VARS = {
     "_css_sc_target": "wt.exe",
     "_css_sc_args_ps": 'wsl.exe -d "O\'\'Brien 24.04" -- bash -l -c "exec /home/u/launch.sh"',
@@ -71,8 +64,6 @@ def _render() -> str:
     """
     text = INSTALL_SH.read_text(encoding = "utf-8")
     body = re.search(
-        # The body is captured into a variable now, because it is either written to a file or piped
-        # to powershell on stdin depending on whether a Windows directory is reachable.
         r"(?ms)^            _css_ps1_body=\$\(cat << WSLPS1_EOF\n(.*?)^WSLPS1_EOF$",
         text,
     )
@@ -81,13 +72,10 @@ def _render() -> str:
         "moved or it is no longer generated, and until this locates it again nothing checks that "
         "what install.sh writes is PowerShell at all."
     )
-    # shlex.quote, not repr: these values deliberately contain the apostrophes and double quotes
-    # the real ones do, and Python's repr quotes for Python.
+    # shlex.quote, not repr: the values contain shell quotes and repr quotes for Python.
     assigns = "".join(f"{k}={shlex.quote(v)}\n" for k, v in _RENDER_VARS.items())
     script = assigns + "cat << WSLPS1_EOF\n" + body.group(1) + "WSLPS1_EOF\n"
-    # check = False, then asserted. CalledProcessError carries the command and the return code and
-    # drops the shell's own diagnostic, so a rendering that fails to render reported a 6 KB repr of
-    # the script and not the one line saying what was wrong with it.
+    # check = False then assert: CalledProcessError drops the shell's own diagnostic.
     done = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert done.returncode == 0, (
         f"bash could not render the here-string (exit {done.returncode}):\n"
@@ -196,7 +184,6 @@ def test_the_icon_refresh_launch_runs_one_interpreter_with_every_shortcut(tmp_pa
             "{'argv': sys.argv[2:], 'cwd': os.getcwd(), 'calls': calls}) + '\\n')",
         )
     )
-    # A stand-in interpreter taking the real one's argv, which is what the quoting has to survive.
     venv_python = (
         tmp_path / "home" / ".unsloth" / "studio" / "unsloth_studio" / "Scripts" / "python.exe"
     )
@@ -207,7 +194,6 @@ def test_the_icon_refresh_launch_runs_one_interpreter_with_every_shortcut(tmp_pa
         f'exec {shlex.quote(sys.executable)} -I -S -B {shlex.quote(str(stub))} "$5"\n'
     )
     venv_python.chmod(0o755)
-    # The same stand-in on PATH: reaching it would mean the loop did not stop at the first success.
     path_dir = tmp_path / "bin"
     path_dir.mkdir()
     (path_dir / "python3").write_bytes(venv_python.read_bytes())
@@ -230,7 +216,6 @@ def test_the_icon_refresh_launch_runs_one_interpreter_with_every_shortcut(tmp_pa
     )
     assert "BLOCK_DONE" in done.stdout, f"{done.stdout}\n{done.stderr}"
     entries = [json.loads(line) for line in log.read_text().splitlines()]
-    # Exactly one run: the first interpreter answered ok, so PATH's are never tried.
     assert len(entries) == 1, entries
     assert entries[0]["calls"] == _EXPECTED_CALLS
     assert entries[0]["cwd"] == str(venv_python.parent)
@@ -274,8 +259,7 @@ def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
         step
         for job in workflow["jobs"].values()
         for step in (job.get("steps") or [])
-        # The WSL leg specifically. The Linux container legs run the same piped install and
-        # have no Windows side to watch.
+        # The WSL leg only: Linux container legs run the same piped install with no Windows side.
         if "cat install.sh | sh" in str(step.get("run", ""))
         and "wsl -d unsloth-ci" in str(step.get("run", ""))
     ]
@@ -321,7 +305,7 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
     )
     runs = [str(step.get("run", "")) for step in (job.get("steps") or [])]
     index = next(i for i, run in enumerate(runs) if "cat install.sh | sh" in run)
-    # Only the steps BEFORE the install count: auditing turned on afterwards measures nothing.
+    # Only steps before the install count: auditing turned on afterwards measures nothing.
     earlier = "\n".join(runs[:index])
     assert 'auditpol /set /subcategory:"Process Creation" /success:enable' in earlier, (
         "the WSL lane never enables process creation auditing, so the 4688 half of the watch is "

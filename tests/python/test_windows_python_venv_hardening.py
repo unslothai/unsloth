@@ -48,23 +48,14 @@ def _link_dir(link: Path, target: Path) -> None:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
-    # run_pwsh, not subprocess.run: $shell is always pwsh or powershell (see POWERSHELLS), and every venv and rollback
-    # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
-    # half a moved environment.
-    # See tests/_shared/unsloth_pwsh_runner.py.
-    # encoding, not the default: `text = True` alone decodes with the locale codec, which is
-    # cp1252 on a Windows runner, while both shells write their stdout as UTF-8. A non-ASCII
-    # path therefore came back as mojibake ("kaffee" with the a-umlaut arriving as A-tilde
-    # plus currency sign) and failed an assertion about a file that was in fact written
-    # correctly, so this decoded the transport wrongly rather than catching a real defect.
+    # run_pwsh, with explicit UTF-8: `text = True` decodes with cp1252 on Windows runners.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
         encoding = "utf-8",
-        # strict, so the next mismatch raises here rather than turning into U+FFFD and
-        # failing an assertion somewhere downstream about a value that was written fine.
+        # strict, so a mis-decode raises here instead of becoming U+FFFD downstream.
         errors = "strict",
         env = env,
         timeout = 30,
@@ -95,12 +86,7 @@ def _assert_same_text(actual: str, expected: str, note: str) -> None:
         f"    actual   {describe(actual[head:])}",
         f"    expected {describe(expected[head:])}",
     ]
-    # Only claim a cause when the bytes show one, and only the cause that is still possible.
-    # _run_powershell decodes stdout as strict UTF-8, so a transport mis-decode raises there
-    # rather than arriving here: mojibake that reaches this point was produced inside the
-    # script, which is the product defect these cases exist to catch. Saying "the script did
-    # not lose the path" would be exactly backwards, and a wrong explanation on a real
-    # restore bug costs more than none.
+    # stdout is decoded strictly, so mojibake reaching here was produced by the script itself.
     if _looks_like_a_mis_decode(actual[head:], expected[head:]):
         lines.append(
             "  actual is expected's UTF-8 bytes read back through a single-byte code page. "
@@ -128,10 +114,7 @@ def _uv_cache_functions(source: str) -> str:
         for name in (
             "Resolve-StudioUvCachePath",
             "Write-StudioUvCacheMarker",
-            # Every one of them must be listed. The selector's candidate loop treats any
-            # failure as an uninspectable cache, so a helper missing here does not raise: it
-            # turns every case in this file into "studio, could not be inspected", which reads
-            # as a product bug.
+            # A missing helper here does not raise; every case reads as an uninspectable cache.
             "Test-StudioUvNoCache",
             "Test-StudioUvBucketName",
             "Test-StudioUvCacheWritable",
@@ -312,9 +295,7 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     assert state["active"] == "True", out
     assert state["dir"].startswith(os.path.join(str(tmp_path), "unsloth_studio.rollback.")), out
     assert Path(state["dir"]).is_dir(), out
-    # Both halves are named, so the user is not left hunting for the moved tree. Match the warning lines themselves
-    # rather than the bare paths: $existing is a prefix of the rollback dir, so "str(existing) in out" alone is
-    # satisfied by the dir= line and would stay green even with the warning missing entirely.
+    # Match warning lines, not bare paths: $existing is a prefix of the rollback dir.
     assert f"still in place: {existing}" in out, out
     assert f"moved aside:    {state['dir']}" in out, out
 
@@ -368,7 +349,6 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     env["TEST_TARGET_DIR"] = str(target)
     out = _run_powershell(shell, script, env)
 
-    # The file that never moved is the whole point: the pre-merge path deleted it.
     assert (target / "Scripts" / "unsloth.exe").read_text(encoding = "utf-8") == "irreplaceable", out
     assert (target / "Lib" / "site-packages" / "marker.txt").is_file(), out
     assert not backup.exists(), out
@@ -467,7 +447,6 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     )
     target = tmp_path / "unsloth_studio"
     backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
-    # A sibling of the environment, never under it.
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "keep.txt").write_text("untouched", encoding = "utf-8")
@@ -498,11 +477,9 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     env["TEST_TARGET_DIR"] = str(target)
     out = _run_powershell(shell, script, env)
 
-    # Nothing from the environment may be written through the link.
     assert not (outside / "payload.txt").exists(), out
     assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"], out
     assert (outside / "keep.txt").read_text(encoding = "utf-8") == "untouched", out
-    # An unresolved conflict keeps both copies, so the rollback stays tracked.
     assert "active=True" in out, out
 
 
@@ -618,7 +595,6 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         (shared / "sdists-v9" / "pypi" / "pkg" / "revision.rev").write_bytes(b"meta")
         (shared / "sdists-v9" / "pypi" / "pkg" / "download.lock").write_bytes(b"")
     elif state == "builds":
-        # What modern uv calls the old built-wheels-* bucket.
         (shared / "builds-v0" / "pkg").mkdir(parents = True)
         (shared / "builds-v0" / "pkg" / "module.py").write_text("x = 1\n", encoding = "utf-8")
     elif state == "symlinked-bucket":
@@ -661,7 +637,6 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         ("builds-bucket", None, False, "builds", "shared"),
         ("symlinked-bucket", None, False, "symlinked-bucket", "shared"),
         ("denied-leaf", None, False, "denied-leaf", "shared"),
-        # Uninspectable: falling back is right, doing it silently is not.
         ("denied-bucket", None, False, "denied-bucket", "studio"),
     ],
 )
@@ -788,11 +763,7 @@ try {{
         ) == "keep"
         assert (shared / ".gitignore").read_text(encoding = "utf-8") == "*\n"
 
-    # The marker `unsloth studio update` reads back, so it reuses the cache this install
-    # used instead of re-deriving it from content that a runtime install can change.
     # utf-8-sig because Windows PowerShell 5.1 writes -Encoding utf8 with a BOM.
-    # Every mode records, custom included: a marker left by a previous install would aim
-    # later updates at a cache this one never filled.
     marker = studio_root / "cache" / "uv-cache-dir"
     recorded = marker.read_text(encoding = "utf-8-sig").strip()
     assert norm(recorded) == norm(str(expected_selected)), case
@@ -848,9 +819,7 @@ try {{
     env["LOCALAPPDATA"] = str(tmp_path / "local app data")
     result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
 
-    # A caller's own value is kept, and resolved: setup runs uv from a directory of its
-    # own choosing, so a relative one would name two caches across the one install. What
-    # gets RESTORED afterwards is still the caller's spelling, asserted below.
+    # A caller's value is resolved: setup runs uv from another directory, so relative would split caches.
     if initial_value.strip():
         expected = os.path.abspath(initial_value)
     else:
@@ -858,8 +827,7 @@ try {{
     assert os.path.normcase(os.path.normpath(result["Active"])) == os.path.normcase(
         os.path.normpath(expected)
     )
-    # Windows normalizes a requested present-empty process variable to absent. Compare
-    # against the platform-representable state captured before installer code ran.
+    # Windows normalizes a present-empty process variable to absent.
     assert result["PresentAfter"] is result["PresentBefore"]
     assert result["ProviderPresentAfter"] is result["ProviderPresentBefore"]
     assert result["Restored"] == result["StoredBefore"]
@@ -931,7 +899,6 @@ def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
     studio_root = tmp_path / "studio root"
     marker = studio_root / "cache" / "uv-cache-dir"
     previous = tmp_path / "kaffee cache"
-    # As the Python backfill writes it: UTF-8, no BOM.
     marker.parent.mkdir(parents = True)
     marker.write_bytes(f"{previous}\n".replace("kaffee", "k\u00e4ffee").encode("utf-8"))
     expected = str(previous).replace("kaffee", "k\u00e4ffee")

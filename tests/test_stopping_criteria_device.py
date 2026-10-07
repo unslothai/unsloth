@@ -11,7 +11,7 @@ import types
 import pytest
 from real_accelerator import (
     has_real_cuda,
-)  # tests/_shared, on sys.path via tests/conftest.py
+)
 import torch
 
 from unsloth.chat_templates import create_stopping_criteria
@@ -51,8 +51,7 @@ def test_multi_token_criteria_builds_and_runs_on_cpu():
     assert criteria[0](torch.tensor([100, 101, 7]), None) is False
 
 
-# Neither torch.cuda.is_available(), which the spoof patches True process-wide, nor
-# has_real_accelerator(), which is true on an XPU-only host: the body names cuda three times.
+# Not cuda.is_available() (spoofed True) nor has_real_accelerator() (true on XPU-only hosts).
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
 def test_stop_token_follows_the_input_device():
     criteria = create_stopping_criteria(_FakeTokenizer(eos_token_id = 2))
@@ -61,7 +60,6 @@ def test_stop_token_follows_the_input_device():
     assert criteria[0].stop_token.device.type == "cuda"
     pointer = criteria[0].stop_token.data_ptr()
 
-    # cached, so generation does not pay a host-to-device copy per token
     assert criteria[0](torch.tensor([9, 9, 2], device = "cuda"), None) is True
     assert criteria[0].stop_token.data_ptr() == pointer
 
@@ -81,6 +79,5 @@ def test_stop_token_follows_the_input_device():
 )
 def test_stopping_criteria_matches_each_sequence(stop_word, rows, expected):
     criteria = create_stopping_criteria(_FakeTokenizer(), stop_word = stop_word)
-    # Exercise Transformers' public aggregation, as generate() does.
     result = criteria(torch.tensor(rows), scores = None)
     torch.testing.assert_close(result, torch.tensor(expected))

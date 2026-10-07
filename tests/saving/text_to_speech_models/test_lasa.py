@@ -1,4 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -114,7 +114,7 @@ print("🔍 SECTION 4: Saving and Merging Model")
 print(f"{'='*80}")
 
 with warnings.catch_warnings():
-    warnings.simplefilter("error")  # save/merge must emit no warnings
+    warnings.simplefilter("error")
     try:
         model.save_pretrained_merged("lasa", tokenizer)
         print("✅ Model saved and merged successfully without warnings!")
@@ -198,7 +198,6 @@ with torch.inference_mode():
 
     speech_tokens = tokenizer.batch_decode(generated_ids, skip_special_tokens = True)
 
-    # Convert token <|s_23456|> to int 23456.
     speech_tokens = extract_speech_ids(speech_tokens)
 
     speech_tokens = torch.tensor(speech_tokens).cpu().unsqueeze(0).unsqueeze(0)

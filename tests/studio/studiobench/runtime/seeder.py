@@ -34,9 +34,7 @@ from typing import Any, Callable, Optional
 from ..fixture.corpus import RungPlan, Unit
 from .lifecycle import StudioAuth, auth_request_json
 
-# How close the two paths must land to count as equivalent. Not zero: a streamed reply carries a
-# usage record and a duration the seeded one does not, and the composer state differs. 2% on the
-# quantities that scale with content.
+# Not zero: a streamed reply carries usage and duration the seeded one lacks.
 EQUIVALENCE_TOLERANCE = 0.02
 
 
@@ -55,10 +53,7 @@ def _assistant_content(unit: Unit) -> list[dict]:
     parts: list[dict] = []
     if unit.reasoning:
         parts.append({"type": "reasoning", "text": unit.reasoning})
-    # Tool calls sit BETWEEN the reasoning and the answer, where a real turn puts them. reasoning.tsx
-    # groups adjacent tool-call parts with the reasoning above them, so the order decides whether a
-    # tool group renders inside the collapsible pane or as its own block, and those are different
-    # components with different costs.
+    # Tool calls go between reasoning and answer; order decides which component renders them.
     for call in unit.tool_calls:
         parts.append(dict(call))
     if unit.content:
@@ -84,10 +79,6 @@ class SeededThread:
     seeded_chars: int
     seconds: float
     turns: int
-    # The markers on the FIRST and LAST user turns: the readiness gate uses `last_marker` to prove the
-    # end of the thread is mounted, and the completeness probe uses `first_marker` to prove a windowed
-    # arm still holds the head. Plain text written by this harness, so neither is a guess about what a
-    # markdown renderer will do.
     first_marker: Optional[str] = None
     last_marker: Optional[str] = None
 
@@ -98,9 +89,7 @@ class Seeder:
     auth: StudioAuth
     model_id: str
     log: Callable[[str], None] = print
-    # Messages per PUT. The route replaces the whole message list in one SQLite transaction, so a
-    # 1M-token thread is one enormous request; it is sent whole because a partial PUT with
-    # pruneMissing would delete everything not in the batch.
+    # Sent whole: a partial PUT with pruneMissing would delete everything not in the batch.
     batch_note: str = field(default = "one transaction, pruneMissing", init = False)
 
     def _url(self, path: str) -> str:
@@ -108,8 +97,7 @@ class Seeder:
 
     def create_thread(self, title: str = "studiobench") -> str:
         thread_id = str(uuid.uuid4())
-        # `auth_request_json`, not `request_json`: the seeder is asked for a thread once per cell for as
-        # long as the run lasts and an access token is good for 60 minutes. See `StudioAuth`.
+        # Authenticated helper because the run outlives the 60-minute access token.
         auth_request_json(
             self.auth,
             self._url("/api/chat/threads"),
@@ -170,8 +158,7 @@ class Seeder:
             parent = assistant_id
         started = time.monotonic()
         if messages:
-            # pruneMissing so this REPLACES the thread rather than merging into whatever a previous cell left
-            # behind; a merge would make every rung after the first cumulative.
+            # pruneMissing replaces the thread, else every rung after the first would be cumulative.
             auth_request_json(
                 self.auth,
                 self._url(f"/api/chat/threads/{thread_id}/messages"),
@@ -205,9 +192,6 @@ class Seeder:
         return got or []
 
 
-# ── the equivalence check ───────────────────────────────────────────
-
-
 def dom_signature(page) -> dict:
     """What the app BUILT, read from the DOM. The only fair comparison between the two paths."""
     return page.evaluate("() => window.__sb.dom.counts()")
@@ -225,14 +209,7 @@ def compare_signatures(
     elements legitimately differ and gating on exact equality would fail every time for a reason
     that has nothing to do with fidelity.
     """
-    # GATED ON CONTENT, REPORTED ON REASONING. A collapsed reasoning pane in a SEEDED thread does not
-    # mount its children while a streamed one does, because it was open while the text arrived.
-    # Measured, the same text carried 1,485 reasoning spans one way and 0 the other, so this is a
-    # property of how the app builds a thread rather than something seeding can reproduce.
-    # Gating on total `highlight_spans` therefore asked a question seeding can never pass, and the
-    # answer moved with whatever pane state the film left behind: two runs of the same rung reported
-    # 2.1% and 36.4% drift. The question worth asking is whether the same text renders the same
-    # CONTENT, and the reasoning difference is measured and reported below.
+    # Gate on content only: collapsed reasoning panes in seeded threads do not mount their spans.
     keys = ("assistant_messages", "content_code_blocks", "content_spans", "reasoning_panes")
     fields: dict = {}
     equivalent = True
@@ -290,9 +267,6 @@ def compare_signatures(
     }
 
 
-# ── chars per token ─────────────────────────────────────────────────
-
-
 def measure_chars_per_token(
     text: str, base_url: str, auth: Optional[StudioAuth], model_id: str
 ) -> dict:
@@ -346,9 +320,7 @@ def measure_chars_per_token(
                 }
         except Exception:  # noqa: BLE001
             pass
-    # Last resort, and LABELLED: counting whitespace-delimited words plus punctuation is a rough
-    # stand-in for a BPE tokeniser and is off by tens of percent on dense code, which is most of this
-    # corpus.
+    # Last resort: word counting is off by tens of percent on code, so the result is labelled.
     words = len(sample.split())
     punct = sum(1 for c in sample if not c.isalnum() and not c.isspace())
     est = max(1, words + punct // 2)

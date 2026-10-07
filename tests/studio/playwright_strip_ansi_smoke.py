@@ -23,9 +23,8 @@ from _playwright_robust import (  # noqa: E402
     wait_for_smoke_page,
 )
 
-# 8000 collides with whatever else is on a shared box; sit by chat (5193) and research (5183).
+# Avoid 8000 on a shared box; sits by chat (5193) and research (5183).
 PORT = int(os.environ.get("SMOKE_PORT", "5203"))
-# Unset: start and stop our own server. Set: drive that one and leave it running.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -54,9 +53,7 @@ def dump(page: Page, vite: subprocess.Popen[str] | None) -> None:
     dump_diagnostics(page, ART, "smoke-ansi-failure", info = info)
     if vite is not None:
         info("vite tail:")
-        # Snapshot first: the drain thread is still appending, and printing releases the GIL, so lazy iteration raises
-        # "deque mutated during iteration" and loses the tail in the noisy failure it exists for. `list()` runs in C,
-        # so it is atomic.
+        # Snapshot with list() (atomic in C): the drain thread still appends and lazy iteration raises.
         for line in list(getattr(vite, "vite_tail", [])) or ["(no output)"]:
             info(f"  {line.rstrip()}")
     info(f"artifacts in {ART}")
@@ -95,11 +92,8 @@ def main() -> None:
                     assert "[32m" not in text, f"{section} still shows SGR garbage"
             except Exception:
                 dump(page, vite)
-                # Say what the page threw, if anything. The smoke renders these components
-                # bare, outside the app's providers, so a component that grows a new context
-                # dependency takes the whole React root down and every pane below goes
-                # missing. Reported as a timeout on the first locator, that reads as a slow
-                # build; it is not. The missing provider is the thing to name.
+                # The smoke renders components outside the app's providers, so a new context dependency kills the
+                # React root; name the thrown error instead of a locator timeout.
                 if thrown:
                     raise AssertionError(
                         "the smoke page threw before rendering, so no pane exists to check: "

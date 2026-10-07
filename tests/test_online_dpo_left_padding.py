@@ -54,7 +54,7 @@ def _compile(source):
 
 
 def _trl_sources():
-    # Read TRL's file, not the live class: an imported unsloth has already swapped in its patched trainer.
+    # Read TRL's file: an imported unsloth has already swapped in its patched trainer.
     sources = {"trl-0.22.2": TRL_0_22_FORWARD}
     spec = importlib.util.find_spec("trl")
     if spec is None or not spec.submodule_search_locations:
@@ -150,7 +150,6 @@ def test_patched_forward_matches_unpadded_rows(version):
     # Patched call first: no pad before a real token. Stock TRL second: left-padded.
     assert not bool((model.seen[0][:, 1:] > model.seen[0][:, :-1]).any())
     assert bool((model.seen[1][:, 1:] > model.seen[1][:, :-1]).any())
-    # Stock TRL on the same model is wrong, so the check can fail.
     assert not torch.allclose(stock[1, : len(reference[1])], reference[1], atol = 1e-3)
 
 

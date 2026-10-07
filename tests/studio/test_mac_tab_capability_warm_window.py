@@ -33,12 +33,11 @@ APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/stores/appearan
 APP_SIDEBAR = REPO / "studio/frontend/src/components/app-sidebar.tsx"
 
 BASE = "http://127.0.0.1:18893"
-# A settled reply: no hardware_detecting at all.
 SETTLED = {"status": "healthy", "service": "Unsloth UI Backend", "device_type": "mac"}
 UNMEASURED = {"status": "healthy", "service": "Unsloth UI Backend", "hardware_detecting": True}
 
-# Spelled out rather than read off the script, so these cases run unchanged against a build of it that does not define
-# the constant yet. test_inline_row_ids_match_the_frontends_default_pinned_set is what keeps the spelling honest.
+# Spelled out so these cases run against a build without the constant; the drift test
+# keeps the spelling honest.
 TRAIN = "train"
 
 GREYED = {"disabled": True, "spinner": False}
@@ -62,8 +61,7 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BASE_URL", BASE)
     monkeypatch.setenv("STUDIO_OLD_PW", "stub-password")
     monkeypatch.setenv("PW_ART_DIR", str(tmp_path / "art"))
-    # The real default gives the row 15s to settle; the stub answers instantly, so the only thing the wait would buy
-    # here is 15s of a red test.
+    # The stub answers instantly; the real 15s settle would only delay a red test.
     monkeypatch.setenv("STUDIO_MAC_FORCED_PENDING_S", "0.2")
     spec = importlib.util.spec_from_file_location("mac_tab_capabilities_under_test", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
@@ -133,9 +131,7 @@ class FakePage:
 
     def route(self, pattern, handler) -> None:
         self.routed.append(pattern)
-        # Prove the stub body is valid JSON and reaches the browser, rather than only
-        # that route() was called: a body the frontend cannot parse would leave the row
-        # in its pre-fetch state and the check would read the wrong thing.
+        # Prove the body parses in the browser, not just that route() was called.
         handler(_RecordingRoute(self))
 
     def unroute(
@@ -210,11 +206,6 @@ def _health(mod, bodies):
     mod._get_json = fake
 
 
-# --------------------------------------------------------------------------------
-# The regression Codex found: the window shut before the browser got there.
-# --------------------------------------------------------------------------------
-
-
 def test_greyed_row_fails_even_though_the_warm_window_already_shut(tmp_path, monkeypatch):
     """The vacuous-pass case. Health has settled, so the real-warm sampler observes
     nothing and breaks on its first iteration; the row is blacked out exactly as it was
@@ -287,7 +278,6 @@ def test_forced_body_is_a_real_reply_with_the_measurement_removed(tmp_path, monk
     assert page.fulfilled["chat_only"] is True
     assert "device_type" not in page.fulfilled
     assert "hardware_detection_deferred" not in page.fulfilled
-    # Untouched fields survive, so the reply differs from a real one only where it must.
     assert page.fulfilled["studio_root_id"] == "abc"
 
 
@@ -300,11 +290,6 @@ def test_unreadable_health_fails_rather_than_returning_early(tmp_path, monkeypat
     mod.assert_row_never_greyed_while_unmeasured(page)
 
     assert any("provisional" in m for m in mod._failed), mod._failed
-
-
-# --------------------------------------------------------------------------------
-# The real-warm sampler still has to fail when it does catch a grey-out.
-# --------------------------------------------------------------------------------
 
 
 def test_real_warm_grey_out_still_fails(tmp_path, monkeypatch):
@@ -364,11 +349,6 @@ def test_missed_warm_window_alone_is_not_a_failure(tmp_path, monkeypatch):
     mod.sample_natural_warm_window(page)
 
     assert mod._failed == []
-
-
-# --------------------------------------------------------------------------------
-# The tab walk: a pinned row that is not there means the tab checked nothing.
-# --------------------------------------------------------------------------------
 
 
 def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatch):
@@ -455,11 +435,6 @@ def test_every_stand_in_names_a_pinned_row_and_a_section_the_sidebar_renders():
         ), f"no sidebar section is keyed {key.group(1)!r}"
 
 
-# --------------------------------------------------------------------------------
-# Drift guard: the row asserted on has to be one the sidebar actually pins.
-# --------------------------------------------------------------------------------
-
-
 def test_inline_row_ids_match_the_frontends_default_pinned_set():
     """If a row is unpinned in the store, it stops rendering a data-testid and every
     assertion pinned to it silently becomes unobservable. That is how the Video half of
@@ -516,10 +491,6 @@ def test_the_forced_verdict_check_is_wired_into_the_public_entry_point():
     )
     assert "assert_row_never_greyed_while_unmeasured" in called.get("main", set())
 
-
-# --------------------------------------------------------------------------------
-# What the survival poller fails on, now that it no longer replays the watchdog.
-# --------------------------------------------------------------------------------
 
 POLL_S = 5.0
 BUDGET_S = 10.0
@@ -753,11 +724,6 @@ def test_the_watchdog_replay_is_gone():
         assert f"def {gone}" not in source and f"\n{gone} =" not in source, gone
 
 
-# --------------------------------------------------------------------------------
-# The post-run watch, which is what stops the window boundary deciding the verdict.
-# --------------------------------------------------------------------------------
-
-
 def _scripted_probes(mod, kinds):
     """Point _get_json at a scripted sequence of outcomes; the last one repeats."""
     seq = list(kinds)
@@ -777,7 +743,6 @@ def test_the_watch_keeps_probing_until_the_backend_answers(tmp_path, monkeypatch
     tell the difference, so the watch keeps asking until something comes back."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["timeout", "timeout", "ok"])
-    # spacing off: this case is about the loop continuing, not about how it paces.
     kind, status, _, probes = mod.await_recovery(window_s = 30.0, spacing_s = 0.0)
     assert (kind, status) == ("ok", 200)
     assert len(calls) == 3, calls
@@ -800,7 +765,6 @@ def test_a_refused_port_does_not_get_the_recovery_window(tmp_path, monkeypatch):
     at once rather than costing the run 90 seconds to reach the same answer."""
     mod = _load(tmp_path, monkeypatch)
     calls = _scripted_probes(mod, ["refused"])
-    # Small but non-zero on purpose.
     kind, _, _, probes = mod.await_recovery(window_s = 2.0, spacing_s = 0.0)
     assert kind == "refused"
     assert len(calls) == 1, f"spent the window instead of returning at once: {len(calls)} probes"
@@ -849,11 +813,6 @@ def test_the_post_run_watch_is_wired_into_the_public_entry_point():
     assert {"final_kind", "final_wait_s"} <= passed, passed
 
 
-# --------------------------------------------------------------------------------
-# The watch has to be bounded, paced, and honest about what it saw.
-# --------------------------------------------------------------------------------
-
-
 def _serve(
     handler_body,
     trickle = False,
@@ -870,8 +829,7 @@ def _serve(
 
         def do_GET(self):
             if trickle:
-                # Headers, then a byte at a time forever. Every chunk resets urllib's per-operation timeout, which is
-                # the shape that hangs a naive read().
+                # A byte at a time forever: each chunk resets urllib's per-operation timeout.
                 self.send_response(200)
                 self.send_header("Content-Length", "1000000")
                 self.end_headers()
@@ -1000,12 +958,10 @@ def test_the_warning_counts_the_post_run_wait(tmp_path, monkeypatch, capsys):
     last timed-out sample, so the reported length leaves out every second of the watch
     that actually saw the stall clear. A warning nobody can trust is worse than none."""
     mod = _load(tmp_path, monkeypatch)
-    # A SHORT trailing stall on purpose.
     samples = _timeline(150, stalls = [(140, 9999)])
     assert samples[-1]["kind"] == "timeout", "fixture no longer ends mid-stall"
     raw = max(end - start for start, end, _ in mod._stall_windows(samples))
     assert raw < 40.0, f"fixture stall is already long enough to pass on its own: {raw}s"
-    # The watch keeps probing for another 40s before it clears.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 4)
     assert (
         _verdict(mod, samples, final_kind = "ok", final_wait_s = 40.0, recovery_samples = recovery) == []
@@ -1055,12 +1011,10 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    # Bytes, never whole header lines: whole lines hit http.client's _MAXHEADERS cap of 100
-    # and end the call themselves in ~2s, passing against a build with no deadline at all.
+    # Bytes, not header lines: lines hit http.client's 100-header cap and end the call early.
     chunk = b"x"
-    # urllib's per-socket-operation timeout is reset by any traffic. While max_gap stays under
-    # it no per-operation timeout can have fired, so a probe that returned anyway returned on
-    # the whole-request deadline. That is the only thing here that tells the two bounds apart.
+    # While max_gap stays under the per-operation timeout, a return must be the whole-request
+    # deadline.
     state = {"accepted": 0, "lines": 0, "chunk": chunk, "max_gap": 0.0, "last_write": None}
     stop = threading.Event()
 
@@ -1150,8 +1104,7 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
         f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
 
-    # Contention that breaks the gap invariant yields no evidence, not a failure: report that
-    # rather than pass on a build with no deadline or go red on a busy machine.
+    # Contention breaking the gap invariant is no evidence either way: report it.
     trickled_throughout = (
         lines >= 3
         and last_write is not None
@@ -1191,7 +1144,6 @@ def test_a_stall_that_begins_after_sampling_is_still_reported(tmp_path, monkeypa
     samples = _timeline(120)
     assert all(s["kind"] == "ok" for s in samples), "fixture must end with sampling healthy"
     assert not mod._stall_windows(samples), "fixture already has a stall during sampling"
-    # 60s of silence after sampling stops, then the backend answers.
     recovery = _recovery_probes(samples[-1]["t"], timeouts = 6)
     assert (
         _verdict(mod, samples, final_kind = "ok", final_wait_s = 60.0, recovery_samples = recovery) == []

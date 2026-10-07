@@ -170,7 +170,6 @@ def test_a_float_that_only_differs_in_the_noise_still_resumes(tmp_path):
     )
     assert _problems(paths, 5.0 + 1e-7) == []
     assert _problems(paths, 5.0 - 1e-7) == []
-    # And the smallest difference two recorded ratios can actually have is still refused.
     assert _problems(paths, 5.001) != []
     assert LADDER_RATIO_TOLERANCE < 0.001
 
@@ -207,9 +206,6 @@ def test_an_unmeasurable_ratio_is_not_a_refusal(tmp_path, measured):
     assert _problems(paths, measured) == []
 
 
-# ── A REFUSAL LEAVES THE PAYLOAD IT REFUSED EXACTLY AS IT FOUND IT ──────────────
-
-
 def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
     """The refusal arrives after the `Recorder` has opened the file, so it has to undo itself.
 
@@ -227,7 +223,6 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
     before = paths.payload_jsonl.read_bytes()
     assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
 
-    # Exactly what `run` writes between opening the payload and asking the ratio question.
     mark = payload_mark(paths.payload_jsonl)
     refused = Recorder(paths.payload_jsonl, "sess-2")
     refused.gate("instrument_unavailable:rss", False, {"error": "psutil is not installed"})
@@ -257,14 +252,11 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
 
     assert dropped > 0
     assert paths.payload_jsonl.read_bytes() == before
-    # The two ways the leftovers were visible: a rung the payload never owed, and a failed gate charged
-    # to somebody else's evidence.
     assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
     assert [
         r for r in _rows(paths) if r.get("row_type") == "gate" and r.get("passed") is False
     ] == []
     assert {r.get("session_id") for r in _rows(paths)} == {"sess-1"}
-    # And the payload still resumes at the ratio it was recorded at.
     assert _problems(paths, 3.336) == []
     assert _resume_set(paths) == {"r1K.A0.rep0"}
 

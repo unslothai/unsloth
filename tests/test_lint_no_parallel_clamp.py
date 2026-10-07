@@ -26,17 +26,14 @@ _spec.loader.exec_module(lint)
 
 CLAMPS = (
     "def load():\n    n_parallel = 1\n",
-    # The annotated spelling of the same clamp: a different AST node, same regression.
+    # Annotated assignment: a different AST node, same regression.
     "def load():\n    n_parallel: int = 1\n",
     "async def load():\n    n_parallel: int = 1\n",
-    # Spelled as an expression rather than a literal.
     "def load(n):\n    n_parallel = min(n, 1)\n",
     "def load(n, mtp):\n    n_parallel = 1 if mtp else n\n",
-    # Tuple unpacking, the shape load_model already uses for the VRAM fit.
     "def load(gi):\n    gpu_indices, use_fit, n_parallel = gi, False, 1\n",
     # The route resolves the request into this alias before the load paths see it.
     "def load():\n    _n_parallel = 1\n",
-    # A request that names no count resolves to the server-wide default.
     "def serve():\n    llama_parallel_slots = 1\n",
     "def load():\n    n_parallel = _mtp_clamped_slots\n",
     "async def load():\n    n_parallel = 1\n",
@@ -44,12 +41,10 @@ CLAMPS = (
 )
 
 ALLOWED = (
-    # The two shapes that survive: a real capability limit, and a real resource limit.
     "def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load():\n    n_parallel: int = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load(fit):\n    n_parallel = fit.slots\n",
     "def load(n):\n    n_parallel = min(n, 1)  # allow-slot-clamp: no --kv-unified\n",
-    # A real bound, and a conditional between two live counts: neither pins to 1.
     "def load(n, cap):\n    n_parallel = min(n, cap)\n",
     "def load(n, hi):\n    n_parallel = n if n < hi else hi\n",
     "def load(gi, s):\n    gpu_indices, use_fit, n_parallel = gi, False, s\n",
@@ -57,7 +52,6 @@ ALLOWED = (
     "def load(r, s):\n    _n_parallel = _resolve(r, s)\n",
     "def serve(a):\n    run(llama_parallel_slots = a.parallel)\n",
     "def load(x):\n    n_parallel: int = x\n",
-    # Structurally distinct, so no marker is needed for any of these.
     "def load(n_parallel: int = 1):\n    return n_parallel\n",
     "class A:\n    n_parallel: int = 1\n",
     "def load():\n    self._requested_n_parallel = 1\n",

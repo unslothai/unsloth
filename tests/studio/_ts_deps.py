@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# `@/x` in the studio frontend means `studio/frontend/src/x`.
+# `@/x` means `studio/frontend/src/x`.
 _ALIAS = "@/"
 
 _DECL_RE = re.compile(
@@ -42,9 +42,7 @@ _IMPORT_RE = re.compile(
 _REEXPORT_RE = re.compile(
     r"^export\s+(?P<clause>\{[^}]*\}|\*)\s+from\s+[\"'](?P<spec>[^\"']+)[\"']", re.MULTILINE
 )
-# Initialisers a `const` may carry and still be safe to lift: literals and callables.
-# Anything else (a store built by `create(...)`, a client instantiated at import time) is
-# module setup rather than a helper, so it is refused instead of executed in the harness.
+# Only literals and callables may be lifted; module setup like create(...) is refused.
 _SAFE_INIT_RE = re.compile(
     r"^(?:/|[\"'`]|\d|\[|\{|!|new\s+(?:Set|Map|RegExp|Date)\b"
     r"|async\s+function\b|function\b|async\s*\(|\(|[A-Za-z_$][\w$]*\s*(?:=>|;))"
@@ -58,9 +56,7 @@ _KEYWORDS = frozenset(
 )
 
 
-# Keywords a `/` may legally follow, where it opens a regex rather than dividing. Without
-# these `return /x{1,2}/.test(s)` scans as division and the quantifier braces count as
-# structure, which truncates every declaration that returns a regex.
+# Keywords after which `/` opens a regex, not division.
 _REGEX_MAY_FOLLOW = frozenset(
     """return case typeof instanceof in of delete void yield await throw new do else""".split()
 )
@@ -80,8 +76,6 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
     """
     out = list(text)
     i, n = 0, len(text)
-    # Frames of the scanner: "code" is ordinary source, "template" is inside a backtick. A
-    # `${` pushes code onto a template, and the `}` that closes it pops back.
     frames: list[tuple[str, int]] = [("code", 0)]
 
     def blank(start: int, stop: int) -> None:
@@ -150,8 +144,6 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
                 or prev_significant in "_$`'\""
             )
         ):
-            # A regex literal: `/` after an operator, an opening bracket or one of the
-            # keywords above cannot be division.
             j = i + 1
             in_class = False
             while j < n:
@@ -182,7 +174,6 @@ def _blank_noise(text: str, keep_strings: bool = False) -> str:
             frames[-1] = (frames[-1][0], frames[-1][1] - 1)
         elif ch == "}":
             if frames[-1][1] == 0 and len(frames) > 1:
-                # The `}` closing a `${...}` hole: blank it with the `${` that opened it.
                 out[i] = " "
                 frames.pop()
                 i += 1
@@ -281,8 +272,6 @@ class _Module:
         self.path = path
         self.text = path.read_text(encoding = "utf-8")
         self.blanked = _blank_noise(self.text)
-        # Comments gone, quoted literals kept: the import parser has to read a specifier, but
-        # must not read one out of a commented-out statement.
         self.uncommented = _blank_noise(self.text, keep_strings = True)
         self.declarations: dict[str, list[tuple[str, int]]] = {}
         for match in _DECL_RE.finditer(self.blanked):
@@ -299,7 +288,6 @@ class _Module:
             clause = match.group("clause")
             spec = match.group("spec")
             if clause.lstrip().startswith("type") or ("*" in clause and "{" not in clause):
-                # `import type {...}` is erased by node, and `export * from` names nothing here.
                 continue
             braces = re.search(r"\{([^}]*)\}", clause, re.DOTALL)
             if braces is None:
@@ -309,7 +297,6 @@ class _Module:
                 continue
             default = clause[: braces.start()].rstrip().rstrip(",").strip()
             if re.fullmatch(r"[A-Za-z_$][\w$]*", default):
-                # `import Default, { named } from ...` binds both.
                 found[default] = (spec, "default")
             for entry in braces.group(1).split(","):
                 entry = entry.strip()
@@ -357,7 +344,6 @@ class _Module:
             return None
         text = self.text[line_start:end].strip("\n")
         if not _balanced(_blank_noise(text)) or "\nexport " in text:
-            # Over-sliced into whatever followed.
             return None
         return text
 
@@ -393,7 +379,7 @@ def _resolve_module(spec: str, importer: Path, root: Path) -> Path | None:
     elif spec.startswith("."):
         base = (importer.parent / spec).resolve()
     else:
-        return None  # A package, not our source.
+        return None
     for candidate in (
         base,
         Path(f"{base}.ts"),
@@ -491,11 +477,10 @@ def resolve_dependencies(
             spec, exported = target
             path = _resolve_module(spec, origin, root)
             if path is None or path.suffix == ".tsx":
-                # A component file is JSX, which node's type stripping will not parse.
+                # Node's type stripping cannot parse JSX.
                 return
             pull(exported, path)
             if exported != name and exported in defined:
-                # Imported under another name: bind the local spelling to what was emitted.
                 defined.add(name)
                 pulled[name] = ("const", f"const {name} = {exported};", {exported})
                 order.append(name)
@@ -504,8 +489,7 @@ def resolve_dependencies(
         if text is None:
             return
         defined.add(name)
-        # Dependencies first: a hoisted `function` would not care, but a `const` read before its declaration is a TDZ
-        # error rather than `undefined`.
+        # Dependencies first: a `const` read before its declaration is a TDZ error.
         wanted = set()
         for reference in home.references(text):
             if (
@@ -513,7 +497,6 @@ def resolve_dependencies(
                 or reference in home.imports
                 or reference in home.reexports
             ):
-                # A name this module really does resolve, so failing to follow it matters.
                 wanted.add(reference)
             pull(reference, origin)
         pulled[name] = (
@@ -528,11 +511,8 @@ def resolve_dependencies(
         for reference in home.references(harness_source):
             pull(reference, source)
 
-    # A declaration evaluated at import time cannot be left half-resolved: `const A = [B]` with `B` refused crashes the
-    # whole harness on load, which is worse than the lazy ReferenceError it replaced. Drop those to a fixed point
-    # instead. Functions and types are lazy or erased, so an unfollowed reference in one costs nothing until it is
-    # called. A fixture the harness defines does not rescue one either: the fixtures sit BELOW this block, so reading
-    # one from here is a TDZ error rather than a resolution.
+    # Eager declarations with an unresolved reference crash the harness on load, so drop them to a
+    # fixed point. Fixtures sit below this block, so they cannot resolve them (TDZ).
     eager = {"const", "let", "var", "class"}
     while True:
         doomed = {
@@ -554,5 +534,5 @@ def resolve_dependencies(
     )
     block = header + "\n".join(emitted) + "\n"
     if not _balanced(_blank_noise(block)):
-        return harness_source  # Never hand node something worse than it had.
+        return harness_source
     return block + harness_source

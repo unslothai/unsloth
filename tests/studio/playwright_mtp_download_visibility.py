@@ -275,9 +275,6 @@ def main() -> None:
 
             assert not page_errors, page_errors
             raw_path = ART_DIR / f"{SIDE.lower()}.png"
-            # The effect lives in the bottom-right overlay. A fixed clip keeps
-            # its filename and byte counters legible in a PR comment instead
-            # of shrinking them into a mostly empty full-page comparison.
             page.screenshot(
                 path = str(raw_path),
                 clip = {"x": 740, "y": 520, "width": 700, "height": 380},

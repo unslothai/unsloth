@@ -36,16 +36,13 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-_RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
-_RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
-_R780M = "AMD Radeon 780M Graphics"  # Phoenix iGPU     -> gfx1103, a shadowing arch
-_R9700 = "AMD Radeon AI PRO R9700"  # RDNA 4 workstation -> gfx1201 (#7624, #7307)
+_RADEON = "AMD Radeon(TM) 8060S Graphics"  # -> gfx1151
+_RX9070 = "AMD Radeon RX 9070 XT"  # -> gfx1201
+_R780M = "AMD Radeon 780M Graphics"  # -> gfx1103, a shadowing arch
+_R9700 = "AMD Radeon AI PRO R9700"  # -> gfx1201
 _ARC = "Intel(R) Arc(TM) A770 Graphics"
 
 HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
-
-
-# ── extracting the shipped source, so these tests exercise it rather than a copy ──────────────
 
 
 def _balanced(src: str, start: int, opener: str, closer: str) -> str:
@@ -69,7 +66,6 @@ def _setup_source() -> str:
     return SETUP_PS1.read_text(encoding = "utf-8")
 
 
-# The two fixes, as (fixed, unfixed) pairs.
 _ARRAY_WRAPS = (
     (
         "$wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })",
@@ -130,9 +126,6 @@ def _prelude(src: str) -> str:
     )
 
 
-# ── the driver: run the shipped blocks against a stubbed adapter list ─────────────────────────
-
-
 def _driver(
     src: str,
     adapters: list[tuple[str, int]],
@@ -164,13 +157,12 @@ def _driver(
             "$wmiGpus = $null",
             _prelude(src),
             _amd_scan_block(src),
-            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing bug corrupts, and
-            # its first element is what Get-GfxArchFromGpuName is actually handed.
+            # Captured inside the arch block: $gpuNames[0] is what the indexing bug corrupts.
             _arch_resolution_block(src).replace(
                 "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
                 "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
             ),
-            # ConvertTo-Json, not string interpolation: a null stays null instead of becoming "".
+            # ConvertTo-Json keeps a null as null instead of "".
             "@{",
             "  wmi_type    = $(if ($null -ne $wmiGpus) { $wmiGpus.GetType().FullName } else { $null })",
             "  wmi_array   = [bool]($wmiGpus -is [array])",
@@ -197,8 +189,7 @@ def _run(
     script.write_text(
         _driver(source or _setup_source(), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
     )
-    # Only what each case names may reach the child: a developer's own exported UNSLOTH_ROCM_GFX_ARCH would otherwise
-    # silently win every inference assertion here.
+    # Minimal env so a developer's exported UNSLOTH_ROCM_GFX_ARCH cannot win assertions.
     child_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     child_env.update(env or {})
     proc = subprocess.run(
@@ -210,9 +201,6 @@ def _run(
     )
     assert proc.returncode == 0, f"scan block failed:\n{proc.stdout}\n{proc.stderr}"
     return json.loads(proc.stdout)
-
-
-# ── source assertions ─────────────────────────────────────────────────────────────────────────
 
 
 def test_scan_wraps_the_whole_if_in_an_array():
@@ -251,9 +239,7 @@ def test_installer_restores_the_private_handoff_after_setup():
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
-    # Cheap companion to test_the_bail_restores_the_caller_environment, which drives the
-    # bail: no path out of the setup call may skip the restore, and the bail now lives
-    # inside the restoring try, so assert the arrangement save < bail < restore.
+    # Assert save < bail < restore: the bail must sit inside the restoring try.
     saved = src.index("$previousRocmGfxHandoff = $env:")
     bail = src.index("--with-llama-cpp-dir path does not exist")
     restored = src.index(f"$env:{HANDOFF} = $previousRocmGfxHandoff")
@@ -274,8 +260,7 @@ def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
     out = _run(tmp_path, [(_RADEON, 0)], ps51 = ps51, strict = strict)
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
-    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so "reported" has to mean
-    # the name reached the inference.
+    # A label alone installs cpu torch, so the name must reach arch inference.
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 
@@ -410,7 +395,7 @@ def test_a_mask_suppresses_the_handoff(tmp_path, var):
     resolves nothing rather than borrowing the 780M's arch. The installer scans without the mask
     and forwards that very arch, and taking it would install for a GPU the mask hides from the
     runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
-    # RX 580 (gfx803): the RX 5700 XT routes since #11755.
+    # RX 580 (gfx803) has no routed arch; the RX 5700 XT now routes.
     adapters = [(_R780M, 0), ("AMD Radeon RX 580", 0)]
     assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
 
@@ -432,17 +417,12 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
     assert out["arch"] == "gfx1010"
 
 
-# ── runtime: install.ps1 picks the adapter setup would keep ───────────────────────────────────
-
-
 def _installer_scan_block() -> str:
     """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds.
     The report-only peer scan added for #8529 is a SEPARATE block, deliberately outside
     this one: it feeds no label and no arch."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    # Anchored on CODE at both ends. The end anchor used to be a comment and a comment
-    # pass deleted it, which turned four tests into ValueError instead of a failure
-    # that said anything. The next statement after the block is the hipconfig probe.
+    # Anchored on code at both ends; a comment anchor gets deleted by comment passes.
     body = src.index("$amdAdapters = @(Get-CimInstance Win32_VideoController")
     start = src.rindex("        if (-not $HasROCm) {", 0, body)
     end = src.index("        if ($HasROCm -or $HipSdkInstalled) {", start)
@@ -459,8 +439,7 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # Both names:
-                # Both names: the routing scan asks WMI (unchanged by #8529), the report-only peer scan asks CIM.
+                # Both names: routing scan uses WMI, the report-only peer scan uses CIM.
                 f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
@@ -520,12 +499,7 @@ def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
     assert _run_installer_scan(tmp_path, adapters)["arch"] == setup["arch"] == "gfx1151"
 
 
-# ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
-
-
-# The block's nineteen save/restore pairs bar the ROCm handoff, which the arch parametrisation
-# drives. Kept in step with install.ps1 by test_every_saved_variable_in_the_block_is_covered:
-# a save added there and not named here fails that test rather than going quietly uncovered.
+# Kept in step with install.ps1 by test_every_saved_variable_in_the_block_is_covered.
 _CALLER_ENV_NAMES = (
     "SKIP_STUDIO_BASE",
     "UNSLOTH_STUDIO_HOME",
@@ -541,25 +515,20 @@ _CALLER_ENV_NAMES = (
     "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
     "UNSLOTH_INSTALL_ROLLBACK_MANAGED",
     "UNSLOTH_SETUP_PYTHON",
-    # The four Windows-on-ARM facts install.ps1 hands setup.ps1 about the torch it just
-    # resolved. Restored from a TABLE rather than from four written-out if/else arms, which
-    # is why they need naming here: the runtime cases below are the only thing that proves
-    # the table is consumed, and a table is exactly the shape where one wrong index restores
-    # every one of the four from the same save.
+    # The UNSLOTH_WOA_* four are restored from a table, so a wrong index only shows at runtime.
     "UNSLOTH_WOA_HAS_TORCHAUDIO",
     "UNSLOTH_WOA_TORCH_PRERELEASE",
     "UNSLOTH_WOA_SELECTED_TORCH_INDEX",
     "UNSLOTH_WOA_PYPI_PROVIDED",
 )
 
-# Distinct per variable, or a finally restoring everything from the wrong save reads as a pass.
+# Distinct per variable, or a restore from the wrong save reads as a pass.
 _CALLER_ENV = tuple(
     (name, "outer-" + name.strip("_").lower().replace("_", "-")) for name in _CALLER_ENV_NAMES
 )
 assert len({sentinel for _, sentinel in _CALLER_ENV}) == len(_CALLER_ENV), "sentinels must differ"
 
-# Which variables the caller already has. Presence has to vary PER variable: all-present and
-# all-absent give every $hadPrevious* flag the same value, so a wrong-flag restore passes by luck.
+# Presence must vary per variable, or a wrong-flag restore passes by luck.
 _PRESENCE_MASK_BITS = max((len(_CALLER_ENV_NAMES) - 1).bit_length(), 1)
 _PRESENCE_PATTERNS = {
     "all": lambda i: True,
@@ -627,8 +596,8 @@ def _studio_repo_dir(tmp_path: Path) -> Path:
     return path
 
 
-# UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are the only two the try does not always assign, so
-# only `env_redirect_local` makes their else-arm restores load-bearing.
+# UNSLOTH_STUDIO_HOME and STUDIO_LOCAL_REPO are not always assigned by the try; only
+# env_redirect_local makes their else-arm restores load-bearing.
 _STUDIO_MODES = ("default", "env_redirect_local")
 
 
@@ -679,14 +648,12 @@ def _run_handoff_lifecycle(
     present = _present_names(caller_env)
     call = "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs"
     block = _handoff_lifecycle_block()
-    # Loudly: a silent miss leaves the probe unrun and every assertion reading
-    # "<never ran>" with nothing saying why.
     assert call in block, "install.ps1 no longer makes the setup call this harness replaces"
-    # Read at the point of the call: what the child would inherit, not what the finally leaves.
+    # Read at the call: what the child inherits, not what the finally leaves.
     probe = (
         "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF; "
         "$script:SeenLlamaCppDir = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR; "
-        # Test-Path, not the bare value: the default modes REMOVE these two.
+        # Test-Path, not the value: the default modes remove these two.
         "$script:SeenStudioHome = $(if (Test-Path Env:UNSLOTH_STUDIO_HOME) "
         "{ $env:UNSLOTH_STUDIO_HOME } else { $null }); "
         "$script:SeenLocalRepo = $(if (Test-Path Env:STUDIO_LOCAL_REPO) "
@@ -700,21 +667,19 @@ def _run_handoff_lifecycle(
                 "$ErrorActionPreference = 'Stop'",
                 "$UnslothProxyHandoffJson = $null",
                 "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
-                # Installer inputs the block reads. Undefined, they throw under
-                # ErrorActionPreference Stop, the catch swallows it, and the probe never runs.
+                # Undefined inputs throw under Stop, get swallowed, and the probe never runs.
                 "$PackageName = 'unsloth'; $SkipTorch = $false; $TauriMode = $false",
                 *_studio_mode_lines(tmp_path, studio_mode),
                 (
                     f"$WithLlamaCppDir = '{tmp_path / 'no-such-llama.cpp'}'"
                     if bails
-                    # A directory that EXISTS reaches the block's only write to that variable.
+                    # Must exist to reach the block's only write to that variable.
                     else f"$WithLlamaCppDir = '{_existing_llama_dir(tmp_path)}'"
                     if with_llama_cpp_dir
                     else "$WithLlamaCppDir = $null"
                 )
                 + "; $VenvPython = 'stub-python'; $VenvDir = 'stub-venv'",
                 "$TorchIndexUrl = $null; $ROCmIndexUrl = $null",
-                # Every installer function the block reaches, stubbed.
                 "function Get-ExpectedTorchFlavorTag { param($TorchIndexUrl, $ROCmIndexUrl) 'cu128' }",
                 "function Get-InstalledTorchVersionRaw { param($Python) '' }",
                 "function ConvertTo-TorchNumericRelease { param($Raw) $null }",
@@ -728,8 +693,7 @@ def _run_handoff_lifecycle(
                 "$script:ManagedUnslothCliExit = 0",
                 "$script:PrevTorchPin = $null",
                 "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
-                # In a function so the block's own return -- the --with-llama-cpp-dir bail --
-                # leaves the block, not the script, letting us read the environment after it.
+                # In a function so the block's bail returns from it, not the script.
                 "function Invoke-HandoffBlock {",
                 "try {",
                 body,
@@ -745,8 +709,7 @@ def _run_handoff_lifecycle(
                 "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
                 "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
                 "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
-                # Value AND presence: a variable assigned "" is still present on 7.5+, so only
-                # Test-Path separates "put back as it was" from "recreated empty".
+                # On 7.5+ an empty value is still present, so Test-Path is needed.
                 _caller_env_report(),
                 "} | ConvertTo-Json -Compress",
             ]
@@ -754,7 +717,6 @@ def _run_handoff_lifecycle(
         encoding = "utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "UNSLOTH_ROCM_GFX_ARCH": "gfx90a"}
-    # Built from scratch, so a name simply not added reads back $null: the finally's remove arm.
     env.update({name: sentinel for name, sentinel in _CALLER_ENV if name in present})
     if inherited is not None:
         env[HANDOFF] = inherited
@@ -766,14 +728,12 @@ def _run_handoff_lifecycle(
         env = env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
-    # Last JSON object only: a stub may emit its return value into the pipeline first.
+    # Last JSON line only: a stub may emit its return value first.
     reports = [line for line in proc.stdout.splitlines() if line.startswith("{")]
     assert reports, f"the handoff block printed no report:\n{proc.stdout}\n{proc.stderr}"
     out = json.loads(reports[-1])
-    # The block may throw only where the test asked; anything else is a missing stub.
     if fails:
-        # The injected throw specifically: an earlier helper failure would still restore
-        # the environment and pass every assertion without the failure path running.
+        # Must be the injected throw; an earlier helper failure would also pass.
         assert "setup exploded" in (
             out.get("block_error") or ""
         ), f"the block failed before the injected throw: {out.get('block_error')}"
@@ -867,14 +827,10 @@ def test_every_save_sits_above_the_handoff_try():
         )
 
 
-#: `$env:NAME = $previousX`, the spelling the finally used when every restore was written out.
 _RESTORE_INLINE = re.compile(r"\$env:(\w+) = \$previous\w+")
-#: `@("NAME", $hadPreviousX, $previousY)`, one row of a table the finally walks. Added for the
-#: four UNSLOTH_WOA_* variables, whose four if/else arms were identical bar the names.
 _RESTORE_TABLE_ROW = re.compile(
     r"""@\(\s*["'](\w+)["']\s*,\s*\$hadPrevious\w+\s*,\s*\$previous\w+\s*\)"""
 )
-#: What consumes such a table. Without it the rows are data nobody reads.
 _RESTORE_TABLE_APPLY = re.compile(r"""Set-Item\s+["']Env:\$\(""")
 
 
@@ -922,9 +878,7 @@ def test_the_restore_reader_sees_both_spellings_and_no_others():
         "UNSLOTH_WOA_HAS_TORCHAUDIO",
         "UNSLOTH_WOA_PYPI_PROVIDED",
     }
-    # A SAVE is not a restore, in either direction of the assignment.
     assert _restored_names("    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE\n") == set()
-    # A table nobody walks restores nothing, and saying so is the whole point of the apply check.
     with pytest.raises(AssertionError, match = "nothing walks it"):
         _restored_names(table.split("        if (")[0])
 
@@ -937,8 +891,7 @@ def test_every_saved_variable_in_the_block_is_covered():
     block = _handoff_lifecycle_block()
     covered = {name for name, _ in _CALLER_ENV} | {HANDOFF}
     saved = set(re.findall(r"\$previous\w+ = \$env:(\w+)", block))
-    # The restore side closes the anchor hole: a save PREPENDED above the anchor is invisible to
-    # any save-side check, but its restore cannot escape the finally.
+    # A save prepended above the anchor is invisible here, but its restore is not.
     restored = _restored_names(block)
     assert restored == covered, (
         "the block restores variables this file does not claim to cover: "
@@ -976,7 +929,6 @@ def test_the_bail_restores_the_caller_environment(tmp_path, caller_env):
     assert out["seen_by_child"] == "<never ran>", "the bail did not happen before the setup call"
     assert out["after"] == "gfx1030", "the caller's inherited handoff was not restored by the bail"
     assert out["after_set"] is True
-    # Put back only by the finally, so install.ps1's value still showing means the bail escaped.
     _assert_caller_env_restored(out, _present_names(caller_env), "the bail")
 
 
@@ -998,7 +950,6 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
         caller_env = caller_env,
     )
     assert out["seen_by_child"] == "gfx1151", "the block did not reach the setup call"
-    # The RESOLVED path, since that is what the block writes and what setup.ps1 goes on to read.
     assert out["seen_llama_cpp_dir"] == str(
         _existing_llama_dir(tmp_path).resolve()
     ), "the child did not inherit the --with-llama-cpp-dir directory"

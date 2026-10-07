@@ -26,9 +26,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# What a user runs to install, update or remove Unsloth.
-# Everything these launch in turn is scanned too (`unsloth studio update` runs setup.sh, which builds whisper.cpp;
-# install.sh fetches and runs the WSL bootstrap), since a question down there stalls the same install.
+# Entry points a user runs; everything they launch (setup.sh, WSL bootstrap) is scanned too.
 ENTRY_POINTS = (
     "install.sh",
     "install.ps1",
@@ -55,13 +53,12 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
     "studio/nvidia_probe.py",
-    # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
     "studio/systemd/install_user_service.sh",
 )
 
-# Every question these scripts may ask, keyed by (script, normalised question) because line numbers move and wording
-# does not. Do NOT add an entry just to turn a build green: decide the prompt is wanted first.
+# Keyed by (script, normalised question) since line numbers move. Do NOT add an entry just to
+# turn a build green: decide the prompt is wanted first.
 APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ("install.sh", "start unsloth studio now?"): (
         "The one sanctioned preference prompt: launch Unsloth after install."
@@ -83,27 +80,23 @@ _MARKER = re.compile(
     r"\[\s*[yn]\s*/\s*[yn]\s*\]|\(\s*[yn]\s*/\s*[yn]\s*\)|\byes\s*/\s*no\b", re.IGNORECASE
 )
 
-# Anything that blocks waiting on a human. `-p` is matched as an option word, not anchored on whitespace: it may be
-# bundled (`read -rp`) or follow `read` directly. The scan stops at `;|&`, since a `mkdir -p` later on the line is
-# another command.
+# `-p` may be bundled (`read -rp`); the scan stops at `;|&` so a later `mkdir -p` is not matched.
 _POSIX_READ = re.compile(
     r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
     r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
 )
 
-# An unredirected `read` takes the terminal it inherited, so it blocks too. Loop and pipeline reads are fed by the
-# `done < ...` or the pipe: data, not questions. Options then variable names to end of line, in command position, so
-# the word `read` in a heredoc of prose is not a prompt.
+# An unredirected `read` blocks on the inherited terminal; loop/pipeline reads are fed data.
+# Command position only, so the word `read` in a prose heredoc is not a prompt.
 _BARE_READ = re.compile(
     r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*!?\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-    # No variable name at all is valid: the answer lands in $REPLY.
+    # No variable name is valid: the answer lands in $REPLY.
     r"read(?:\s+(?:-[a-zA-Z0-9]+|[\d.]+|\"\"|''))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
     r"(?:\s*(?:;|\|\||&&).*)?\s*(?:#.*)?$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
 
-# `select reply in Yes No` is the other builtin that blocks for an answer; its question is the PS3 assignment above it,
-# which the nearby scan already reads.
+# `select` also blocks; its question is the PS3 assignment the nearby scan already reads.
 _SELECT = re.compile(r"(?:^|[;&(])\s*select\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s")
 
 _PWSH_READ = re.compile(
@@ -111,34 +104,27 @@ _PWSH_READ = re.compile(
     re.IGNORECASE,
 )
 
-# The Python helpers setup runs, and the batch launcher.
 _PY_READ = re.compile(
     r"(?<![.\w])(?:input|getpass)\s*\(|getpass\.getpass\s*\("
     r"|click\.confirm\s*\(|sys\.stdin(?:\.buffer)?\.read(?:line)?\s*\("
 )
-# In command position: starting the line or a `&`-joined command, after `do`, or as the body of a single-line `if`.
-# Echoing the word `choice` is not a prompt. `pause` asks nothing but waits for a keypress, which stalls setup just
-# the same.
+# `pause` asks nothing but still waits for a keypress, which stalls setup the same way.
 _BAT_READ = re.compile(
     r"(?:^\s*|[&(]\s*|\bdo\s+)@?\s*(?:set\s+/p\b|choice\b|pause\b)"
     r"|^\s*@?\s*(?:if|else)\b.*?\s(?:set\s+/p\b|choice\b|pause\b)",
     re.IGNORECASE,
 )
 
-# A helper filename, with or without its `scripts/` prefix: sibling invocations such as "$SCRIPT_DIR/build_deps.sh"
-# carry no prefix. Resolved against the repo before it counts, so a name that is not a real script is ignored.
+# A helper filename with or without `scripts/`; names that are not real scripts are ignored.
 _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
-# An f-string field that calls something.
 _FIELD = re.compile(r"\{[^}]*\(")
 
-# `<# ... #>` opened and closed on one line.
 _INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
 
-# `@' ... '@` is literal, unlike the expandable `@" ... "@`. The uninstaller prints its help from one and install.ps1
-# embeds source in the other.
+# `@' ... '@` is literal, unlike the expandable `@" ... "@`.
 _HERESTRING_OPEN = re.compile(r"@'\s*$")
 _HERESTRING_CLOSE = re.compile(r"^\s*'@")
 
@@ -147,8 +133,7 @@ _REGEXY = re.compile(r"\\|\(\?|\^|\$\(|\[0|\{[0-9]|\.\*|\|")
 
 _ESCAPE = re.compile(r"\\[nrte]")
 
-# A conversion or variable becomes a placeholder rather than vanishing, so wording
-# spliced into the middle of an approved question cannot normalise back onto it.
+# Placeholder rather than removal, so wording spliced into an approved question cannot match it.
 _SUBSTITUTION = re.compile(r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
 _TRAILING_SUBSTITUTION = re.compile(r"(?:\s*<var>)+$")
 
@@ -193,16 +178,14 @@ def _is_interactive_read(
     if script.endswith(".py"):
         return bool(_PY_READ.search(code))
     if script.endswith(".bat"):
-        # `set /p version=<VERSION.txt` reads the file, not the user, but the redirection belongs to that command alone.
+        # `set /p version=<VERSION.txt` reads the file; the redirect is that command's alone.
         return any("<" not in part and _BAT_READ.search(part) for part in code.split("&"))
     if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
-    # Inside a file-fed loop only a bare read consumes the file: an explicit /dev/tty or -p read above overrode it and
-    # still waits on the terminal.
+    # In a file-fed loop only a bare read consumes the file; /dev/tty or -p reads still wait.
     if loop_input:
         return False
-    # Per command: in `read -r reply; echo done | tee log` the pipe is the echo's. `||` is a fallback, not a pipeline,
-    # and leaves the read on the terminal.
+    # Per command: `||` is a fallback, not a pipeline, and leaves the read on the terminal.
     for command in code.split(";"):
         piped = "|" in command.replace("||", "")
         if "<" not in command and not piped and _BARE_READ.search(command):
@@ -210,8 +193,7 @@ def _is_interactive_read(
     return False
 
 
-# `<<EOF`, not the `<<<` here-string, and not inside a quoted string: install.sh prints a shell-profile marker
-# containing `# <<< Unsloth ... <<<`.
+# Not `<<<` nor inside a string: install.sh prints a `# <<< Unsloth ... <<<` profile marker.
 _HEREDOC = re.compile(r"<<(?!<)-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
 _INTERPRETER = re.compile(r"\b(?:python[0-9.]*|node|perl|ruby|osascript)\b[^<]*<<")
 
@@ -228,15 +210,12 @@ def _blank_heredocs(lines: list[str]) -> list[str]:
                 out[start:index] = [""] * (index - start)
                 terminator = ""
             continue
-        # Openers come from code: not from a string, not from an inline comment.
         code = _blank_strings(line).split("#")[0]
         match = _HEREDOC.search(code)
-        # `python - <<PY` runs its body. Blanking that would hide real code, which is the one thing worse than
-        # scanning it as shell.
+        # `python - <<PY` runs its body, so it must stay visible to the scan.
         if match and not _INTERPRETER.search(code):
             terminator, start = match.group(1), index + 1
-    # An unterminated opener was not one. Blanking to EOF would silently blind the scan for the rest of the file,
-    # prompts included.
+    # An unterminated opener was not one; blanking to EOF would hide every later prompt.
     return out
 
 
@@ -252,7 +231,7 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
             if not opened:
                 continue
             start = opened.pop()
-            # Only stdin feeds them: `done | tee` pipes the output away, and `done 3<config` opens a spare descriptor.
+            # Only stdin feeds them: `done | tee` and `done 3<config` do not.
             if re.search(r"(?<![1-9])<", line):
                 inside.update(range(start, index))
     return inside
@@ -272,7 +251,7 @@ def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
         opener = min((i for i in (line.find('"""'), line.find("'''")) if i != -1), default = -1)
         if opener == -1:
             return line, ""
-        # An f-string field executes, so this one is code, not documentation.
+        # An f-string field executes, so this is code, not documentation.
         if "f" in line[max(0, opener - 2) : opener].lower():
             return line, ""
         head, delimiter = line[:opener], line[opener : opener + 3]
@@ -294,12 +273,10 @@ def blank_comments(source: str, script: str) -> str:
     in_herestring = False
     for index, line in enumerate(source.splitlines()):
         if powershell and in_block:
-            # Code can follow the terminator on the same line.
             lines.append(line.split("#>", 1)[1] if "#>" in line else "")
             in_block = "#>" not in line
             continue
-        # A comment naming a delimiter is not one: reading it as an opener would blank the rest of the file and take
-        # every prompt in it out of the scan.
+        # A comment naming a delimiter must not open a block, or the rest of the file is blanked.
         if _is_comment(line) or (batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE)):
             lines.append("")
             continue
@@ -323,7 +300,6 @@ def blank_comments(source: str, script: str) -> str:
                 continue
         lines.append(line)
     if in_block or in_docstring:
-        # Unterminated, so it was never a comment or a docstring. Put the lines back.
         original = source.splitlines()
         lines[opened + 1 :] = original[opened + 1 :]
     return "\n".join(lines)
@@ -525,13 +501,11 @@ def test_helpers_the_installers_invoke_are_scanned():
         path = REPO_ROOT / script
         source = blank_comments(path.read_text(encoding = "utf-8"), script)
         for match in _HELPER_REF.finditer(source):
-            # Below the script that names it, below the repo, or in scripts/, by full path and by name so a URL still
-            # resolves to the local copy. What resolves nowhere is a filename in a message, not an invocation.
+            # Unresolvable names are filenames in messages, not invocations.
             reference = match.group(1).replace("\\", "/")
             name = reference.rsplit("/", 1)[-1]
             if name == "__init__.py":
-                # A presence marker (tiktoken/__init__.py), not a helper they run; by name alone it
-                # would resolve to studio/__init__.py.
+                # A presence marker, not a helper; by name it would resolve to studio/__init__.py.
                 continue
             for candidate in (
                 path.parent / reference,
@@ -563,8 +537,7 @@ def test_the_workflow_runs_for_every_scanned_script():
         if collecting is not None and entry:
             collecting.append(entry.group(1))
             continue
-        # A comment or a blank line inside the list does not end it. Treating one as the end dropped every filter
-        # after it, so this guard passed while reading nothing.
+        # A comment or blank line inside the list does not end it.
         if collecting is not None and (not line.strip() or line.strip().startswith("#")):
             continue
         if collecting:
@@ -593,7 +566,7 @@ def test_the_workflow_runs_for_every_scanned_script():
                 included = not negated
         return included
 
-    # Each event on its own: a filter present only on push leaves pull requests bare.
+    # Each event separately: a filter only on push leaves pull requests bare.
     for patterns in blocks:
         uncovered = sorted(script for script in SCANNED_SCRIPTS if not covered(script, patterns))
         assert not uncovered, (

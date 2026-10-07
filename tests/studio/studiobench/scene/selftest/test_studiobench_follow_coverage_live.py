@@ -39,12 +39,8 @@ if str(_STUDIO_TESTS) not in sys.path:
 
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 
-#: A running thread: the stop button is what `isRunning()` looks for, and the viewport is scrollable
-#: so "at the bottom" is a real question.
-#: The jump-to-bottom control is present and its `invisible` class is kept in sync with the scroll
-#: position by a listener, because that class IS the app's own answer to "are we at the bottom" and
-#: `appSaysAtBottom()` reads nothing else. Omitting the control makes every sample
-#: `running_unknown` and `pinned_fraction` null.
+# The jump control's invisible class is the app's own at-bottom answer and is all
+# appSaysAtBottom() reads; without it every sample is running_unknown.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -159,8 +155,6 @@ def test_returning_to_the_end_reattaches_so_the_rest_of_the_stream_is_still_scor
     _settle(page)
     before = _read(page)["running_samples"]
 
-    # A deliberate gesture that ends back at the bottom, which is what `scroll_after` does and what
-    # `scroll_during_generation` does when the user returns.
     page.evaluate("() => window.__sb.follow.suspend()")
     _to_top(page)
     _to_bottom(page)
@@ -201,7 +195,6 @@ def test_the_app_pulling_the_viewport_down_on_its_own_is_not_laundered_into_a_re
     _to_top(page)
     page.evaluate("() => window.__sb.follow.resume()")
     _settle(page, 400)
-    # The app, not the user, returns the viewport to the end.
     _to_bottom(page)
     _settle(page)
     got = _read(page)
@@ -228,20 +221,10 @@ def test_the_coverage_travels_with_the_verdict(page):
     )
 
 
-# The run the user started is a fresh intent to be at the end. THE GESTURE ON THE REAL FILM NEVER
-# ENDS AT THE BOTTOM: `SCROLL_JS` jumps to the bottom and then steps 14 x 420px away, so on any
-# thread taller than 5,880px the gesture ends thousands of pixels up and the `resume()`
-# re-attachment cannot fire. The film then starts two more runs of its own and the app pins to the
-# bottom for them, which `runtime/session.py` documents as intended.
-# `stop_generation` and `send_turn` both submit a turn.
-# Measured at head over every 100K payload in `outputs/`: attached_fraction_of_stream 0.07 to 0.15
-# with reattachments 0, on the BASE arm as well as the treatment and on pure null controls, so
-# FOLLOW_MIN_STREAM_COVERAGE of 0.50 failed every 100K cell of every run and a failed gate excludes
-# the cell from scoring. It passed only on the 1K smoke film, where the gesture's reversal lands
-# back at the bottom by accident: a verdict about the thread's height, not the app.
+# The film's gesture never ends at the bottom, so re-attachment comes from a new run the user
+# started, not from resume().
 
 
-# ── the run the user started is a fresh intent to be at the end ─────
 def _end_run(page) -> None:
     """The reply finishes: the stop control goes, so `isRunning()` is false."""
     page.evaluate(
@@ -264,14 +247,12 @@ def test_a_run_the_user_started_reattaches_when_the_app_pins_for_it(page):
     _start_at_bottom(page)
     _settle(page, 400)
 
-    # The harness scrolls away mid-stream and stays away, exactly as SCROLL_JS leaves it.
     page.evaluate("() => window.__sb.follow.suspend()")
     _to_top(page)
     page.evaluate("() => window.__sb.follow.resume()")
     _settle(page, 500)
     assert _read(page)["reattachments"] == 0, _read(page)
 
-    # That reply finishes; the user sends another turn and the app pins to the bottom for it.
     _end_run(page)
     _settle(page, 300)
     _start_run(page)

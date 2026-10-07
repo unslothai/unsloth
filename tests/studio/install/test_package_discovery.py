@@ -13,7 +13,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Directories that never hold packaged sources but are expensive to walk.
 _PRUNED = {".git", "__pycache__", "node_modules", "dist", "build", "venv", ".venv"}
 
 
@@ -32,10 +31,7 @@ def _exclude_package_data():
     assert len(section) == 2, "no exclude-package-data table in pyproject.toml"
     body = section[1].split("\n[", 1)[0]
     table = {}
-    # DOTALL so a value spread over several lines is read whole. Matching only
-    # single-line arrays would silently return {} for a multi-line entry, and every
-    # caller reads an empty veto list as "nothing is excluded", so the simulation
-    # would disagree with the wheel setuptools actually builds.
+    # DOTALL: a multi-line array read as {} would mean 'nothing excluded'.
     for entry in re.finditer(
         r'^\s*"?([\w.*]+)"?\s*=\s*\[(.*?)\]',
         body,
@@ -111,8 +107,7 @@ def test_generated_compiled_caches_are_excluded():
 
 
 def test_backend_test_suites_stay_out_of_the_wheel():
-    # Dropping them from packages.find is not enough on its own: with include-package-data they return as package data
-    # of studio.backend.
+    # With include-package-data they would return as package data of studio.backend.
     leaked = [
         path
         for path in _wheel_payload()
@@ -122,9 +117,7 @@ def test_backend_test_suites_stay_out_of_the_wheel():
 
 
 def test_frontend_source_tree_stays_out_of_the_wheel():
-    # public/ is copied into frontend/dist by Vite, so without the veto every one of
-    # its files shipped twice, and src/ is .tsx that is already compiled into
-    # dist/assets. Together they were 35MB of an 82MB wheel in 2026.9.2.
+    # Vite copies public/ into dist, and src/ is compiled .tsx: 35MB of an 82MB wheel in 2026.9.2.
     shipped = _wheel_payload()
     leaked = [
         path
@@ -135,8 +128,6 @@ def test_frontend_source_tree_stays_out_of_the_wheel():
 
 
 def test_desktop_crate_sources_stay_out_of_the_wheel():
-    # `tauri build` reads these from a git checkout in release-desktop.yml. Only
-    # src-tauri/icons is needed from an installed Unsloth, by install.sh.
     leaked = [
         path
         for path in _wheel_payload()
@@ -146,9 +137,7 @@ def test_desktop_crate_sources_stay_out_of_the_wheel():
 
 
 def test_installer_icons_survive_the_src_tauri_exclusion():
-    # install.sh copies both out of site-packages/studio/src-tauri/icons to build the
-    # macOS .icns and the Linux .desktop launcher, so the exclusion above must not
-    # take the whole directory with it.
+    # install.sh copies icons out of site-packages/studio/src-tauri/icons, so keep that dir.
     shipped = set(_wheel_payload())
     for path in (
         "studio/src-tauri/icons/icon.icns",
@@ -165,8 +154,7 @@ def test_built_wheel_has_no_frontend_source():
     names = zipfile.ZipFile(wheels[-1]).namelist()
     leaked = [n for n in names if n.startswith(("studio/frontend/public/", "studio/frontend/src/"))]
     assert not leaked, f"{wheels[-1].name} ships {len(leaked)} frontend source files"
-    # The served frontend must still be there. Guarding the exclusion alone would
-    # pass just as happily on a wheel with no UI in it at all.
+    # Guarding only the exclusion would pass on a wheel with no UI at all.
     assert any(
         n.startswith("studio/frontend/dist/") for n in names
     ), f"{wheels[-1].name} ships no frontend/dist; the UI would 404"

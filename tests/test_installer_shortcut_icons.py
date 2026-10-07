@@ -227,8 +227,7 @@ def test_windows_shortcut_prefers_the_packaged_icon_over_the_download(tmp_path):
                 block,
             ]
         )
-        # run_pwsh, not subprocess.run: a pwsh killed at startup never read $packagedIcon,
-        # and check = True would report that as the precedence being wrong.
+        # run_pwsh: a pwsh killed at startup would read as the precedence being wrong.
         return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             check = True,

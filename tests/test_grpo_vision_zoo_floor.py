@@ -35,9 +35,7 @@ REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO / "pyproject.toml"
 RL_REPLACEMENTS = REPO / "unsloth" / "models" / "rl_replacements.py"
 
-# The first unsloth_zoo release that carries grpo_vision_chunks. The same number
-# unslothai/unsloth#11137 moves the floor to for the TRL ceiling, deliberately: one floor, not
-# two, or whichever is higher silently decides what a user resolves.
+# The first unsloth_zoo with grpo_vision_chunks; deliberately the same floor as the TRL ceiling.
 ZOO_FLOOR_WITH_THE_VISION_CHUNKER = Version("2026.9.5")
 
 

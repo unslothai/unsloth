@@ -78,8 +78,6 @@ def test_an_instrument_after_a_failing_one_still_gets_its_hook():
 
     s.each_instrument("start_cell", "c1")
 
-    # `input` sits immediately behind the instrument that raised, which is exactly the position
-    # the old loop skipped.
     assert keys.started == ["c1"], "the instrument behind the failing one was skipped"
     assert frames.started == ["c1"]
     assert rss.started == ["c1"]

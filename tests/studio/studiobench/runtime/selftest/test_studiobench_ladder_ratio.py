@@ -66,7 +66,6 @@ def test_the_ladder_is_sized_by_the_measured_ratio_and_not_the_provisional_one()
             cell.rung,
             plan.target_chars,
         )
-        # The bug, stated as the number it produced: the top rung was 4,000,000 characters.
         assert plan.target_chars != int(RUNGS[cell.rung] * PROVISIONAL_CHARS_PER_TOKEN), cell.rung
         assert cell.meta["ladder_chars_per_token"]["chars_per_token"] == ratio["chars_per_token"]
         assert cell.meta["ladder_chars_per_token"]["provisional"] is False

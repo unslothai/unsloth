@@ -152,7 +152,6 @@ def test_sentence_transformer_decline_survives_the_env_var():
         if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
     )
 
-    # The decline itself must read the env var, not the raw argument.
     assert any(
         isinstance(node, ast.Call) and getattr(node.func, "id", None) == "requested_device_map"
         for node in ast.walk(function)
@@ -199,8 +198,7 @@ def test_every_planned_map_membership_test_is_guarded_against_a_dict():
                 and any(ast.unparse(c) == "_PLANNED_DEVICE_MAPS" for c in node.comparators)
             ):
                 continue
-            # One tree, walked twice: a second parse gives different node objects, so
-            # the identity test below would find no parent and pass on anything.
+            # One tree walked twice: a reparse gives new nodes and the identity test passes vacuously.
             parents = [
                 ast.unparse(outer)
                 for outer in ast.walk(tree)

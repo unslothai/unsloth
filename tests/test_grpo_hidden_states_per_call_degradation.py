@@ -186,7 +186,6 @@ def test_dropping_positional_kwargs_never_hands_back_the_callers_dict():
     for args in ((), (1,)):
         kwargs = {"input_ids": 1, "pixel_values": 2}
         assert drop_positional_kwargs(signature, args, kwargs) is not None
-    # the wrapper copies before mutating, so the caller's dict survives a forward
     kwargs = {"input_ids": 1}
     result = drop_positional_kwargs(signature, (), kwargs)
     dict(result)["output_hidden_states"] = True

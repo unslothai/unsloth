@@ -51,7 +51,7 @@ print(json.dumps({{
 
 def _probe(env_overrides: dict) -> dict:
     env = dict(os.environ)
-    # UNSLOTH_LLAMA_CPP_PATH too, as _main_probe does: an inherited value measures the runner.
+    # Clear UNSLOTH_LLAMA_CPP_PATH too, as _main_probe does: an inherited value measures the runner.
     for key in ("UNSLOTH_HOME", "UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
         env.pop(key, None)
     env.update(env_overrides)
@@ -74,7 +74,6 @@ def test_unsloth_home_resolves_to_one_studio_root(tmp_path):
 
     assert result["backend"] == str(master / "studio")
     assert result["cli"] == result["backend"]
-    # Custom, so `unsloth studio ...` re-exports UNSLOTH_STUDIO_HOME.
     assert result["cli_is_custom"] is True
 
 
@@ -98,8 +97,7 @@ def test_no_unsloth_home_keeps_the_legacy_default(tmp_path):
 
 
 def test_the_cli_exports_the_llama_cpp_path_the_backend_will_use(tmp_path):
-    # run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so a CLI exporting
-    # <root>/studio/llama.cpp pins that wrong path for every worker.
+    # run.py keeps a non-blank UNSLOTH_LLAMA_CPP_PATH, so a wrong export pins every worker.
     master = tmp_path / "portable"
     result = _probe({"UNSLOTH_HOME": str(master)})
 
@@ -108,10 +106,7 @@ def test_the_cli_exports_the_llama_cpp_path_the_backend_will_use(tmp_path):
 
 
 def test_the_cli_recovers_a_recorded_master_root_for_the_setup_subprocess(tmp_path):
-    # A one-command UNSLOTH_HOME leaves nothing in a later environment, and the backend recovers
-    # the root from the note, so a CLI that did not would have setup refresh the runtimes at
-    # <master>/studio/ while the backend launched the stale ones at <master>/. Exported rather
-    # than read, since setup is a subprocess.
+    # The backend recovers the root from the note, so the CLI must export it to setup too.
     master = tmp_path / "portable"
     studio = master / "studio"
     (studio / "share").mkdir(parents = True)
@@ -124,8 +119,7 @@ def test_the_cli_recovers_a_recorded_master_root_for_the_setup_subprocess(tmp_pa
 
 
 def test_the_cli_and_the_backend_accept_the_same_nested_studio_root(tmp_path):
-    # A real pairing: setup records <root>, and the Studio directory is inside it without being
-    # its studio/ child. A stricter rule in the CLI would decline a note the backend accepts.
+    # Studio dir inside the root but not its studio/ child; a stricter CLI rule would diverge.
     master = tmp_path / "root"
     studio = master / "custom" / "studio"
     (studio / "share").mkdir(parents = True)
@@ -139,9 +133,7 @@ def test_the_cli_and_the_backend_accept_the_same_nested_studio_root(tmp_path):
 
 
 def test_the_cli_refuses_a_note_carried_in_from_another_master_root(tmp_path):
-    # A Studio tree copied from master root A to B keeps a note naming A. Exporting it would
-    # point an update at the original install; the Studio directory has to lie inside the root
-    # its note names, which is the rule storage_roots and both uninstallers apply.
+    # A copied Studio tree keeps a note naming the old root; it must lie inside that root.
     original = tmp_path / "original"
     (original / "studio").mkdir(parents = True)
     copied = tmp_path / "copied" / "studio"
@@ -174,7 +166,6 @@ def test_a_master_root_the_cli_declined_is_still_told_to_the_backend(tmp_path):
     the legacy root uninstalled, so the fallback is never entered by them.
     """
     home = tmp_path / "home"
-    # The sentinel _looks_like_installer_managed_studio_home reads.
     conf = home / ".unsloth" / "studio" / "share" / "studio.conf"
     conf.parent.mkdir(parents = True)
     conf.write_text("installed\n", encoding = "utf-8")
@@ -189,8 +180,7 @@ def test_a_master_root_the_cli_declined_is_still_told_to_the_backend(tmp_path):
 
     legacy = str(home / ".unsloth" / "studio")
     assert result["cli"] == legacy
-    # Not custom: the root is the Unsloth-owned legacy one, and false is what lets the
-    # installers replace the tree without an owner marker.
+    # Not custom: false lets installers replace the legacy tree without an owner marker.
     assert result["cli_is_custom"] is False
     assert result["exported_studio_home"] == legacy
     assert result["backend"] == legacy
@@ -224,8 +214,7 @@ def test_a_whitespace_studio_home_does_not_defeat_the_export(tmp_path):
         assert result["cli"] == legacy, inherited
         assert result["exported_studio_home"] == legacy, inherited
         assert result["backend"] == legacy, inherited
-        # The runtimes live beside studio/ at the master root, and a whitespace value left in
-        # place would be scanned as a directory rather than replaced.
+        # Runtimes live beside studio/; a whitespace value would be scanned as a directory.
         assert result["cli_llama"] == str(tmp_path / "portable" / "llama.cpp"), inherited
 
 
@@ -234,7 +223,6 @@ def test_a_legacy_install_still_keeps_llama_cpp_at_the_legacy_path(tmp_path):
     (home / ".unsloth" / "studio").mkdir(parents = True)
     result = _probe({"HOME": str(home), "USERPROFILE": str(home)})
 
-    # Not custom, so nothing is exported at all and the backend default stands.
     assert result["cli_llama"] is None
     assert result["backend_llama"] == str(home / ".unsloth" / "studio" / "llama.cpp")
 
@@ -287,8 +275,7 @@ def _main_probe(env_overrides: dict) -> dict:
 
 
 def test_main_marks_the_same_llama_cpp_path_run_py_exports(tmp_path):
-    # A direct `uvicorn main:app` exports this outright; under run.py main.py would instead
-    # mark the wrong path managed, making the bundled one look like an override.
+    # Under run.py main.py would mark the wrong path managed, unlike a direct uvicorn launch.
     master = tmp_path / "portable"
     result = _main_probe({"UNSLOTH_HOME": str(master)})
 
@@ -305,8 +292,7 @@ def test_main_leaves_a_plain_custom_root_alone(tmp_path):
 
 
 def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
-    # A portable install pointed at the legacy Studio path still owns <root>/llama.cpp, so the
-    # legacy equality alone skipped the export and left unsloth_zoo on ~/.unsloth/llama.cpp.
+    # A portable install at the legacy Studio path still owns <root>/llama.cpp.
     home = tmp_path / "home"
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)
@@ -324,7 +310,6 @@ def test_main_exports_for_a_master_root_that_is_the_legacy_path(tmp_path):
 
 
 def test_main_still_exports_nothing_without_a_master_root(tmp_path):
-    # The other half: no master root, so the guard stays closed rather than pinning the default.
     home = tmp_path / "home"
     (home / ".unsloth" / "studio").mkdir(parents = True)
     result = _main_probe({"HOME": str(home), "USERPROFILE": str(home)})

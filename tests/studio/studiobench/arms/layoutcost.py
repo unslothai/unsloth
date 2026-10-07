@@ -35,10 +35,9 @@ from ..scoring.schema import Measure
 
 LAYOUTCOST_JS_PATH = Path(__file__).resolve().parents[1] / "instruments" / "layoutcost.js"
 
-#:The instrument level at which this may run. Headline numbers come from level 0 only.
+# Instrument level this runs at; headline numbers come from level 0 only.
 LAYOUTCOST_LEVEL = 3
 
-#:Counter families the browser side reports, each with its own `attempted` flag.
 COUNTER_FAMILIES = (
     "scrollHeightReads",
     "scrollTopWrites",
@@ -187,8 +186,7 @@ class LayoutCostInstrument:
         self._ctx = ctx
 
     def start_cell(self, cell: Any) -> None:
-        # `ctx.page` may be replaced between cells when a crashed renderer is recovered, so the page is
-        # re-read here rather than cached in attach().
+        # `ctx.page` may be replaced after a renderer crash, so re-read it.
         self._page = getattr(self._ctx, "page", None)
 
     def open(self, window: Any) -> None:
@@ -214,9 +212,7 @@ class LayoutCostInstrument:
         return reading_from_snapshot(snapshot).to_json()
 
     def end_cell(self, cell: Any) -> dict[str, Any] | None:
-        # The harness contract requires every instrument at level >= 1 to declare its own cost. This one
-        # declares the LOWER BOUND it can measure itself, because the real number comes from the paired
-        # with/without cell that only the deep tier runs.
+        # Declares only the lower bound it can measure; the real number needs the deep-tier paired cell.
         if self._page is None:
             return {"overhead_ms": None, "overhead_attempted": False}
         try:

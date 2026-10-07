@@ -39,22 +39,15 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "version-compat-ci.yml"
 SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 
-# The bundled job. Named, not detected: if it is ever renamed, that should be a deliberate edit here rather than this
-# whole file quietly asserting nothing.
+# Named, not detected, so a rename is a deliberate edit rather than a silent no-op.
 BUNDLE_JOB = "pinned-symbol-matrix"
 
-# Cron-only; sweeps tests/version_compat/ with only pytest installed.
 SWEEP_JOB = "daily-fresh-fetch"
 # A None entry in sys.modules makes `import` raise and find_spec return None, as in that job.
 NOT_IN_THE_SWEEP = ("torch", "numpy", "transformers", "trl", "peft", "accelerate", "unsloth_zoo")
 
-# Suites with no pull_request home today.
-# This is a RECORDED GAP, not an approval, and both entries pre-date the bundling change that added this file.
-# Neither can join the bundle, because the bundle installs nothing but pytest: test_import_leaves_torch_globals_alone.py
-# runs `import torch` inside a subprocess probe (_PROBE at module scope), so it needs a real torch.
-# test_trl_vllm_generation_lora_patch.py needs an installed TRL.
-# Both are swept by the cron-only `daily-fresh-fetch` job, so they are checked daily rather than never. Anything
-# added here needs the same kind of reason written down.
+# Recorded gap, not an approval: these need real torch or TRL, which the bundle never installs.
+# The cron-only `daily-fresh-fetch` job sweeps them.
 CRON_ONLY = {
     "tests/version_compat/test_import_leaves_torch_globals_alone.py",
     "tests/version_compat/test_trl_vllm_generation_lora_patch.py",
@@ -83,7 +76,6 @@ def _named_paths(job: dict) -> set[str]:
         body = str(step.get("run", ""))
         for m in re.finditer(r"tests/[\w/]+\.py", body):
             named.add(m.group(0))
-        # A bare directory sweep covers every file under it.
         for m in re.finditer(r"(tests/(?:version_compat|vllm_compat))/(?:\s|\\|$)", body):
             named.add(m.group(1) + "/")
     return named

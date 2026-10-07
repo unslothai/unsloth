@@ -127,7 +127,6 @@ def test_the_guard_binds_triton_to_none_and_records_why():
     """`triton` and `TRITON_IMPORT_ERROR` are the contract the rest of the file reads."""
     source = GPU_INIT.read_text(encoding = "utf-8")
     assert "TRITON_IMPORT_ERROR" in source
-    # Every later use of `triton` in this module has to tolerate None.
     tree = ast.parse(source)
     version_calls = [
         node

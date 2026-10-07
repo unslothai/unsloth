@@ -22,7 +22,6 @@ from .decision import *
 try:
     from .falcon_h1 import FastFalconH1Model
 except:
-    # falcon_h1 absent before transformers 4.53.0; skip
     pass
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__

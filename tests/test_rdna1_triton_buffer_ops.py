@@ -20,18 +20,18 @@ from unsloth import device_type
 @pytest.mark.parametrize(
     "arch, lacks",
     [
-        ("gfx1010", True),  # RDNA1, RX 5700 XT: where it was measured
+        ("gfx1010", True),  # RDNA1, where the bug was measured
         ("gfx1010:xnack-", True),  # the suffixed form torch reports
-        ("gfx1011", True),  # RDNA1, Radeon Pro V520
-        ("gfx1012", True),  # RDNA1, RX 5500 XT
-        ("gfx1013", True),  # RDNA1, Cyan Skillfish
+        ("gfx1011", True),
+        ("gfx1012", True),
+        ("gfx1013", True),
         ("gfx1030", False),  # RDNA2 reads the newer descriptor, buffer ops are fine
-        ("gfx1034", False),  # RDNA2, RX 6500 XT: measured correct with buffer ops on
+        ("gfx1034", False),  # RDNA2, measured correct with buffer ops on
         ("gfx1034:sramecc-:xnack-", False),
-        ("gfx1100", False),  # RDNA3
-        ("gfx1201", False),  # RDNA4
-        ("gfx90a", False),  # CDNA
-        ("gfx942", False),  # CDNA3
+        ("gfx1100", False),
+        ("gfx1201", False),
+        ("gfx90a", False),
+        ("gfx942", False),
         ("", False),  # unreadable: fail open, never guess
         (None, False),
     ],
@@ -65,7 +65,7 @@ def test_workaround_sets_knob_and_a_separate_cache_dir():
     assert device_type.apply_gfx101x_triton_workaround(env, triton_home = "/th") is True
     assert env["AMDGCN_USE_BUFFER_OPS"] == "0"
     assert env["TRITON_CACHE_DIR"].replace("\\", "/") == "/th/.triton/cache-no-buffer-ops"
-    # Inductor caches the Triton kernels it generates on its own, keyed the same blind way.
+    # Inductor caches its generated Triton kernels too, keyed without the buffer-ops knob.
     assert env["TORCHINDUCTOR_CACHE_DIR"].endswith("_no_buffer_ops")
     assert "torchinductor_" in env["TORCHINDUCTOR_CACHE_DIR"]
 

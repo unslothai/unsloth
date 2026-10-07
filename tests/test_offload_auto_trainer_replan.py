@@ -217,7 +217,7 @@ def test_rebuilds_a_smaller_plan_when_the_restore_fits(capsys):
     model = _Model()
     first = ns["install_block_swap"](model, "auto")
     assert len(first.indices) == 1
-    state.free = 3 * GIB  # memory freed since attach: restoring 1 GiB fits
+    state.free = 3 * GIB
     swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
     assert state.removed == [first] and swapper is not first
     # 3 GiB free with layer 1 out -> 2 GiB after restore, so 4 layers cover a 6 GiB reserve.
@@ -289,12 +289,10 @@ def test_trainer_init_wrapper_calls_the_safe_replan():
         if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
     ]
     assert "_replan_auto_offload_safely" in calls
-    # After the original init, so the trainer's args and optimizer are known.
     assert calls.index("_replan_auto_offload_safely") > calls.index("_original_trainer_init")
 
 
 def test_a_short_second_card_still_rebuilds():
-    # device_map model: the swapped layers' first card has room, the second does not.
     ns, state = _load(free = 1 * GIB)
     model = _Model()
     first = ns["install_block_swap"](model, "auto")
@@ -319,7 +317,6 @@ def test_a_failed_rebuild_puts_the_old_plan_back(capsys):
 
 
 def test_newly_swapped_layers_recompute_in_backward():
-    # checkpoint_skip_layers = "max" marked every layer the attach-time plan left resident.
     ns, state = _load(free = 1 * GIB)
     model = _Model()
     ns["install_block_swap"](model, "auto")
@@ -332,7 +329,6 @@ def test_newly_swapped_layers_recompute_in_backward():
 
 
 def test_a_card_without_swapped_layers_is_checked():
-    # Attach-time plan swapped only on cuda:0; the bigger batch leaves cuda:1 short.
     ns, state = _load(free = 1 * GIB)
     model = _Model()
     first = ns["install_block_swap"](model, "auto")
@@ -348,7 +344,6 @@ def test_resident_blocks_and_idle_slots_need_no_restore():
     model = _Model()
     first = ns["install_block_swap"](model, "auto")
     assert len(first.indices) == 2
-    # Both blocks sit in slots already and an idle slot is freed first: nothing new to restore.
     state.resident = True
     state.idle_slot_bytes = GIB
     state.free = GIB // 2
@@ -364,7 +359,6 @@ def test_a_rebuild_keeps_the_old_plans_layers_swapped():
     state.free = 3 * GIB
     ns["auto_swap_indices"] = lambda layers, reserve, depth: ([1, 4, 7], 0)
     swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
-    # The union keeps the old layers and every layer the planner picked for the shortfall.
     assert swapper.indices == [1, 3, 4, 7]
 
 

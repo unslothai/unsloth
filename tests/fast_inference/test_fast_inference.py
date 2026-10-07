@@ -32,7 +32,6 @@ from real_accelerator import (
 
 from tests.utils import header_footer_context
 
-# Spins up a real inference path on the accelerator.
 pytestmark = pytest.mark.gpu
 
 
@@ -42,23 +41,18 @@ LORA_RANK = 8
 NUM_GENERATIONS = 2
 MAX_PROMPT_LENGTH = 64
 MAX_COMPLETION_LENGTH = 16
-# >1 so the updated LoRA adapter is re-synced into vLLM on every step, not just loaded once; that repeat sync is the
-# path that regressed.
+# >1 so the LoRA adapter is re-synced into vLLM each step, the path that regressed.
 MAX_STEPS = 3
 GPU_MEMORY_UTILIZATION = 0.3
 COMPILATION_CONFIG = 0
-# Pins torch's global RNG (via the Trainer's set_seed), which the colocated vLLM sampler draws from, so the rollout and
-# every metric below is reproducible.
 SEED = 42
 
-# Loose sanity bounds, not fitted values: they catch divergence and degenerate rollouts while staying valid across
-# GPUs, models and vLLM versions.
+# Loose sanity bounds, not fitted values.
 MAX_CHARS_PER_TOKEN = 20
 MAX_GRAD_NORM = 1e3
 MAX_KL = 1.0
 
-# All attention + MLP projections, so both fused vLLM LoRA families (qkv_proj and gate_up_proj) are exercised
-# the >= 0.25.0 collision hit both.
+# Covers both fused vLLM LoRA families (qkv_proj and gate_up_proj).
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 SYSTEM_PROMPT = "Respond concisely."
@@ -87,8 +81,7 @@ def _metric(metrics, *names):
 
 @pytest.mark.skipif(not has_real_accelerator(), reason = "fast_inference needs an accelerator + vLLM")
 def test_fast_inference():
-    # Import here, not at module load: importing unsloth probes for an accelerator and errors on CPU-only machines, so
-    # deferring keeps pytest collection and the skip path import-free. Unsloth must precede TRL.
+    # Deferred: importing unsloth errors on CPU-only machines. Unsloth must precede TRL.
     from unsloth import FastLanguageModel
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
@@ -101,7 +94,7 @@ def test_fast_inference():
             fast_inference = True,
             max_lora_rank = LORA_RANK,
             gpu_memory_utilization = GPU_MEMORY_UTILIZATION,
-            enforce_eager = True,  # skip CUDA graph capture for fast startup
+            enforce_eager = True,
             compilation_config = COMPILATION_CONFIG,
         )
     assert hasattr(model, "vllm_engine"), "fast_inference=True did not attach a vLLM engine"
@@ -137,8 +130,6 @@ def test_fast_inference():
             args = training_args,
             train_dataset = dataset,
         )
-    # The trainer must actually route rollouts through vLLM, otherwise it would
-    # fall back to HF generation and never exercise WorkerLoRAManager.
     assert trainer.args.use_vllm, "GRPO is not configured to use vLLM"
     # TRL >= 0.28 keeps the engine on trainer.vllm_generation.llm instead of trainer.llm.
     engine = getattr(trainer, "llm", None) or getattr(
@@ -153,13 +144,10 @@ def test_fast_inference():
     assert trainer_stats.global_step == MAX_STEPS, "GRPO ran the wrong number of steps"
     assert math.isfinite(trainer_stats.training_loss), "training loss is not finite"
 
-    # Without these, a rollout that silently produced nothing, or an update that diverged to NaN, would still pass the
-    # wiring assertions above.
     steps = [log for log in trainer.state.log_history if "loss" in log]
     assert len(steps) == MAX_STEPS, f"expected {MAX_STEPS} logged steps, got {len(steps)}"
 
-    # Every reward is a completion's character count, so this bounds reward and its spread without hard-coding
-    # model-specific values.
+    # Reward is a completion's character count.
     max_reward = MAX_COMPLETION_LENGTH * MAX_CHARS_PER_TOKEN
 
     for i, step in enumerate(steps, start = 1):
@@ -168,15 +156,13 @@ def test_fast_inference():
         reward = step.get("reward")
         zero_std = step.get("frac_reward_zero_std")
         kl = step.get("kl")
-        # Key names differ across the supported TRL range, so accept either.
         length = _metric(step, "completion_length", "completions/mean_length")
         reward_std = _metric(step, "reward_std", "rewards/std")
 
         assert math.isfinite(loss), f"step {i}: loss not finite ({loss})"
         assert grad_norm is not None, f"step {i}: no grad_norm logged"
         assert math.isfinite(grad_norm), f"step {i}: grad_norm not finite ({grad_norm})"
-        # Sign check only: a step can legitimately be near zero (0.004 observed), so any tighter lower bound would be
-        # flaky.
+        # Sign check only: a step can legitimately be near zero.
         assert 0.0 < grad_norm < MAX_GRAD_NORM, f"step {i}: grad_norm {grad_norm}"
         assert length is not None, f"step {i}: no completion length logged"
         assert 0.0 < length <= MAX_COMPLETION_LENGTH, f"step {i}: empty rollout ({length})"

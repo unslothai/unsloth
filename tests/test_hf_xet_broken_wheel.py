@@ -56,7 +56,6 @@ def _platform_tag_cases():
         ("linux_armv7l", "armv7l"),
         ("macosx_11_0_arm64", "arm64"),
         ("macosx_10_12_x86_64", "x86_64"),
-        # Unreadable on purpose: these must never be reported as a mismatch.
         ("macosx_10_9_universal2", None),
         ("any", None),
         ("something_else", None),
@@ -101,8 +100,7 @@ def test_architecture_mismatch_verdicts(monkeypatch, host_platform, tags, expect
         ("linux-aarch64", "aarch64", "arm64"),
         ("macosx-11.0-arm64", "arm64", "arm64"),
         ("macosx-10.12-x86_64", "x86_64", "x86_64"),
-        # sysconfig cannot name a single CPU for a universal2 build, so platform.machine()
-        # is the right answer there and only there.
+        # sysconfig cannot name one CPU for universal2, so platform.machine() is right there only.
         ("macosx-10.9-universal2", "arm64", "arm64"),
         ("something-unparseable", "x86_64", "x86_64"),
         ("something-unparseable", "sparc64", None),
@@ -159,8 +157,7 @@ def _install_fake_environment(
         if name == "hf_xet":
             if import_error is not None:
                 raise import_error
-            # A real module, not a bare object: __file__ is what separates an installed package
-            # from the empty namespace shell the confirm step has to reject.
+            # __file__ separates an installed package from the empty namespace shell.
             loaded = types.ModuleType("hf_xet")
             loaded.__file__ = "/site-packages/hf_xet/__init__.py"
             return loaded
@@ -189,12 +186,10 @@ def test_fires_on_a_wrong_architecture_wheel(monkeypatch, caplog):
         IF.fix_broken_hf_xet_wheel()
 
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
-    # one line, naming the real cause rather than repeating "pip install hf_xet"
     assert len(caplog.records) == 1
     message = caplog.records[0].getMessage()
     assert "architecture" in message and "win_amd64" in message
 
-    # idempotent
     caplog.clear()
     IF.fix_broken_hf_xet_wheel()
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
@@ -329,7 +324,6 @@ def test_fires_when_hf_xet_is_only_an_empty_namespace_package(monkeypatch, caplo
 
     assert IF.os.environ.get("HF_HUB_DISABLE_XET") == "1"
     assert "namespace package" in caplog.records[0].getMessage()
-    # The shell must not be left behind for the next importer to trip over.
     assert "hf_xet" not in IF.sys.modules
 
 
@@ -352,7 +346,7 @@ def test_fires_when_the_hub_already_cached_the_namespace_shell(monkeypatch, capl
     spec.submodule_search_locations = [str(package)]
 
     shell = types.ModuleType("hf_xet")
-    shell.__file__ = None  # what the Hub left behind
+    shell.__file__ = None
     monkeypatch.setitem(IF.sys.modules, "hf_xet", shell)
 
     real_find_spec = importlib.util.find_spec
@@ -448,7 +442,7 @@ def test_extension_header_decides_when_wheel_metadata_is_unreadable(monkeypatch,
     package = tmp_path / "hf_xet"
     package.mkdir()
     extension = package / ("hf_xet" + importlib.machinery.EXTENSION_SUFFIXES[0])
-    extension.write_bytes(_compiled_object("pe", 0x8664))  # x86-64 binary
+    extension.write_bytes(_compiled_object("pe", 0x8664))
 
     spec = importlib.machinery.ModuleSpec("hf_xet", None, is_package = True)
     spec.submodule_search_locations = [str(package)]
@@ -573,7 +567,6 @@ def test_patches_every_module_that_binds_the_flag(monkeypatch):
             "utils._runtime": _UNBOUND,  # reads constants.X, holds no copy: must stay unbound
         },
     )
-    # a look-alike package must not be caught by the prefix match
     decoy = types.ModuleType("huggingface_hubby")
     decoy.HF_HUB_DISABLE_XET = False
     monkeypatch.setitem(sys.modules, "huggingface_hubby", decoy)

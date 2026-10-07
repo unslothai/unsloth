@@ -31,12 +31,11 @@ from pathlib import Path
 import pytest
 
 
-# daily-fresh-fetch collects tests/version_compat/ with only pytest installed; the spoof and the rest of this module
-# need the real torch runtime. Skip the whole module cleanly when torch is absent rather than crashing collection.
+# daily-fresh-fetch collects this dir with only pytest installed; skip without torch.
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level = True)
 
-# Apply the spoof BEFORE any unsloth-touching import (mirrors tests/vllm_compat/test_extended_module_imports.py).
+# Apply the spoof BEFORE any unsloth-touching import.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -54,11 +53,7 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
     sys.modules[name] = m
 
 
-# Stand-in for torchcodec only when it is not installed, and shaped like the package: datasets
-# (5.x) does `from torchcodec.decoders import AudioDecoder, VideoDecoder` whenever its find_spec
-# probe saw torchcodec and the name is in sys.modules. A bare module answered that probe and then
-# failed the submodule import ("'torchcodec' is not a package") in every later test that built a
-# Dataset, and it also shadowed a real, working torchcodec in the lanes that install one.
+# Stub torchcodec only if absent, shaped as a package: datasets 5.x imports torchcodec.decoders.
 if "torchcodec" not in sys.modules and importlib.util.find_spec("torchcodec") is None:
 
     class _NoDecoder:
@@ -92,9 +87,7 @@ def _patch_grpo_and_get_source() -> str:
         f"{patched.__name__!r}, expected 'UnslothGRPOTrainer' (transform failed "
         f"or dispatch key drifted on this TRL)"
     )
-    # The transformed body (__init__ rewrites, injected per-token-logps) lives in the generated module's
-    # `_UnslothGRPOTrainer` base + module-level funcs, not the thin UnslothGRPOTrainer subclass -- read the
-    # whole generated module.
+    # The transformed body lives in the generated module, not the thin subclass.
     mod = inspect.getmodule(patched)
     return inspect.getsource(mod) if mod is not None else inspect.getsource(patched)
 
@@ -172,9 +165,6 @@ def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source
     ), "TRL's hardcoded QLoRA bf16 cast survived; rl.py neutralization no-oped"
 
 
-# SFT / DPO: the same source-transform patcher runs on them (a fake patch run, no training), so a structural TRL change
-# can break generation.
-# Catches "and or others" beyond GRPO.
 def _patch_and_get_source(trainer_file: str, trainer_cls: str) -> str:
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
@@ -216,10 +206,7 @@ def test_dpo_patch_generates_valid_source():
     _assert_quantized_cast_neutralized(src, "DPOTrainer")
 
 
-# The installed TRL in CI is always >= 1.7.0, so the < 1.7.0 return-arity
-# downgrade is never exercised by the fake-run above. Lock both arities by
-# monkeypatching rl_replacements.trl_version and re-generating the injected
-# _get_per_token_logps_and_entropies source directly (no TRL install needed).
+# CI TRL is always >= 1.7.0, so lock both return arities by monkeypatching trl_version.
 def test_per_token_logps_arity_gate_both_directions(monkeypatch):
     if importlib.util.find_spec("unsloth") is None:
         pytest.skip("unsloth not installed")
@@ -230,15 +217,12 @@ def test_per_token_logps_arity_gate_both_directions(monkeypatch):
 
     gate = _rlr.grpo_trainer__get_per_token_logps_and_entropies
 
-    # >= 1.7.0: 3-tuple return kept.
     monkeypatch.setattr(_rlr, "trl_version", Version("1.7.0"), raising = False)
     src_new = gate("_get_per_token_logps_and_entropies", None)
     assert (
         "return logprobs.detach(), entropies, aux_loss" in src_new
     ), "3-tuple return missing for TRL >= 1.7.0"
 
-    # < 1.7.0: aux_loss element dropped -> 2-tuple. A no-op downgrade must raise
-    # (fail loud), never silently ship a 3-tuple to older TRL.
     monkeypatch.setattr(_rlr, "trl_version", Version("1.6.0"), raising = False)
     src_old = gate("_get_per_token_logps_and_entropies", None)
     assert (

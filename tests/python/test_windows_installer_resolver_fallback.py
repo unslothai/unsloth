@@ -69,8 +69,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-# A compiler that always fails. install.ps1 no longer calls Add-Type at all, so this
-# proves the absence: every test that installs it must behave as it does without it.
+# A compiler that always fails: install.ps1 no longer calls Add-Type, so tests prove its absence.
 SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
@@ -89,7 +88,6 @@ def _helpers(*names: str) -> str:
     return "\n".join(_extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in names)
 
 
-# The whole chain the reported failure walked, plus the fallback it now lands on.
 LOCK_CHAIN = (
     "Write-StudioLine",
     "Test-StudioDirectoryUsable",
@@ -132,18 +130,13 @@ LOCK_CHAIN = (
 
 
 def _run_powershell(script: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    # Through a FILE, not -Command: these scripts carry the whole extracted helper chain, and Windows caps a command
-    # line at 32767 characters. Passed inline, the moment the chain grows past that every test here dies as WinError 206
-    # rather than testing anything. utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI; utf-8 with
-    # replacement on the way back because the default console codepage there cannot decode what PowerShell writes.
+    # Through a FILE: Windows caps command lines at 32767 chars. utf-8-sig because PS 5.1
+    # reads a BOM-less .ps1 as ANSI; replacement on decode for the console codepage.
     handle, name = tempfile.mkstemp(suffix = ".ps1")
     os.close(handle)
     try:
         Path(name).write_text(script, encoding = "utf-8-sig")
-        # run_pwsh, not subprocess.run: every test in this file reads this result as "did the Add-Type fallback chain
-        # survive", and an interpreter that aborted at startup produces the same empty stdout as a helper that never ran
-        # its fallback.
-        # See tests/_shared/unsloth_pwsh_runner.py.
+        # run_pwsh, not subprocess.run: a pwsh dead at startup gives the same empty stdout.
         return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
             capture_output = True,
@@ -173,8 +166,7 @@ def _script(
     return "\n".join(
         [
             '$ErrorActionPreference = "Stop"',
-            # Write-StudioLine picks its sink from this; unset, it reaches Write-Host,
-            # which the caller cannot capture.
+            # Unset, Write-StudioLine falls back to Write-Host, which the caller cannot capture.
             "$script:StudioStdoutRedirected = $true",
             _helpers(*names),
             SABOTAGE if sabotage else "",
@@ -219,7 +211,6 @@ Exit-StudioInstallMutex -Mutex $mutex
     assert re.fullmatch(
         r"NAME:Global\\UnslothStudioInstall-[0-9a-f]{64}", _lines(result, "NAME:")[0]
     )
-    # And it says why it degraded, once, without dumping anything it tried to build.
     warnings = [
         line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
     ]
@@ -228,7 +219,6 @@ Exit-StudioInstallMutex -Mutex $mutex
 
 
 def _fresh_install_statement() -> str:
-    # The real statement, not a retyped copy: it is what decides whether a run is a first install.
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     return _extract(r"    \$script:StudioInstallIsFresh = -not \(.*?\)\)\n", source)
 
@@ -241,8 +231,7 @@ def test_the_first_install_verdict_is_taken_before_anything_is_created() -> None
     verdict = source.index(_fresh_install_statement())
     assert source.index('    $VenvDir = Join-Path $StudioHome "unsloth_studio"') < verdict
     assert verdict < source.index("$studioInstallLock = Enter-StudioInstallLock -Path $StudioHome")
-    # Initialised with the rest of the resolver state, so a second `irm | iex` in one session
-    # does not inherit the first run's verdict.
+    # Reset with the resolver state so a second `irm | iex` in one session gets a fresh verdict.
     assert "    $script:StudioInstallIsFresh = $null\n" in source
 
 
@@ -337,7 +326,6 @@ Write-Output "EXACT:$((Resolve-StudioFinalPathInfo -Path '{studio_home}').Exact)
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "LOCK:") == ["LOCK:True"]
-    # Exact, because the interpreter rung answered. A compiler never entered into it.
     assert _lines(result, "EXACT:") == ["EXACT:True"]
     assert not [
         line for line in result.stdout.splitlines() if "Could not resolve a path exactly" in line
@@ -447,7 +435,6 @@ Write-Output "TEMP:$env:TEMP"
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    # Handed back exactly, broken values and all: they are the caller's, not ours.
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
@@ -475,11 +462,8 @@ Write-Output "MISSING:$(Get-StudioFinalPath -Path '{alias / "studio" / "not" / "
         )
     )
     assert result.returncode == 0, result.stderr
-    # A link on a PARENT component is the ordinary Windows shape, and the one
-    # GetFullPath alone gets wrong.
     assert _lines(result, "PATH:") == [f"PATH:{physical}"]
     assert _lines(result, "EQUAL:") == ["EQUAL:True"]
-    # Segments that do not exist yet are reattached, as the native resolver does.
     assert _lines(result, "MISSING:") == [f"MISSING:{physical / 'not' / 'there'}"]
 
 
@@ -525,8 +509,7 @@ Write-Output "NULL:$($null -eq $answer)"
         )
     )
     assert result.returncode == 0, result.stderr
-    # Without exact resolution two spellings may still be one directory; $null makes the caller take BOTH runtime
-    # locks, where $false would silently drop one.
+    # $null makes the caller take BOTH runtime locks; $false would silently drop one.
     assert _lines(result, "NULL:") == ["NULL:True"]
 
 
@@ -556,14 +539,11 @@ Write-Output "AFTER:$(Test-StudioDirectoryUsable -Path '{good}')"
     assert result.returncode == 0, result.stderr
     assert _lines(result, "BEFORE:") == ["BEFORE:True"]
     assert _lines(result, "AFTER:") == ["AFTER:False"]
-    # The healthy probe cleaned up after itself, so only the undeletable one is left.
     assert len(list(good.glob("unsloth-probe-*.tmp"))) == 1
 
 
 @requires_pwsh
 def test_unusable_temp_is_replaced_and_then_restored(tmp_path: Path):
-    # Under a regular file so it cannot merely be created: the probe has to fail the way an ACL-restricted temp
-    # directory fails.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")
     env = os.environ.copy()
@@ -598,9 +578,7 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
     # Both, because Windows reads TMP before TEMP.
     assert _lines(result, "MATCHED:") == ["MATCHED:True"]
     assert _lines(result, "TMP:") == [f"TMP:{env['TMP']}"]
-    # TEMP was absent; restoring it as "" would change how every later child resolves its own temp directory.
     assert _lines(result, "TEMPSET:") == ["TEMPSET:False"]
-    # It survives on purpose: an autostarted Unsloth inherited it as its own %TEMP%, and the host's real one is broken.
     assert _lines(result, "KEPT:") == ["KEPT:True"]
 
 
@@ -626,10 +604,8 @@ def _same_path(got: str, expected: str) -> bool:
 _NT_DEVICE_PREFIX = "\\??\\"
 _LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 
-# What (Get-Item).Target actually hands back. 5.1 returns a COLLECTION, not a string and not an [array] either, so a
-# container test naming one type lets the real one fall through and be space-joined. Junctions store the NT device
-# form; system junctions and Store AppExecLinks report nothing. None of these shapes can be produced on Linux, so
-# Get-Item is stubbed and the paths are POSIX-style; see _same_path for why the comparison cannot be a string equality.
+# Shapes (Get-Item).Target really returns: 5.1 gives a collection, junctions use NT device
+# form, system links report nothing. Stubbed since Linux cannot produce them.
 _TARGET_SHAPES = [
     ("generic collection", _LIST.format('$l.Add("/real/target")'), "/real/target"),
     (
@@ -699,9 +675,7 @@ def _dead_pid(start: int = 4_000_000) -> int:
 
 
 _DEAD_PID = _dead_pid()
-# A second one, so a test can put two abandoned directories side by side. It cannot reuse
-# _DEAD_PID with a different hex spelling: NTFS and the default macOS filesystem are
-# case-insensitive, so the two names would be one directory and the second mkdir would raise.
+# Cannot reuse _DEAD_PID with other hex case: case-insensitive filesystems merge the names.
 _OTHER_DEAD_PID = _dead_pid(_DEAD_PID + 1)
 
 
@@ -789,7 +763,6 @@ def test_a_drive_less_rooted_target_lands_on_the_link_own_root(tmp_path: Path):
     root = _lines(result, "ROOT:")[0].split("[", 1)[1].rstrip("]")
     assert got.startswith(root), f"{got} is not on the link's own root {root}"
     assert got.rstrip("\\/").endswith("real")
-    # The whole point: it is NOT reparented under the link's own directory either.
     assert "nested" not in got
 
 
@@ -873,7 +846,6 @@ def test_final_normalization_strips_every_extended_prefix():
     assert "$resolved.Substring(4)" in body
 
     gate = (REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py").read_text(encoding = "utf-8")
-    # The two sides have to agree about which prefixes come off, and there are exactly two rules on the Python side.
     assert 'resolved.startswith("\\\\\\\\?\\\\UNC\\\\")' in gate
     assert "resolved = resolved[4:]" in gate
     assert "Volume{" not in gate
@@ -977,11 +949,9 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
     """
     root = tmp_path / "root"
     root.mkdir()
-    # Name says dead, owner.pid says alive: keep it.
     keep = root / f"ust-{_DEAD_PID}-000000aa"
     keep.mkdir()
     (keep / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
-    # Name says alive, owner.pid says dead: the recorded owner wins, so sweep it.
     drop = root / f"ust-{os.getpid()}-000000bb"
     drop.mkdir()
     (drop / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1036,7 +1006,6 @@ def test_a_healthy_temp_still_sweeps_what_an_earlier_degraded_run_left(tmp_path:
     root.mkdir(parents = True)
     abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
-    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
     (abandoned / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (abandoned / "leftover.bin").write_text("half a download", encoding = "utf-8")
     aged = time.time() - 3 * 24 * 3600
@@ -1059,7 +1028,6 @@ Write-Output "OVERRIDE:$($null -ne $script:StudioTempOverride)"
     )
     assert result.returncode == 0, result.stderr
     assert not abandoned.exists()
-    # And the healthy path is still the healthy path: nothing was redirected.
     assert _lines(result, "TMP:") == [f"TMP:{good}"]
     assert _lines(result, "OVERRIDE:") == ["OVERRIDE:False"]
 
@@ -1087,7 +1055,6 @@ Write-Output "EXISTS:$(Test-Path -LiteralPath '{ghost}')"
     assert _lines(result, "USABLE:") == ["USABLE:False"]
     assert _lines(result, "EXISTS:") == ["EXISTS:False"]
     assert not ghost.exists()
-    # A directory the installer owns is a different matter: that one it creates.
     owned = tmp_path / "owned" / "ust-1-aaaaaaaa"
     result = _run_powershell(
         _script(
@@ -1115,9 +1082,6 @@ def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
     stale.write_text("left by a run that could not delete it", encoding = "utf-8")
     fresh = good / "unsloth-probe-cafebabe.tmp"
     fresh.write_text("another process is using this right now", encoding = "utf-8")
-    # Same prefix, same suffix, not the shape the probe writes.
-    # This sweep runs in the HOST's temp directory, so a name that merely starts the same way is somebody else's file
-    # however old it is.
     theirs = good / "unsloth-probe-report.tmp"
     theirs.write_text("not ours", encoding = "utf-8")
     theirs_long = good / "unsloth-probe-deadbeefcafe.tmp"
@@ -1154,7 +1118,6 @@ def test_a_root_that_fails_its_probe_is_not_left_behind(tmp_path: Path):
     user_profile = tmp_path / "userprofile"
     user_profile.mkdir()
 
-    # Pre-existing content under one of the same parents: the unwind must stop.
     keep = local_app_data / "Unsloth Studio" / "studio.port"
     keep.parent.mkdir(parents = True)
     keep.write_text("41343", encoding = "utf-8")
@@ -1188,10 +1151,6 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
-    # Not just the ust-* leaf: -Force built the whole chain, so "Unsloth Studio"
-    # and "temp" were conjured too and a run that gave up must not leave a data
-    # directory tree on a machine Unsloth was never installed on.
-    # ~\.unsloth itself is shared and stays; everything the probe made under it goes.
     assert not (user_profile / ".unsloth" / ".cache").exists()
     assert not list(user_profile.rglob("ust-*")), list(user_profile.rglob("*"))
     assert keep.exists()
@@ -1217,9 +1176,8 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
     (ours / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (ours / "scratch.bin").write_text("x", encoding = "utf-8")
     keep = []
-    # Case-insensitively ours: Windows filenames are case-insensitive, so refusing the uppercase spelling would leak a
-    # directory we created. A second dead PID, because on Windows and macOS the same PID with the other hex spelling is
-    # the same directory and the mkdir below would raise FileExistsError before the sweep ever ran.
+    # Windows names are case-insensitive, so uppercase must count as ours; a second dead PID
+    # avoids colliding with the lowercase directory on case-insensitive filesystems.
     upper = root / f"ust-{_OTHER_DEAD_PID}-ABCDEF01"
     upper.mkdir()
     (upper / "owner.pid").write_text(str(_OTHER_DEAD_PID), encoding = "utf-8")
@@ -1297,18 +1255,15 @@ def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
     two_days = time.time() - 2 * 24 * 3600
     eight_days = time.time() - 8 * 24 * 3600
 
-    # No owner.pid, dead name PID, two days old: unknown, so it stays.
     unknown = root / f"ust-{_DEAD_PID}-aaaaaaaa"
     unknown.mkdir()
     (unknown / "in-use.txt").write_text("a live Unsloth may own this", encoding = "utf-8")
     os.utime(unknown, (two_days, two_days))
 
-    # Same, but a week past: collected, so the pile still stays bounded.
     ancient = root / f"ust-{_DEAD_PID}-bbbbbbbb"
     ancient.mkdir()
     os.utime(ancient, (eight_days, eight_days))
 
-    # Recorded dead owner, two days old: proof, so it goes at the usual cutoff.
     recorded = root / f"ust-{_DEAD_PID}-cccccccc"
     recorded.mkdir()
     (recorded / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1327,8 +1282,6 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     precious = tmp_path / "precious"
     precious.mkdir()
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
-    # A dead owner PID, or the sweep keeps the directory for the live process its name says owns it; that case is the
-    # test below.
     stale = root / f"ust-{_DEAD_PID}-01d01d01"
     stale.mkdir()
     (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1347,17 +1300,14 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     try:
         os.utime(link, (aged, aged), follow_symlinks = False)
     except (NotImplementedError, OSError):
-        # Windows has no follow_symlinks=False for utime, and aging the link any other way writes THROUGH it, leaving
-        # the link fresh so the sweep skips it.
-        # The 5.1 staging probe ages the reparse point via a FILE_FLAG_OPEN_REPARSE_POINT handle instead.
+        # Windows has no follow_symlinks=False for utime; aging the link otherwise writes through it.
         pytest.skip("this host cannot age a link without writing through it")
 
     _shared_setup_1(root)
     assert not stale.exists()
     assert fresh.exists()
     assert not link.is_symlink()
-    # 5.1's Remove-Item -Recurse follows a junction and empties what it points at.
-    # Nothing the installer creates here is a reparse point, so one costs only the link.
+    # 5.1's Remove-Item -Recurse follows a junction and empties its target.
     assert (precious / "keepme.txt").exists()
 
 
@@ -1406,11 +1356,8 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     roots = _extract(r"    function Get-StudioPrivateTempRoots \{.*?\n    \}\n", source)
 
-    # LOCALAPPDATA\"Unsloth Studio" is the data dir uninstall.ps1 removes wholesale.
     assert 'Join-Path $env:LOCALAPPDATA "Unsloth Studio\\temp"' in roots
     assert '"Unsloth Studio"' in uninstall
-    # ~\.unsloth\.cache is on its explicit sibling list. Directly under ~\.unsloth would be worse: that directory
-    # is removed only when it is empty.
     assert 'Join-Path $env:USERPROFILE ".unsloth\\.cache\\temp"' in roots
     assert (
         '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }'
@@ -1418,16 +1365,10 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     )
     assert ".unsloth\\temp" not in roots
 
-    # The GetFolderPath fallback is the whole point of the second root: LOCALAPPDATA is dropped in service and CI
-    # contexts. The uninstaller has to resolve the data dir the same way, or the tree it places there survives an
-    # uninstall on exactly the hosts that needed the fallback.
+    # LOCALAPPDATA is dropped in service/CI contexts; the uninstaller must resolve the same fallback.
     assert '[Environment]::GetFolderPath("LocalApplicationData")' in roots
-    # And it has to consider BOTH spellings rather than the first that answers: install.ps1 falls through from a
-    # set-but-unusable LOCALAPPDATA to the known folder, so the variable being non-blank does not say where the tree
-    # landed.
     assert "foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {" in uninstall
-    # And the second spelling gets the TEMP TREE ONLY. It can name a different user's profile, and the data-dir
-    # delete is recursive with no ownership sentinel, so widening that to both roots would have been the larger bug.
+    # The second root gets the temp tree only: it may name another user's profile.
     assert 'Join-Path $root "Unsloth Studio\\temp"' in uninstall
     assert "_RemoveStudioPrivateTempTrees -Paths $privateTempDirs" in uninstall
     assert "foreach ($d in $defaultDataDirs)" not in uninstall
@@ -1508,8 +1449,6 @@ def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
 
-    # The order is a property of the script body, not of any one function, so it is checked as one: every wholesale
-    # data-dir removal is preceded by the sweep and carries what the sweep kept.
     body = uninstall[uninstall.index("function Uninstall-UnslothStudio") :]
     calls = [
         line.strip()
@@ -1593,8 +1532,6 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
 
     block, preamble, uninstall = _shared_setup_2()
 
-    # The real profile, with an Unsloth temp tree in it that belongs to a dead owner: nothing about the entries
-    # themselves protects them.
     real = tmp_path / "real profile"
     real_temp = real / "localappdata" / "Unsloth Studio" / "temp"
     real_temp.mkdir(parents = True)
@@ -1603,7 +1540,6 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (stale / "precious.txt").write_text("another profile", encoding = "utf-8")
 
-    # Three levels above the temp directory, so neither it nor its parent is a link. Only a full walk sees this.
     redirected = tmp_path / "redirected profile"
     try:
         redirected.symlink_to(real, target_is_directory = True)
@@ -1628,7 +1564,6 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     assert _lines(result, "DONE:") == ["DONE:1"]
     assert (stale / "precious.txt").exists(), "the sweep walked through a link high above the root"
 
-    # Same shape, but now it is this uninstall's own profile: the tree goes.
     result = _run_powershell(
         "\n".join(
             [
@@ -1684,10 +1619,8 @@ Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
     )
     assert result.returncode == 0, result.stderr
     assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
-    # The candidate the probe made is gone; the directory that was already there stays.
     assert not list(provisioned.glob("ust-*"))
     assert provisioned.is_dir(), "a pre-existing temp directory was unwound"
-    # And the tree the probe DID create under the other root is still taken back.
     assert not (user_profile / ".unsloth" / ".cache").exists()
 
 
@@ -1795,7 +1728,6 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     assert _lines(result, "DONE:") == ["DONE:1"]
     assert not (temp / "ust-1234-abcdef01").exists()
-    # Prefix, not shape, would have taken all three of these.
     assert (temp / "ust-legacy").is_dir()
     assert (temp / "ust-notapid-abcdef01").is_dir()
     assert (temp / "somebody-elses").is_dir()
@@ -1803,25 +1735,21 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert (data / "studio.port").exists()
 
 
-# Split-Path's -LiteralPath lives in its own parameter set in Windows PowerShell 5.1, so naming
-# -Parent with it throws AmbiguousParameterSet at runtime, not at parse time, which is why eight of
-# them reached a release. -LiteralPath alone already splits off the parent, and -Path globs.
-# Static, because CI has no Windows PowerShell 5.1 to run the scripts under.
+# Split-Path -LiteralPath with -Parent throws AmbiguousParameterSet at runtime on PS 5.1.
+# Checked statically because CI has no Windows PowerShell 5.1.
 _SPLIT_PATH_LITERAL_PARENT = re.compile(
     r"Split-Path\b[^\r\n|;]*?-LiteralPath\b[^\r\n|;]*?-Parent\b"
     r"|Split-Path\b[^\r\n|;]*?-Parent\b[^\r\n|;]*?-LiteralPath\b"
 )
 
 
-# The two installers this change touches. scripts/uninstall.ps1 has its own eight of these and its
-# own PR (#10471); listed here it failed on this tree unconditionally.
+# scripts/uninstall.ps1 has its own occurrences, fixed separately.
 @pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
 def test_split_path_never_pairs_literalpath_with_parent(name: str) -> None:
     text = (REPO_ROOT / name).read_text(encoding = "utf-8")
     offenders = [
         f"{name}:{number}: {line.strip()}"
         for number, line in enumerate(text.splitlines(), start = 1)
-        # Comments are prose about the rule, not a call the shell binds.
         if not line.strip().startswith("#") and _SPLIT_PATH_LITERAL_PARENT.search(line)
     ]
     assert not offenders, (
@@ -1854,8 +1782,7 @@ def test_the_lock_chain_defines_everything_it_reaches() -> None:
         f"only {len(installer_functions)} installer functions found, so the scan is not reading "
         "install.ps1 and this test would pass on an empty set"
     )
-    # Whole-line comments dropped first: a helper NAMED in prose is not a call, and treating it
-    # as one grows the list to satisfy a mention rather than a dependency.
+    # Whole-line comments dropped: a helper named in prose is not a call.
     code = "\n".join(line for line in extracted.splitlines() if not line.lstrip().startswith("#"))
     called = set(re.findall(r"(?<![\w-])([A-Z][\w]*-[\w-]+)", code))
     missing = sorted((called & installer_functions) - provided)
@@ -1931,7 +1858,6 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
     system32.mkdir(parents = True)
     tools = {"icacls.exe": "exit 0", "whoami.exe": 'printf "S-1-16-8192"'}
     if hung == "whoami.exe":
-        # whoami is asked only once the label cannot be set.
         tools["icacls.exe"] = "exit 1"
     if hung:
         tools[hung] = "exec sleep 60"
@@ -1963,9 +1889,7 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
                 str(script),
                 str(REPO_ROOT / source),
                 str(python),
-                # The hung cases time only the integrity utilities, which carry their own deadlines,
-                # so the child keeps a 1 s budget there. The control asserts the child's answer
-                # arrives, so it gets a budget that only a genuinely hung child would exhaust.
+                # Hung cases need a 1 s budget; the control gets 10 s so only a truly hung child fails.
                 "1000" if hung else "10000",
             ],
             env = env,
@@ -1979,14 +1903,9 @@ def test_a_hung_integrity_tool_cannot_stall_the_nvidia_probe(tmp_path: Path, sou
 
     result = attempt()
     if hung is None:
-        # Control: a healthy host still gets the Python answer, so the case above is not vacuous.
-        # On Linux, pwsh's Start-Process copies a redirected stdout into the file from an async
-        # handler, so Wait-Process can return before the child's line lands and the probe reads
-        # an empty file (about 1 in 100 runs under xdist load, as in #12471's run). Windows hands
-        # the child the file handle itself, so this race is the parity host's, not the installer's.
-        # A probe that really lost its answer comes back empty every time and still fails here.
+        # On Linux pwsh copies redirected stdout asynchronously, so the answer can rarely be missing;
+        # retry once (Windows does not race). A truly lost answer is empty every time.
         for _ in range(2):
-            # Only the race's exact signature is retried; a wrong or duplicated answer fails at once.
             if _lines(result, "ANSWER:") != ["ANSWER:"]:
                 break
             result = attempt()
@@ -2040,7 +1959,6 @@ def test_a_child_directory_swapped_for_a_link_before_labelling_is_refused(tmp_pa
     """A standard user can replace the new directory with a link until the label lands."""
     victim = tmp_path / "victim"
     victim.mkdir()
-    # The label step is where the swap races in: this icacls replaces its target with a link first.
     swap = f'case "$2" in /setintegritylevel) rm -rf "$1"; ln -s "{victim}" "$1";; esac; exit 0'
     env = _fake_system32(tmp_path, {"icacls.exe": swap, "whoami.exe": 'printf "S-1-16-12288"'})
     script = tmp_path / "mkdir.ps1"

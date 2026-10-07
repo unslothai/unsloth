@@ -40,26 +40,12 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Optional
 
-#: The state every surface is reached from and restored to: a fresh, empty chat. Fresh matters,
-#: since the keep-alive chat container is inside `@route`'s siblings and inside `@shell`, so a
-#: sweep against a loaded thread would carry that thread's DOM into every other surface's
-#: digest and any thread difference would flip all forty at once.
+#: A fresh empty chat: the keep-alive chat container is in every surface's digest scope.
 KNOWN_STATE_PATH = "/chat"
 
-#: Steps are (verb, *args), interpreted by surface_sweep, which owns the browser; keeping them
-#: declarative is what lets the unit tests check the registry with no browser present.
-#:  goto <path>: navigate, relative to the Unsloth base url.
-#: click <selector>: a REAL mouse click through the driver, not element.click(). Radix menus
-#: open on pointerdown and a synthetic click misses them, reading as a menu that opened
-#: instantly.
-#: click_if <selector>: click only when present, for controls that exist in one of two states
-#: (e.g. an already-collapsed sidebar).
-#: hover <selector>: park the pointer over an element. REQUIRED before four of the sidebar's
-#: controls, whose row actions ship `opacity-0 pointer-events-none` and only take
-#: `group-hover:pointer-events-auto` when hovered, so a click times out against an element
-#: every check except the relevant one reports as visible.
-#: press <key>: a key on the focused element. fill <selector> <text>: set an input's value
-#: through the driver. wait <ms>: a bounded pause, only ever ALONGSIDE a settle condition.
+#: Steps are declarative (verb, *args) so the registry is testable without a browser.
+#: `click` is a real mouse click (Radix opens on pointerdown); `hover` is required before
+#: sidebar row actions that ship `pointer-events-none` until hovered.
 Step = tuple
 
 
@@ -74,20 +60,11 @@ class Surface:
     restore: tuple[Step, ...]
     root: tuple[str, ...]
     settle: Optional[dict] = None
-    #: Set when the surface's absence is a legitimate property of THIS installation rather than a
-    #: broken selector: the Connected tab needs an external provider, the hub catalog needs
-    #: network. A surface that fails to reach records a reason either way; this decides whether the
-    #: manifest counts it against coverage.
+    #: Set when absence is a property of this install (no provider, no network), not a bad selector.
     conditional: Optional[str] = None
-    #: Surfaces the film already drives. Swept anyway, since the sweep runs on an EMPTY chat and the
-    #: film on a loaded one, but flagged so the coverage figure is not inflated by re-counting.
+    #: Already driven by the film; flagged so coverage is not double-counted.
     also_in_film: bool = False
-    #: The mechanism by which this surface's digest differs between two runs of the SAME build.
-    #: Measured, not assumed: three consecutive sweeps against one Unsloth agreed on 44 of 53
-    #: surfaces, and every entry below is the mechanism behind one of the nine that did not.
-    #: The same distinction `scripts/sbench_ui_parity.py` draws for the film's actions with
-    #: UNSTABLE_ACTIONS, and for the same reason: a comparison that reports a live memory gauge as
-    #: a UI change gets ignored within a day.
+    #: Why this surface's digest moves between runs of the same build (measured, not assumed).
     volatile: Optional[str] = None
     notes: str = ""
 
@@ -107,14 +84,9 @@ class Surface:
         }
 
 
-#: Back to the known state the hard way. The restore for anything that navigated, and the
-#: recovery path when a surface's own restore left the app dirty.
-# ── shared fragments ────────────────────────────────────────────────
-
 HOME: tuple[Step, ...] = (("goto", KNOWN_STATE_PATH), ("wait", 400))
 
-#: Escape twice, not once: a settings tab that opened a sub-view (Data -> Archived chats, Voice
-#: -> Dictionary) eats the first Escape closing the sub-view and stays open on the dialog.
+#: Twice: a settings sub-view eats the first Escape.
 ESCAPE_OUT: tuple[Step, ...] = (
     ("press", "Escape"),
     ("wait", 200),
@@ -122,7 +94,6 @@ ESCAPE_OUT: tuple[Step, ...] = (
     ("wait", 300),
 )
 
-#:The chat composer. Its presence is what 'the chat route has rendered' means, everywhere.
 COMPOSER = 'textarea[aria-label="Message input"]'
 
 ROOT_ROUTE = ("@route",)
@@ -130,29 +101,19 @@ ROOT_SHELL = ("@shell",)
 ROOT_SIDEBAR = ("@sidebar",)
 
 
-#: The empty chat prints a randomly chosen greeting: `pickRandom` in
-#: components/assistant-ui/thread.tsx:2019 selects from a time-of-day list, so two loads of one
-#: build render different headings and every digest containing the welcome screen differs.
+#: The empty chat greeting is random (`pickRandom` in thread.tsx), so its digest varies.
 GREETING_IS_RANDOM = (
     "the empty chat's greeting is chosen by pickRandom "
     "(components/assistant-ui/thread.tsx:2019), so two loads of the same build "
     "render different headings"
 )
 
-#: The hub catalogue is fetched from Hugging Face; download counts, trending order and the
-#: list's arrival time all move independently of the build under test.
 HUB_IS_REMOTE = (
     "the catalogue is fetched from Hugging Face, so its content and its arrival time "
     "both move independently of the build under test"
 )
 
-#: MEASURED TO MOVE, MECHANISM NOT ESTABLISHED. Three sweeps of one build disagreed on these
-#: while a back-to-back pair of visits produced byte-identical markup, so it is not a timer and
-#: not a render race inside the surface: it is state something earlier in the sweep, or the
-#: install, carries between sweeps.
-#: Flagged as UNEXPLAINED rather than given a plausible cause, because a wrong mechanism here
-#: is worse than an admitted gap: it is the sentence a reader uses to dismiss a real
-#: difference.
+#: Measured to move between sweeps of one build, mechanism unknown; deliberately not guessed.
 UNEXPLAINED_DRIFT = (
     "measured to differ between sweeps of the SAME build while a back-to-back "
     "pair of visits produced byte-identical markup. The mechanism is NOT "
@@ -184,8 +145,7 @@ def _route(
 
 
 def _settings_tab(tab_id: str, title: str) -> Surface:
-    # `/settings` is not a page: its route component calls `openDialog()` and redirects to /chat,
-    # so the dialog is the surface and a settle written against the URL would never be satisfied.
+    # `/settings` redirects to /chat and opens the dialog, so settle on the dialog, not the URL.
     return Surface(
         id = f"settings:{tab_id}",
         group = "settings",
@@ -196,9 +156,7 @@ def _settings_tab(tab_id: str, title: str) -> Surface:
             ("click", f'[data-testid="settings-tab-{tab_id}"]'),
             ("wait", 400),
         ),
-        # The panel is lazily imported per tab, so 'the dialog is open' is not enough: the tab would be
-        # recorded as reached with its chunk in flight and the digest would be of the Suspense
-        # fallback. The tab's pressed state plus a settled panel body is what says the panel arrived.
+        # Panels are lazy per tab: wait for the pressed tab and a settled body, not the Suspense fallback.
         settle = {
             "js": f"!!document.querySelector('[data-testid=\"settings-tab-{tab_id}\"]')"
             f' && !!document.querySelector(".settings-surface main")'
@@ -209,8 +167,6 @@ def _settings_tab(tab_id: str, title: str) -> Surface:
         root = (".settings-surface", '[data-slot="dialog-content"]'),
     )
 
-
-# ── the registry ────────────────────────────────────────────────────
 
 _SURFACES: list[Surface] = [
     _route(
@@ -234,10 +190,7 @@ _SURFACES: list[Surface] = [
         "route:train",
         "Train (Unsloth)",
         "/studio",
-        # NOT a URL check alone, and not the nav row either: the nav row is in the sidebar and is
-        # there before the page is. StudioPage shows a spinner while the hardware verdict is
-        # unmeasured and then redirects to /chat if the host is chat-only, so the wizard's last
-        # section is what says the page finished rendering.
+        # StudioPage may spin then redirect to /chat, so the wizard's last section proves it rendered.
         {
             "js": 'location.pathname === "/studio" && '
             '(document.body.innerText || "").includes("Run preview")'
@@ -267,15 +220,12 @@ _SURFACES: list[Surface] = [
         "/api-monitor",
         {"js": 'location.pathname === "/api-monitor"'},
     ),
-    # The 404 is a rendered surface with its own mascot, heading and back-link, exactly the kind of
-    # page a bundler or asset-path change breaks unnoticed.
     _route(
         "route:not-found",
         "Not found",
         "/studiobench-no-such-route",
         {"js": 'location.pathname === "/studiobench-no-such-route"'},
     ),
-    # ── the settings dialog ─────────────────────────────────────────
     _settings_tab("general", "Settings: General"),
     _settings_tab("profile", "Settings: Profile"),
     _settings_tab("appearance", "Settings: Appearance"),
@@ -296,14 +246,11 @@ _SURFACES: list[Surface] = [
         "timestamps. Two visits differed by 402 lines",
     ),
     _settings_tab("about", "Settings: About"),
-    # The dialog's own search index is a distinct rendering of every panel's labels, and the one
-    # place a settings string appears without its panel being mounted.
     Surface(
         id = "settings:search",
         group = "settings",
         title = "Settings: search results",
-        # By aria-label, not `input[type="text"]`: the search box ships no `type` attribute, so a type
-        # selector matches the Embedding model field further down the General panel and fills THAT.
+        # By aria-label: the search box has no `type`, so a type selector hits the Embedding field.
         reach = (
             ("goto", "/settings"),
             ("wait", 500),
@@ -331,8 +278,7 @@ _SURFACES: list[Surface] = [
         group = "sidebar",
         title = "Sidebar, collapsed to the rail",
         reach = (("click", 'button[aria-label="Close sidebar"]'), ("wait", 500)),
-        # The rail is the same container in a different data-state, so presence proves nothing; the
-        # reopen control appearing is what says the collapse happened.
+        # The rail stays mounted collapsed, so wait for the reopen control.
         settle = {"visible": 'button[aria-label="Open sidebar"]'},
         restore = (("click_if", 'button[aria-label="Open sidebar"]'), ("wait", 400)) + HOME,
         root = ROOT_SIDEBAR,
@@ -417,9 +363,7 @@ _SURFACES: list[Surface] = [
         group = "chat",
         title = "Model picker",
         reach = (("click", ".unsloth-model-selector-trigger"), ("wait", 600)),
-        # The rows, not the menu: the popover mounts before its list has been fetched, so a settle on
-        # the container's presence digests an empty picker roughly half the time, and an empty picker
-        # and a broken picker have the same digest.
+        # Settle on rows: the popover mounts before its list is fetched.
         settle = {"count_at_least": [".unsloth-model-selector-menu button", 2]},
         restore = ESCAPE_OUT,
         root = (".unsloth-model-selector-menu",),
@@ -456,10 +400,7 @@ _SURFACES: list[Surface] = [
         reach = (("click", 'button[aria-label="Open run settings"]'), ("wait", 600)),
         settle = {"visible": 'button[aria-label="Close run settings"]'},
         restore = (("click_if", 'button[aria-label="Close run settings"]'), ("wait", 400)) + HOME,
-        # The panel, not a sheet: despite the file being called chat-settings-sheet it renders as a
-        # docked column inside the chat layout, so it is in NO overlay list and a root of
-        # `[role="dialog"]` falls through to body, which digested 301,402 characters of whole page and
-        # called it the run settings panel.
+        # Rendered as a docked column, not an overlay, so `[role="dialog"]` would fall back to body.
         root = ('[data-slot="chat-settings-panel"]',),
     ),
     Surface(
@@ -475,9 +416,7 @@ _SURFACES: list[Surface] = [
         id = "chat:system-prompt",
         group = "chat",
         title = "System prompt editor",
-        # Through the run settings panel: the edit control is rendered at x=1458 on a 1440 viewport
-        # when the panel is closed (present, sized and off screen), so clicking it directly times out
-        # on an element every presence check reports as there.
+        # The edit control is off screen while the panel is closed, so reach it through the panel.
         reach = (
             ("click", 'button[aria-label="Open run settings"]'),
             ("wait", 800),
@@ -503,11 +442,8 @@ _SURFACES: list[Surface] = [
         group = "chat",
         title = "Composer holding text",
         reach = (("fill", COMPOSER, "studiobench surface sweep"), ("wait", 400)),
-        # The send control is what changes, and it is the control the film's stop action trips over:
-        # with text in the box the Stop button is replaced by Queue.
-        # ONE EXPRESSION: the settle evaluator wraps the string in `return (...)`, so a statement
-        # raises SyntaxError at evaluation time and the surface is recorded as never settling for a
-        # reason about this file rather than about the app.
+        # With text in the box Stop is replaced by Queue.
+        # Must be one expression: the evaluator wraps it in `return (...)`.
         settle = {
             "js": "(document.querySelector("
             "'textarea[aria-label=\"Message input\"]') || {}).value ? true : false"
@@ -527,9 +463,7 @@ _SURFACES: list[Surface] = [
             ("click", 'button[aria-label="Datasets"]'),
             ("wait", 800),
         ),
-        # The URL flips the instant the tab is pressed, well before the list arrives. Settling on the
-        # URL alone digested an empty table on one visit and a populated one on the next, a 424-line
-        # difference unrelated to any build.
+        # The URL flips before the list arrives, so settle on the rows too.
         settle = {
             "js": 'location.search.includes("kind=datasets") && '
             '(document.body.innerText || "").includes("Downloads")'
@@ -539,9 +473,7 @@ _SURFACES: list[Surface] = [
         conditional = "needs the catalogue, which needs network",
         volatile = HUB_IS_REMOTE,
     ),
-    # The hub's two filter popovers are LISTBOXES, not menus: `[role="menuitem"]` counted zero on a
-    # popover open and visible on screen, and zero from a wrong selector is the failure mode this
-    # tool exists to refuse, so both the settle and the root read `option`/`listbox`.
+    # The hub filter popovers are listboxes, not menus: use `option`/`listbox`.
     Surface(
         id = "hub:format-filter",
         group = "hub",
@@ -718,9 +650,7 @@ _SURFACES: list[Surface] = [
             ("click", 'button[aria-label="Image training"]'),
             ("wait", 1200),
         ),
-        # It NAVIGATES: the control sits on the Train page but lands on /images with the training panel
-        # selected, so a settle written against /studio waits out its timeout on a page that arrived
-        # correctly.
+        # It navigates to /images, so the settle targets that page, not /studio.
         settle = {
             "js": 'location.pathname === "/images" && '
             '(document.body.innerText || "").includes("Train a LoRA")'
@@ -750,10 +680,7 @@ _SURFACES: list[Surface] = [
 ]
 
 
-#: Surfaces that exist and are NOT swept, each with the mechanism that puts them out of reach.
-#: This list is the honest half of the coverage number: a manifest reporting '38 of 38 reached'
-#: while eleven surfaces were never registered invites the reader to believe the app is fully
-#: covered.
+#: Existing surfaces that are NOT swept, with why; reported so coverage is not overstated.
 KNOWN_UNCOVERED: tuple[dict, ...] = (
     {
         "id": "route:login",
@@ -831,9 +758,6 @@ KNOWN_UNCOVERED: tuple[dict, ...] = (
 )
 
 
-# ── accessors ───────────────────────────────────────────────────────
-
-
 def surfaces() -> list[Surface]:
     return list(_SURFACES)
 
@@ -880,8 +804,6 @@ def validate_registry(entries: Optional[list[Surface]] = None) -> None:
             raise RegistryError(f"surface {s.id!r} is missing an id, group or title")
         if not s.root:
             raise RegistryError(f"surface {s.id!r} has no digest root")
-        # `reach` may be empty only for a surface that IS the known state; `restore` may be empty only
-        # when reaching it changed nothing. Both are declared, never inferred.
         for name, steps in (("reach", s.reach), ("restore", s.restore)):
             for step in steps:
                 if not step:

@@ -21,7 +21,6 @@ from enforce_kwargs_spacing import (  # noqa: E402
 )
 
 
-# (name, source) pairs where the blank after the import block MUST be removed.
 _MUST_CHANGE = {
     "try_except_import": (
         "def f():\n"
@@ -53,7 +52,6 @@ _MUST_CHANGE = {
     "with_block": ("def f():\n    with ctx():\n        import a\n\n        return a.run()\n"),
 }
 
-# Sources that MUST be left byte-for-byte unchanged.
 _MUST_NOT_CHANGE = {
     "module_level": 'import os\n\nVALUE = os.environ.get("V")\n',
     "large_suite": (
@@ -76,7 +74,6 @@ def test_blank_removed_for_small_import_block(name):
     out, changed = remove_blank_after_short_import(src)
     assert changed is True
     assert out != src
-    # Import and following statement now adjacent.
     assert "\n\n" not in out or out.count("\n\n") < src.count("\n\n")
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
     out2, changed2 = remove_blank_after_short_import(out)
@@ -118,7 +115,6 @@ def test_exact_output_try_block():
 
 
 def test_exact_output_multiple_consecutive_imports():
-    # Only the blank after the LAST import in a run is dropped; both imports kept.
     src = "def f():\n    import a\n    import b\n\n    return a, b\n"
     expected = "def f():\n    import a\n    import b\n    return a, b\n"
     out, changed = remove_blank_after_short_import(src)
@@ -186,33 +182,28 @@ def test_enforce_spacing_noop_when_already_spaced():
     assert out == src
 
 
-# Rule D:
-
-# ── Rule D: def one-per-line iff >= 3 params AND a default ──────────────────
-# add comma -> force one-per-line; strip comma -> stay collapsible.
+# Rule D: def one-per-line iff >= 3 params AND a default.
 _DEF_ADD = {
     "three_with_default": "def f(a, b, c=1):\n    return a\n",
     "four_with_default": "def f(a, b, c, d=1):\n    return a\n",
-    "kwonly_default": "def f(a, b, *, c=1):\n    return a\n",  # 3 real params, kw default
+    "kwonly_default": "def f(a, b, *, c=1):\n    return a\n",
     "continuation_default": "def f(\n    a, b, c=1\n):\n    return a\n",
-    "starred_with_default": "def f(a, b, *args, c=1):\n    return a\n",  # 4 params
+    "starred_with_default": "def f(a, b, *args, c=1):\n    return a\n",
 }
 
-# Comma must be STRIPPED: NOT (>=3 params and default), but a trailing comma exists.
 _DEF_STRIP = {
     "three_no_default_multiline": "def f(\n    a,\n    b,\n    c,\n):\n    return a\n",
     "four_no_default_multiline": "def f(\n    a,\n    b,\n    c,\n    d,\n):\n    return a\n",
-    "two_with_default": "def f(\n    a,\n    b=1,\n):\n    return a\n",  # < 3 params -> one line
+    "two_with_default": "def f(\n    a,\n    b=1,\n):\n    return a\n",
     "single_arg": "def f(\n    a,\n):\n    return a\n",
 }
 
-# Left byte-for-byte unchanged.
 _DEF_NOCHANGE = {
     "three_no_default_oneline": "def f(a, b, c):\n    return a\n",
-    "two_with_default_oneline": "def f(a, b=1):\n    return a\n",  # < 3 -> one line, no comma
+    "two_with_default_oneline": "def f(a, b=1):\n    return a\n",
     "noparams": "def f():\n    return 1\n",
     "call_site": "x = foo(\n    a,\n    b,\n    c,\n    d,\n)\n",
-    "nested_default_call": "def f(a=g(1, 2,)):\n    return a\n",  # 1 param, no def comma
+    "nested_default_call": "def f(a=g(1, 2,)):\n    return a\n",
     "three_default_already_comma": "def f(\n    a,\n    b,\n    c=1,\n):\n    return a\n",
 }
 
@@ -248,11 +239,9 @@ def test_def_comma_unchanged(name):
 
 
 def test_def_comma_exact_output_strip_and_add():
-    # >= 3 params + default -> add comma (force one-per-line)
     assert normalize_def_trailing_comma("def f(a, b, c=1):\n    return a\n")[0] == (
         "def f(a, b, c=1,):\n    return a\n"
     )
-    # 3 params, no default -> strip comma (collapsible)
     assert (
         normalize_def_trailing_comma("def f(\n    a,\n    b,\n    c,\n):\n    return a\n")[0]
         == "def f(\n    a,\n    b,\n    c\n):\n    return a\n"
@@ -267,14 +256,13 @@ def test_def_comma_exact_output_strip_and_add():
         ('m = ("a. " "b.")\n', 'm = ("a. b.")\n'),
         ('x = r"a\\n" r"b"\n', 'x = r"a\\nb"\n'),
         ('x = "a\\"q" "b"\n', 'x = "a\\"qb"\n'),
-        # f + plain folds into one f-string (plain braces escaped).
         ('x = f"a" "b"\n', 'x = f"ab"\n'),
         (
             'd = (f"{pkg}@{ver} is on the " "BLOCKED list")\n',
             'd = (f"{pkg}@{ver} is on the BLOCKED list")\n',
         ),
         ('x = f"a{z}" "{lit}"\n', 'x = f"a{z}{{lit}}"\n'),
-        ('m = "plain " f"then {y}"\n', 'm = f"plain then {y}"\n'),  # plain + f
+        ('m = "plain " f"then {y}"\n', 'm = f"plain then {y}"\n'),
     ],
 )
 def test_merge_adjacent_strings(src, expected):
@@ -289,14 +277,14 @@ def test_merge_adjacent_strings(src, expected):
 @pytest.mark.parametrize(
     "src",
     [
-        'x = "ab"\n',  # single literal
-        "x = \"ab\" 'cd'\n",  # mixed quote style
+        'x = "ab"\n',
+        "x = \"ab\" 'cd'\n",
         'x = b"a" b"b"\n',  # bytes: left side-by-side by request
-        'x = rb"a" rb"b"\n',  # raw-bytes: also left alone
-        'm = f"a {x} " f"after {y}"\n',  # pure f + f: left side-by-side
+        'x = rb"a" rb"b"\n',
+        'm = f"a {x} " f"after {y}"\n',
         'x = rf"a{z}" "b"\n',  # raw f-string: brace/backslash too subtle -> skip
         'x = f"a{z}" "\\N{BULLET}"\n',  # named escape: AST guard rejects the fold
-        'x = (\n    "a"\n    "b"\n)\n',  # different lines, not merged
+        'x = (\n    "a"\n    "b"\n)\n',
     ],
 )
 def test_merge_adjacent_strings_skips(src):
@@ -306,7 +294,6 @@ def test_merge_adjacent_strings_skips(src):
 
 
 def test_fstring_fold_skipped_when_statement_would_not_collapse():
-    # Folding a long f + plain assert message can't fit on one line, so leave it.
     src = (
         "def f():\n"
         "    assert some_condition_holds_here, (\n"
@@ -319,7 +306,6 @@ def test_fstring_fold_skipped_when_statement_would_not_collapse():
 
 
 def test_fstring_fold_applied_when_statement_collapses():
-    # A multi-line f + plain that fits on one line after folding is folded.
     src = "def f():\n    raise ValueError(\n" '        f"bad {x}: " "try again"\n' "    )\n"
     out, changed = merge_adjacent_string_literals(src)
     assert changed is True
@@ -328,7 +314,6 @@ def test_fstring_fold_applied_when_statement_collapses():
 
 
 def test_fstring_fold_applied_inside_large_multiline_call():
-    # The fit guard only restricts asserts; an f + plain arg in a big call folds.
     src = (
         "findings.append(\n"
         "    Finding(\n"
@@ -344,8 +329,7 @@ def test_fstring_fold_applied_inside_large_multiline_call():
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
 
 
-# ── collapse_short_asserts: strip the magic comma holding a short assert open ──
-# Strips the trailing comma so ruff joins the assert onto one line; AST unchanged.
+# collapse_short_asserts strips the magic comma so ruff joins a short assert; AST unchanged.
 @pytest.mark.parametrize(
     "name,src",
     [
@@ -374,7 +358,6 @@ def test_fstring_fold_applied_inside_large_multiline_call():
 def test_collapse_short_assert_strips_trailing_comma(name, src):
     out, changed = collapse_short_asserts(src)
     assert changed is True
-    # Magic trailing comma is gone, so ruff joins it on the next pass.
     assert out.count(",") == src.count(",") - 1
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
     out2, changed2 = collapse_short_asserts(out)
@@ -391,7 +374,6 @@ def test_collapse_short_assert_strips_trailing_comma(name, src):
             "comment_inside",
             'def t():\n    assert x == {\n        "a": 1,  # keep\n        "b": 2,\n    }\n',
         ),
-        # genuinely long: would not fit on one line, leave expanded.
         (
             "too_long",
             "def t():\n    assert some_really_long_left_operand_name_here == {\n"
@@ -430,7 +412,6 @@ class TestTheRewriteKeepsThePermissions:
         target.write_text("x = f(a=1)\n", encoding = "utf-8")
         target.chmod(mode)
         self._rewrite(target)
-        # It really did rewrite: otherwise this asserts nothing about the writer.
         assert target.read_text(encoding = "utf-8") == "x = f(a = 1)\n"
         assert target.stat().st_mode & 0o777 == mode
 

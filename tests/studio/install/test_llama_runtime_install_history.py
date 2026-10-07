@@ -40,10 +40,7 @@ SPEC.loader.exec_module(ILP)
 
 HostInfo = ILP.HostInfo
 
-# The release zips this file reads. Downloaded out of band and absent in CI, where every
-# test that wants one skips. The default is under the user's own cache so the file carries
-# no path belonging to one machine; point UNSLOTH_TEST_LLAMACPP_ASSET_DIR at the zips to
-# run these for real.
+# Zips are fetched out of band and absent in CI (tests skip); set UNSLOTH_TEST_LLAMACPP_ASSET_DIR.
 ASSET_DIR = Path(
     os.environ.get(
         "UNSLOTH_TEST_LLAMACPP_ASSET_DIR",
@@ -102,10 +99,7 @@ WINDOWS_ARM64 = _host(
 )
 
 
-# ---------------------------------------------------------------------------
-# The real release bundles: (asset, llama_backend in the marker, tag, host). The tag
-# matters, since the shared Windows group requires llama-server-impl.dll only from the
-# build that split it out, so a wrong tag would pass for the wrong reason.
+# (asset, marker llama_backend, tag, host). The tag matters: impl.dll is owed only post-split.
 
 BUNDLES = [
     ("app-b10798-mix-659e406-windows-x64-cpu.zip", None, "b10798", "published", WINDOWS),
@@ -127,8 +121,7 @@ BUNDLES = [
     ),
     # An older bundle, so the pass is not specific to one build number.
     ("app-b10715-mix-86bd2d3-windows-x64-cpu.zip", None, "b10715", "published", WINDOWS),
-    # An upstream ggml-org archive: source = "upstream" takes a different branch through
-    # _windows_shared_groups.
+    # Upstream ggml-org archive: source='upstream' takes a different branch.
     ("llama-b10830-bin-win-cpu-x64.zip", None, "b10830", "upstream", WINDOWS),
 ]
 
@@ -259,10 +252,6 @@ def test_the_real_cuda_bundle_carries_its_own_build_marker(tmp_path):
     assert "upstream_tag" not in read_back, "the install marker, not the archive's build record"
 
 
-# ---------------------------------------------------------------------------
-# The Windows layout contract.
-
-
 def test_every_windows_layout_decision_agrees_on_the_release_subdirectory():
     """One directory, named the same way by all four places that name it.
 
@@ -286,10 +275,6 @@ def test_the_installer_creates_the_directory_the_probe_looks_for(tmp_path):
     assert runtime_dir.is_dir(), "the installer must create exactly the directory the probe reads"
     assert server.parent == runtime_dir
     assert quantize.parent == runtime_dir
-
-
-# ---------------------------------------------------------------------------
-# The managed install that is really on this machine.
 
 
 def _managed_install() -> Path | None:
@@ -395,8 +380,7 @@ def test_no_single_missing_file_in_the_real_install_causes_a_repair_loop(tmp_pat
     for path in sorted(runtime_dir.iterdir()):
         if not path.is_file():
             continue
-        # Moved out rather than renamed: every payload pattern ends in a star, so a renamed
-        # file is still matched by its own group.
+        # Moved out, not renamed: every payload pattern ends in a star.
         shutil.move(str(path), str(vault / path.name))
         probe = ILP.installed_runtime_health(root, host = host)
         if probe is not None and probe[0] is False and ILP._existing_install_runs(root, host):
@@ -472,14 +456,9 @@ def test_the_soname_quarantine_really_breaks_the_runtime(tmp_path):
         env = environment,
     )
     assert after.returncode != 0, "removing the SONAME must break the binary, or there is no defect"
-    # No assertion on the probe's verdict here: that is the subject of the test above, and
-    # pinning it twice would make a fix edit two places.
 
 
-# ---------------------------------------------------------------------------
-# Desktop and CLI upgrade ordering. The two halves ship separately, so all four combinations
-# occur in the field. managed.rs covers the desktop half; checkable here is the CLI half:
-# the payload carries the keys, and a probe that cannot answer says null rather than false.
+# Desktop and CLI halves ship separately; a probe that cannot answer says null, not false.
 
 
 def test_the_capability_cache_on_this_machine_is_the_shape_the_new_reader_expects():
@@ -505,8 +484,7 @@ def test_the_capability_cache_on_this_machine_is_the_shape_the_new_reader_expect
     assert "llama_runtime_ok" not in entry.get(
         "capability", {}
     ), "a pre-bump entry cannot carry a runtime verdict"
-    # Named individually, not compared as a set: a dropped key is a silent loss, an extra
-    # key is harmless.
+    # Checked individually: a dropped key is a silent loss, an extra key is harmless.
     for required in (
         "schema",
         "bin_path",
@@ -588,7 +566,7 @@ def test_quarantining_a_split_entrypoint_library_is_reported_broken(victim, tmp_
     assert (
         verdict is not None and verdict[0] is False
     ), f"a runtime missing {victim} cannot load, but the probe said {verdict}"
-    # And the two answers still agree, which is the property that keeps repair from looping.
+    # The two answers must agree, or repair loops.
     assert ILP._existing_install_runs(root, host) is False
 
 
@@ -642,18 +620,13 @@ def test_a_stripped_execute_bit_is_not_reused_as_an_exact_release_match(tmp_path
             "llama_runtime_binaries_missing",
         )
         assert ILP._existing_install_runs(root, host) is False
-        # The old gate, which is what let the two disagree.
         assert server.exists(), "the file is still there, which is the whole point"
-        # The new one, shared with both answers above.
         assert ILP._entrypoint_is_runnable(server, host) is False
     finally:
         server.chmod(mode)
 
 
-# The bundle that changed the packaging. b10360 shipped two names per library and no
-# versionless one; b10840 ships libllama.so -> libllama.so.0 -> libllama.so.0.4.0 as
-# symlinks, and copy_globs flattens all three into regular files, because it selects
-# with is_file() and copies with shutil.copy2, which follows links.
+# b10840 ships libllama.so symlink chains; copy_globs flattens them into regular files.
 _TRIO_ASSET = "app-b10840-mix-d5c17a0-linux-x64-cpu.tar.gz"
 _TRIO_TAG = "b10840-mix-d5c17a0"
 
@@ -765,7 +738,6 @@ def test_quarantining_a_soname_beside_a_versionless_copy_is_reported_broken(vict
     assert (
         verdict is not None and verdict[0] is False
     ), f"a runtime missing {victim} cannot load, but the probe said {verdict}"
-    # The two answers still agree, which is what keeps repair from looping.
     assert ILP._existing_install_runs(root, host) is False
 
 

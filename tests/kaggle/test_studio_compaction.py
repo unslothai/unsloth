@@ -79,8 +79,7 @@ def test_the_short_control_is_present_and_is_the_opposite_claim():
     ]
     assert short, "there is no negative control"
     for node in short:
-        # It must fail when the short chat DID drop, which is the opposite
-        # polarity to the long one.
+        # Opposite polarity to the long chat: it must fail when the short chat dropped.
         assert not (
             isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)
         ), "the control must fire when a SHORT conversation reports a drop"
@@ -210,8 +209,7 @@ def test_the_refusal_is_checked_by_CODE_and_not_by_the_status_alone():
         if isinstance(node, ast.Compare) and "context_length_exceeded" in ast.unparse(node)
     ]
     assert compares, "context_length_exceeded appears but is never compared against"
-    # And it has to gate the SAME branch as the status, or a run can refuse with
-    # the wrong code and still pass.
+    # Must gate the same branch as the status.
     guards = [
         ast.unparse(node.test)
         for node in ast.walk(func)

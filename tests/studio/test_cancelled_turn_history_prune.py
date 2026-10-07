@@ -36,7 +36,6 @@ TEMP = WORKDIR / "temp" / "cancelled_turn_history_prune"
 
 SOURCES = (ADAPTER, CODEX, CONTINUATION)
 
-# Fixtures the sliced code reads through.
 HARNESS = """
 // @ts-nocheck
 function readCodexReasoning(_metadata: any): any {
@@ -187,7 +186,7 @@ CANCELLED = (
     '{ role: "assistant", content: [], status: { type: "incomplete" },'
     ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
 )
-# Nothing yielded, so status is the only record; a failure has the same shape under "error".
+# Nothing yielded, so status is the only record; a failure looks the same under "error".
 STOPPED_UNMARKED = (
     '{ role: "assistant", content: [], status: { type: "incomplete", reason: "cancelled" } }'
 )
@@ -353,7 +352,6 @@ def test_a_tool_call_the_replay_cannot_carry_prunes_with_its_prompt():
             "measuring the defect it was written for"
         )
         if marker == stopped:
-            # Stopped, so the prompt is history. The unreplayable call stays off the wire.
             assert out["kept"] == ["user", "assistant", "user"], marker
             assert out["keptText"] == ["first", "second"]
             assert out["wire"] == ["user", "assistant", "user"]

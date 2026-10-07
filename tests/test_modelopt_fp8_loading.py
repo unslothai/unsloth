@@ -223,8 +223,8 @@ def test_key_mapping_adds_no_class_renames_transformers_would_not_apply(monkeypa
         r"\.input_scale$": ".activation_scale",
     }
     for model_class, kwargs in (
-        (MistralForCausalLM, {}),  # not a VLM
-        (None, {}),  # class not resolved
+        (MistralForCausalLM, {}),
+        (None, {}),
         (LlavaForConditionalGeneration, {"key_mapping": {}}),  # the caller's mapping wins
     ):
         config = SimpleNamespace(quantization_config = _sarvam_quant())
@@ -477,7 +477,6 @@ def test_rewrite_follows_who_loads_the_weights():
     assert llama._vllm_will_load_weights(True, num_labels = 2) is False
     vision_source = inspect.getsource(vision.FastBaseModel.from_pretrained)
     assert "rewrite_modelopt = not (fast_inference and is_vLLM_available())" in vision_source
-    # The un-rewritten ModelOpt config must not be looked up in transformers' quantizer map.
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)" in vision_source
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]" not in vision_source
 
@@ -552,7 +551,6 @@ def test_config_branch_moves_rope_extension_onto_the_config():
     import re
 
     source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
-    # The condition may wrap over several lines once it grows.
     start = re.search(r"if \(?\s*user_config is not None\s+or _modelopt_rewritten", source)
     branch = source[start.end() :].split("AutoModelForCausalLM.from_pretrained(", 1)[0]
     assert 'kwargs.pop("rope_scaling", None)' in branch
@@ -685,7 +683,6 @@ def test_both_loaders_hand_the_planner_the_rewritten_plan():
         in llama_source
     )
     vision_source = inspect.getsource(vision.FastBaseModel.from_pretrained)
-    # A 16-bit load dequantizes the fp8 weights, so the planner must size them at bf16.
     assert "rewritten_quantization_config = modelopt_planner_quantization_config(" in vision_source
     assert "auto_config, dequantize = load_in_16bit" in vision_source
 
@@ -723,7 +720,6 @@ def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_pat
     assert type(model.model.layers[0].self_attn.q_proj).__name__ != "Linear"
     assert type(model.lm_head).__name__ == "Linear"
 
-    # A 16-bit load dequantizes: the planner then sees bf16 Linear layers, not fp8 ones.
     bf16 = modelopt_planner_quantization_config(loaded, dequantize = True)
     assert bf16["dequantize"] is True and "dequantize" not in loaded.quantization_config
     kwargs = planner_quantization_kwargs(rewritten_quantization_config = bf16)
@@ -798,7 +794,7 @@ def test_a_reused_config_keeps_the_scale_renaming():
     first, second = {}, {}
     pop_modelopt_key_mapping(config, first)
     assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
-    assert arm_modelopt_fp8_loading(config, verbose = False) is None  # already fp8
+    assert arm_modelopt_fp8_loading(config, verbose = False) is None
     assert modelopt_rewritten(config)
     pop_modelopt_key_mapping(config, second)
     assert second["key_mapping"] == first["key_mapping"]
@@ -977,7 +973,7 @@ def test_vlm_ignore_globs_follow_the_instantiated_names():
         architectures = ["Qwen2_5_VLForConditionalGeneration"],
     )
     skip = modelopt_fp8_plan(config)["modules_to_not_convert"]
-    # Checkpoint `visual.*` is instantiated as `model.visual.*`; its bf16 weights have no fp8 scales.
+    # Checkpoint `visual.*` loads as `model.visual.*`; its bf16 weights have no fp8 scales.
     assert not should_convert_module("model.visual.blocks.0.attn.qkv", skip)
     assert not should_convert_module("model.visual.merger.mlp.0", skip)
     assert should_convert_module("model.language_model.layers.0.self_attn.q_proj", skip)
@@ -1022,8 +1018,7 @@ def test_standalone_hf_quant_config_is_rewritten(tmp_path):
         )
         assert method is None and getattr(config, "quantization_config", None) is None
 
-    # Under vLLM the block is attached but not rewritten (vLLM reads ModelOpt itself); the
-    # default load_in_4bit must still drop so vLLM is not asked for bitsandbytes.
+    # vLLM reads ModelOpt itself, but load_in_4bit must still drop so bnb is not requested.
     config = AutoConfig.from_pretrained(str(fp8))
     load_in_4bit, _, method = check_and_disable_bitsandbytes_loading(
         config, load_in_4bit = True, verbose = False, rewrite_modelopt = False
@@ -1032,7 +1027,7 @@ def test_standalone_hf_quant_config_is_rewritten(tmp_path):
     assert config.quantization_config["quant_method"] == "modelopt"
     assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
-    # A caller-built config carries no checkpoint path; the loader's model name finds the file.
+    # A caller-built config has no checkpoint path; the loader's model name finds the file.
     from transformers import LlamaConfig
 
     config = LlamaConfig(hidden_size = 64, num_hidden_layers = 1, num_attention_heads = 4)
@@ -1073,7 +1068,6 @@ def test_config_overrides_move_onto_the_rewritten_config():
     }
     move_config_overrides_onto_config(config, kwargs)
     assert config.use_cache is False and config.pad_token_id == 7
-    # from_pretrained's own arguments stay load arguments.
     assert set(kwargs) == {"dtype", "key_mapping", "subfolder"}
 
 
@@ -1159,6 +1153,5 @@ def test_merged_save_lookup_keeps_a_positional_token(tmp_path, monkeypatch):
         or real(name, revision, token, hub_kwargs),
     )
     arm_modelopt_fp8_loading(SimpleNamespace(quantization_config = _sarvam_quant()), verbose = False)
-    # As unsloth_zoo calls it: check_model_quantization_status(model_name, token, ...).
     assert zoo_saving.check_model_quantization_status(str(tmp_path), "hf_secret") == (True, "fp8")
     assert seen == ["hf_secret"]

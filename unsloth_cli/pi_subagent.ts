@@ -215,8 +215,7 @@ async function runLocalAgent(
 			}
 			if (event.type !== "message_end") return;
 			const message = event.message;
-			// Pi reports model/API failures as message_end events while still exiting 0, so the exit status
-			// alone cannot surface them.
+			// Pi reports model/API failures as message_end events while still exiting 0.
 			if (message?.stopReason === "error" || message?.stopReason === "aborted") {
 				childError =
 					(typeof message.errorMessage === "string" && message.errorMessage) ||

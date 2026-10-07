@@ -28,7 +28,6 @@ from pathlib import Path
 
 import pytest
 
-# tests/conftest.py puts tests/_shared on sys.path for everything under tests/.
 from jsx_tags import opening_tag, without_comments  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -121,10 +120,7 @@ def test_the_notification_stack_uses_the_named_layer():
     stacks = []
     at = src.find(_RAIL_TESTID)
     while at != -1:
-        # opening_tag, not rfind("<")/find(">"): an attribute before the test id can hold a
-        # comparison (`disabled={count < limit}`) and one after it an arrow function, either
-        # of which truncates a hand-rolled scan. A truncated tag drops the classes this test
-        # reads, so it would pass over the very z-index regression it exists to catch.
+        # opening_tag, not rfind/find: `<` or `=>` inside attributes truncates a hand-rolled scan.
         start, end = opening_tag(src, at)
         stacks.append(src[start:end])
         at = src.find(_RAIL_TESTID, end)

@@ -40,9 +40,6 @@ class _Trainer:
 
 
 def test_reset_helper_is_importable_and_exported():
-    # Regression: the helper used to live only inside rl.py's RLTrainer_replacement template string (exec'd into a
-    # generated trainer module), so importing it from a real module raised ImportError and every non-RL consumer (SFT
-    # trainer.py, the plain-Trainer loop, the RL template's own delegation) silently no-op'd.
     from unsloth.models import _utils
     assert callable(_utils._unsloth_reset_stray_compile_cache)
     assert "_unsloth_reset_stray_compile_cache" in _utils.__all__
@@ -57,8 +54,7 @@ def test_fresh_install_starts_unseen():
 
 
 def test_reinstall_with_live_hook_preserves_seen():
-    # Re-entering get_peft_model/patch_peft_model after a grad-enabled probe must NOT wipe the recorded poisoning, or
-    # train() skips the reset and the NaN/flat-loss bug returns.
+    # Re-entering get_peft_model must keep the recorded poisoning, or train() skips the reset.
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
     hook = m._unsloth_pretrain_marker["hook"]
@@ -66,8 +62,8 @@ def test_reinstall_with_live_hook_preserves_seen():
 
     _unsloth_install_pretrain_detector(m)
     marker = m._unsloth_pretrain_marker
-    assert marker["seen"] is True  # evidence kept
-    assert marker["hook"] is hook  # same hook, not double-registered
+    assert marker["seen"] is True
+    assert marker["hook"] is hook
 
 
 def test_reinstall_after_teardown_resets_and_reregisters():
@@ -75,7 +71,7 @@ def test_reinstall_after_teardown_resets_and_reregisters():
     _unsloth_install_pretrain_detector(m)
     marker = m._unsloth_pretrain_marker
     marker["seen"] = True
-    marker.pop("hook").remove()  # simulate teardown (what the reset does)
+    marker.pop("hook").remove()
 
     _unsloth_install_pretrain_detector(m)
     assert marker["seen"] is False
@@ -87,13 +83,13 @@ def test_grad_enabled_forward_marks_seen_no_grad_does_not():
     _unsloth_install_pretrain_detector(m)
     with torch.no_grad():
         m(torch.zeros(1, 2))
-    assert m._unsloth_pretrain_marker["seen"] is False  # no backward graph -> clean
-    m(torch.zeros(1, 2))  # grad-enabled forward poisons the cache
+    assert m._unsloth_pretrain_marker["seen"] is False
+    m(torch.zeros(1, 2))
     assert m._unsloth_pretrain_marker["seen"] is True
 
 
 def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
-    # Pin compile on: the reset only warns/resets when UNSLOTH_COMPILE_DISABLE != "1", which a GPU-free CI env may set.
+    # Pin compile on: the reset is skipped when UNSLOTH_COMPILE_DISABLE=1, which CI may set.
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
@@ -107,11 +103,10 @@ def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
 
     assert any("manual forward/backward" in str(w.message) for w in caught)
     assert "hook" not in m._unsloth_pretrain_marker
-    assert m._unsloth_pretrain_marker["seen"] is False  # evidence consumed
+    assert m._unsloth_pretrain_marker["seen"] is False
 
 
 def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):
-    # The clean path still removes the one-shot hook so it adds no per-step cost, but must not warn or reset Dynamo.
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
@@ -128,12 +123,11 @@ def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):
 
 
 def test_reset_walks_wrapper_chain_to_reach_a_nested_marker():
-    # The probe may have run on an inner wrapper (.model/.base_model/.module), not self.model.
     inner = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(inner)
     inner._unsloth_pretrain_marker["seen"] = True
 
-    class _Wrapper:  # e.g. a PEFT base_model wrapping the real module
+    class _Wrapper:
         pass
 
     outer = _Wrapper()
@@ -145,5 +139,5 @@ def test_reset_walks_wrapper_chain_to_reach_a_nested_marker():
         warnings.simplefilter("ignore")
         _unsloth_reset_stray_compile_cache(trainer)
 
-    assert "hook" not in inner._unsloth_pretrain_marker  # found and torn down through the chain
+    assert "hook" not in inner._unsloth_pretrain_marker
     assert inner._unsloth_pretrain_marker["seen"] is False

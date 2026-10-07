@@ -46,9 +46,7 @@ def _differences(saved_target_modules, wanted = None):
         r = 16,
     )
     expected = {"target_modules": wanted if wanted is not None else WANTED}
-    # The comparison loop, reached through the module's own function by
-    # monkeypatching the load. Driving the real code rather than restating the
-    # rule is the difference between testing the payload and testing a copy.
+    # Drive the real comparison loop by monkeypatching the load, not a restated copy.
     differences = []
     for key, want in sorted(expected.items()):
         got = getattr(config, key)

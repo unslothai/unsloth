@@ -101,9 +101,6 @@ def _window(
     }
 
 
-# ── what is selected as "the streaming phase" ────────────────────────────────────────────────
-
-
 def test_a_window_with_traffic_and_growth_is_the_streaming_phase():
     picked, rejected = _stream_windows([_window("stream:gap1")])
     assert len(picked) == 1
@@ -169,10 +166,8 @@ def test_the_drain_is_scored_when_the_reply_outlasts_the_film():
     m = _stream_measures([gap, drain])
     assert "2 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
     assert "12000 streamed characters" in m["stream_delta_cost_ms_per_kchar"].note
-    # 3,600 ms over 12,000 characters, not 900 ms over 3,000: the drain is in the integral.
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
     assert m["stream_cost_ms_per_kchar"].value == pytest.approx(600.0)
-    # A max is not a ratio, so a dropped window is a silently missing worst frame.
     assert m["stream_max_frame_ms"].value == pytest.approx(640.0)
 
 
@@ -290,9 +285,6 @@ def test_a_window_the_instrument_never_ran_in_is_refused():
     assert any("did not run" in reason for reason in rejected)
 
 
-# ── the numbers themselves ───────────────────────────────────────────────────────────────────
-
-
 def test_the_rate_is_cost_per_thousand_streamed_characters():
     m = _stream_measures([_window("stream:gap1", delta_task_ms = 900.0, chars_close = 3_000)])
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
@@ -305,7 +297,6 @@ def test_cost_integrates_across_several_streaming_windows():
     assert two["stream_delta_cost_ms_per_kchar"].value == pytest.approx(
         one["stream_delta_cost_ms_per_kchar"].value
     )
-    # ... but the integral itself doubled, which is what the note records.
     assert "6000 streamed characters" in two["stream_delta_cost_ms_per_kchar"].note
 
 
@@ -367,14 +358,8 @@ def test_an_action_running_during_generation_does_not_set_the_worst_streaming_fr
     ]
     m = _stream_measures(windows)
     assert m["stream_max_frame_ms"].value == pytest.approx(286.0)
-    # And its SSE task chains are excluded from the targeted numerator too. Measured on a
-    # standard-tier 10K null, an `action:keystroke` chain cost 23.77 ms per burst against 1.69 ms in
-    # the gap windows either side: the chain runs until the event loop drains, so the typing lands
-    # inside it and is billed to the stream.
+    # SSE task chains in action windows absorb the action's own work, so they are excluded too.
     assert "1 unaided streaming window(s)" in m["stream_delta_cost_ms_per_kchar"].note
-
-
-# ── refusing rather than reporting zero ──────────────────────────────────────────────────────
 
 
 def test_no_clamp_means_null_with_a_reason_not_zero_cost():
@@ -382,7 +367,6 @@ def test_no_clamp_means_null_with_a_reason_not_zero_cost():
     assert m["stream_cost_ms_per_kchar"].value is None
     assert m["stream_cost_ms_per_kchar"].attempted is True
     assert "clamp" in (m["stream_cost_ms_per_kchar"].note or "")
-    # The targeted numerator does not depend on the clamp, so it still reads.
     assert m["stream_delta_cost_ms_per_kchar"].value == pytest.approx(300.0)
 
 
@@ -423,12 +407,10 @@ def test_a_frameless_streaming_window_poisons_the_pooled_streaming_frame_metrics
         assert m[key].value is None
         assert "no frames at all" in (m[key].note or "")
 
-    # The cost side is untouched: `stream_cost` measured that window perfectly well.
     assert m["stream_cost_ms_per_kchar"].value is not None
     assert m["stream_delta_cost_ms_per_kchar"].value is not None
     assert m["stream_busy_pct"].value is not None
 
-    # The giveaway: without this the three above were byte-identical to the cell with no freeze.
     alone = _stream_measures([smooth])
     assert alone["stream_max_frame_ms"].value == pytest.approx(16.7)
     assert alone["stream_time_in_jank_pct"].value == pytest.approx(0.0)
@@ -473,8 +455,6 @@ def test_a_recorder_that_died_partway_poisons_every_streaming_metric():
         m["stream_cost_ms_per_kchar"].note or ""
     )
 
-    # The giveaway: without this the crashed cell was byte-identical to the one that never crashed, so
-    # nothing downstream could tell a truncated run from a complete one.
     assert _stream_measures([good])["stream_cost_ms_per_kchar"].value is not None
 
 
@@ -499,9 +479,6 @@ def test_every_declared_stream_metric_is_produced():
     m = _stream_measures([_window("stream:gap1")])
     assert set(m) == set(STREAM_METRICS)
     assert all(v.value is not None for v in m.values())
-
-
-# ── the label that caused this ───────────────────────────────────────────────────────────────
 
 
 def test_a_gap_window_is_not_labelled_stream():
@@ -545,7 +522,6 @@ def test_a_gap_window_is_not_labelled_stream():
         log = lambda _m: None,
     )
     runner._census = lambda: {}
-    # A gap far enough ahead that the scheduler actually opens a window for it.
     runner._gap_window("stream:gap12", until_ms = 300, t0 = __import__("time").monotonic())
 
     assert opened, "the scheduler opened no window for a gap that was wide enough to need one"

@@ -40,14 +40,10 @@ from typing import Any, Iterable, Mapping, Sequence
 from ..scoring.schema import Measure
 from .manifest import Arm, ArmOutcome, ArmStatus, Invariance, PotencyCounter
 
-#: The spike sizes every batch runs. 0.1 ms is below any plausible per-update mechanism and is
-#: expected to be INVISIBLE, so the detection floor has something to sit on; 2.0 ms is comfortably
-#: above and must be seen or the instrument is broken.
+# 0.1 ms is expected to be invisible (the floor sits on it); 2.0 ms must be seen.
 SPIKE_SIZES_MS: tuple[float, ...] = (0.1, 0.5, 2.0)
 
-#: A spike is considered recovered when the observed delta is this close to the burned cost. Wide on
-#: purpose: the point is "roughly the right amount", not calibration to three digits, and a tight
-#: band would fail on a merely noisy machine.
+# Wide on purpose: a tight band would fail on a merely noisy machine.
 RECOVERY_MIN = 0.5
 RECOVERY_MAX = 2.0
 
@@ -367,8 +363,7 @@ def evaluate_batch(
     detection_floor_value = min(r.spike_ms for r in recovered)
     detection_floor = Measure.read(detection_floor_value, "ms/update")
 
-    # The other half of the rule: one arm must read the SAME. A NULL arm whose delta exceeds the
-    # smallest thing the batch can detect is not reading the same.
+    # A null arm whose delta exceeds the detection floor is not reading the same.
     worst_null = max(abs(float(m.value)) for m in usable_nulls)
     if worst_null >= detection_floor_value:
         return CalibrationVerdict(

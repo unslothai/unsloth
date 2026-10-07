@@ -56,7 +56,6 @@ class FakeTok:
 
 
 def _block_shared_module(monkeypatch):
-    # Stub parent so importing it is cheap, and mark the submodule absent.
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.pad_token", None)
 
@@ -69,7 +68,6 @@ def test_fix_pad_token_none_is_noop():
 def test_fallback_keeps_pad_named_token(monkeypatch):
     ns = _load_pad_helpers()
     _block_shared_module(monkeypatch)
-    # A pad-named token (e.g. <|vision_pad|>) is a valid pad -> fallback keeps it.
     tok = FakeTok(
         {"<|endoftext|>": 1, "<|im_end|>": 2, "<|vision_pad|>": 3},
         pad = "<|vision_pad|>",
@@ -104,6 +102,5 @@ def test_fix_pad_token_delegates_to_shared_module(monkeypatch):
 
     tok = FakeTok({"a": 1}, pad = "x", eos = "y")
     ns["_fix_pad_token"](tok)
-    # Delegated, and crucially with allow_add=False (no model here to resize).
     assert tok.pad_token == "SHARED"
     assert calls["allow_add"] is False

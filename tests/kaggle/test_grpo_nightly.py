@@ -60,10 +60,7 @@ def test_the_nightly_does_not_pile_onto_the_hour_mark():
 
 def _nightly_legs():
     """The leg names the schedule actually selects, read off the workflow."""
-    # Anchored on LEG_LIST, not on the schedule fallback in general. The gate
-    # bypass a few lines above reads `github.event_name == 'schedule' && 'true'`
-    # and a loose pattern picks THAT up: the first version of this helper
-    # reported the nightly leg set as ["true"].
+    # Anchored on LEG_LIST: a loose pattern matches the gate bypass `... && 'true'` above it.
     match = re.search(r"LEG_LIST:.*github\.event_name == 'schedule' && '([a-z_,]+)'", TEXT)
     assert match, "the schedule selects no leg list at all"
     return [name for name in match.group(1).split(",") if name]
@@ -78,15 +75,14 @@ def _nightly_legs():
             "is just another copy of the per-PR run",
             id = "the_schedule_runs_the_grpo_leg",
         ),
-        # multi_gpu is nightly for makespan cost (+172.4s, +39.7s in A/B), not instability.
+        # multi_gpu is nightly for makespan cost, not instability.
         pytest.param(
             "multi_gpu",
             "the nightly no longer runs multi_gpu, so unsloth's DEVICE_COUNT > 1 "
             "code path is covered by nothing: every other leg is pinned to one card",
             id = "the_schedule_also_runs_the_multi_gpu_leg",
         ),
-        # latest_compile is nightly because it does not FIT: 1323.0s at 12.73GB peak needs a
-        # whole card, and the per-PR kernel's only slack is gpu1's 776.3s idle block.
+        # latest_compile is nightly because it needs a whole card for too long.
         pytest.param(
             "latest_compile",
             "the nightly no longer runs latest_compile, so nothing anywhere loads "
@@ -156,15 +152,8 @@ def test_the_leg_list_default_survives_a_schedule_event():
     assert "inputs.legs || (github.event_name == 'schedule'" in TEXT
 
 
-# ------------------------------------------------- the command line it composes
-
-# Every rule above reads the workflow as TEXT, each was true, and the nightly
-# still never ran: the build step also emitted --with-studio unconditionally,
-# which build_kernel.py refuses next to --legs, so runs 33587255856 and
-# 33716011285 (every scheduled run there has ever been) died on
-# `--with-studio requires --all-kernels`. Two guards, neither able to see the
-# other. So the rules below run the step's own shell body and hand the argv it
-# composes to the real parser.
+# Text rules alone missed that the build step emitted --with-studio next to --legs, which
+# build_kernel.py refuses. So run the step's shell body and parse the argv it composes.
 
 
 def _build_step():
@@ -195,9 +184,7 @@ def _compose_argv(
     import subprocess
 
     step = _build_step()
-    # `inputs` is null on push and on a schedule, so every input expression is
-    # empty on both triggers modelled here. Only LEG_LIST differs, and it comes
-    # from the workflow's own fallback rather than a copy kept here.
+    # `inputs` is null on push and schedule; only LEG_LIST differs, from the workflow's fallback.
     nightly = ",".join(_nightly_legs())
     env_values = {
         "LEG_LIST": legs_input or (nightly if event == "schedule" else ""),
@@ -209,7 +196,6 @@ def _compose_argv(
         assert key in env_values, f"the build step gained {key}, which this rule does not model"
 
     body = step["run"]
-    # `steps.*.outputs.*` are refs the builder only echoes, so any hex will do.
     body = body.replace("${{ steps.ref.outputs.ref }}", "0" * 40)
     body = body.replace("${{ steps.pins.outputs.zoo_ref }}", "1" * 40)
     body = body.replace("${{ inputs.shared_wheels }}", "")
@@ -228,9 +214,8 @@ def _compose_argv(
     (bindir / "python").chmod(0o755)
 
     env = dict(os.environ, PATH = f"{bindir}{os.pathsep}{os.environ['PATH']}", **env_values)
-    # A real file, so the rules read what the step published, not what it printed.
     env["GITHUB_OUTPUT"] = github_output or str(tmp_path / "github_output")
-    # `bash -e`, which is what GitHub runs a `run:` block under on Linux.
+    # `bash -e` is what GitHub uses for `run:` blocks on Linux.
     proc = subprocess.run(
         ["bash", "-e", "-c", body],
         cwd = ROOT,

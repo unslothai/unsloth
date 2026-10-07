@@ -28,12 +28,8 @@ import yaml
 _REPO = Path(__file__).resolve().parents[2]
 _ACTION = _REPO / ".github" / "actions" / "core-cpu-setup" / "action.yml"
 
-# The block is executed, not read, so the host has to be able to run it. bash is the shell
-# the step declares; GNU timeout is what bounds the lookup. Stock macOS ships bash and no
-# timeout -- it is gtimeout, from coreutils -- which tests/sh/test_llama_build_jobs.sh
-# already records. Without it the lookup fails, `|| true` absorbs it, head comes back empty
-# and the two tests that expect a warning fail on a developer's Mac. The action itself only
-# ever runs on ubuntu-24.04, so skipping here gives up no coverage that exists.
+# Executed, not read: needs bash and GNU timeout, which stock macOS lacks. The action
+# only runs on ubuntu-24.04, so skipping loses no coverage.
 _MISSING = [tool for tool in ("bash", "timeout") if shutil.which(tool) is None]
 
 pytestmark = pytest.mark.skipif(
@@ -55,8 +51,7 @@ def _revision_notice_block() -> str:
     body = _clone_step()["run"]
     start = body.index('head="$(')
     block = body[start:]
-    # The step interpolates nothing in this tail, but assert that rather than assume it:
-    # a ${{ }} left in would run as literal text and quietly test the wrong thing.
+    # A ${{ }} left in would run as literal text and quietly test the wrong thing.
     assert "${{" not in block, f"unexpected GitHub expression in the notice block:\n{block}"
     return block
 
@@ -95,13 +90,10 @@ def _run_notice(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "ls-remote" ]; then\n'
         f"  sleep {git_sleep}\n"
-        # %b, not %s: the repr below writes the tab and newline as backslash escapes, and
-        # ls-remote output is tab-separated. With %s they stay literal, cut -f1 finds no
-        # field separator and hands back the whole line, which reads as a mismatch.
+        # %b, not %s: the repr writes tabs as escapes, and cut -f1 needs a real tab.
         f"  printf '%b' {git_stdout!r}\n"
         f"  exit {git_exit}\n"
         "fi\n"
-        # rev-parse, standing in for the clone this test does not make.
         "echo 0000000000000000000000000000000000000000\n",
         encoding = "utf-8",
     )
@@ -115,10 +107,7 @@ def _run_notice(
         + "\necho NOTICE_BLOCK_SURVIVED\n",
         encoding = "utf-8",
     )
-    # The stub directory first so its git wins, then the caller's real PATH rather than a
-    # hardcoded pair of directories. Hardcoding meant the skip above and the run below could
-    # disagree: a Mac with coreutils installed has timeout on PATH, `shutil.which` finds it,
-    # and a fixed /usr/bin:/bin would still not.
+    # The caller's real PATH, not a fixed one, so the skip check and the run agree.
     env = {
         "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
         "RUNNER_TEMP": str(tmp_path),
@@ -236,9 +225,7 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
         "the warning tells the reader to re-run without allowing that the ref may have "
         f"been pinned on purpose, which re-running will not change:\n{warning}"
     )
-    # A first attempt can mismatch too: resolve-zoo-ref pins main in the gating job, and
-    # this step asks again only after the whole install, so main advancing in between is
-    # enough. Calling that a --failed re-run would be a wrong diagnosis, not a vague one.
+    # A first attempt can mismatch too: main may advance between resolve-zoo-ref and this step.
     assert (
         "advanced" in lowered
     ), f"the warning does not allow for main moving after the resolve job:\n{warning}"

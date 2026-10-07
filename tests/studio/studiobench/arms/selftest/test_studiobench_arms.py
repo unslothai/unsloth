@@ -72,12 +72,6 @@ def _arm(
     )
 
 
-# manifest: invariance and potency
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_an_exact_arm_that_drifts_is_voided_not_quoted():
     outcome = judge(
         _arm(),
@@ -199,12 +193,6 @@ def test_an_equivalent_arm_must_declare_its_diff_and_an_exact_one_may_not():
         _arm(invariance = Invariance.EQUIVALENT)
     with pytest.raises(ValueError):
         _arm(declared_diff = DeclaredDiff(normaliser = "n", keys = ("style",)))
-
-
-# ladder
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_step_removing_two_mechanisms_must_admit_it_is_fused():
@@ -349,7 +337,7 @@ def test_the_two_declared_routes_reach_the_same_floor_by_different_orders():
 def test_route_disagreement_is_reported_as_an_interaction_not_averaged():
     scheduler_costs = {
         "shipping": 40.0,
-        "D": 22.0,  # removing the observer first is worth much more on this route
+        "D": 22.0,
         "D+E": 20.0,
         "D+E+F": 15.0,
         "A+D+E+F": 12.0,
@@ -363,7 +351,6 @@ def test_route_disagreement_is_reported_as_an_interaction_not_averaged():
     terms = {t.mechanism: t for t in interaction_terms(visual, scheduler, detection_floor_ms = 0.5)}
     assert terms["autoscroll_forced_layout"].disagreement_ms == pytest.approx(9.0 - 18.0)
     assert "not additive" in terms["autoscroll_forced_layout"].note
-    # nothing anywhere produced a mean of the two
     assert terms["autoscroll_forced_layout"].value_a.value == pytest.approx(9.0)
     assert terms["autoscroll_forced_layout"].value_b.value == pytest.approx(18.0)
 
@@ -385,12 +372,6 @@ def test_required_rungs_covers_both_routes():
     assert "shipping" in keys
     assert "A+B+C+D+E+F" in keys
     assert "D" in keys and "A" in keys
-
-
-# calibration
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_batch_without_calibration_arms_is_refused_before_it_runs():
@@ -488,12 +469,6 @@ def test_a_batch_with_no_null_reading_has_no_noise_floor():
     assert "no measured noise floor" in verdict.reason
 
 
-# dose-response
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def _dose_points(
     per_child_ms: float,
     intercept: float = 0.0,
@@ -551,12 +526,6 @@ def test_two_points_do_not_make_a_line():
     points = _dose_points(0.002)[:2]
     fit = fit_dose_response(points, detection_floor_ms = 0.5)
     assert fit.verdict == "NO FIT"
-
-
-# armpack
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def _write_armpack(
@@ -617,12 +586,6 @@ def test_a_matching_armpack_resolves(tmp_path: Path):
     assert resolution.require().target_dist_digest == "digest-1"
 
 
-# recovery
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_full_recovery_is_occupancy():
     result = classify_recovery(
         baseline = Measure.read(2.0, "ms/update"),
@@ -675,12 +638,6 @@ def test_worse_after_delete_points_at_the_delete_path():
         noise_floor_ms = 0.5,
     )
     assert result.classification == "WORSE AFTER DELETE"
-
-
-# knobs
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_only_requested_preboot_arms_are_installed():

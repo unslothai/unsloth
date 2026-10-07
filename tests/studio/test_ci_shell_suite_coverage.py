@@ -254,7 +254,7 @@ class TestPowerShellTestsRunOnAPr:
         unguarded = []
         for name, (invoked, paths) in _workflows_running_powershell_tests().items():
             if paths is None:
-                continue  # no filter at all means it always runs
+                continue
             matchers = [_github_path_matcher(p) for p in paths]
             for test in invoked:
                 if not any(m.match(test) for m in matchers):
@@ -282,7 +282,7 @@ class TestPowerShellTestsRunOnAPr:
                     re.S,
                 )
                 if len(invocations) < 2:
-                    continue  # a single invocation's exit code is the step's
+                    continue
                 for test, following in invocations:
                     if "$LASTEXITCODE" not in following:
                         offenders.append(f"{workflow.name}: {test} runs without an exit-code check")

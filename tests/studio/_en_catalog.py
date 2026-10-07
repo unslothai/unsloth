@@ -35,8 +35,7 @@ EN_LOCALE_TS = (
 
 _QUOTED = r"""(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)"""
 
-# Whitespace and comments between tokens. A block comment stops at its own `*/`: a lazy
-# `.*?` would stretch to a later comment's close and swallow the code between.
+# A block comment stops at its own `*/`; a lazy `.*?` would swallow code to a later close.
 _TRIVIA = r"(?:\s|//[^\n]*|/\*(?:[^*]|\*(?!/))*\*/)*"
 
 _TOKEN = re.compile(
@@ -79,16 +78,13 @@ def _decode(literal: str) -> str:
     while index < len(body):
         char = body[index]
         if char == "$" and body[index + 1 : index + 2] == "{" and literal.startswith("`"):
-            # Reached outside an escape, so this `${` is a live placeholder, not `\${`.
             interpolated = True
         if char == "\\" and index + 1 < len(body):
             nxt = body[index + 1]
             if body.startswith("\r\n", index + 1):
-                # A line continuation contributes nothing to the value.
                 index += 3
                 continue
             if nxt in "\n\r\u2028\u2029":
-                # So does one over any other ECMAScript line terminator.
                 index += 2
                 continue
             braced = re.match(r"u\{([0-9A-Fa-f]{1,6})\}", body[index + 1 :])
@@ -117,7 +113,7 @@ def _decode(literal: str) -> str:
             continue
         out.append(char)
         index += 1
-    # `\uD83D\uDE00` decodes as two UTF-16 halves; join valid pairs into their code point.
+    # Join valid UTF-16 surrogate pairs (`\uD83D\uDE00`) into one code point.
     value = "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
     if interpolated:
         return _Interpolated(value)
@@ -138,13 +134,9 @@ def _flatten(source: str) -> dict[str, str]:
         if kind == "comment":
             continue
         if kind == "key":
-            # Tried before a plain string, so a quoted key followed by its colon is read as a key.
             raw = match.group("key")
             pending = raw if raw[0] not in "\"'`" else _decode(raw)
             if not _STARTS_VALUE.match(source, match.end()):
-                # `flag ? "a" : "b"`, `labels.x` and the like: not a literal this reader can
-                # evaluate, so the key is recorded as an expression rather than left to pick up
-                # whichever literal comes next.
                 dotted = ".".join(p for p in [*path, pending] if p is not None)
                 strings[dotted] = _Expression("")
                 pending = None
@@ -156,8 +148,6 @@ def _flatten(source: str) -> dict[str, str]:
                 path.pop()
             pending = None
         elif kind == "spread":
-            # `...shared` applies after the properties before it, so any of them may be
-            # replaced by a value this reader cannot see. Properties after it still win.
             prefix = ".".join(p for p in path if p is not None)
             for dotted, value in strings.items():
                 if not prefix or dotted.startswith(prefix + "."):
@@ -167,10 +157,7 @@ def _flatten(source: str) -> dict[str, str]:
             if pending is not None:
                 dotted = ".".join(p for p in [*path, pending] if p is not None)
                 value = _decode(match.group("string"))
-                # A plain value is the whole property: the next significant token ends it. Anything
-                # else (`"a" + "b"`, `"a".toUpperCase()`, `flag ? "a" : "b"` read from its
-                # middle) is an expression, and reading only this literal would hand back the
-                # wrong label. Comments may sit before the terminator.
+                # A plain value must be followed by the property terminator; anything else is an expression.
                 if not _ENDS_PROPERTY.match(source, match.end()):
                     value = _Expression(value)
                 strings[dotted] = value
@@ -210,10 +197,8 @@ def aria_label_selector(label: str) -> str:
     match something else.
     """
     if any("\ud800" <= char <= "\udfff" for char in label):
-        # CSS replaces a lone surrogate with U+FFFD too, so the selector could never match.
         raise ValueError(f"a CSS selector cannot match a label with a lone surrogate: {label!r}")
     if "\0" in label:
-        # CSS reads an escaped U+0000 as U+FFFD, so no selector can match a NUL in the label.
         raise ValueError(f"a CSS selector cannot match a label containing NUL: {label!r}")
     quoted = "".join(
         "\\" + char

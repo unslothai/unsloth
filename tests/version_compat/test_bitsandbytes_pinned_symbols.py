@@ -52,19 +52,17 @@ def first_match_signature(src: str, class_name: str) -> str | None:
     return None
 
 
-# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
+# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0.
 BNB_TAGS = [
     "0.45.5",
-    "0.47.0",  # skip 0.46.0 (broken)
-    "0.49.2",  # skip 0.48.0 (broken)
+    "0.47.0",
+    "0.49.2",
     "main",
 ]
 
-# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", BNB_TAGS)
 
 
-# bnb.functional dequantize_4bit / quantize_4bit: the public 4-bit surface unsloth kernels call into.
 def test_bnb_functional_4bit(tag: str):
     candidates = [
         "bitsandbytes/functional.py",
@@ -80,7 +78,7 @@ def test_bnb_functional_4bit(tag: str):
     )
 
 
-# bnb.nn.Linear4bit / Params4bit: peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
+# peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
 def test_bnb_nn_linear4bit_classes(tag: str):
     candidates = [
         "bitsandbytes/nn/modules.py",
@@ -104,8 +102,6 @@ def test_bnb_nn_linear4bit_classes(tag: str):
     )
 
 
-# Coverage extension (2026-05):
-# Top-level export: unsloth/kernels/utils.py + zoo vllm_utils.py call bnb.matmul_4bit(...).
 def test_bnb_matmul_4bit_top_level(tag: str):
     src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
     if src is None:
@@ -292,8 +288,7 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
     call = _super_init_call(caller, "QGaLoreAdamW8bit")
     assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"
 
-    # "adam" and params are positional on purpose; everything after them must be a keyword,
-    # because bitsandbytes reorders the tail of this signature between minors.
+    # Everything after 'adam' and params must be keyword: bitsandbytes reorders the signature tail.
     positional = [a for a in call.args if not isinstance(a, ast.Starred)]
     extra = positional[2:]
     assert not extra, (

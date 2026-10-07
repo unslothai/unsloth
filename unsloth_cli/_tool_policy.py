@@ -12,7 +12,7 @@ from typing import Callable, Optional
 
 import typer
 
-# loopback aliases mirror the self-contained backend bind policy
+# Loopback aliases mirror the self-contained backend bind policy.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 

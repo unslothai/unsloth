@@ -136,7 +136,6 @@ def test_a_mention_that_installs_nothing_is_not_a_pin(run_mod, cell):
         pytest.param("!pip -q install transformers==5.5.0\n", "5.5.0", id = "opt-before-install"),
         pytest.param("pip install transformers==5.5.0\n", "5.5.0", id = "bare-shell-cell"),
         pytest.param(
-            # the pin on a backslash continuation, several lines below the invocation
             "!uv pip install -qqq \\\n"
             '    {_torch} "triton>=3.3.0" {_numpy} torchvision bitsandbytes "transformers==4.56.2" \\\n'
             '    "unsloth[base] @ git+https://github.com/unslothai/unsloth"\n',
@@ -144,7 +143,6 @@ def test_a_mention_that_installs_nothing_is_not_a_pin(run_mod, cell):
             id = "backslash-continuation",
         ),
         pytest.param(
-            # installs indented inside the Colab guard
             "%%capture\n"
             "import os\n"
             'if "COLAB_" not in "".join(os.environ.keys()):\n'
@@ -161,7 +159,6 @@ def test_real_install_shapes_still_yield_their_pin(run_mod, cell, expected):
 
 
 def test_an_install_still_outranks_the_model_tier(run_mod):
-    # a REAL install must keep outranking the tier; only prose stops counting
     pin, model = run_mod._scan(_nb("!pip install transformers==5.5.0\n", GEMMA4_12B))
     assert (pin, model) == ("5.5.0", "unsloth/gemma-4-12b-it")
 
@@ -231,8 +228,7 @@ def test_a_real_pin_still_drives_the_kernel(run_mod, monkeypatch, tmp_path):
     assert seen["marker"] == "5.10.1"
 
 
-# `--timeout` only ever reached nbconvert, so a URL host that accepted the connection
-# and then went quiet hung unsloth-run before a single cell had executed.
+# --timeout only reached nbconvert, so a stalled URL fetch hung unsloth-run.
 
 
 def test_a_url_fetch_is_bounded(run_mod, monkeypatch):
@@ -286,11 +282,7 @@ def test_a_local_path_is_not_given_a_timeout(run_mod, tmp_path):
     }
 
 
-# The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
-# `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's marker. Honouring
-# it corrupts both sides: the target's pin overwrites the caller kernel's, and a target
-# with no pin runs against the caller's stale pin. A kernel that has not imported
-# transformers yet then activates the wrong sidecar.
+# Each kernel has its own UNSLOTH_NB_TF_MARKER; a nested unsloth-run must not inherit it.
 def _launch_with_inherited_marker(run_mod, monkeypatch, tmp_path, nb, caller_pin):
     src = tmp_path / "target.ipynb"
     src.write_text(json.dumps(nb))

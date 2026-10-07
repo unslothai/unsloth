@@ -30,17 +30,13 @@ def test_gemma_2b_base_and_instruct_4bit_are_distinct():
     int_to_float = namespace["INT_TO_FLOAT_MAPPER"]
     float_to_int = namespace["FLOAT_TO_INT_MAPPER"]
 
-    # The base 4bit repo must resolve to the base model, not the instruct one.
     assert int_to_float["unsloth/gemma-2b-bnb-4bit"] == "unsloth/gemma-2b"
 
-    # The instruct 4bit repo must be registered and resolve to the instruct model.
     assert "unsloth/gemma-2b-it-bnb-4bit" in int_to_float
     assert int_to_float["unsloth/gemma-2b-it-bnb-4bit"] == "unsloth/gemma-2b-it"
 
-    # The base model must reverse-map back to the base 4bit repo.
     assert float_to_int["unsloth/gemma-2b"] == "unsloth/gemma-2b-bnb-4bit"
     assert float_to_int["google/gemma-2b"] == "unsloth/gemma-2b-bnb-4bit"
 
-    # The instruct model must reverse-map to the instruct 4bit repo.
     assert float_to_int["unsloth/gemma-2b-it"] == "unsloth/gemma-2b-it-bnb-4bit"
     assert float_to_int["google/gemma-2b-it"] == "unsloth/gemma-2b-it-bnb-4bit"

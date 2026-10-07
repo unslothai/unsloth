@@ -40,7 +40,6 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 SELECTOR = REPO / ".github" / "scripts" / "select_install_matrix.py"
 
-# workflow -> (matrix file, {job: (all legs, PR legs)})
 EXPECTED = {
     "clean-machine-install-ci.yml": (
         ".github/ci/clean-machine-matrix.yml",
@@ -52,11 +51,7 @@ EXPECTED = {
     ),
 }
 
-# Keys every leg of a job must carry, stated here rather than derived from the legs: a
-# leg that drops `overlay` renders `${{ matrix.overlay }}` empty and quietly tests the
-# released package, so the list that catches that cannot be computed from the legs.
-# Anything else a job reads (`nonroot`, `wget_only`, `allow_working`, ...) is an optional
-# flag read with a truthiness test.
+# Stated, not derived: a leg missing `overlay` silently tests the released package.
 REQUIRED_KEYS = {
     "macos": {"os", "mode", "delivery", "flags", "experimental", "overlay"},
     "linux": {"label", "image", "runner", "experimental", "overlay"},
@@ -193,7 +188,6 @@ def test_a_job_whose_pr_subset_is_empty_gates_on_the_count(name):
         assert (
             f"{_key(jid)}_count" in outputs
         ), f"{name}: the select job does not expose {_key(jid)}_count"
-    # The container probe exists only to gate the container install rows.
     if name == "clean-machine-install-ci.yml":
         probe = doc["jobs"]["windows_container_probe"]
         assert "windows_container_install_count != '0'" in str(probe.get("if", ""))
@@ -240,23 +234,11 @@ def test_the_nightly_and_the_matrix_file_are_wired_into_the_trigger(name):
             assert needed in paths, f"{name}: {trigger} paths do not list {needed}"
 
 
-# The interrupt legs kill the installer once a marker appears in its log, and a leg whose
-# marker never appears asserts nothing: the installer runs to completion and the guard in
-# the workflow fails it. That is what happened when #11254 renamed the dependency phase
-# "studio deps" to "Unsloth Studio deps" for branding: the label is user-facing text, the
-# matrix file is the only other place that spells it, and nothing coupled the two, so the
-# workflow went red on main and on every pull request that ran it. A rename is cheap to
-# make and expensive to find this way, so the coupling is pinned here, in a CPU test, and
-# not in a ten-minute macOS leg.
-
-# Per job, because the legs of one never run the installer of the other: a phrase renamed
-# only in install.ps1 leaves the Windows leg unreachable while install.sh still carries it,
-# and a single pooled text would call that green. install_python_stack.py is on both lists
-# because both installers run it.
+# Interrupt legs need their marker in the installer they run; checked per job so a rename
+# in only one installer cannot pass on the other's text.
 INSTALLER_SOURCES = {
     "interrupt": (
         "install.sh",
-        # Where the [TAURI:STEP] lines come from, and where several phases are named.
         "studio/setup.sh",
         "studio/install_python_stack.py",
     ),
@@ -268,7 +250,6 @@ INSTALLER_SOURCES = {
 }
 
 
-# What the installer's logger prepends, not what any phase is named.
 _TAURI_TAG = re.compile(r"^\\\[TAURI:STEP\\\]\s*")
 
 

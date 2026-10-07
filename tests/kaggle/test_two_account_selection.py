@@ -50,9 +50,6 @@ def _steps(workflow: dict) -> list[tuple[str, str, dict]]:
     return out
 
 
-# --------------------------------------------------------------- the secrets
-
-
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
 def test_no_workflow_names_a_secret_that_does_not_exist(path):
     """THE GUARD THIS FILE EXISTS FOR, and it is written from a real outage.
@@ -151,9 +148,6 @@ def test_no_token_is_ever_a_job_output(path):
             ), f"{job_name}.outputs.{key} publishes a secret: {value}"
 
 
-# ----------------------------------------------------------- the concurrency
-
-
 @pytest.mark.parametrize(
     "path,suffix",
     ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")),
@@ -200,8 +194,7 @@ def test_no_kaggle_username_is_hardcoded_on_the_launch_path(path):
         body = step.get("run") or ""
         if "launch.py" not in body:
             continue
-        # To end of line, not the next token: the value is quoted, so `\S+`
-        # captures `'${{` and reports a correct workflow as hardcoded.
+        # To end of line: the value is quoted, so `\S+` would capture only `'${{`.
         for match in re.findall(r"--user\s+(.+)", body):
             assert (
                 "matrix.kaggle_user" in match
@@ -228,9 +221,6 @@ def test_the_recheck_can_actually_stop_the_push(path):
         assert "steps.recheck.outputs.should_run == 'true'" in (
             step.get("if") or ""
         ), "the push does not depend on the recheck, so the recheck decides nothing"
-
-
-# ------------------------------------------------------------------ the draw
 
 
 def test_the_split_follows_the_weekly_hours():
@@ -319,9 +309,6 @@ def test_an_account_with_no_readable_quota_gets_no_weight_but_keeps_its_turn():
     assert chosen == ""
 
 
-# --------------------------------------------------------------- the reserve
-
-
 def test_the_reserve_is_a_fraction_of_the_plan_not_a_flat_number():
     """20h held out of a 30h account is two thirds of it against one third of a
     60h one, which silently makes the SMALLER account the stricter one -- on top
@@ -336,9 +323,6 @@ def test_an_unknown_plan_size_leaves_the_reserve_alone():
     value is the conservative answer and is what is kept."""
     assert gate.scaled_reserve(20.0, 0.0, 60.0) == 20.0
     assert gate.scaled_reserve(20.0, 30.0, 0.0) == 20.0
-
-
-# ------------------------------------------------------------- the in-flight
 
 
 def test_a_sweep_leaves_the_other_account_s_kernels_filed(tmp_path, monkeypatch):
@@ -461,9 +445,6 @@ def test_a_filed_slug_records_the_account_that_owns_it(tmp_path, monkeypatch):
     assert entry["owner"] == "carol", entry
 
 
-# -------------------------------------------------------------- the leak set
-
-
 def test_neither_token_name_can_reach_the_kernel():
     """The built notebook is what Kaggle receives. Both account env vars belong
     in the forbidden list, not just the first one."""
@@ -497,8 +478,7 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     assert gate.in_flight_for_commit(["someone/unsloth-probe-x (RUNNING)"], sha, "notebook") is None
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
     main = source[source.index("def main(") :]
-    # Every candidate is asked BEFORE any is chosen: the first loop over `order`
-    # is the in-flight sweep, the selection loop comes after it.
+    # Every candidate is surveyed before any is chosen.
     sweep, selection = main.split("for account_id in order:", 2)[1:]
     assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
     assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
@@ -626,7 +606,6 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     assert outputs["should_run"] == "false", outputs["reason"]
     assert f"account {other}" in outputs["reason"] and "already running" in outputs["reason"]
     assert {a for a, _b in asked} == {"1", "2"}, "the account holding the kernel was never asked"
-    # One survey per account, reused by the selection loop.
     assert len(asked) == 2, asked
 
 
@@ -667,11 +646,8 @@ def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tm
         monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "1"), holder_slot = "2"
     )
     assert outputs["should_run"] == "true", outputs["reason"]
-    # And slot 1 against slot 1 still stands down.
     _c, outputs, _a, _s = _drive_gate(monkeypatch, tmp_path, holder = sampled, holder_slot = "1")
     assert outputs["should_run"] == "false", outputs["reason"]
-    # The workflow threads its slot input through the gate, the collector's
-    # in-flight check and the launcher (which writes it into the slug).
     steps = {s.get("id"): s for _j, _n, s in _steps(_wf(NOTEBOOK_WF)) if s.get("id")}
     for step_id, script in (
         ("decide", "gate.py"),
@@ -712,8 +688,7 @@ def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
             "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"]
         ), f"{path.name}: the gate is keyed on a commit the GPU job may not test"
         assert "github.sha" not in decide["run"]
-        # And the GPU job takes the gate's answer rather than resolving a
-        # moving ref a second time.
+        # The GPU job reuses the gate's SHA instead of resolving a moving ref again.
         assert gate_job["outputs"]["head_sha"] == "${{ steps.ref.outputs.head_sha }}"
         gpu = next(
             s

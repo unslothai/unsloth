@@ -37,8 +37,6 @@ BASE = "http://127.0.0.1:8888"
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
-# --no-launch prints shell setup as POSIX (export/unset) on Unix/WSL and
-# PowerShell ($env:/Remove-Item) on native Windows; assert the host's form.
 def _assert_env_set(output: str, name: str, value: str) -> None:
     needle = f'$env:{name} = "{value}"' if os.name == "nt" else f"export {name}={value}"
     assert needle in output, f"{needle!r} not found in:\n{output}"
@@ -60,8 +58,6 @@ def _assert_env_cwd(output: str, name: str) -> None:
 
 
 def _launch_command(output: str) -> list:
-    # The --no-launch recipe ends with a self-contained one-liner: inline NAME=value
-    # assignments, then the command. Return just the command argv.
     last = [ln for ln in output.splitlines() if ln.strip()][-1]
     parts = shlex.split(last)
     for i, part in enumerate(parts):
@@ -82,26 +78,20 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
 
 
 def _path_aware_which(binaries: dict):
-    # A shutil.which fake that resolves a name only when its directory is on PATH at call time.
-    # Lets a test prove a version probe augments PATH before resolving: an agent present only in
-    # an install dir (~/.local/bin, %APPDATA%\npm) must still be found and version-checked.
+    # A which() fake that resolves a name only when its directory is on PATH at call time.
     def _which(name):
         directory = binaries.get(name)
         if directory is None:
             return None
         entries = os.environ.get("PATH", "").split(os.pathsep)
-        # os.path.join (not Path()) so this works when a test has flipped os.name to "nt": under
-        # a simulated os.name, pathlib would build the non-native flavour and raise.
+        # os.path.join, not Path(): pathlib raises under a simulated os.name.
         return os.path.join(str(directory), name) if str(directory) in entries else None
 
     return _which
 
 
 def _simulate_windows(monkeypatch) -> None:
-    # Exercise the `os.name == "nt"` branch on any host. Flipping os.name alone makes pathlib
-    # pick the non-native flavour (WindowsPath on POSIX, PosixPath on Windows) when a Path is
-    # constructed, which raises; pin Path to the host-native class (captured before the flip)
-    # so the branch logic runs without that crash. Keeps these tests green on Linux/Mac/WSL too.
+    # Flipping os.name makes pathlib build the non-native flavour and raise; pin the host class.
     monkeypatch.setattr(start, "Path", type(Path()))
     monkeypatch.setattr(start.os, "name", "nt")
 
@@ -132,8 +122,6 @@ def test_claude_settings_retained_on_unparseable_version(monkeypatch):
 
 
 def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
-    # The X.Y.Z is pulled from anywhere in the output, so a format change (version not
-    # the first token) doesn't silently drop the optimization flags.
     _fake_claude(monkeypatch, "claude version 2.1.98\n")
     assert start._claude_flags(MODEL["id"]) == [
         "--exclude-dynamic-system-prompt-sections",
@@ -143,11 +131,7 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
 
 
 def test_claude_settings_overlay_pins_served_model():
-    # The session overlay must pin availableModels to the served model: a user's allowlist
-    # in ~/.claude/settings.json otherwise rejects the Unsloth --model ("restricted by your
-    # organization's settings"), and no env var can bypass it. The override must be a
-    # NON-EMPTY array to take effect (an empty [] is ignored and the user's list still
-    # applies), so it lists exactly this model, for this session only.
+    # A user's availableModels allowlist would reject --model; only a NON-EMPTY override takes effect.
     overlay = json.loads(start._claude_settings_overlay(MODEL["id"]))
     assert overlay["availableModels"] == [MODEL["id"]]
 
@@ -161,10 +145,8 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
     assert overlay["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-test"
     for name in start._CLAUDE_ENV_UNSET:
         assert overlay["env"][name] == ""
-    # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
     assert overlay["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
-    # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
 
@@ -179,7 +161,6 @@ def test_claude_settings_files_preserve_concurrent_sessions(tmp_path):
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
-    # TTY + yes: run the documented install command, then re-resolve the now-present binary.
     monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
@@ -191,8 +172,6 @@ def test_install_agent_prompts_then_installs(monkeypatch):
         "run",
         lambda command, *a, **k: ran.append(command) or SimpleNamespace(returncode = 0),
     )
-    # _install_agent only re-resolves after installing (the pre-install check is the
-    # caller's job), so `which` reports the now-present binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     executable = start._install_agent("codex", "npm install -g @openai/codex")
     assert executable == "/usr/local/bin/codex"
@@ -215,17 +194,12 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     executable = start._install_agent("hermes", install_hint)
 
     assert executable == r"C:\Users\samle\bin\hermes.exe"
-    # -ExecutionPolicy Bypass (process-scoped) lets npm's npm.ps1 wrapper and irm|iex
-    # scripts run even when the machine policy is the Windows default Restricted.
     assert ran == [
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", install_hint]
     ]
 
 
 def test_install_agent_windows_failure_hints_execution_policy(monkeypatch, capsys):
-    # A failed install on Windows points the user at the per-user execution-policy fix:
-    # our subprocess bypasses the policy, but their own shell may still block npm.ps1
-    # (PSSecurityException) when they run the install by hand.
     _simulate_windows(monkeypatch)
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
@@ -265,7 +239,6 @@ def test_install_command_uses_resolved_npm_cmd_on_windows(monkeypatch):
 
 
 def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
-    # The execution-policy hint is Windows-only; a POSIX install failure must not mention it.
     monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
@@ -321,7 +294,6 @@ def test_npm_executable_uses_studio_managed_node(monkeypatch, tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
-    # WSL inherits the Windows PATH, so a shim can precede a usable native npm.
     native = "/usr/bin/npm"
     shim = "/mnt/c/Program Files/nodejs/npm"
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
@@ -333,7 +305,6 @@ def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
     def fake_which(name, path = None):
         if os.path.isabs(name):
             return name
-        # No path given means search all of PATH, so the shim wins as it does in WSL.
         for entry in (path or os.environ["PATH"]).split(os.pathsep):
             if entry in found:
                 return found[entry]
@@ -346,7 +317,6 @@ def test_npm_executable_skips_wsl_shim_and_finds_native_npm(monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX hint form")
 def test_npm_install_hint_without_resolvable_home(monkeypatch):
-    # A bare container UID has no home; the hint must still build.
     def no_home():
         raise RuntimeError("no home directory")
 
@@ -504,11 +474,9 @@ def test_install_agent_runs_managed_npm_with_its_node_on_path(monkeypatch, tmp_p
 
 
 def test_install_agent_warns_remote_installer_is_unverified_third_party(monkeypatch, capsys):
-    # Before the confirm, a remote installer must name the URL it fetches so the
-    # user consents to a specific source rather than blindly accepting.
     monkeypatch.setattr(start.os, "name", "nt")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
-    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)  # decline: nothing runs
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
     hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
     assert start._install_agent("hermes", hint) is None
     err = capsys.readouterr().err
@@ -532,8 +500,6 @@ def test_install_agent_reports_immutable_remote_installer_pin(monkeypatch, capsy
 
 
 def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
-    # An npm-style installer has no URL to fetch, but still runs with the user's
-    # privileges, so the warning names the command instead.
     monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
@@ -546,8 +512,6 @@ def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
 def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
 
-    # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
-    # setup wizard is skipped during the unattended `unsloth start hermes` run.
     assert start._hermes_install_hint() == (
         f"& ([scriptblock]::Create((irm {start._HERMES_INSTALL_BASE}/install.ps1)))"
         f" -SkipSetup -Commit {start._HERMES_INSTALL_COMMIT}"
@@ -557,7 +521,6 @@ def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
 def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
     monkeypatch.setattr(start.os, "name", "posix")
 
-    # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
     assert start._hermes_install_hint() == (
         f"curl -fsSL {start._HERMES_INSTALL_BASE}/install.sh | bash -s --"
         f" --skip-setup --commit {start._HERMES_INSTALL_COMMIT}"
@@ -582,7 +545,6 @@ def test_refresh_windows_path_noop_off_windows(monkeypatch):
 
 
 def test_refresh_windows_path_merges_registry_hives(monkeypatch):
-    # Fake Windows registry PATH values written after this process started.
     hkcu, hklm = object(), object()
     reg = {
         (hkcu, "Environment"): r"C:\existing;C:\Users\me\hermes\bin",
@@ -629,24 +591,20 @@ def test_refresh_windows_path_merges_registry_hives(monkeypatch):
 
 
 def test_augment_path_adds_existing_local_bin(monkeypatch, tmp_path):
-    # Claude's installer drops its binary in ~/.local/bin but only *suggests* adding it to
-    # PATH, so Unsloth appends it in-process to resolve the freshly installed agent.
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
     monkeypatch.setenv("PATH", str(tmp_path / "existing"))
     start._augment_path_with_install_dirs()
     entries = os.environ["PATH"].split(os.pathsep)
     assert str(local_bin) in entries
-    # Appended (lowest precedence), so it never shadows an existing PATH entry.
     assert entries[-1] == str(local_bin)
 
 
 def test_augment_path_skips_missing_and_duplicate_dirs(monkeypatch, tmp_path):
-    # A non-existent ~/.local/bin is not added; an already-present one is not duplicated.
-    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no .local/bin created yet
-    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
     monkeypatch.setenv("PATH", str(tmp_path / "existing"))
     start._augment_path_with_install_dirs()
     assert os.environ["PATH"] == str(tmp_path / "existing")
@@ -659,10 +617,8 @@ def test_augment_path_skips_missing_and_duplicate_dirs(monkeypatch, tmp_path):
 
 
 def test_augment_path_adds_npm_global_bin_on_windows(monkeypatch, tmp_path):
-    # npm -g shims (codex/opencode/pi) land in %APPDATA%\npm on Windows; add it so a freshly
-    # installed npm agent resolves even when that dir isn't on PATH yet.
     _simulate_windows(monkeypatch)
-    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
     npm_dir = tmp_path / "Roaming" / "npm"
     npm_dir.mkdir(parents = True)
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
@@ -672,24 +628,19 @@ def test_augment_path_adds_npm_global_bin_on_windows(monkeypatch, tmp_path):
 
 
 def test_which_with_install_dirs_finds_agent_and_restores_path(monkeypatch, tmp_path):
-    # The probe helper resolves against the augmented PATH but must NOT persist it: only
-    # _launch() should mutate PATH for the child process. Here `claude` is only in ~/.local/bin.
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))  # skip the npm candidate
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
     original = str(tmp_path / "existing")
-    monkeypatch.setenv("PATH", original)  # local_bin NOT on PATH yet
+    monkeypatch.setenv("PATH", original)
     monkeypatch.setattr(start.shutil, "which", _path_aware_which({"claude": local_bin}))
     assert start._which_with_install_dirs("claude") == str(local_bin / "claude")
-    assert os.environ["PATH"] == original  # restored, no global pollution
+    assert os.environ["PATH"] == original
 
 
 def test_claude_flags_probes_old_agent_only_in_install_dir(monkeypatch, tmp_path):
-    # Regression: the version probe must augment PATH before resolving, so an OLD claude present
-    # only in ~/.local/bin (not yet on PATH) is detected as old and the unsupported flags are
-    # dropped -- the same binary _launch() will run. Before the fix the probe saw no binary,
-    # assumed a current build, and emitted flags the old claude rejects.
+    # The version probe must augment PATH first, so an OLD claude only in ~/.local/bin gets no new flags.
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
@@ -706,8 +657,6 @@ def test_claude_flags_probes_old_agent_only_in_install_dir(monkeypatch, tmp_path
 
 
 def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, tmp_path):
-    # The counterpart: a SUPPORTED claude present only in ~/.local/bin is now resolved and gets
-    # the flags, instead of being missed and (coincidentally) also assumed current.
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
@@ -725,10 +674,8 @@ def test_claude_flags_detects_supported_agent_only_in_install_dir(monkeypatch, t
 
 
 def test_claude_flags_probes_npm_install_dir_on_windows(monkeypatch, tmp_path):
-    # npm -g shims land in %APPDATA%\npm on Windows; an old claude there (not on PATH) must still
-    # be version-checked so the unsupported flags are dropped.
     _simulate_windows(monkeypatch)
-    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)  # no ~/.local/bin created
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
     npm_dir = tmp_path / "Roaming" / "npm"
     npm_dir.mkdir(parents = True)
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
@@ -744,8 +691,6 @@ def test_claude_flags_probes_npm_install_dir_on_windows(monkeypatch, tmp_path):
 
 
 def test_codex_catalog_probes_old_codex_only_in_install_dir(monkeypatch, tmp_path):
-    # Same ordering fix for codex: an old codex present only in an install dir is detected so the
-    # model-catalog config is omitted (the old binary can't consume it).
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
@@ -757,8 +702,6 @@ def test_codex_catalog_probes_old_codex_only_in_install_dir(monkeypatch, tmp_pat
 
 
 def test_opencode_native_auto_probes_old_opencode_only_in_install_dir(monkeypatch, tmp_path):
-    # Same ordering fix for opencode: an old opencode present only in an install dir is detected
-    # so native --auto is not assumed (the old binary rejects it).
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
@@ -795,9 +738,7 @@ def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
 
 
 def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
-    # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so the
-    # augmentation must keep those default dirs instead of collapsing to just the install dir
-    # (which would hide a system-installed agent and strip the launched child's normal PATH).
+    # PATH unset: which() falls back to os.defpath, so augmentation must keep those dirs.
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
@@ -812,8 +753,6 @@ def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
 
 
 def test_which_with_install_dirs_keeps_defpath_when_path_unset(monkeypatch, tmp_path):
-    # With PATH unset, a system agent on os.defpath (e.g. /usr/bin) must still resolve; the
-    # install-dir augmentation must not drop the default search path. PATH is restored to unset.
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents = True)
     monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
@@ -826,7 +765,6 @@ def test_which_with_install_dirs_keeps_defpath_when_path_unset(monkeypatch, tmp_
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
-    # TTY + no: never runs anything; caller falls back to the print-hint failure.
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
@@ -837,7 +775,6 @@ def test_install_agent_declined_returns_none(monkeypatch):
 
 
 def test_install_agent_non_interactive_returns_none(monkeypatch):
-    # No TTY (piped stdin): cannot prompt, so don't install; return None silently.
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: False))
     monkeypatch.setattr(
         start.subprocess, "run", lambda *a, **k: pytest.fail("should not install without a TTY")
@@ -1154,11 +1091,7 @@ def test_create_directory_junction_uses_windows_mklink(tmp_path, monkeypatch):
         str(target),
         str(source),
     ]
-    # Whole-dict equality made this a tripwire for any unrelated keyword. #10192
-    # added encoding/errors so a localized Windows console cannot lose the child's
-    # whole output stream, and this assertion went red on a change that had nothing
-    # to do with junctions. Pin the values the call has to keep, and separately
-    # refuse a shell, instead of forbidding every future keyword.
+    # Pin the needed values (and no shell) rather than whole-dict equality, which broke on #10192.
     kwargs = captured["kwargs"]
     for key, value in {
         "capture_output": True,
@@ -1535,18 +1468,13 @@ def fake_studio(tmp_path, monkeypatch):
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
-    # Identity handshake has its own tests; trust the loopback server here.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
-    # Hub listing unavailable: the Codex preflight defers to the stubbed post-connect check.
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
-    # _studio_token / api-keys are faked so the mint flow stays offline.
     monkeypatch.setattr(start, "_studio_token", lambda: "jwt-token")
     monkeypatch.setattr(start, "_http_json", http_json)
     monkeypatch.setattr(start, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
-    # --no-launch session configs land under tmp instead of the real Unsloth dir.
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: None)
-    # Most existing assertions cover the stable V1 command; V2 has focused cases below.
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
     # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
@@ -1564,19 +1492,13 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
     _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "1")
-    # Suppress the full-screen TUI redraw so a bursty local server doesn't flicker.
     _assert_env_set(result.output, "CLAUDE_CODE_NO_FLICKER", "1")
-    # Attribution header is suppressed for the session via env + --settings, never
-    # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
     _assert_env_set(result.output, "CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off")
-    # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
-    # window into [100k, that], so the real window has to be pinned as well.
     _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_CODE_AUTO_COMPACT_WINDOW", str(MODEL["context_length"]))
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
-    # Overlay is session-only and lives outside the user's ~/.claude.
     command = _launch_command(result.output)
     settings_path = Path(command[command.index("--settings") + 1])
     settings = json.loads(settings_path.read_text())
@@ -1796,8 +1718,6 @@ def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_pat
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
-    # A model that doesn't report a context length -> leave Claude's default window
-    # rather than guessing one.
     monkeypatch.setattr(start, "_resolve_model", lambda *a, **k: {"id": "local-model"})
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -1829,7 +1749,7 @@ def test_launch_native_posix_child_gets_current_pwd(fake_studio, monkeypatch, tm
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX exec signal semantics")
 def test_launch_leaves_child_able_to_handle_sigint(monkeypatch, tmp_path):
-    # SIG_IGN here reached the agent too, so hermes could never be interrupted.
+    # SIG_IGN reached the agent too, so hermes could never be interrupted.
     probe = tmp_path / "probe.py"
     probe.write_text(
         "import signal, sys\n"
@@ -2070,8 +1990,7 @@ def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, 
 
 
 def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monkeypatch, tmp_path):
-    # which() can resolve the extensionless POSIX shim ahead of its .cmd sibling;
-    # CreateProcess rejects the former with WinError 193 (#9167).
+    # which() can resolve the extensionless POSIX shim, which CreateProcess rejects (#9167).
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2090,7 +2009,6 @@ def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monke
 
 
 def test_resolved_launch_command_keeps_extensionless_shim_without_sibling(monkeypatch, tmp_path):
-    # Nothing to substitute, so the path passes through unchanged.
     _simulate_windows(monkeypatch)
     executable = tmp_path / "fake-agent"
     executable.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2102,8 +2020,6 @@ def test_resolved_launch_command_keeps_extensionless_shim_without_sibling(monkey
 
 
 def test_prefer_cmd_sibling_leaves_an_unreadable_resolution_alone(monkeypatch, tmp_path):
-    # A directory, an unreadable file, or a delete between resolve and open must
-    # fall through instead of raising out of the launch path.
     _simulate_windows(monkeypatch)
     executable = tmp_path / "fake-agent"
     executable.mkdir()
@@ -2117,8 +2033,7 @@ def test_prefer_cmd_sibling_leaves_an_unreadable_resolution_alone(monkeypatch, t
 
 def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
     assert start._prefer_windows_cmd_sibling(None) is None
-    # Pin os.name instead of relying on the host: on a Windows runner the rescue
-    # would fire and this would assert the opposite of what it means to check.
+    # Pin os.name: on a Windows runner the rescue would fire.
     monkeypatch.setattr(start.os, "name", "posix")
     shim = tmp_path / "fake-agent"
     shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2127,9 +2042,7 @@ def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
 
 
 def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_path):
-    # #9167's pnpm dir holds pi.CMD. A case-sensitive volume needs the .CMD probe;
-    # a case-insensitive one answers the earlier .cmd probe with the same file, so
-    # compare identity rather than spelling or this passes only on Linux.
+    # Compare identity: a case-insensitive volume answers the .cmd probe with the same file.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2142,8 +2055,6 @@ def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_
 
 
 def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch, tmp_path):
-    # The version probes spawn this result directly, bypassing
-    # _resolved_launch_command, so the rescue must happen here too.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2156,8 +2067,7 @@ def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch,
 
 
 def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_path):
-    # cmd-shim appends .cmd to the whole bin name, so "foo.bar" pairs with
-    # "foo.bar.cmd" and still needs the sibling preference.
+    # cmd-shim appends .cmd to the whole bin name.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake.agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2178,8 +2088,7 @@ def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_p
 def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_sibling(
     monkeypatch, tmp_path
 ):
-    # CreateProcess runs a PE regardless of its name, so a real executable keeps
-    # priority over a stale .cmd; only shebang files are treated as shims.
+    # CreateProcess runs a PE regardless of its name; only shebang files are shims.
     _simulate_windows(monkeypatch)
     executable = tmp_path / "fake-agent"
     executable.write_bytes(b"MZ\x90\x00")
@@ -2193,8 +2102,6 @@ def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_siblin
 
 
 def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatch, tmp_path):
-    # A non-npm .cmd sibling is still what cmd.exe would have picked, so it is
-    # returned as-is.
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
@@ -2341,8 +2248,7 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     for name in start._CLAUDE_ENV_UNSET:
         assert f"export {name}=" in result.output
     assert "export WSLENV=" in result.output
-    # PWD must NOT be frozen into the recipe (no `export PWD=`): WSLENV PWD/p translates the
-    # shell's live PWD at run time, so a recipe reused from another dir resolves the project root.
+    # PWD must not be frozen into the recipe: WSLENV PWD/p translates the live PWD.
     assert "export PWD=" not in result.output
     assert "PWD/p" in result.output
     assert "ANTHROPIC_AUTH_TOKEN" in result.output
@@ -2358,7 +2264,6 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
         _assert_env_unset(result.output, name)
     _assert_env_set(result.output, "UNSLOTH_STUDIO_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     assert "codex --oss --profile unsloth_api" in result.output
-    # Config lands in the session-scoped CODEX_HOME, not the user's ~/.codex.
     home = tmp_path / "agents" / "codex"
     _assert_env_set(result.output, "CODEX_HOME", str(home))
     assert (home / "config.toml").exists()
@@ -2493,7 +2398,6 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
             return {"data": [{"id": "abc123"}] if state["loaded"] else []}
         if url.endswith("/api/inference/load"):
             state["loaded"] = True
-            # The load echoes the path it was given, which /v1/models never lists.
             return {"model": snapshot, "display_name": snapshot}
         raise AssertionError(f"unexpected request: {method} {url}")
 
@@ -2537,9 +2441,6 @@ def test_public_model_id_leaves_repo_ids_alone():
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
-    # A cached-but-unloaded catalog entry (loaded == False) that only case-differs must
-    # not be treated as ready; the load endpoint must still be called so the requested
-    # model becomes resident instead of the agent preflighting a different backend.
     calls = []
     state = {"loaded": False}
 
@@ -2605,8 +2506,6 @@ def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
 
 
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
-    # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
-    # no /api/inference/load call.
     calls = []
 
     def http_json(
@@ -2652,9 +2551,7 @@ def test_resolve_model_without_request_rejects_unloaded_catalog(monkeypatch):
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
-    # Against a remote Unsloth the local existence probe cannot see server-side paths,
-    # so a case-variant loaded id must NOT attach without a load: it could be a distinct
-    # server-side path on a case-sensitive host. The load endpoint resolves the request.
+    # Remotely the existence probe cannot see server paths, so a case variant must not attach.
     calls = []
     state = {"loaded": False}
 
@@ -2680,8 +2577,6 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
 
     entry = start._resolve_model("http://10.0.0.5:8888", "sk-test", "unsloth/gemma-4-gguf")
 
-    # The load endpoint was consulted (no casefold shortcut), and we still attach to the
-    # server's canonical id it reports back.
     assert entry["id"] == "unsloth/Gemma-4-GGUF"
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
@@ -2694,17 +2589,10 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
-    # A server-side relative path (extra path segments) is not a hub id even when it
-    # does not exist on the CLI host, so it must not casefold-match a differently
-    # cased path on a case-sensitive server filesystem.
     assert not start._is_hub_model_id("models/Llama/Foo.gguf")
     assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
-    # A genuine two-segment hub id still matches case-insensitively.
     assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
     assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
-    # Casefolding is gated to loopback studios (allow_casefold). With it disabled (a
-    # remote studio, where a two-segment string could be a server-side path), even a
-    # genuine hub-id case variant must not match, so the load endpoint resolves it.
     assert not start._model_id_matches(
         "unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf", allow_casefold = False
     )
@@ -2712,8 +2600,6 @@ def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
 
 
 def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
-    # Launch mode writes config to a throwaway temp CODEX_HOME and removes it after
-    # the agent exits; the user's real ~/.codex is never the target.
     captured = {}
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
 
@@ -2726,10 +2612,10 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     result = CliRunner().invoke(start.start_app, ["codex"])
     assert result.exit_code == 0, result.output
     home = Path(captured["home"])
-    assert captured["config_present"]  # config existed while codex ran
+    assert captured["config_present"]
     parent = start._ephemeral_session_parent("codex")
     assert home.name.startswith(start._ephemeral_session_prefix("codex", parent))
-    assert not home.exists()  # cleaned up after the agent exits
+    assert not home.exists()
 
 
 @pytest.mark.skipif(
@@ -2737,9 +2623,6 @@ def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     reason = "the #6547 CI parser is bash-only; on Windows --no-launch prints PowerShell",
 )
 def test_no_launch_output_is_parseable(fake_studio):
-    # Mirror the #6547 CI parser: status lines, then `export`/`unset`, then exactly
-    # one launch command on the last line (now an inline-env one-liner, so the parser
-    # matches by substring rather than prefix).
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
@@ -2750,9 +2633,7 @@ def test_no_launch_output_is_parseable(fake_studio):
 
 
 def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
-    # People copy just the last line. A bare `codex` there would run against the user's
-    # real ~/.codex (e.g. a pre-existing damaged state DB) with zero isolation, so the
-    # last line must inline every session env var ahead of the command.
+    # People copy just the last line, so it must inline every session env var.
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
@@ -2771,19 +2652,15 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
 
 
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
-    # The unset vars must be neutralized inline too, or a partial copy would send the
-    # user's own ANTHROPIC_API_KEY to the Unsloth base.
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
     for name in start._CLAUDE_ENV_UNSET:
         assert f"{name}= " in last
-    assert "ANTHROPIC_AUTH_TOKEN=" in last  # the real key still applied after the blanks
+    assert "ANTHROPIC_AUTH_TOKEN=" in last
 
 
 def test_opencode_inline_config_beats_project_config(fake_studio):
-    # A project's opencode.json outranks OPENCODE_CONFIG, so the model pin (and --yolo
-    # permissions) ride in OPENCODE_CONFIG_CONTENT, which outranks project config.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
     inline = _opencode_inline_config(result.output)
@@ -2794,13 +2671,10 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
         "webfetch": "allow",
         "external_directory": {"*": "allow"},
     }
-    assert "sk-unsloth" not in result.output  # key stays in the private file, not the env
+    assert "sk-unsloth" not in result.output
 
 
 def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
-    # A non-yolo session carries no permission inline. OPENCODE_CONFIG_CONTENT outranks the
-    # project opencode.json we cannot read, so forcing any value there would override the
-    # user's project rules; clearing our own config is the fix, and the inline pins the model.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     inline = _opencode_inline_config(result.output)
@@ -2809,8 +2683,6 @@ def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
 
 
 def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
-    # `unsloth run` serves plain HTTP; auto-serving behind an https:// target would poll
-    # the wrong scheme until the startup timeout. Keep the plain "no server" error.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "https://127.0.0.1:8443")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {"called": False}
@@ -2824,7 +2696,6 @@ def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
 
 
 def test_connect_alias_still_works(fake_studio):
-    # `unsloth connect` remains a compat alias for `unsloth start`.
     from unsloth_cli import app
 
     result = CliRunner().invoke(app, ["connect", "claude", "--no-launch"])
@@ -2835,7 +2706,6 @@ def test_connect_alias_still_works(fake_studio):
 def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
-    # First run mints; second reuses the minted key cached for this server.
     mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
@@ -2857,10 +2727,8 @@ def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path)
     )
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    # Reused, not re-minted (a mint would return the feedface stand-in).
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
-    # An explicit key is remembered as "saved" so it replays without the handshake.
     assert cached["servers"][BASE]["saved"] == ["sk-unsloth-deadbeefdeadbeef"]
 
 
@@ -2889,14 +2757,12 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
-    # The working key moves to the front so the next run tries it first.
     cached = json.loads(cache.read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface", "sk-unsloth-stale"]
 
 
 def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_path, monkeypatch):
-    # A 5xx/timeout while checking a saved key is a server outage, not a rejected key:
-    # surface it instead of discarding the key and minting a new one against a sick server.
+    # A 5xx/timeout on a saved key is an outage, not a rejected key.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-saved"]}}}))
     inner = start._http_json
@@ -2916,21 +2782,18 @@ def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_
     monkeypatch.setattr(start, "_http_json", http_json)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code != 0, result.output
-    # The outage did not cause a fresh key to be minted.
     mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
     assert mints == []
 
 
 def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
-    # Legacy unscoped caches have no server binding (could leak across servers),
-    # so they're ignored: a fresh key is minted and stored scoped to this server.
     (tmp_path / "agent_api_key.json").write_text(json.dumps({"key": "sk-unsloth-oldformat"}))
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface"]
-    assert "key" not in cached  # legacy field collapsed away
+    assert "key" not in cached
 
 
 def test_connect_model_flag_loads_on_server(fake_studio):
@@ -2956,7 +2819,6 @@ def _fake_path_resident(
     load_error = None,
     after_failure = "kept",
 ):
-    # API-key status exposes an opaque ref instead of the resident path.
     inner = start._http_json
     state = {"after": None, "listed": listed_id}
 
@@ -2978,7 +2840,6 @@ def _fake_path_resident(
             if load_error is not None:
                 state["after"] = after_failure
                 raise load_error
-            # Load responses use the path and short name; snapshot listings use the repo ID.
             name = os.path.basename(payload["model_path"]).removesuffix(".gguf")
             if load_status == "loaded":
                 state["listed"] = name
@@ -3032,7 +2893,6 @@ def test_connect_model_path_other_name_switch_announced_before_load(fake_studio,
 def test_connect_model_path_failed_same_name_load_reports_eviction(
     fake_studio, monkeypatch, after_failure
 ):
-    # An unreachable listing must not be treated as evidence of eviction.
     failure = urllib.error.HTTPError(
         f"{BASE}/api/inference/load", 500, "Internal Server Error", None, None
     )
@@ -3049,7 +2909,6 @@ def test_connect_model_path_failed_same_name_load_reports_eviction(
 
 
 def test_connect_model_flag_forwards_load_options(fake_studio):
-    # The model-load knobs mirrored from `unsloth run` reach /api/inference/load.
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -3083,9 +2942,6 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
 
 
 def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
-    # Unsloth registers a loaded model under a canonical id (resolved identifier
-    # / casing) that can differ from the path we passed. The agent must connect
-    # to that model, not silently fall through to the first loaded one.
     requested = "Unsloth/Qwen3.5-35B-A3B"
     canonical = "unsloth/Qwen3.5-35B-A3B"
     inner = start._http_json
@@ -3116,11 +2972,11 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     [
         ("unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL", ("unsloth/Qwen3-1.7B-GGUF", "UD-Q4_K_XL")),
         ("unsloth/gemma-4-E2B-it-GGUF:Q8_0", ("unsloth/gemma-4-E2B-it-GGUF", "Q8_0")),
-        ("unsloth/Qwen3-1.7B-GGUF", ("unsloth/Qwen3-1.7B-GGUF", None)),  # no suffix
-        ("/models/local.gguf", ("/models/local.gguf", None)),  # absolute path
-        ("./rel.gguf", ("./rel.gguf", None)),  # relative path
-        ("C:\\models\\x.gguf", ("C:\\models\\x.gguf", None)),  # Windows drive
-        ("repo:with/slash", ("repo:with/slash", None)),  # slash in variant -> not a variant
+        ("unsloth/Qwen3-1.7B-GGUF", ("unsloth/Qwen3-1.7B-GGUF", None)),
+        ("/models/local.gguf", ("/models/local.gguf", None)),
+        ("./rel.gguf", ("./rel.gguf", None)),
+        ("C:\\models\\x.gguf", ("C:\\models\\x.gguf", None)),
+        ("repo:with/slash", ("repo:with/slash", None)),
         ("", ("", None)),
     ],
 )
@@ -3134,13 +2990,13 @@ def test_split_repo_variant(model, expected):
         ("unsloth/gemma-4-E2B-it-GGUF", True),
         ("unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", True),
         ("some-org/model.name_1", True),
-        ("--continue", False),  # flag
-        ("resume", False),  # single word, no slash
-        ("/models/local.gguf", False),  # absolute path
-        ("./rel.gguf", False),  # relative path
-        ("C:\\models\\x.gguf", False),  # Windows drive
-        ("my models/foo", False),  # has a space
-        ("owner/repo/extra", False),  # too many segments
+        ("--continue", False),
+        ("resume", False),
+        ("/models/local.gguf", False),
+        ("./rel.gguf", False),
+        ("C:\\models\\x.gguf", False),
+        ("my models/foo", False),
+        ("owner/repo/extra", False),
     ],
 )
 def test_looks_like_model(token, expected):
@@ -3148,29 +3004,23 @@ def test_looks_like_model(token, expected):
 
 
 def test_consume_positional_model_leading_token():
-    # A leading org/name positional routes to --model and is dropped from the passthrough.
     model, rest = start._consume_positional_model(None, ["unsloth/Model-GGUF", "--continue"])
     assert model == "unsloth/Model-GGUF"
     assert rest == ["--continue"]
 
 
 def test_looks_like_model_leaves_existing_local_dir_for_agent(tmp_path, monkeypatch):
-    # A relative `owner/repo` that actually exists (e.g. an OpenCode project dir) must
-    # stay an agent argument, not be consumed as a model.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "owner" / "repo").mkdir(parents = True)
     assert start._looks_like_model("owner/repo") is False
     model, rest = start._consume_positional_model(None, ["owner/repo"])
     assert model is None and rest == ["owner/repo"]
-    # The same shape, when it does not exist locally, is still treated as a model.
     assert start._looks_like_model("owner/absent-repo") is True
 
 
 def test_consume_positional_model_ignores_non_leading_and_explicit_model():
-    # An org/name that is an option value (not leading) is never stolen.
     model, rest = start._consume_positional_model(None, ["--profile", "owner/repo"])
     assert model is None and rest == ["--profile", "owner/repo"]
-    # An explicit --model always wins; the positional is left untouched.
     model, rest = start._consume_positional_model("explicit/model", ["owner/repo"])
     assert model == "explicit/model" and rest == ["owner/repo"]
 
@@ -3195,8 +3045,6 @@ def test_start_separator_preserves_model_shaped_agent_argument(fake_studio):
 
 
 def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monkeypatch):
-    # `unsloth start claude unsloth/Model-GGUF` (no --model): the positional becomes the
-    # model; the GGUF variant is left unset so the server's own quant preference selects it.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -3226,8 +3074,6 @@ def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monke
 
 
 def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch, tmp_path):
-    # A local GGUF dir/path ending in -GGUF must NOT get a forced default quant: the dir
-    # may only hold a different quant, and pre-PR the server picked whatever was available.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     local = tmp_path / "Qwen3-1.7B-GGUF"
@@ -3271,11 +3117,9 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
     monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
     monkeypatch.setattr(start.time, "sleep", lambda _s: None)
-    # No inherited kill switches, so the omitted-flag default applies.
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
     monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
 
-    # Default start: tools off (passthrough), model-template reasoning, healing + nudging on.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
@@ -3285,7 +3129,6 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
-    # Flipped: tools on, healing off, nudging off.
     start._start_studio_server(
         "http://127.0.0.1:8888",
         "unsloth/M-GGUF",
@@ -3301,15 +3144,12 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     assert "--enable-tools" in cmd and "--disable-tools" not in cmd
     assert "--reasoning" not in cmd
     assert env["LLAMA_ARG_REASONING"] == "auto"
-    # Unset: the template's own level, and an inherited pin cannot survive.
     assert env["LLAMA_ARG_REASONING_EFFORT"] == "default"
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
 
 
 def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
-    # With the flags omitted, an operator's pre-exported kill switch must survive into the
-    # child server instead of being overwritten with the start defaults.
     captured = {}
 
     class FakePopen:
@@ -3327,13 +3167,11 @@ def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "1")
     monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", "0")
 
-    # Flags omitted -> inherited values are preserved.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     env = captured["kwargs"]["env"]
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
 
-    # An explicit flag still overrides the inherited env.
     start._start_studio_server(
         "http://127.0.0.1:8888",
         "unsloth/M-GGUF",
@@ -3373,8 +3211,6 @@ def test_start_studio_server_drops_an_inherited_pin_the_agent_overrides(monkeypa
 
 
 def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
-    # Sampling pins ride to the child server through UNSLOTH_SAMPLING_*; unset ones stay absent
-    # so the backend keeps the per-model recommendation.
     captured = {}
 
     class FakePopen:
@@ -3392,12 +3228,10 @@ def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
     for _v in ("TEMPERATURE", "TOP_P", "TOP_K", "MIN_P", "REPETITION_PENALTY", "PRESENCE_PENALTY"):
         monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
 
-    # No sampling flags -> nothing forwarded.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     env = captured["kwargs"]["env"]
     assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in env)
 
-    # Pins are forwarded; unset ones stay absent.
     start._start_studio_server(
         "http://127.0.0.1:8888",
         "unsloth/M-GGUF",
@@ -3412,9 +3246,6 @@ def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
 
 
 def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, capsys):
-    # Attaching to an already-running server can't apply UNSLOTH_SAMPLING_* pins (only
-    # _start_studio_server forwards them), so a sampling flag on the attach path must warn
-    # instead of being silently dropped while the command "succeeds".
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
@@ -3424,11 +3255,10 @@ def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, c
         server_options = start.ServerOptions(temperature = 0.3, top_k = 40),
     )
     assert base == BASE
-    assert server is None  # attach path: we did not start the server
+    assert server is None
     err = capsys.readouterr().err
     assert "already running" in err
     assert "--temperature" in err and "--top-k" in err
-    # Only the pinned fields are named; an unset one is not.
     assert "--top-p" not in err
 
 
@@ -3738,8 +3568,6 @@ def test_require_studio_warns_on_explicit_reasoning_when_reusing_server(
 
 
 def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
-    # The level reaches llama-server through its documented env var, so an older
-    # managed build ignores it instead of failing on an unknown flag.
     captured = {}
 
     class FakePopen:
@@ -3767,8 +3595,6 @@ def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
 
 
 def test_start_studio_server_overrides_inherited_reasoning_effort(monkeypatch):
-    # A level exported for some earlier llama-server run must not silently pin a
-    # server started without the flag.
     monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", "high")
     captured = {}
 
@@ -3799,13 +3625,11 @@ def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(m
     )
     assert base == BASE and server is None
     err = capsys.readouterr().err
-    # Both pins are named, so neither looks like it took.
     assert "--reasoning on" in err and "--reasoning-effort high" in err
     assert "unsloth studio stop" in err
 
 
 def test_start_claude_sends_sampling_flags_itself(fake_studio, monkeypatch):
-    # Claude sends the flags itself, so the server it starts is left at its defaults.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -3855,8 +3679,6 @@ def test_start_claude_sends_sampling_flags_itself(fake_studio, monkeypatch):
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
-    # A bare `--model <loaded repo>` (no load knobs) attaches to the already-loaded model
-    # without touching /api/inference/load, so it can never evict another session.
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
@@ -3866,11 +3688,6 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
 
 
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
-    # `--model repo:QUANT` splits into a VALID load payload (bare repo + gguf_variant),
-    # never the `:`-suffixed repo id Unsloth rejects. The variant knob defers to
-    # /api/inference/load, whose already-loaded dedup answers without reloading when the
-    # active variant+settings match -- so a second session running the same command
-    # attaches without evicting the first, while a genuinely different quant reloads.
     result = CliRunner().invoke(
         start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]
     )
@@ -3888,8 +3705,6 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
 
 
 def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
-    # /v1/models can't reveal the active quant, so an id match alone would silently keep
-    # the wrong variant loaded. Explicit knobs must always consult the load endpoint.
     result = CliRunner().invoke(
         start.start_app,
         ["claude", "--no-launch", "--model", MODEL["id"], "--gguf-variant", "Q8_0"],
@@ -3955,8 +3770,6 @@ def test_start_rejects_invalid_gpu_memory_mode(fake_studio):
 
 
 def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
-    # When the model is not already loaded, the `:QUANT` suffix becomes the gguf_variant
-    # and the load uses the bare (valid) repo id, mirroring `unsloth run repo --gguf-variant`.
     result = CliRunner().invoke(
         start.start_app,
         ["claude", "--no-launch", "--model", "unsloth/Qwen3-4B-GGUF:UD-Q4_K_XL"],
@@ -3973,8 +3786,6 @@ def test_connect_model_variant_suffix_loads_split_repo(fake_studio):
 
 
 def test_connect_explicit_gguf_variant_wins_over_suffix(fake_studio):
-    # An explicit --gguf-variant takes precedence; the suffix is still stripped so the
-    # repo id stays valid.
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -4013,8 +3824,6 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
 
 
 def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
-    # Unsloth never surfaces the requested model; fail loudly rather than
-    # silently connecting to whatever else happens to be loaded.
     inner = start._http_json
 
     def http_json(
@@ -4028,7 +3837,7 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
         if url.endswith("/api/inference/load"):
             return {}
         if url.endswith("/api/inference/loaded-models"):
-            return {"object": "list", "data": [MODEL]}  # decoy; request never appears
+            return {"object": "list", "data": [MODEL]}
         return inner(method, url, token, payload, timeout, error)
 
     monkeypatch.setattr(start, "_http_json", http_json)
@@ -4040,7 +3849,6 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
 
 
 def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch):
-    # opencode is the control: /v1/chat/completions serves this model, so it must pass.
     inner = start._http_json
 
     def http_json(
@@ -4067,18 +3875,15 @@ def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch
 
 
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
-    # A server known only by URL + health check is unverified: keyless connect
-    # must refuse and make no request at all.
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://studio.evil.example:8888")
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 1
     assert "Settings → API" in result.output
     assert "--api-key" in result.output
-    assert fake_studio == []  # no HTTP request of any kind (no mint, no /v1/models)
+    assert fake_studio == []
 
 
 def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
-    # User named both server and key, so it's their choice; only auto-send is blocked.
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://studio.example:8888")
     result = CliRunner().invoke(
         start.start_app,
@@ -4088,8 +3893,6 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
 
 
 def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatch):
-    # A key saved for a remote (non-loopback) Unsloth is replayed on keyless runs;
-    # auto-minting stays blocked for non-loopback.
     remote = "http://studio.example:8888"
     monkeypatch.setattr(start, "find_studio_server", lambda: remote)
     (tmp_path / "agent_api_key.json").write_text(
@@ -4098,12 +3901,10 @@ def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatc
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
-    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
 
 
 def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
-    # A user who pointed UNSLOTH_STUDIO_URL at a remote Unsloth should get an
-    # error, not a silent local model load (which they did not ask for).
     import typer
 
     import unsloth_cli._inference as inference
@@ -4117,8 +3918,6 @@ def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
 
 
 def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypatch):
-    # Opportunistic local discovery (no UNSLOTH_STUDIO_URL): if the loopback
-    # server can't be verified, fall back to a local load rather than erroring.
     import unsloth_cli._inference as inference
 
     monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
@@ -4133,44 +3932,34 @@ def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypat
 def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
     fake_studio, tmp_path, monkeypatch
 ):
-    # With no saved key, the next step would auto-mint; an unverified loopback
-    # server (port squatter) must be refused, with nothing sent.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
 
 
 def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path, monkeypatch):
-    # A "saved" key (e.g. for an SSH-tunnelled Unsloth the handshake can't match)
-    # replays on keyless runs without the handshake, scoped to its own base.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}}))
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
-    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # reused, not minted
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
 
 
 def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, monkeypatch):
-    # A "minted" key is NOT replayed to an unverified loopback server: minting and
-    # minted-key replay both sit behind the handshake, so a squatter can't grab it.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-feedfacefeedface"]}}}))
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    assert not any(
-        c[1].endswith("/api/inference/loaded-models") for c in fake_studio
-    )  # minted key never sent
+    assert not any(c[1].endswith("/api/inference/loaded-models") for c in fake_studio)
 
 
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
-    # An explicit key is the user's deliberate choice, so it does not require
-    # the automatic identity handshake.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(
         start.start_app,
@@ -4213,23 +4002,19 @@ def _serve_identity(proof_for):
 
 
 def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
-    # Real crypto end to end: verify_studio_identity reads the install secret from
-    # an isolated DB; a "good" server proves the same secret, a spoofing one can't.
     import unsloth_cli._inference as inference
 
     inference.ensure_studio_backend_path()
     try:
         from studio.backend.auth import storage
-    except Exception as exc:  # backend not importable here (e.g. missing deps)
+    except Exception as exc:
         pytest.skip(f"studio backend not importable: {exc}")
 
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
-    good = lambda nonce, host, port: storage.compute_identity_proof(
-        nonce, host, port
-    )  # real secret
-    bad = lambda nonce, host, port: "00" * 32  # spoofer without the secret
+    good = lambda nonce, host, port: storage.compute_identity_proof(nonce, host, port)
+    bad = lambda nonce, host, port: "00" * 32
     base_ok, stop_ok = _serve_identity(good)
     base_bad, stop_bad = _serve_identity(bad)
     try:
@@ -4280,8 +4065,6 @@ def _serve_redirect(target):
 
 
 def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
-    # A squatter could 302 /api/auth/identity to the real Unsloth and relay its
-    # proof; redirects must be refused so the squatter's base isn't accepted.
     import unsloth_cli._inference as inference
 
     inference.ensure_studio_backend_path()
@@ -4298,17 +4081,14 @@ def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
     )
     squatter_base, stop_squatter = _serve_redirect(real_base)
     try:
-        assert inference.verify_studio_identity(real_base) is True  # direct: ok
-        assert inference.verify_studio_identity(squatter_base) is False  # relayed: refused
+        assert inference.verify_studio_identity(real_base) is True
+        assert inference.verify_studio_identity(squatter_base) is False
     finally:
         stop_real()
         stop_squatter()
 
 
 def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
-    # A squatter that proxies the nonce to the real Unsloth on another port gets a
-    # proof bound to *that* port; the client expects one bound to the port it
-    # connected to, so the relayed proof is rejected.
     import unsloth_cli._inference as inference
 
     inference.ensure_studio_backend_path()
@@ -4324,7 +4104,6 @@ def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
         lambda nonce, host, port: storage.compute_identity_proof(nonce, host, port)
     )
     real_port = int(real_base.rsplit(":", 1)[1])
-    # The squatter answers on its own port but returns the proof for the real port.
     squatter_base, stop_squatter = _serve_identity(
         lambda nonce, host, port: storage.compute_identity_proof(nonce, host, real_port)
     )
@@ -4342,7 +4121,7 @@ def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
         ("http://127.0.0.1:8888", True),
         ("http://localhost:8888", True),
         ("http://[::1]:8888", True),
-        ("http://127.0.0.5:9001", True),  # SSH tunnels can land anywhere in 127/8
+        ("http://127.0.0.5:9001", True),
         ("http://0.0.0.0:8888", False),
         ("http://10.0.0.5:8888", False),
         ("http://studio.evil.example:8888", False),
@@ -4362,15 +4141,13 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _studio_is_this_machine(monkeypatch):
-    # 127.0.0.1 can be a tunnel, so the gate judges the local filesystem only once the server
-    # is confirmed to be this machine's. Default to local; the tunneled case overrides this.
+    # The gate reads the local filesystem only for a confirmed identity; tunnel tests override this.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: True)
 
 
 @pytest.fixture(autouse = True)
 def _reset_auto_served():
-    # Never let a test leave a fake server in the module slot (an atexit backstop would
-    # otherwise try to signal it at interpreter shutdown).
+    # Never leave a fake server in the module slot: the atexit backstop would signal it.
     yield
     start._auto_served_server = None
 
@@ -4420,7 +4197,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
-    assert captured["kwargs"].get("start_new_session") is True  # own process group
+    assert captured["kwargs"].get("start_new_session") is True
     assert server.pid == 4321
     output = capsys.readouterr().out
     assert "Starting Unsloth server\n" in output
@@ -4556,7 +4333,6 @@ def test_start_studio_server_follows_the_port_the_child_bound(monkeypatch, tmp_p
 
 
 def test_start_studio_server_reads_the_port_the_child_reported_once(monkeypatch):
-    # The child reports its port once, before the loader pushes it out of the tail the key uses.
     class FakePopen:
         pid = 4321
 
@@ -4660,11 +4436,7 @@ def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     assert f"expected_bytes={4 * 1024**3}" in progress_url
 
 
-# ── A load slower than the proxy timer (routes/inference.py _tunnel_safe_json) ──
-#
-# /api/inference/load pads its body so a proxy cannot time a slow load out, committing
-# the 200 before the load finishes. A failure after that travels only in the body, as
-# `_deferred_error`, so `_http_json` must raise on it or a late OOM reads as success.
+# /api/inference/load commits its 200 early and pads; a late failure travels as `_deferred_error`.
 
 _DEFERRED_OOM = {
     "_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"},
@@ -4690,7 +4462,6 @@ def test_http_json_raises_a_deferred_error_as_an_http_error(monkeypatch):
     )
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         start._http_json("POST", f"{BASE}/api/inference/load", "sk-test")
-    # The same class every caller already handles for an early HTTP failure.
     assert excinfo.value.code == 507
     assert "CUDA out of memory" in str(excinfo.value)
 
@@ -4709,7 +4480,6 @@ def test_http_json_deferred_error_fails_like_an_http_failure(monkeypatch, capsys
             error = "Model load failed",
         )
     assert excinfo.value.exit_code == 1
-    # _http_error_detail reads the raised error's body, so the detail survives.
     assert "Model load failed: CUDA out of memory" in capsys.readouterr().err
 
 
@@ -4719,7 +4489,6 @@ def test_load_model_with_progress_fails_on_a_deferred_error(monkeypatch):
     def urlopen(request, timeout):
         if request.full_url.endswith("/api/inference/load"):
             return _padded(_DEFERRED_OOM)
-        # Progress polling is best-effort; 404 it so the display just disables.
         raise urllib.error.HTTPError(request.full_url, 404, "not found", None, None)
 
     monkeypatch.setattr(start, "urlopen_no_redirect", urlopen)
@@ -4754,7 +4523,6 @@ def test_load_model_with_progress_rejects_a_truncated_padded_body(monkeypatch, b
     def urlopen(request, timeout):
         if request.full_url.endswith("/api/inference/load"):
             return io.BytesIO(body)
-        # Progress polling is best-effort; 404 it so the display just disables.
         raise urllib.error.HTTPError(request.full_url, 404, "not found", None, None)
 
     monkeypatch.setattr(start, "urlopen_no_redirect", urlopen)
@@ -5038,13 +4806,9 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"]
     )
     assert result.exit_code == 0, result.output
-    # The `:QUANT` suffix is split off into the gguf_variant so `unsloth run` gets a valid
-    # repo id plus `--gguf-variant`, mirroring how `unsloth run` accepts either form.
     assert started["model"] == "unsloth/Qwen3-1.7B-GGUF"
     assert started["load"].gguf_variant == "UD-Q4_K_XL"
     assert started["base"] == BASE
-    # A successful agent exit releases ownership and leaves the server available
-    # for another terminal. Explicit startup failures still use the cleanup path.
     assert "down" not in started
     assert start._auto_served_server is None
     assert "is still running" in result.output
@@ -5180,7 +4944,6 @@ def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys
     fake = SimpleNamespace(pid = 4242, poll = lambda: 1)
 
     def fake_popen(command, **kwargs):
-        # The child prints the early key marker, then dies before it is ready.
         kwargs["stdout"].write(b"UNSLOTH_START_API_KEY: sk-unsloth-secretsecret\nload failed\n")
         kwargs["stdout"].flush()
         return fake
@@ -5197,7 +4960,6 @@ def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):
-    # Listing unavailable, so the post-connect check decides and must still tear down.
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -5237,7 +4999,6 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     )
     assert result.exit_code != 0, result.output
     assert "GGUF" in result.output
-    # Torn down at the point the preflight rejected the model, not only via atexit.
     assert started.get("down") is fake
 
 
@@ -5279,14 +5040,12 @@ def test_no_server_no_model_hints_model_flag(fake_studio, monkeypatch):
 @pytest.mark.parametrize(
     "base, expected",
     [
-        ("http://127.0.0.1", "http://127.0.0.1:8888"),  # portless -> unsloth run's :8888
-        ("http://127.0.0.1:8888", "http://127.0.0.1:8888"),  # explicit port kept
+        ("http://127.0.0.1", "http://127.0.0.1:8888"),
+        ("http://127.0.0.1:8888", "http://127.0.0.1:8888"),
         ("http://127.0.0.1:9000", "http://127.0.0.1:9000"),
         ("http://localhost", "http://localhost:8888"),
-        ("http://[::1]", "http://[::1]:8888"),  # IPv6 literal stays bracketed
+        ("http://[::1]", "http://[::1]:8888"),
         ("http://[::1]:8888", "http://[::1]:8888"),
-        # Paths are stripped: unsloth run serves at the root, so /studio would make the
-        # health poll hit /studio/api/health (404) until the startup timeout.
         ("http://127.0.0.1:8888/studio", "http://127.0.0.1:8888"),
         ("http://127.0.0.1/studio", "http://127.0.0.1:8888"),
     ],
@@ -5296,8 +5055,6 @@ def test_effective_base(base, expected):
 
 
 def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
-    # A portless UNSLOTH_STUDIO_URL must launch AND poll :8888 (what unsloth run binds),
-    # not port 80, or readiness never matches and we hit the startup timeout.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -5333,9 +5090,6 @@ def test_connect_explicit_api_key_skips_mint(fake_studio):
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
 
 
-# ── OpenClaw (Anthropic /v1/messages) ────────────────────────────────
-
-
 def test_write_openclaw_config_fresh(tmp_path):
     path = tmp_path / "openclaw.json"
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
@@ -5352,13 +5106,12 @@ def test_write_openclaw_config_fresh(tmp_path):
             "maxTokens": 32000,
         }
     ]
-    # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
     assert config["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
     assert (tmp_path / "workspace").is_dir()
     assert config["gateway"]["mode"] == "local"
-    assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
-    if os.name != "nt":  # the file holds an API key
+    assert config["gateway"]["auth"]["mode"] == "none"
+    if os.name != "nt":
         assert path.stat().st_mode & 0o777 == 0o600
 
 
@@ -5431,9 +5184,9 @@ def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "dark"
-    assert config["agents"]["defaults"]["temperature"] == 0.5  # other agent defaults kept
+    assert config["agents"]["defaults"]["temperature"] == 0.5
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
-    assert config["models"]["mode"] == "replace"  # user's mode is left as-is
+    assert config["models"]["mode"] == "replace"
     assert config["models"]["providers"]["openrouter"]["baseUrl"] == "x"
     assert config["models"]["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
     before = path.read_text()
@@ -5457,7 +5210,6 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "openclaw" in result.output
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
-    # Config + state are scoped to the session dir, not the user's ~/.openclaw.
     _assert_env_set(result.output, "OPENCLAW_CONFIG_PATH", str(config_path))
     _assert_env_set(result.output, "OPENCLAW_STATE_DIR", str(tmp_path / "agents" / "openclaw"))
     for name in start._OPENCLAW_ENV_UNSET:
@@ -5475,7 +5227,6 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     }
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
-    # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
@@ -5533,9 +5284,6 @@ def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
 
 
 def test_connect_openclaw_no_launch_passes_global_flags_through(fake_studio):
-    # OpenClaw globals (openclaw [--dev] [--profile <name>] <command>) precede the
-    # command, and tui does not accept them, so any passthrough args must be forwarded
-    # verbatim rather than rewritten into `openclaw tui --local <globals>`.
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "--profile", "test"])
     assert result.exit_code == 0, result.output
     assert _launch_command(result.output) == ["openclaw", "--profile", "test"]
@@ -5549,9 +5297,6 @@ def test_connect_openclaw_no_launch_keeps_explicit_tui(fake_studio):
     assert _launch_command(result.output) == ["openclaw", "tui", "--message", "hi"]
 
 
-# ── OpenCode (OpenAI /v1/chat/completions) ───────────────────────────
-
-
 def test_write_opencode_config_fresh(tmp_path):
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
@@ -5559,7 +5304,6 @@ def test_write_opencode_config_fresh(tmp_path):
     provider = config["provider"][start._OPENCODE_PROVIDER]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
-    # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
         MODEL["id"]: {
             "name": MODEL["id"],
@@ -5567,9 +5311,7 @@ def test_write_opencode_config_fresh(tmp_path):
         }
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
-    # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
 
 
@@ -5578,7 +5320,6 @@ def test_write_opencode_config_fresh(tmp_path):
     [
         (16_384, None, 4_096),
         (32_768, None, 8_192),
-        # No longer pinned at 8,192 (#12009).
         (131_072, None, 32_000),
         (143_616, None, 32_000),
         (143_616, 65_536, 65_536),
@@ -5603,7 +5344,6 @@ def test_opencode_max_tokens_sets_limit_and_raises_opencode_ceiling(fake_studio,
 
 
 def test_opencode_limit_input_keeps_compaction_off_the_output_limit(tmp_path):
-    # Without input, OpenCode compacts at context - output and a 65,536 limit compacts at half full.
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, max_tokens = 65536)
     config = json.loads(path.read_text())
@@ -5662,7 +5402,6 @@ def test_opencode_max_tokens_raises_a_smaller_inherited_ceiling(fake_studio, mon
 
 
 def test_opencode_max_tokens_recipe_keeps_a_larger_inherited_ceiling(fake_studio, monkeypatch):
-    # The --no-launch recipe must carry the ceiling, or a shell without the export reverts to 32,000.
     monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
     result = CliRunner().invoke(
         start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
@@ -5696,8 +5435,6 @@ def test_write_opencode_config_preserves_and_idempotent(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
-    # The overlay no longer edits disabled_providers; re-enabling unsloth is done in
-    # the inline layer, so an existing list here is preserved untouched.
     assert config["disabled_providers"] == ["ollama", "unsloth"]
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
     assert config["provider"][start._OPENCODE_PROVIDER]["options"]["baseURL"] == f"{BASE}/v1"
@@ -5707,9 +5444,6 @@ def test_write_opencode_config_preserves_and_idempotent(tmp_path):
 
 
 def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
-    # A user who disabled other providers (but not unsloth) must keep them disabled:
-    # the overlay must not rewrite disabled_providers, or those providers get silently
-    # re-enabled for the session.
     path = tmp_path / "opencode.json"
     path.write_text(json.dumps({"disabled_providers": ["openai", "gemini"]}))
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
@@ -5859,9 +5593,6 @@ def test_opencode_v2_subagent_does_not_override_configured_depth(monkeypatch, tm
 
 
 def _opencode_inline_config(output: str) -> dict:
-    # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
-    # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
-    # parse whichever the host emitted so the opencode tests are shell-agnostic.
     name = "OPENCODE_CONFIG_CONTENT"
     for raw in output.splitlines():
         line = raw.strip()
@@ -5870,32 +5601,22 @@ def _opencode_inline_config(output: str) -> dict:
         prefix = f'$env:{name} = "'
         if line.startswith(prefix) and line.endswith('"'):
             escaped = line[len(prefix) : -1]
-            # Reverse _print_env's PowerShell escaping (backtick is the escape char).
             value = escaped.replace("`$", "$").replace('`"', '"').replace("``", "`")
             return json.loads(value)
     raise AssertionError(f"{name} not found in:\n{output}")
 
 
 def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
-    # opencode filters even config-defined providers through enabled/disabled_providers,
-    # and a model pin does not bypass that gate. The inline overlay (session-only, highest
-    # layer, arrays replace) allowlists our provider and clears the denylist so the Unsloth
-    # model always loads regardless of the user's config, without reading or editing it.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     inline = _opencode_inline_config(result.output)
     assert inline["enabled_providers"] == [start._OPENCODE_PROVIDER]
     assert inline["disabled_providers"] == []
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    # small_model stays on the enabled provider too, so lightweight tasks do not resolve a
-    # filtered provider mid-session.
     assert inline["small_model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
 
 
 def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
-    # Any passthrough (top-level flags that may precede a subcommand, or a subcommand)
-    # is left untouched; --model is not injected. The model is pinned by the inline
-    # OPENCODE_CONFIG_CONTENT (highest layer) instead, so it is still forced.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--dir", "repo"])
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
@@ -5908,8 +5629,6 @@ def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
 
 
 def test_opencode_passthrough_subcommand_omits_model_flag(fake_studio):
-    # A passthrough subcommand (e.g. `serve`) takes the model from the pinned config;
-    # inserting --model before it would break opencode's arg parsing.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "serve"])
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
@@ -5923,15 +5642,12 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     assert result.exit_code == 0, result.output
     assert "opencode" in result.output
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
-    # OPENCODE_CONFIG overlay points at the session file, not the user's global config.
     _assert_env_set(result.output, "OPENCODE_CONFIG", str(config_path))
     inline_config = _opencode_inline_config(result.output)
     config = json.loads(config_path.read_text())
     provider = config["provider"][start._OPENCODE_PROVIDER]
     assert provider["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    # The session config file (a throwaway overlay, not the user's real config) does not
-    # carry provider filters; the session scoping rides in the inline env layer only.
     assert "disabled_providers" not in config
     assert "enabled_providers" not in config
     assert inline_config == {
@@ -5940,8 +5656,6 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
         "enabled_providers": [start._OPENCODE_PROVIDER],
         "disabled_providers": [],
     }
-    # --no-launch prints an append-safe base command (no --model before a subcommand a
-    # driver may append); the model is forced by the inline pin above.
     assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
@@ -6003,7 +5717,6 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
     assert result.exit_code == 0, result.output
     assert _launch_command(result.output) == ["opencode"]
     expected_model = f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
-    # The agent rides in the inline overlay; nothing else comes from the empty base.
     assert _opencode_inline_config(result.output) == {
         "agent": {
             "unsloth": {
@@ -6025,8 +5738,6 @@ def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_pa
 
 
 def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
-    # A forwarded `--` makes everything after it positional; the tool pre-approval
-    # must be parsed as an option, so it rides before ctx.args.
     result = CliRunner().invoke(
         start.start_app,
         ["claude", "--as-subagent", "--no-launch", "--", "--resume", "abc123"],
@@ -6038,7 +5749,6 @@ def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
 
 
 def test_claude_subagent_forwards_positional_prompt(fake_studio):
-    # --allowedTools is variadic: a detached value would consume the prompt.
     result = CliRunner().invoke(
         start.start_app,
         ["claude", "--as-subagent", "--no-launch", "fix the failing test"],
@@ -6050,9 +5760,6 @@ def test_claude_subagent_forwards_positional_prompt(fake_studio):
 
 
 def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
-    # The effective-config inspection needs the opencode binary; a first launch must
-    # offer the install before building the overlay, or a global allowlist read only
-    # after _launch installs OpenCode would filter out the new provider.
     installed = {}
     monkeypatch.setattr(
         start,
@@ -6083,8 +5790,6 @@ def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio,
 
 
 def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
-    # A project opencode.json outranks the session file, so the agent must ride in
-    # OPENCODE_CONFIG_CONTENT where a repo's own agent.unsloth cannot field-merge over it.
     monkeypatch.setattr(
         start, "_opencode_subagent_inline_config", lambda path, permission, **kwargs: {}
     )
@@ -6127,9 +5832,6 @@ def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio,
     assert _opencode_inline_config(result.output)["permission"] == captured["permission"]
 
 
-# ── Hermes (OpenAI /v1/chat/completions, key via env) ────────────────
-
-
 @pytest.fixture()
 def hermes_config(tmp_path):
     return tmp_path / "config.yaml"
@@ -6139,21 +5841,16 @@ def test_write_hermes_config_fresh(hermes_config):
     yaml = pytest.importorskip("yaml")
     start.write_hermes_config(BASE, MODEL, hermes_config)
     config = yaml.safe_load(hermes_config.read_text())
-    # Hermes only honors the key for a *named* custom provider, so the endpoint
-    # is registered under providers.* and model.provider points at it.
     assert config["model"]["provider"] == "custom:unsloth"
     assert config["model"]["default"] == MODEL["id"]
     assert config["model"]["api_mode"] == "openai"
-    # Pin the real context window (top-level override) and compact at 90% of it.
     assert config["model"]["context_length"] == MODEL["context_length"]
     assert config["compression"] == {"enabled": True, "threshold": 0.9}
-    # Windows at or above Hermes' floor need no auxiliary compression override.
     assert "auxiliary" not in config
     provider = config["providers"]["unsloth"]
     assert provider["base_url"] == f"{BASE}/v1"
     assert provider["api_mode"] == "openai"
     assert provider["key_env"] == "UNSLOTH_API_KEY"
-    # The key is resolved from the launch env, never written to disk.
     assert "sk-unsloth" not in hermes_config.read_text()
 
 
@@ -6162,14 +5859,10 @@ def test_write_hermes_config_small_window_claims_floor(hermes_config):
     small = {"id": "unsloth/Qwen3-1.7B-GGUF", "context_length": 40960}
     start.write_hermes_config(BASE, small, hermes_config)
     config = yaml.safe_load(hermes_config.read_text())
-    # Hermes refuses to initialize below its 64,000-token floor, so the recipe
-    # claims the floor and scales the compaction threshold so it still fires at
-    # 90% of the REAL window: 0.9 * 40960 / 65536.
+    # 0.5625 = 0.9 * 40960 / 65536: 90% of the real window.
     assert config["model"]["context_length"] == 65536
     assert config["compression"] == {"enabled": True, "threshold": 0.5625}
-    # The same floor check runs against the compression model mid-session.
     assert config["auxiliary"]["compression"]["context_length"] == 65536
-    # Newer Hermes checks a local server's floor against ollama_num_ctx, not context_length.
     assert config["model"]["ollama_num_ctx"] == 65536
 
 
@@ -6200,8 +5893,8 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     )
     start.write_hermes_config(BASE, MODEL, hermes_config)
     config = yaml.safe_load(hermes_config.read_text())
-    assert config["terminal"] == {"backend": "local"}  # unrelated sections kept
-    assert config["model"]["temperature"] == 0.7  # unrelated model keys kept
+    assert config["terminal"] == {"backend": "local"}
+    assert config["model"]["temperature"] == 0.7
     assert config["model"]["provider"] == "custom:unsloth"
     assert config["providers"]["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
@@ -6212,10 +5905,10 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
 
 def test_write_hermes_config_preserves_non_mapping_file(hermes_config, capsys):
     pytest.importorskip("yaml")
-    original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
+    original = "- just\n- a\n- list\n"
     hermes_config.write_text(original)
     start.write_hermes_config(BASE, MODEL, hermes_config)
-    assert hermes_config.read_text() == original  # user-managed file left untouched
+    assert hermes_config.read_text() == original
     assert "couldn't parse" in capsys.readouterr().err
 
 
@@ -6224,7 +5917,6 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
-    # HERMES_HOME relocates the whole hermes home, so the user's ~/.hermes is untouched.
     home = tmp_path / "agents" / "hermes"
     _assert_env_set(result.output, "HERMES_HOME", str(home))
     assert "hermes" in result.output
@@ -6235,9 +5927,6 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
-# ── Pi (OpenAI-compatible /v1, key in config, ~/.pi relocated via HOME) ──
-
-
 def test_write_pi_config_fresh(tmp_path):
     path = tmp_path / ".pi" / "agent" / "models.json"
     start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, path)
@@ -6246,8 +5935,6 @@ def test_write_pi_config_fresh(tmp_path):
     assert provider["api"] == "openai-completions"
     assert provider["baseUrl"] == f"{BASE}/v1"
     assert provider["apiKey"] == "sk-unsloth-abc"
-    # Pin the loaded window (and a sane output cap) so Pi compacts instead of
-    # overflowing; without it Pi assumes its 128000 default.
     assert provider["models"] == [
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
@@ -6259,7 +5946,7 @@ def test_write_pi_config_preserves_and_idempotent(tmp_path):
     path.write_text(json.dumps({"providers": {"google": {"api": "gemini"}}}))
     start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
-    assert config["providers"]["google"] == {"api": "gemini"}  # unrelated provider kept
+    assert config["providers"]["google"] == {"api": "gemini"}
     assert config["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
     before = path.read_text()
     start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, path)
@@ -6283,13 +5970,9 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     (user_agent_dir / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mine"]}))
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
-    # Pi resolves its config dir from PI_CODING_AGENT_DIR first, so pin it at the session
-    # dir (and relocate HOME) to keep the user's real ~/.pi untouched and their own
-    # PI_CODING_AGENT_DIR from redirecting Pi away from our provider/key.
     home = tmp_path / "agents" / "pi"
     _assert_env_set(result.output, "HOME", str(home))
     _assert_env_set(result.output, "PI_CODING_AGENT_DIR", str(home / ".pi" / "agent"))
-    # Provider/model pinned on the command (Pi defaults to google otherwise).
     assert f"pi --provider unsloth --model {MODEL['id']}" in result.output
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
@@ -6365,7 +6048,6 @@ def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_pa
             "-extensions/off.ts",
             str(user_agent_dir / "root.ts"),
             "/abs/ext.ts",
-            # Pi matches patterns relative to the agent directory, so add a user-anchored copy.
             "!local/old.ts",
             f"!{user_agent_dir / 'local' / 'old.ts'}",
             "-~/literal.ts",
@@ -6383,7 +6065,6 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     agent_dir = session_home / ".pi" / "agent"
 
     start.write_pi_user_resources(agent_dir, session_home)
-    # Add session-only state, then change the user config.
     settings_path = agent_dir / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["packages"].append("npm:session-only")
@@ -6394,7 +6075,6 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
 
     start.write_pi_user_resources(agent_dir, session_home)
 
-    # Pi keeps the first entry per package identity, so session-owned packages lead.
     assert json.loads(settings_path.read_text()) == {
         "packages": ["npm:session-only", "npm:kept", "npm:new"],
         "theme": "dark",
@@ -6425,7 +6105,6 @@ def test_write_pi_user_resources_leaves_session_dirs_and_user_files_alone(tmp_pa
     assert not (agent_dir / "npm").is_symlink()
     assert (agent_dir / "npm" / "session.txt").read_text() == "session\n"
     assert (agent_dir / "extensions" / "mine.ts").read_text() == "mine\n"
-    # Deleting the session must not delete linked user files.
     shutil.rmtree(session_home)
     assert (user_agent_dir / "extensions" / "mine.ts").read_text() == "mine\n"
     assert (user_agent_dir / "npm" / "node_modules" / "pi-mine").is_dir()
@@ -6442,7 +6121,6 @@ def test_write_pi_user_resources_uses_inherited_agent_dir(tmp_path, monkeypatch)
     start.write_pi_user_resources(agent_dir, session_home)
     assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
 
-    # Do not reuse the session as its own source.
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
     start.write_pi_user_resources(agent_dir, session_home)
     assert not (agent_dir / "extensions").exists()
@@ -6488,7 +6166,7 @@ def test_is_junction_reads_the_reparse_tag_before_python_3_12(tmp_path, monkeypa
 
 def test_link_user_dir_replaces_a_junction_from_an_earlier_run(tmp_path, monkeypatch):
     target = tmp_path / "session" / "extensions"
-    target.mkdir(parents = True)  # stands in for a junction to a previous source
+    target.mkdir(parents = True)
     source = tmp_path / "user" / "extensions"
     source.mkdir(parents = True)
     monkeypatch.setattr(start, "_is_junction", lambda path: path == target and path.is_dir())
@@ -6514,8 +6192,6 @@ def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypa
 
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, monkeypatch):
-    # Switching a persisted session from a Linux pi to a Windows one must not hand
-    # Windows Pi the WSL-backed links the skip exists to withhold.
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     (user_agent_dir / "extensions").mkdir()
     (user_agent_dir / "settings.json").write_text(
@@ -6526,7 +6202,6 @@ def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, 
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
     start.write_pi_user_resources(agent_dir, session_home)
     assert (agent_dir / "extensions").is_symlink()
-    # Something the session set for itself, which must survive.
     settings = json.loads((agent_dir / "settings.json").read_text())
     settings["packages"].append("npm:session-only")
     (agent_dir / "settings.json").write_text(json.dumps(settings))
@@ -6539,14 +6214,11 @@ def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, 
         "packages": ["npm:session-only"],
     }
     assert not (agent_dir / start._PI_USER_RESOURCES_MANIFEST).exists()
-    # The user's own directory is untouched either way.
     assert (user_agent_dir / "extensions").is_dir()
 
 
 @pytest.mark.parametrize("session_command", [None, ["npm", "--silent"]])
 def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch, session_command):
-    # npmCommand is an argument vector: subtracting it entry by entry would leave a
-    # command missing whatever the copied and session values happen to share.
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     (user_agent_dir / "settings.json").write_text(
         json.dumps({"npmCommand": ["npm", "--registry=x"]})
@@ -6568,7 +6240,6 @@ def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch,
     start.write_pi_user_resources(agent_dir, session_home)
 
     settings = json.loads((agent_dir / "settings.json").read_text())
-    # The copied command goes; one the session chose survives intact.
     assert settings.get("npmCommand") == session_command
 
 
@@ -6576,9 +6247,6 @@ def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch,
 def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_link(
     tmp_path, monkeypatch
 ):
-    # Pi creates <agent dir>/npm the first time a package is installed, so a
-    # persisted session can already own that directory. The link is then skipped
-    # and a session-relative entry would point into it instead of at the user's.
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     (user_agent_dir / "npm").mkdir()
     (user_agent_dir / "extensions").mkdir()
@@ -6592,16 +6260,13 @@ def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_li
     start.write_pi_user_resources(agent_dir, session_home)
 
     settings = json.loads((agent_dir / "settings.json").read_text())
-    assert not (agent_dir / "npm").is_symlink()  # the session's own directory survives
+    assert not (agent_dir / "npm").is_symlink()
     assert settings["packages"] == [str(user_agent_dir / "npm" / "pkg")]
-    # extensions was linked, so entries under it stay relative and resolve through it.
     assert settings["extensions"] == ["extensions/mine.ts"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_keeps_a_disabled_global_skill_disabled(tmp_path, monkeypatch):
-    # ~/.agents/skills is reached through HOME, which moved, so a rule naming the
-    # user's copy has to follow it or Pi re-enables the skill inside the session.
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     user_home = user_agent_dir.parent.parent
     disabled = user_home / ".agents" / "skills" / "off" / "SKILL.md"
@@ -6616,13 +6281,10 @@ def test_write_pi_user_resources_keeps_a_disabled_global_skill_disabled(tmp_path
     session_skill = session_home / ".agents" / "skills" / "off" / "SKILL.md"
     assert session_skill.exists()
     settings = json.loads((agent_dir / "settings.json").read_text())
-    # The original rule is kept and an alias for the session path is added beside it.
     assert settings["skills"] == [f"-{disabled}", f"-{session_skill}"]
 
 
 def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
-    # Pi runs every package lookup and install through npmCommand, so a session
-    # that inherits the package list without it falls back to plain npm.
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     command = ["mise", "exec", "node@20", "--", "npm"]
     (user_agent_dir / "settings.json").write_text(
@@ -6634,7 +6296,6 @@ def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
     start.write_pi_user_resources(agent_dir, session_home)
 
     assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == command
-    # A command set inside the session is not overwritten on the next launch.
     settings_path = agent_dir / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["npmCommand"] = ["pnpm"]
@@ -6646,7 +6307,6 @@ def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
 def test_write_pi_user_resources_warns_on_an_unusable_agent_dir_override(
     tmp_path, monkeypatch, capsys
 ):
-    # Otherwise this looks exactly like the bug write_pi_user_resources exists to fix.
     _pi_user_agent_dir(tmp_path, monkeypatch)
     missing = tmp_path / "not-a-directory"
     monkeypatch.setenv("PI_CODING_AGENT_DIR", f"  {missing}  ")
@@ -6669,20 +6329,17 @@ def test_write_pi_user_resources_keeps_a_non_list_setting(tmp_path, monkeypatch)
 
     start.write_pi_user_resources(agent_dir, session_home)
 
-    # Not a shape we understand, so it is left alone rather than deleted.
     assert json.loads((agent_dir / "settings.json").read_text())["themes"] == {"name": "dark"}
 
 
 @pytest.mark.parametrize("entry", ["", "   ", "."])
 def test_pi_local_entry_leaves_degenerate_entries_alone(tmp_path, entry):
-    # Anchoring these would name the user's whole agent directory.
     assert start._pi_local_entry(entry, tmp_path, tmp_path, frozenset()) == entry
 
 
 @pytest.mark.parametrize("dangling", [False, True])
 def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(tmp_path, monkeypatch, dangling):
-    # unlink maps to DeleteFileW, which refuses a directory symlink with WinError 5,
-    # and a dangling link is still one: is_dir() would follow the missing target.
+    # DeleteFileW refuses a directory symlink (WinError 5); is_dir() would follow a dangling target.
     source = tmp_path / "source"
     source.mkdir()
     (source / "keep.txt").write_text("keep\n")
@@ -6690,7 +6347,7 @@ def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(tmp_path, monke
     target.symlink_to(source, target_is_directory = True)
     if dangling:
         shutil.rmtree(source)
-        source.mkdir()  # restore the sentinel dir so the assertion below still reads
+        source.mkdir()
         (source / "keep.txt").write_text("keep\n")
         target.unlink()
         target.symlink_to(tmp_path / "gone", target_is_directory = True)
@@ -6769,7 +6426,6 @@ def test_connect_pi_output_limit(fake_studio, tmp_path, as_subagent):
     args = ["pi", "--no-launch", "--max-tokens", "40000"]
     if as_subagent:
         args.append("--as-subagent")
-    # Each launch regenerates the config, so the second run must honour the flag too.
     for _ in range(2):
         result = CliRunner().invoke(start.start_app, args)
         assert result.exit_code == 0, result.output
@@ -6811,8 +6467,6 @@ def test_write_pi_output_limit_context_metadata(tmp_path, context):
 
 
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
-    # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
-    # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
     user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
     # Avoid pathlib selecting WindowsPath on this POSIX runner.
     monkeypatch.setattr(start.Path, "home", lambda: user_home)
@@ -6824,9 +6478,6 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
     assert f'$env:USERPROFILE = "{home}"' in result.output
 
 
-# ── DeepSeek Harness (OpenAI /v1, key via env, ~/.dsh relocated) ─────
-
-
 @pytest.fixture()
 def dsh_patch(tmp_path):
     return tmp_path / "unsloth.patch.yml"
@@ -6835,7 +6486,6 @@ def dsh_patch(tmp_path):
 def _dsh_entries(path):
     yaml = pytest.importorskip("yaml")
     entries = yaml.safe_load(path.read_text())
-    # A loader patch is a top-level list of id-targeted entries, not a settings mapping.
     assert isinstance(entries, list), entries
     return {entry["id"]: entry for entry in entries}
 
@@ -6884,7 +6534,6 @@ def test_write_dsh_patch_is_idempotent_and_follows_the_server(dsh_patch, capsys)
     start.write_dsh_patch(BASE, MODEL, dsh_patch)
     assert dsh_patch.read_text() == before
     assert "Updated" not in capsys.readouterr().out
-    # Unsloth owns this file: a new server or model replaces the old one, it does not pile up.
     start.write_dsh_patch("http://127.0.0.1:9999", {"id": "other"}, dsh_patch)
     entries = _dsh_entries(dsh_patch)
     provider = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]
@@ -6915,7 +6564,6 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        # A bare profile name must stay first so dsh expands it to --profile <name>.
         ([], ["dsh", "web", "--patch", "P"]),
         (["--no-open"], ["dsh", "web", "--patch", "P", "--no-open"]),
         (["web", "--no-open"], ["dsh", "web", "--patch", "P", "--no-open"]),
@@ -6925,14 +6573,11 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
         ),
         (["--profile=headless", "fix"], ["dsh", "--patch", "P", "--profile=headless", "fix"]),
         (["--dump-config"], ["dsh", "--patch", "P", "--dump-config"]),
-        # --patch repeats and composes in order, so a caller's own overlay lands after ours
-        # and wins only on the keys it sets; the Unsloth provider stays defined.
         (
             ["--patch", "mine.yml", "--profile", "headless"],
             ["dsh", "--patch", "P", "--patch", "mine.yml", "--profile", "headless"],
         ),
         (["--patch=mine.yml", "web"], ["dsh", "--patch", "P", "--patch=mine.yml", "web"]),
-        # Nothing boots a profile here, so there is nothing for an overlay to apply to.
         (
             ["plugin", "--profile", "web", "add", "x"],
             ["dsh", "plugin", "--profile", "web", "add", "x"],
@@ -6958,11 +6603,7 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     entries = {entry["id"]: entry for entry in yaml.safe_load(patch.read_text())}
     assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
     assert entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
-    # dsh 0.1.7 imports a settings.yaml into the profile only after boot, so none is written.
     assert not (home / "settings.yaml").exists()
-
-
-# ── Vibe (Mistral, OpenAI-compatible /v1, settings and key via VIBE_* env) ──
 
 
 def _vibe_settings(env: dict) -> tuple:
@@ -6991,7 +6632,6 @@ def test_vibe_env(tmp_path):
     ]
     assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
     assert env["VIBE_ENABLE_TELEMETRY"] == "false"
-    # Only the served model is selectable, so a resumed cloud session cannot switch away.
     assert json.loads(env["VIBE_ALLOWED_MODELS"]) == ["re:" + re.escape(MODEL["id"])]
 
 
@@ -7012,7 +6652,6 @@ def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
     _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
     assert "VIBE_HOME" not in result.output
     assert _launch_command(result.output) == ["vibe", "--auto-approve"]
-    # Vibe's own home (instructions, hooks, trust, agents) is used as is; nothing is written.
     assert not (tmp_path / "agents" / "vibe").exists()
 
 
@@ -7020,7 +6659,6 @@ def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
     captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])
     assert captured["command"][-3:] == ["/usr/local/bin/vibe", "-p", "hi"]
-    # Vibe's tools run git/ssh/gh, which need the user's real HOME; ~/.vibe stays its home.
     assert captured["env"].get("HOME") == os.environ.get("HOME")
     assert "VIBE_HOME" not in captured["env"]
     assert _vibe_settings(captured["env"])[1][0]["temperature"] == 0.6
@@ -7049,7 +6687,6 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
     threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
-    # Keep the real CLI's own state off the runner's ~/.vibe.
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
     monkeypatch.chdir(tmp_path)
     try:
@@ -7081,7 +6718,6 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
     ],
 )
 def test_vibe_sends_recommended_temperature(fake_studio, monkeypatch, argv, status, expected):
-    # Vibe always sends a temperature; without one in its model entry it sends 0.2.
     monkeypatch.setattr(start, "_inference_status", lambda *args: status)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
     captured = _capture_launch(monkeypatch, ["vibe", *argv])
@@ -7097,8 +6733,6 @@ def test_vibe_install_hint_per_os(monkeypatch):
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
 def test_dsh_under_wsl_gets_the_windows_patch_path(fake_studio, monkeypatch):
-    # WSLENV translates DSH_HOME for a Windows dsh, but a path on the command line reaches
-    # the Windows Node process verbatim, where a Linux path does not open.
     windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.patch.yml"
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     shim = "/mnt/c/Users/x/AppData/Roaming/npm/dsh"
@@ -7132,8 +6766,6 @@ def test_dsh_without_yolo_pins_the_safe_permission_mode(fake_studio):
 def test_dsh_permission_mode_overrides_an_inherited_bypass(
     argv, expected, fake_studio, monkeypatch
 ):
-    # dsh reads DSH_PERMISSION_MODE with ??, so merely omitting it would let a
-    # danger-full-access exported in the parent shell survive a run without --yolo.
     monkeypatch.setenv("DSH_PERMISSION_MODE", "danger-full-access")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/dsh")
     monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
@@ -7142,8 +6774,6 @@ def test_dsh_permission_mode_overrides_an_inherited_bypass(
 
 
 def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
-    # --reasoning-effort is a shared option: it must reach the dsh config rather than
-    # pass through to `dsh web`, which does not accept it.
     yaml = pytest.importorskip("yaml")
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
@@ -7188,13 +6818,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     assert provider["compat"]["chatTemplateKwargs"] == {"reasoning_effort": "high"}
 
 
-# ── WSLENV path translation + PowerShell quoting (helper units) ──
-
-
 def test_wsl_bridge_names_flags_paths_not_scalars():
-    # WSLENV only translates a var to a Windows path when its entry carries /p.
-    # Path-valued vars must get it; scalar knobs and URLs must not, or WSLENV would
-    # mangle them when handing off to a Windows shim under /mnt.
     env = {
         "CODEX_HOME": "/tmp/sess/codex",
         "HOME": "/tmp/sess/pi",
@@ -7205,15 +6829,14 @@ def test_wsl_bridge_names_flags_paths_not_scalars():
     names = start._wsl_bridge_names(env, ("ANTHROPIC_API_KEY",))
     assert "CODEX_HOME/p" in names
     assert "HOME/p" in names
-    assert "USERPROFILE/p" in names  # drive-qualified Windows path
-    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" in names  # scalar: no /p
+    assert "USERPROFILE/p" in names
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" in names
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW/p" not in names
-    assert "ANTHROPIC_BASE_URL" in names  # URL is not a filesystem path
-    assert "ANTHROPIC_API_KEY" in names  # cleared var carries no value to translate
+    assert "ANTHROPIC_BASE_URL" in names
+    assert "ANTHROPIC_API_KEY" in names
 
 
 def test_merge_wslenv_dedups_on_base_name():
-    # An already-shared var must not be appended again just because the flag differs.
     merged = start._merge_wslenv("CODEX_HOME/p:FOO", ("CODEX_HOME/p", "BAR/p"))
     parts = merged.split(":")
     assert parts.count("CODEX_HOME/p") == 1
@@ -7221,31 +6844,24 @@ def test_merge_wslenv_dedups_on_base_name():
 
 
 def test_merge_wslenv_upgrades_existing_unflagged_entry():
-    # A user's pre-existing bare "HOME" must be upgraded to "HOME/p" (not left bare or
-    # duplicated), or the Windows shim gets the path without WSL translation.
     merged = start._merge_wslenv("HOME:FOO", ("HOME/p", "CODEX_HOME/p"))
     parts = merged.split(":")
-    assert "HOME/p" in parts and "HOME" not in parts  # upgraded in place
+    assert "HOME/p" in parts and "HOME" not in parts
     assert parts.count("HOME/p") == 1
-    assert "FOO" in parts  # untouched user var preserved
+    assert "FOO" in parts
     assert "CODEX_HOME/p" in parts
 
 
 def test_powershell_quote_single_quotes_json():
-    # Bare flags/paths pass through; JSON payloads get single-quoted so PowerShell
-    # keeps the embedded double quotes literal (list2cmdline's backslashes would not).
     assert start._powershell_quote("--settings") == "--settings"
     assert start._powershell_quote("unsloth/gemma-4-26B") == "unsloth/gemma-4-26B"
     overlay = start._claude_settings_overlay("unsloth/gemma-4-26B")
     quoted = start._powershell_quote(overlay)
     assert quoted == "'" + overlay + "'"
-    assert "\\" not in quoted  # no cmd.exe backslash escaping
-    assert start._powershell_quote("a'b") == "'a''b'"  # embedded quote doubled
+    assert "\\" not in quoted
+    assert start._powershell_quote("a'b") == "'a''b'"
 
 
-# ── --yolo: one switch routed to each agent's own auto-approve form ──
-
-# The native "run tools without prompting" CLI flag each agent should receive.
 _NATIVE_YOLO = {
     "claude": "--dangerously-skip-permissions",
     "codex": "--dangerously-bypass-approvals-and-sandbox",
@@ -7265,7 +6881,6 @@ def test_yolo_routes_to_native_flag(fake_studio, agent, native):
 def test_no_yolo_omits_native_flag(fake_studio, agent, native):
     result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
     assert result.exit_code == 0, result.output
-    # pi's --approve is a real flag only added under --yolo; assert it's absent here.
     command = _launch_command(result.output)
     assert command and command[0] == agent, result.output
     assert native not in command
@@ -7276,11 +6891,9 @@ def test_no_yolo_omits_native_flag(fake_studio, agent, native):
     ["--yolo", "--dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox"],
 )
 def test_yolo_aliases_are_interchangeable(fake_studio, alias):
-    # Any spelling on any agent routes to that agent's own flag, even the "wrong" one.
     claude = CliRunner().invoke(start.start_app, ["claude", alias, "--no-launch"])
     assert claude.exit_code == 0, claude.output
     assert "--dangerously-skip-permissions" in claude.output
-    # The codex spelling must not leak through to Claude's command line.
     assert "--dangerously-bypass-approvals-and-sandbox" not in claude.output
 
     codex = CliRunner().invoke(start.start_app, ["codex", alias, "--no-launch"])
@@ -7298,8 +6911,6 @@ def test_yolo_aliases_are_interchangeable(fake_studio, alias):
 
 
 def test_yolo_opencode_bare_no_launch_uses_permission_fallback(fake_studio, tmp_path):
-    # A bare --no-launch recipe stays append-safe (callers add a subcommand later);
-    # `opencode --auto run ...` would select the TUI, not `run`, so keep the config fallback.
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
@@ -7472,10 +7083,8 @@ def test_yolo_opencode_old_version_uses_config_fallback(fake_studio, monkeypatch
         (["serve"], ["serve"], False),
         (["--print-logs", "serve"], ["--print-logs", "serve"], False),
         (["run", "--auto", "hello"], ["run", "--auto", "hello"], True),
-        # Hidden commands that reject --auto fall back like the visible utility ones.
         (["generate"], ["generate"], False),
         (["console", "login"], ["console", "login"], False),
-        # --mini ignores --auto (runMini forces auto=false), so use the config fallback.
         (["--mini"], ["--mini"], False),
         (["--session", "sid", "--mini"], ["--session", "sid", "--mini"], False),
     ],
@@ -7503,8 +7112,6 @@ def test_yolo_opencode_non_agent_subcommand_uses_config_fallback(fake_studio):
 
 @pytest.mark.parametrize("passthrough", (["generate"], ["console", "login"], ["--mini"]))
 def test_yolo_opencode_no_auto_command_uses_config_fallback(fake_studio, passthrough):
-    # generate/console are hidden and reject --auto, --mini ignores it: none get --auto,
-    # all keep the config permission fallback.
     result = CliRunner().invoke(
         start.start_app,
         ["opencode", "--yolo", "--no-launch", *passthrough],
@@ -7523,14 +7130,10 @@ def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
-    # A non-yolo run on a fresh config writes no permission block; it only flips a prior
-    # --yolo run's explicit allow back to ask (see the yolo-then-plain test below).
     assert "permission" not in config
 
 
 def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
-    # The core reset: a --yolo run wrote explicit per-tool allow; a later non-yolo run
-    # must flip exactly those back to ask so nothing stays auto-approved.
     yolo = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert yolo.exit_code == 0, yolo.output
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
@@ -7556,18 +7159,11 @@ def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     state = tmp_path / "agents" / "openclaw"
     config = json.loads((state / "openclaw.json").read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
-    # Both layers: the host approvals file in OPENCLAW_STATE_DIR must also be set, or
-    # OpenClaw can still prompt/deny despite the config.
     approvals = json.loads((state / "exec-approvals.json").read_text())
     assert approvals["defaults"] == {"security": "full", "ask": "off", "askFallback": "full"}
 
 
 def test_no_yolo_openclaw_leaves_fresh_config_untouched(fake_studio, tmp_path):
-    # A fresh non-yolo run only undoes state a prior --yolo wrote; with no yolo
-    # fingerprint present it must not synthesize an exec policy. An omitted policy can
-    # resolve to a sandbox default of security=deny, so writing allowlist here would
-    # BROADEN it. The reset is scoped to the exact yolo write, verified by the
-    # yolo-then-plain round trip below.
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     state = tmp_path / "agents" / "openclaw"
@@ -7601,9 +7197,6 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
 
 
 def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp_path):
-    # The no-launch config dir is reused across runs, so a --yolo run persists its
-    # auto-approve settings; a later run without --yolo must strip them, not leave
-    # tool execution silently pre-approved.
     yolo = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert yolo.exit_code == 0, yolo.output
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
@@ -7611,15 +7204,12 @@ def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp
     plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert plain.exit_code == 0, plain.output
     config = json.loads(config_path.read_text())
-    # The yolo allow policy is replaced by a prompting one, not deleted (which would
-    # revert to OpenCode's permissive "allow" default).
     assert config["permission"] == {
         "edit": "ask",
         "bash": "ask",
         "webfetch": "ask",
         "external_directory": {"*": "ask"},
     }
-    # The session provider survives the cleanup.
     assert start._OPENCODE_PROVIDER in config["provider"]
 
 
@@ -7631,11 +7221,8 @@ def test_no_launch_rerun_clears_stale_openclaw_yolo_state(fake_studio, tmp_path)
     plain = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert plain.exit_code == 0, plain.output
     config = json.loads((state / "openclaw.json").read_text())
-    # The yolo policy is replaced by a prompting one, not deleted (which would revert
-    # to OpenClaw's permissive default), and the yolo approvals file is gone.
     assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
     assert not (state / "exec-approvals.json").exists()
-    # The session provider survives the cleanup.
     assert "unsloth" in config["models"]["providers"]
 
 
@@ -7644,8 +7231,6 @@ def test_write_openclaw_config_yolo_then_plain_unit(tmp_path):
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
-    # A plain rerun replaces the yolo policy with a prompting one (deleting it would
-    # fall back to OpenClaw's permissive default) and removes the yolo approvals file.
     assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
     assert not (path.parent / "exec-approvals.json").exists()
 
@@ -7655,7 +7240,6 @@ def test_write_opencode_config_yolo_then_plain_unit(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
-    # A plain rerun replaces the yolo allow policy with a prompting one.
     assert config["permission"] == {
         "edit": "ask",
         "bash": "ask",
@@ -7665,8 +7249,6 @@ def test_write_opencode_config_yolo_then_plain_unit(tmp_path):
 
 
 def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
-    # OpenClaw records its own entries in exec-approvals.json (OPENCLAW_STATE_DIR is
-    # this dir); the non-yolo reset drops only the yolo defaults, not those.
     path = tmp_path / "openclaw.json"
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     approvals = path.parent / "exec-approvals.json"
@@ -7680,9 +7262,6 @@ def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
 
 
 def test_openclaw_non_yolo_keeps_mixed_approval_defaults(tmp_path):
-    # A mixed user-managed defaults block that only shares a field with the yolo payload
-    # (here askFallback=full, whose omitted default is deny) is not stale yolo state, so a
-    # non-yolo run leaves it intact rather than stripping the shared field.
     path = tmp_path / "openclaw.json"
     approvals = path.parent / "exec-approvals.json"
     mixed = {
@@ -7695,9 +7274,6 @@ def test_openclaw_non_yolo_keeps_mixed_approval_defaults(tmp_path):
 
 
 def test_openclaw_non_yolo_leaves_partial_policy_untouched(tmp_path):
-    # A policy that lacks the full yolo fingerprint (here no host and no security) is not
-    # our --yolo write, so a non-yolo run leaves it as-is rather than assuming ask=off
-    # means permissive: an omitted host/security can resolve to a sandbox deny default.
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"timeout": 30, "ask": "off"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7706,9 +7282,6 @@ def test_openclaw_non_yolo_leaves_partial_policy_untouched(tmp_path):
 
 
 def test_openclaw_non_yolo_leaves_no_permissive_values(tmp_path):
-    # The whole point of the reset: after a yolo run, a plain run must leave neither the
-    # config nor the approvals file at OpenClaw's permissive (security=full, ask=off)
-    # default, or exec still auto-approves.
     path = tmp_path / "openclaw.json"
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7719,8 +7292,6 @@ def test_openclaw_non_yolo_leaves_no_permissive_values(tmp_path):
 
 
 def test_openclaw_non_yolo_preserves_stricter_exec_policy(tmp_path):
-    # A policy that doesn't carry the yolo values (for example stricter security or
-    # prompting turned on) was not written by --yolo and must survive a plain run.
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"security": "deny", "ask": "on"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7729,8 +7300,6 @@ def test_openclaw_non_yolo_preserves_stricter_exec_policy(tmp_path):
 
 
 def test_openclaw_non_yolo_preserves_stricter_approval_defaults(tmp_path):
-    # exec-approvals.json defaults that don't match the yolo payload (stricter
-    # settings from the user or the OpenClaw UI) are kept, and the file stays.
     path = tmp_path / "openclaw.json"
     approvals = path.parent / "exec-approvals.json"
     approvals.write_text(
@@ -7742,8 +7311,6 @@ def test_openclaw_non_yolo_preserves_stricter_approval_defaults(tmp_path):
 
 
 def test_openclaw_non_yolo_leaves_unparseable_approvals(tmp_path):
-    # An unreadable approvals file is left in place rather than deleted, matching
-    # how an unparseable config is handled.
     path = tmp_path / "openclaw.json"
     approvals = path.parent / "exec-approvals.json"
     approvals.write_text("{not json")
@@ -7752,14 +7319,12 @@ def test_openclaw_non_yolo_leaves_unparseable_approvals(tmp_path):
 
 
 def test_opencode_non_yolo_flips_only_explicit_allow(tmp_path):
-    # Only a tool explicitly set to "allow" (what --yolo writes) is flipped to "ask". A
-    # deny/ask a user set is kept, and an absent tool is not added.
     path = tmp_path / "opencode.json"
     path.write_text(json.dumps({"permission": {"edit": "allow", "bash": "deny", "read": "ask"}}))
     session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
     assert config["permission"] == {"edit": "ask", "bash": "deny", "read": "ask"}
-    assert session == {}  # a non-yolo session carries no permission inline
+    assert session == {}
 
 
 def test_opencode_subagent_non_yolo_clears_yolo_task_permission(tmp_path):
@@ -7784,8 +7349,6 @@ def test_opencode_subagent_non_yolo_clears_yolo_task_permission(tmp_path):
 
 
 def test_opencode_non_yolo_leaves_string_permission(tmp_path):
-    # A global string rule ("deny") is a user-managed catch-all; leave it untouched and
-    # carry no inline override.
     path = tmp_path / "opencode.json"
     path.write_text(json.dumps({"permission": "deny"}))
     session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7794,9 +7357,6 @@ def test_opencode_non_yolo_leaves_string_permission(tmp_path):
 
 
 def test_opencode_non_yolo_leaves_catch_all_and_flips_explicit_allow(tmp_path):
-    # A "*" catch-all is the user's own rule, never something --yolo writes (yolo sets
-    # explicit per-tool allow), so it is left intact; an explicit per-tool "allow" is still
-    # flipped to "ask", but an absent tool inheriting the catch-all is not touched.
     path = tmp_path / "opencode.json"
     path.write_text(json.dumps({"permission": {"*": "allow", "bash": "allow"}}))
     session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7805,8 +7365,6 @@ def test_opencode_non_yolo_leaves_catch_all_and_flips_explicit_allow(tmp_path):
 
 
 def test_opencode_non_yolo_leaves_granular_object(tmp_path):
-    # A granular object value is a user rule (yolo only ever writes a plain "allow" string),
-    # so it is left in the file verbatim and never carried inline.
     path = tmp_path / "opencode.json"
     obj = {"read *": "deny", "git *": "ask"}
     path.write_text(json.dumps({"permission": {"bash": dict(obj)}}))
@@ -7816,8 +7374,6 @@ def test_opencode_non_yolo_leaves_granular_object(tmp_path):
 
 
 def test_openclaw_non_yolo_leaves_mode_policy(tmp_path):
-    # tools.exec.mode is OpenClaw's normalized knob and cannot be combined with explicit
-    # security/ask (the config is rejected), so a mode-based policy must be left as-is.
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"mode": "deny"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7826,9 +7382,6 @@ def test_openclaw_non_yolo_leaves_mode_policy(tmp_path):
 
 
 def test_openclaw_non_yolo_preserves_sandbox_host(tmp_path):
-    # host=sandbox defaults to security=deny (stricter than the gateway "full" default),
-    # so a non-yolo run must not treat the missing security as permissive nor pop host
-    # (which would broaden routing to the gateway).
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"host": "sandbox"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7837,8 +7390,6 @@ def test_openclaw_non_yolo_preserves_sandbox_host(tmp_path):
 
 
 def test_openclaw_non_yolo_preserves_node_host(tmp_path):
-    # host=node routes to a paired node and is only ever set by the user (--yolo writes
-    # host=gateway), so a non-yolo run must not pop it and reroute to the gateway.
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"host": "node"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7847,10 +7398,6 @@ def test_openclaw_non_yolo_preserves_node_host(tmp_path):
 
 
 def test_openclaw_non_yolo_preserves_auto_host_permissive(tmp_path):
-    # host=auto (or omitted) with security=full/ask=off is NOT the --yolo write: under an
-    # active sandbox, auto resolves to security=deny. --yolo only ever writes host=gateway,
-    # so the reset must not treat auto/None as the permissive gateway default and broaden a
-    # sandboxed deny to allowlist.
     for exec_policy in (
         {"host": "auto", "security": "full", "ask": "off"},
         {"security": "full", "ask": "off"},
@@ -7863,8 +7410,6 @@ def test_openclaw_non_yolo_preserves_auto_host_permissive(tmp_path):
 
 
 def test_openclaw_non_yolo_resets_only_gateway_yolo_fingerprint(tmp_path):
-    # The reset fires on exactly the host=gateway + security=full + ask=off write --yolo
-    # makes, and nothing else.
     path = tmp_path / "openclaw.json"
     path.write_text(
         json.dumps({"tools": {"exec": {"host": "gateway", "security": "full", "ask": "off"}}})
@@ -7875,9 +7420,6 @@ def test_openclaw_non_yolo_resets_only_gateway_yolo_fingerprint(tmp_path):
 
 
 def test_openclaw_non_yolo_preserves_full_mode(tmp_path):
-    # OpenClaw never normalizes our security=full/ask=off yolo write into mode:"full"
-    # (verified against the binary: doctor --fix and config get leave security/ask as-is),
-    # so a mode:"full" is always a deliberate user policy, not stale yolo state; leave it.
     path = tmp_path / "openclaw.json"
     path.write_text(json.dumps({"tools": {"exec": {"mode": "full"}}}))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
@@ -7886,7 +7428,6 @@ def test_openclaw_non_yolo_preserves_full_mode(tmp_path):
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():
-    # Placement-aware/config-based agents (and any typo) must yield no prefix flag.
     assert start._yolo_command_flags("opencode", True) == []
     assert start._yolo_command_flags("openclaw", True) == []
     assert start._yolo_command_flags("claude", True) == ["--dangerously-skip-permissions"]
@@ -7894,8 +7435,6 @@ def test_yolo_command_flags_unmapped_agent_is_empty():
 
 
 def test_yolo_config_fallbacks_add_no_legacy_command_flag(fake_studio):
-    # OpenClaw is config-only; OpenCode's append-safe bare recipe uses its config fallback.
-    # Neither should leak a legacy yolo/dangerous alias onto argv.
     for agent in ("opencode", "openclaw"):
         result = CliRunner().invoke(start.start_app, [agent, "--yolo", "--no-launch"])
         assert result.exit_code == 0, result.output
@@ -7905,9 +7444,6 @@ def test_yolo_config_fallbacks_add_no_legacy_command_flag(fake_studio):
 
 
 def test_pi_launch_clears_screen_first(fake_studio, monkeypatch):
-    # Pi paints inline from the current cursor position (no alternate screen, no
-    # clear on its first render), so the launcher hands it a clean screen. The
-    # clear must come BEFORE the exec, and only on the launch path.
     calls = []
     monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/pi")
@@ -7923,7 +7459,6 @@ def test_pi_launch_clears_screen_first(fake_studio, monkeypatch):
 
 
 def test_pi_no_launch_does_not_clear(fake_studio, monkeypatch):
-    # The --no-launch recipe is meant to be read (and piped); never wipe it.
     calls = []
     monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
@@ -7932,7 +7467,6 @@ def test_pi_no_launch_does_not_clear(fake_studio, monkeypatch):
 
 
 def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
-    # Alternate-screen agents manage the terminal themselves; leave it alone.
     calls = []
     monkeypatch.setattr(start.click, "clear", lambda: calls.append("clear"))
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
@@ -7961,8 +7495,6 @@ def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypa
     result = CliRunner().invoke(start.start_app, ["pi"])
     assert result.exit_code == 0, result.output
     home = captured["env"]["HOME"]
-    # A Windows pi shim resolves ~/.pi via USERPROFILE, so it must match the session
-    # HOME and ride the WSLENV bridge (with /p) so the path is translated for Windows.
     assert captured["env"]["USERPROFILE"] == home
     wslenv = captured["env"]["WSLENV"].split(":")
     assert "HOME/p" in wslenv
@@ -7970,9 +7502,6 @@ def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypa
 
 
 def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp_path, monkeypatch):
-    # UNSLOTH_API_KEY exported for some OTHER server must not fail the launch
-    # against a server this run just auto-started: validate, then fall back to
-    # the local mint path, and never remember the foreign key for this base.
     inner = start._http_json
 
     def http_json(
@@ -7989,14 +7518,12 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
 
     monkeypatch.setattr(start, "_http_json", http_json)
     key = start._agent_api_key(BASE, "sk-unsloth-other-server", auto_started = True)
-    assert key == "sk-unsloth-feedfacefeedface"  # minted for the fresh server
+    assert key == "sk-unsloth-feedfacefeedface"
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert "sk-unsloth-other-server" not in json.dumps(cached["servers"].get(BASE, {}))
 
 
 def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_path):
-    # An explicit key the fresh server accepts (e.g. persisted in this Unsloth
-    # home's auth db across restarts) keeps working exactly as before.
     key = start._agent_api_key(BASE, "sk-unsloth-deadbeefdeadbeef", auto_started = True)
     assert key == "sk-unsloth-deadbeefdeadbeef"
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
@@ -8004,8 +7531,6 @@ def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_pat
 
 
 def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path):
-    # A previously printed recipe may still be running an agent whose sessions
-    # or sqlite state live in the stable home; a re-run must not wipe it.
     with start._session_config("codex", launch = False) as home:
         marker = home / "sessions" / "live.sqlite"
         marker.parent.mkdir(parents = True)
@@ -8015,10 +7540,7 @@ def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path
         assert (home2 / "sessions" / "live.sqlite").read_text() == "state"
 
 
-# ── --persist: persist the agent session so it can be resumed ────────────────
 def test_session_config_persist_uses_stable_dir_and_survives(monkeypatch, tmp_path):
-    # --persist routes a launch to the stable Unsloth agents dir (the one --no-launch
-    # already uses) instead of a throwaway temp dir, and never wipes it on exit.
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     with start._session_config("codex", launch = True, persist = True) as home:
         assert home == tmp_path / "agents" / "codex"
@@ -8040,9 +7562,6 @@ def test_session_config_default_launch_is_ephemeral(monkeypatch, tmp_path):
 
 
 def test_session_config_codex_uses_short_ephemeral_parent(monkeypatch, tmp_path):
-    # Windows Codex checks out its curated plugins under CODEX_HOME/.tmp/plugins.
-    # Put its throwaway home outside the longer system temp path so that checkout
-    # stays below legacy MAX_PATH and Codex does not reject temp-dir PATH helpers.
     short_parent = tmp_path / "u"
     short_parent.mkdir()
     monkeypatch.setattr(
@@ -8111,7 +7630,6 @@ def test_session_config_reclaims_old_short_homes_but_keeps_recent_and_live(monke
 
 @pytest.mark.parametrize("agent", ["codex", "codex-subagent"])
 def test_windows_codex_homes_use_the_short_parent(monkeypatch, tmp_path, agent):
-    # codex-subagent nests CODEX_HOME under <home>/parent, so it needs the short root even more.
     monkeypatch.setattr(start.os, "name", "nt")
     monkeypatch.setattr(start.Path, "home", staticmethod(lambda: tmp_path))
 
@@ -8146,7 +7664,6 @@ def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeyp
 
 
 def test_augment_path_keeps_managed_node_without_a_home(monkeypatch, tmp_path):
-    # No home, but the managed Node still backs Node shims, so it must stay on PATH.
     managed_bin = tmp_path / "node" / "bin"
     managed_bin.mkdir(parents = True)
     monkeypatch.setattr(
@@ -8181,7 +7698,6 @@ def test_augment_path_leaves_path_alone_when_nothing_to_add(monkeypatch):
 
 
 def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
-    # A shim resolved via Unsloth's managed Node needs that node on PATH when it runs.
     managed_bin = tmp_path / "node" / "bin"
     managed_bin.mkdir(parents = True)
     monkeypatch.setattr(
@@ -8199,7 +7715,6 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
 
 
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
-    # Attaching to a remote Unsloth needs no local auth tree, so a read-only one must not stop it.
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
     monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
@@ -8211,7 +7726,6 @@ def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypat
 
 
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
-    # Nothing else prunes Unsloth's auth tree, so a killed wrapper's home must be reclaimed.
     agents_root = tmp_path / "agents"
     temp_root = agents_root / ".tmp"
     temp_root.mkdir(parents = True)
@@ -8251,9 +7765,6 @@ def test_session_config_serializes_normal_short_home_deletion(monkeypatch, tmp_p
     assert not home.exists()
 
 
-# The temp-dir agents: --persist points each one's home/state env at the stable dir;
-# without it, at an ephemeral temp path. opencode is handled separately (only its
-# config overlay is relocated; its session data was never in the temp dir).
 _RESUME_ENV_VAR = {
     "codex": "CODEX_HOME",
     "openclaw": "OPENCLAW_STATE_DIR",
@@ -8290,7 +7801,6 @@ def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, 
     captured = _capture_launch(monkeypatch, [agent, "--persist"])
     stable = tmp_path / "agents" / agent
     assert captured["env"][_RESUME_ENV_VAR[agent]] == str(stable)
-    # The stable dir survives the agent exit, so the session can be resumed.
     assert stable.exists()
 
 
@@ -8308,8 +7818,6 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
 
 
 def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch):
-    # opencode's session data lives in ~/.local/share/opencode (never relocated), so
-    # resume already survives exit; --persist also stabilizes its config overlay dir.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
     captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
     stable = tmp_path / "agents" / "opencode"
@@ -8318,13 +7826,9 @@ def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch
 
 
 def test_persist_bare_codex_launch_has_no_resume_token(fake_studio, monkeypatch):
-    # A bare `--persist` only persists the session dir; it must NOT auto-append a native
-    # resume token, or the very first launch (no session yet) would send codex down its
-    # no-session error path. The user resumes explicitly: `unsloth start codex --persist resume`.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     captured = _capture_launch(monkeypatch, ["codex", "--persist"])
     assert "resume" not in captured["command"]
-    # command[0] is the resolved executable path; assert the argv after it.
     assert captured["command"][1:] == ["--oss", "--profile", start._CODEX_PROFILE]
 
 
@@ -8344,8 +7848,6 @@ def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch
 
 
 def test_resume_with_passthrough_does_not_auto_append(fake_studio, monkeypatch):
-    # When the caller drives their own subcommand, --persist only persists the dir; it
-    # must not inject a resume token that would collide with the user's command.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     captured = _capture_launch(monkeypatch, ["codex", "--persist", "exec", "hello"])
     assert "resume" not in captured["command"]
@@ -8359,7 +7861,6 @@ def test_default_launch_has_no_resume_token(fake_studio, monkeypatch):
 
 
 def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatch):
-    # Persistence alone must not select a session.
     for agent in ("openclaw", "hermes", "dsh"):
         monkeypatch.setattr(start.shutil, "which", lambda _, a = agent: f"/usr/local/bin/{a}")
         if agent == "dsh":
@@ -8499,16 +8000,12 @@ def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
 
 
 def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
-    # The persistence flag is --persist, NOT --resume, so an agent's own
-    # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
-    # through to the agent verbatim and is not swallowed as an Unsloth option.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
     resume = captured["command"].index("--resume")
     assert captured["command"][resume : resume + 2] == ["--resume", "some-session-guid"]
     assert captured["command"].index("--model") < resume
-    # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]
 
@@ -8555,7 +8052,6 @@ def test_codex_preflight_skips_paths_and_empty_model(monkeypatch):
 
 
 def test_codex_preflight_skips_remote_studio(monkeypatch):
-    # A one-slash server-side path can look like a hub id; do not reject it from here.
     calls = _fake_hub_listing(monkeypatch, {"models/qwen-finetune": []})
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://studio.example:8888")
     start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, "models/qwen-finetune")
@@ -8646,8 +8142,6 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
 
 
 def test_hub_gguf_files_ignores_prefixed_drafters(monkeypatch):
-    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (every kind) or exact
-    # parent dir (mtp/, dspark/ only -- dflash/ is a real family name).
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     payload = {
@@ -8656,7 +8150,6 @@ def test_hub_gguf_files_ignores_prefixed_drafters(monkeypatch):
             {"rfilename": "dflash-drafter-Q8_0.gguf"},
             {"rfilename": "eagle3-gpt-oss-20b-Q8_0.gguf"},
             {"rfilename": "dspark/DeepSeek-V4-Flash-Q8_0.gguf"},
-            # Family names, not companions: these ARE the model.
             {"rfilename": "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"},
             {"rfilename": "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf"},
             {"rfilename": "Llama-3.1-8B-Eagle3-Q4_K_M.gguf"},
@@ -8694,8 +8187,6 @@ def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
 
 
 def test_codex_preflight_defers_to_running_server(monkeypatch):
-    # With a server running, identifiers resolve against its cwd/cache/token, so the attach
-    # check asks it rather than guessing here.
     calls = _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
     start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit")
@@ -8741,8 +8232,6 @@ def test_codex_attach_check_passes_on_variants(monkeypatch):
 
 
 def test_codex_attach_check_rejects_unavailable_variant(monkeypatch, capsys):
-    # llama.cpp kills the resident server before resolving the quant, so a typo'd quant on a
-    # real GGUF repo evicts and then fails the download.
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}, {"quant": "Q8_0"}]})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
@@ -8756,12 +8245,8 @@ def test_codex_attach_check_rejects_unavailable_variant(monkeypatch, capsys):
 @pytest.mark.parametrize(
     "requested,rows",
     [
-        # Case-insensitive, exactly as the load path compares quant labels.
         ("q4_k_m", [{"quant": "Q4_K_M"}]),
-        # The load falls back to a whole-token filename match, so a quant that is only part
-        # of a longer label still resolves.
         ("Q4_K_XL", [{"quant": "UD-Q4_K_XL", "filename": "Qwen3-0.6B-UD-Q4_K_XL.gguf"}]),
-        # An answer that carries neither field cannot disprove anything.
         ("Q4_K_M", [{"size_bytes": 1}]),
     ],
 )
@@ -8773,8 +8258,6 @@ def test_codex_attach_check_passes_resolvable_variants(monkeypatch, requested, r
 
 
 def test_codex_attach_check_takes_the_variant_from_the_caller(monkeypatch):
-    # `--gguf-variant` never reaches the identifier and _connect strips `repo:QUANT` before
-    # the gate runs, so the quant arrives as an argument.
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q8_0"}]})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
@@ -8813,8 +8296,6 @@ def test_hub_gguf_files_skips_hub_when_offline(monkeypatch, var):
 
 
 def test_codex_preflight_defers_bare_names_to_attached_server(monkeypatch):
-    # A bare name may be a directory under the attached server's cwd, invisible here, so
-    # only the auto-start path may canonicalize it.
     calls = _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B": []})
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
@@ -8885,8 +8366,6 @@ def test_codex_attach_rejects_unavailable_variant_before_load(fake_studio, monke
 
 
 def test_codex_attach_reuses_resident_model_without_preload_probe(fake_studio, monkeypatch):
-    # No load happens when the resident model already answers --model, so the gate must not
-    # run: a canonical empty listing would reject a session that works.
     inner = start._http_json
     probes = []
 
@@ -8927,7 +8406,6 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
     )
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "./local/model.GGUF")
-    # A quant folder or an unrelated parent name is still the model itself.
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/Q4_K_M/model-be.gguf"
     )
@@ -8940,8 +8418,6 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
 
 
 def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
-    # The resolver scans the file's marked parent and may bind a different sibling, so every
-    # explicit variant goes to the probe.
     probes = []
 
     def http_json(
@@ -8966,7 +8442,6 @@ def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
     )
     assert probes, "an explicit variant must reach the server"
 
-    # Without a variant the load takes this very file, so no probe is needed.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -8976,8 +8451,6 @@ def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
 
 
 def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, capsys):
-    # A quant that is not the file's own label is the marked parent's business: an answer
-    # carrying it passes, one without it fails before the load can evict.
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}, {"quant": "Q8_0"}]})
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/m/model-Q4_K_M.gguf", "Q8_0"
@@ -8988,7 +8461,6 @@ def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, 
             start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "Q8_0"
         )
     assert "no GGUF variant Q8_0" in capsys.readouterr().err
-    # The parent folder cannot vouch for a quant the file is not.
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
             start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q8_0"
@@ -8996,8 +8468,6 @@ def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, 
 
 
 def test_codex_attach_check_fails_live_empty_explicit_paths(tmp_path, monkeypatch, capsys):
-    # Every server version resolves explicit local syntax locally, so a live empty answer
-    # settles the load; deferring would send a GGUF-less directory down the transformers path.
     _fake_variants(monkeypatch, {"variants": []})
     target = tmp_path / "hf-dir"
     target.mkdir()
@@ -9007,8 +8477,6 @@ def test_codex_attach_check_fails_live_empty_explicit_paths(tmp_path, monkeypatc
 
 
 def test_codex_attach_check_still_defers_existing_raw_names(tmp_path, monkeypatch):
-    # Marker-less names keep the deferral: older servers read them as hub ids, so a CLI-side
-    # hit may be a server-side model.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "my-model-dir").mkdir()
     _fake_variants(monkeypatch, {"variants": []})
@@ -9016,8 +8484,6 @@ def test_codex_attach_check_still_defers_existing_raw_names(tmp_path, monkeypatc
 
 
 def test_codex_attach_check_strictness_follows_the_server_answer(monkeypatch):
-    # A one-slash id can be a hub repo or a server-cwd directory; the answer says which, and
-    # a local answer takes exact labels only.
     rows = [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}]
     _fake_variants(monkeypatch, {"variants": rows, "resolved_locally": True})
     with pytest.raises(typer.Exit):
@@ -9027,7 +8493,6 @@ def test_codex_attach_check_strictness_follows_the_server_answer(monkeypatch):
 
 
 def test_codex_attach_check_strict_accepts_the_full_stem(monkeypatch):
-    # The local resolver accepts the exact shard-stripped stem as a label too.
     _fake_variants(
         monkeypatch,
         {
@@ -9039,7 +8504,6 @@ def test_codex_attach_check_strict_accepts_the_full_stem(monkeypatch):
 
 
 def test_codex_attach_check_strict_rejects_nested_basename_labels(monkeypatch):
-    # The local resolver answers the full relative stem, never a nested file's basename.
     _fake_variants(
         monkeypatch,
         {
@@ -9052,8 +8516,6 @@ def test_codex_attach_check_strict_rejects_nested_basename_labels(monkeypatch):
 
 
 def test_codex_attach_check_rejects_torn_named_file_despite_sibling_variant(tmp_path, monkeypatch):
-    # A variant does not redirect a DIRECT FILE, so the torn file named here is what loads
-    # and a ready sibling row must not vouch for it.
     shard = tmp_path / "model-Q4_K_M-00001-of-00002.gguf"
     shard.write_bytes(b"GGUF")
     (tmp_path / "model-Q8_0.gguf").write_bytes(b"GGUF")
@@ -9066,7 +8528,6 @@ def test_codex_attach_check_rejects_torn_named_file_despite_sibling_variant(tmp_
 
 
 def test_codex_attach_check_rejects_a_requested_torn_local_variant(monkeypatch):
-    # A torn local row's labels do not vouch: llama gets the incomplete split after teardown.
     rows = {
         "variants": [
             {"quant": "Q8_0", "partial": False},
@@ -9082,8 +8543,6 @@ def test_codex_attach_check_rejects_a_requested_torn_local_variant(monkeypatch):
 
 
 def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, capsys):
-    # A remote filesystem is not ours, and the load takes the .gguf suffix as authoritative,
-    # so a missing file evicts before failing.
     remote = "http://studio.example:8888"
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
     with pytest.raises(typer.Exit):
@@ -9091,7 +8550,6 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
             start._CODEX_GGUF_AGENT, remote, "sk-test", "/models/gone-Q4_K_M.gguf"
         )
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # A server that has it answers with rows, and loopback still short-circuits.
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q4_K_M", "partial": False}], "resolved_locally": True},
@@ -9103,9 +8561,6 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
 
 @pytest.mark.skipif(os.name == "nt", reason = "every spelling is native on Windows")
 def test_codex_attach_check_probes_non_native_direct_paths(monkeypatch, capsys):
-    # A Windows path read from WSL parses to nonsense here, so it is exempt from the absence
-    # check and reads as ready without anything being verified. Returning on it would vouch
-    # for a file nobody looked at, and the load trusts the .gguf suffix: teardown, then failure.
     urls = _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
@@ -9113,7 +8568,6 @@ def test_codex_attach_check_probes_non_native_direct_paths(monkeypatch, capsys):
         )
     assert "Codex needs a GGUF model" in capsys.readouterr().err
     assert urls, "the server was never asked"
-    # The server holding it still passes.
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q4_K_M", "partial": False}], "resolved_locally": True},
@@ -9122,9 +8576,6 @@ def test_codex_attach_check_probes_non_native_direct_paths(monkeypatch, capsys):
 
 
 def test_codex_attach_check_honors_a_negative_verdict_without_an_allow_list(monkeypatch, capsys):
-    # No loadable_variants means a direct file, which loads as itself whatever the quant, so
-    # the variantless verdict decides for a variant too. The shapes differ (the row scan judges
-    # the immediate parent, the resolver the model root), so a row can outlive a false verdict.
     negative = {
         "variants": [{"quant": "Q8_0", "partial": False}],
         "resolved_locally": True,
@@ -9136,7 +8587,6 @@ def test_codex_attach_check_honors_a_negative_verdict_without_an_allow_list(monk
             start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/MTP/sub/foo-Q8_0.gguf", "Q8_0"
         )
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # A positive verdict passes, and a server too old to send the flag falls through to rows.
     _fake_variants(monkeypatch, {**negative, "loadable": True})
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/sub/foo-Q8_0.gguf", "Q8_0"
@@ -9148,8 +8598,6 @@ def test_codex_attach_check_honors_a_negative_verdict_without_an_allow_list(monk
 
 
 def test_codex_attach_check_refuses_companion_paths_with_a_variant(monkeypatch, capsys):
-    # The loader consults gguf_variant only for a directory, so a refused direct file cannot
-    # be rescued by naming a sibling quant.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9167,7 +8615,6 @@ def test_codex_attach_check_refuses_companion_paths_with_a_variant(monkeypatch, 
 
 
 def test_codex_attach_check_ignores_cleanable_only_answers(monkeypatch, capsys):
-    # A cleanable row offers deleting an empty leftover folder, never weights.
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q4_K_M", "partial": True, "cleanable": True}]},
@@ -9175,7 +8622,6 @@ def test_codex_attach_check_ignores_cleanable_only_answers(monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "owner/no-gguf")
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # A real listed row beside it still answers.
     _fake_variants(
         monkeypatch,
         {
@@ -9189,8 +8635,6 @@ def test_codex_attach_check_ignores_cleanable_only_answers(monkeypatch, capsys):
 
 
 def test_codex_attach_check_follows_bare_names_the_server_calls_remote(monkeypatch):
-    # The load uses a bare name only when it resolves locally, so an answer the server marks
-    # non-local must not settle the shorthand.
     urls = []
 
     def http_json(
@@ -9212,7 +8656,6 @@ def test_codex_attach_check_follows_bare_names_the_server_calls_remote(monkeypat
 
 
 def test_codex_attach_check_trusts_the_servers_loadable_answer(monkeypatch, capsys):
-    # When the server answers with the load resolver itself, that settles the round.
     _fake_variants(
         monkeypatch,
         {
@@ -9222,7 +8665,6 @@ def test_codex_attach_check_trusts_the_servers_loadable_answer(monkeypatch, caps
             "loadable": False,
         },
     )
-    # Naming the quant works even though every row is nested...
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "./m", "BF16")
     _fake_variants(
         monkeypatch,
@@ -9233,11 +8675,9 @@ def test_codex_attach_check_trusts_the_servers_loadable_answer(monkeypatch, caps
             "loadable": False,
         },
     )
-    # ...and a variantless load, which cannot pick it, is refused.
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "./m")
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # A quant the load would not serve is refused even though a row lists it.
     _fake_variants(
         monkeypatch,
         {
@@ -9252,8 +8692,6 @@ def test_codex_attach_check_trusts_the_servers_loadable_answer(monkeypatch, caps
 
 
 def test_codex_attach_check_probes_missing_bare_gguf_shorthands(tmp_path, monkeypatch, capsys):
-    # A bare foo.gguf naming no local file is not a path: the load canonicalizes it to
-    # unsloth/foo.gguf, so the gate follows it there.
     monkeypatch.chdir(tmp_path)
     urls = []
 
@@ -9272,7 +8710,6 @@ def test_codex_attach_check_probes_missing_bare_gguf_shorthands(tmp_path, monkey
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "foo.gguf")
     assert any("repo_id=unsloth%2Ffoo.gguf" in url for url in urls)
-    # A file that does exist is still the direct path it names.
     (tmp_path / "real-Q4_K_M.gguf").write_bytes(b"GGUF")
     monkeypatch.setattr(
         start, "_http_json", lambda *a, **k: pytest.fail("an existing file needs no probe")
@@ -9281,8 +8718,6 @@ def test_codex_attach_check_probes_missing_bare_gguf_shorthands(tmp_path, monkey
 
 
 def test_codex_attach_check_treats_gguf_suffixed_hub_ids_as_remote(monkeypatch):
-    # owner/name.gguf is a repo, not a path: the remote load scans siblings recursively and
-    # matches loosely, so local-only rules must not apply.
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q4_K_M", "filename": "BF16/model-Q4_K_M.gguf"}]},
@@ -9298,8 +8733,6 @@ def test_codex_attach_check_treats_gguf_suffixed_hub_ids_as_remote(monkeypatch):
 
 
 def test_codex_attach_check_accepts_bpw_qualified_local_requests(monkeypatch):
-    # The listing advertises the stripped label, the local loader takes the full bpw
-    # spelling; both name the same file, so both must pass.
     _fake_variants(
         monkeypatch,
         {
@@ -9311,8 +8744,6 @@ def test_codex_attach_check_accepts_bpw_qualified_local_requests(monkeypatch):
 
 
 def test_codex_attach_check_strict_accepts_basename_quant_tokens(monkeypatch):
-    # The loose-file resolver takes any whole quant token of the basename, so the listing's
-    # own default (the file's other label) must pass.
     _fake_variants(
         monkeypatch,
         {
@@ -9328,22 +8759,17 @@ def test_codex_attach_check_strict_accepts_basename_quant_tokens(monkeypatch):
 def test_codex_attach_check_honors_resolved_locally_empty_for_raw_names(
     tmp_path, monkeypatch, capsys
 ):
-    # A server that resolved the name locally already answered for the directory the load
-    # will take, so deferring on CLI existence would let it evict the resident model.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "models" / "qwen").mkdir(parents = True)
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "models/qwen")
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # A legacy answer without the flag keeps the deferral.
     _fake_variants(monkeypatch, {"variants": []})
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "models/qwen")
 
 
 def test_codex_attach_check_requires_a_pickable_row_without_a_variant(monkeypatch, capsys):
-    # detect_gguf_model picks from the top level, so rows living only in quant subdirectories
-    # need an explicit variant.
     rows = {
         "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
         "resolved_locally": True,
@@ -9353,7 +8779,6 @@ def test_codex_attach_check_requires_a_pickable_row_without_a_variant(monkeypatc
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "./m")
     err = capsys.readouterr().err
     assert "quant subdirectories" in err and "BF16" in err
-    # Naming the variant resolves it, and a top-level row needs nothing.
     _fake_variants(monkeypatch, rows)
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "./m", "BF16")
     _fake_variants(
@@ -9364,14 +8789,12 @@ def test_codex_attach_check_requires_a_pickable_row_without_a_variant(monkeypatc
 
 
 def test_codex_attach_check_probes_gguf_named_directories(tmp_path, monkeypatch, capsys):
-    # The detector scans a .gguf-named directory instead of trusting the suffix.
     gguf_dir = tmp_path / "foo.gguf"
     gguf_dir.mkdir()
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(gguf_dir))
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # One holding weights answers with rows and passes.
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q4_K_M", "filename": "m-Q4_K_M.gguf"}], "resolved_locally": True},
@@ -9380,7 +8803,6 @@ def test_codex_attach_check_probes_gguf_named_directories(tmp_path, monkeypatch,
 
 
 def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch):
-    # The split grammar is five digits exactly, so a -001-of-002 name loads as an ordinary file.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9392,11 +8814,8 @@ def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch)
 
 
 def test_codex_attach_check_honors_loadable_on_an_empty_listing(monkeypatch):
-    # A root-blind lister can miss a file detect_gguf_model resolves, so an empty answer
-    # reporting loadable is loadable.
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True, "loadable": True})
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/MTP/foo-Q8_0.gguf")
-    # Empty and not loadable still fails.
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True, "loadable": False})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
@@ -9405,7 +8824,6 @@ def test_codex_attach_check_honors_loadable_on_an_empty_listing(monkeypatch):
 
 
 def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch, tmp_path):
-    # /v1/models shows only the basename, so a different path with the same name reloads.
     inner = start._http_json
     probed = []
     resident = tmp_path / "old" / "foo-Q4_K_M.gguf"
@@ -9445,8 +8863,6 @@ def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch
 
 
 def test_codex_preload_gate_runs_for_a_settings_reload(fake_studio, monkeypatch):
-    # A knob that changes the runtime intent is a real reload nothing dedupes, so the gate
-    # runs even for the resident id.
     inner = start._http_json
     probed = []
 
@@ -9472,8 +8888,6 @@ def test_codex_preload_gate_runs_for_a_settings_reload(fake_studio, monkeypatch)
 
 
 def test_codex_preload_gate_runs_for_a_mistyped_resident_variant(fake_studio, monkeypatch):
-    # The server matches intent case-insensitively but keeps separators, so Q4KM is not the
-    # resident Q4_K_M and really reloads.
     inner = start._http_json
     probed = []
 
@@ -9501,8 +8915,6 @@ def test_codex_preload_gate_runs_for_a_mistyped_resident_variant(fake_studio, mo
 
 
 def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatch):
-    # An explicit knob forces the load endpoint's disk-free dedupe to answer; gating it would
-    # reject a second session for the model already serving, whose file may have moved.
     inner = start._http_json
 
     def http_json(
@@ -9528,7 +8940,6 @@ def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatc
 
 
 def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monkeypatch):
-    # A different quant is a real reload, so the gate has to run.
     inner = start._http_json
     probed = []
 
@@ -9556,15 +8967,12 @@ def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monk
 
 
 def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsys):
-    # detect_gguf_model reads drafter folders relative to the model root, so the same nested
-    # path loads or is refused depending on a root this process cannot see.
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
             start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf"
         )
     assert "Codex needs a GGUF model" in capsys.readouterr().err
-    # A server that serves it answers with rows and the attach proceeds.
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q8_0"}], "resolved_locally": True, "loadable": True},
@@ -9572,7 +8980,6 @@ def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsy
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf"
     )
-    # A drafter NAME PREFIX means the same under any root, so it is refused with no probe.
     monkeypatch.setattr(
         start, "_http_json", lambda *a, **k: pytest.fail("an immediate companion needs no probe")
     )
@@ -9583,14 +8990,11 @@ def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsy
 
 
 def test_codex_attach_check_defers_foreign_path_syntax(monkeypatch, tmp_path):
-    # A Windows path read from POSIX parses to nonsense here (parent '.'), so its local
-    # absence says nothing about the server's disk.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(start, "_http_json", lambda *a, **k: {"variants": [{"quant": "Q4_K_M"}]})
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", "C:\\models\\foo-Q4_K_M.gguf"
     )
-    # A native path that really is absent is still failed.
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
             start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(tmp_path / "gone-Q4_K_M.gguf")
@@ -9598,8 +9002,6 @@ def test_codex_attach_check_defers_foreign_path_syntax(monkeypatch, tmp_path):
 
 
 def test_codex_attach_check_defers_when_loopback_is_not_this_machine(monkeypatch, tmp_path):
-    # 127.0.0.1 can be an SSH or container forward, where a server-valid path is simply absent
-    # here. Without a confirmed identity the local filesystem says nothing, so the probe decides.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: False)
     probes = []
@@ -9616,7 +9018,6 @@ def test_codex_attach_check_defers_when_loopback_is_not_this_machine(monkeypatch
         return {"variants": [{"quant": "Q4_K_M"}]}
 
     monkeypatch.setattr(start, "_http_json", http_json)
-    # Absent locally, and an incomplete local shard: neither may settle it now.
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(tmp_path / "gone-Q4_K_M.gguf")
     )
@@ -9627,8 +9028,6 @@ def test_codex_attach_check_defers_when_loopback_is_not_this_machine(monkeypatch
 
 
 def test_codex_attach_check_treats_both_spellings_as_native_on_windows(monkeypatch, tmp_path):
-    # The other half of the asymmetry above: Windows accepts forward slashes, so both spellings
-    # are native there and an absent file is really absent.
     monkeypatch.chdir(tmp_path)
     _simulate_windows(monkeypatch)
     assert start._path_syntax_is_native("C:\\models\\foo-Q4_K_M.gguf") is True
@@ -9645,8 +9044,6 @@ def test_codex_attach_check_treats_both_spellings_as_native_on_windows(monkeypat
 
 
 def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, capsys):
-    # A mistyped or deleted path is still a GGUF load, so it tears the resident model down
-    # and only then fails.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9657,15 +9054,12 @@ def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, 
             start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(tmp_path / "typo-Q4_K_M.gguf")
         )
     assert "does not exist" in capsys.readouterr().err
-    # A path under a directory this process cannot list stays unknowable.
     start._attach_gguf_check(
         start._CODEX_GGUF_AGENT, BASE, "sk-test", "/nonexistent-root/dir/m-Q4_K_M.gguf"
     )
 
 
 def test_codex_attach_check_rejects_broken_direct_symlinks(tmp_path, monkeypatch, capsys):
-    # A broken symlink is visible here, and the suffix alone still makes it a GGUF load that
-    # fails after teardown.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9679,8 +9073,6 @@ def test_codex_attach_check_rejects_broken_direct_symlinks(tmp_path, monkeypatch
 
 
 def test_codex_attach_check_fails_all_partial_local_answers(monkeypatch, capsys):
-    # A local answer of only torn rows proves a load llama cannot serve; a hub answer passes
-    # because the downloader resumes hub partials.
     rows = {"variants": [{"quant": "Q4_K_M", "partial": True}], "resolved_locally": True}
     _fake_variants(monkeypatch, rows)
     with pytest.raises(typer.Exit):
@@ -9688,15 +9080,12 @@ def test_codex_attach_check_fails_all_partial_local_answers(monkeypatch, capsys)
     assert "incomplete GGUF weights" in capsys.readouterr().err
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M", "partial": True}]})
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF")
-    # A server predating resolved_locally still resolves explicit path syntax locally.
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M", "partial": True}]})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "./m")
 
 
 def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
-    # The local resolver takes exact labels only, so a local answer must not let the
-    # filename-token tier vouch for a shorter quant; hub answers keep that tier.
     rows = {"variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}]}
     _fake_variants(monkeypatch, rows)
     with pytest.raises(typer.Exit):
@@ -9708,8 +9097,6 @@ def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
 
 
 def test_codex_attach_check_rejects_incomplete_direct_files(tmp_path, monkeypatch, capsys):
-    # On a loopback attach the CLI sees the server's filesystem, and llama finds missing bytes
-    # or shards only after the resident model is torn down.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9726,7 +9113,6 @@ def test_codex_attach_check_rejects_incomplete_direct_files(tmp_path, monkeypatc
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(shard))
 
-    # The complete set beside it passes, and a CLI-invisible path stays open.
     (tmp_path / "m-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(shard))
     start._attach_gguf_check(
@@ -9735,8 +9121,6 @@ def test_codex_attach_check_rejects_incomplete_direct_files(tmp_path, monkeypatc
 
 
 def test_codex_attach_check_accepts_symlinked_split_shards(tmp_path, monkeypatch):
-    # The load resolves an incomplete nominal set through the symlink to the target's shards,
-    # so the readiness check does the same.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9752,7 +9136,6 @@ def test_codex_attach_check_accepts_symlinked_split_shards(tmp_path, monkeypatch
     link.symlink_to(real / "m-Q4_K_M-00001-of-00002.gguf")
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(link))
 
-    # A target set that is itself torn still fails.
     (real / "m-Q4_K_M-00002-of-00002.gguf").unlink()
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", os.fspath(link))
@@ -9769,9 +9152,6 @@ def test_codex_attach_check_accepts_symlinked_split_shards(tmp_path, monkeypatch
     ],
 )
 def test_codex_attach_check_refuses_companion_gguf_files(monkeypatch, capsys, path):
-    # Projector and drafter name prefixes read the basename alone, so detect_gguf_model refuses
-    # these under any root and the name settles it; probing would defer on a path that exists.
-    # A drafter FOLDER is root-dependent instead (see the nested-drafter test).
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -9783,8 +9163,6 @@ def test_codex_attach_check_refuses_companion_gguf_files(monkeypatch, capsys, pa
 
 
 def test_codex_preflight_canonicalizes_missing_bare_gguf_names(tmp_path, monkeypatch):
-    # A bare foo.gguf naming no local file is a shorthand the load canonicalizes, so the
-    # preflight checks the repo that will load.
     monkeypatch.chdir(tmp_path)
     calls = _fake_hub_listing(monkeypatch, {"unsloth/foo.gguf": []})
     with pytest.raises(typer.Exit):
@@ -9844,8 +9222,6 @@ def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
 
 
 def test_codex_attach_check_rejects_live_empty_raw_shorthand(monkeypatch, tmp_path, capsys):
-    # A live empty answer for the raw name is the server resolving it against its own cwd,
-    # exactly what the load does; unsloth/<name> is tried only when that resolves to nothing.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     urls = []
@@ -9899,9 +9275,6 @@ def test_codex_attach_check_defers_when_raw_name_exists_locally(monkeypatch, tmp
     monkeypatch.chdir(tmp_path)
     _fake_variants(monkeypatch, {"variants": []})
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", "models/qwen")
-
-
-# These also pin Codex's wording, now that the helpers are shared.
 
 
 def test_gguf_agents_name_themselves_and_their_own_subcommand(monkeypatch, capsys):
@@ -9966,9 +9339,7 @@ def test_claude_command_preflights_before_starting_a_server(fake_studio, monkeyp
 def test_a_rejected_model_never_offers_to_install_the_agent(
     monkeypatch, tmp_path, subcommand, label
 ):
-    # No fake_studio: it stubs _require_agent_for_launch to a no-op, which is the call
-    # under test here. _install_agent runs a remote installer, so the refusal must come
-    # first. Neither test reaches a server.
+    # No fake_studio: it stubs _require_agent_for_launch, the call under test here.
     _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: None)
@@ -9989,7 +9360,6 @@ def test_a_rejected_model_never_offers_to_install_the_agent(
 
 
 def test_a_missing_agent_is_still_reported_for_a_model_that_passes(monkeypatch, tmp_path):
-    # The reorder must not turn the install prompt into dead code for a runnable model.
     _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B-GGUF": ["Q4_K_M.gguf"]})
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: None)
@@ -10037,8 +9407,6 @@ def test_claude_preload_gate_rejects_before_an_evicting_load(fake_studio, monkey
 
 
 def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeypatch):
-    # Listing unavailable: the check falls back to post-connect and must still tear down an
-    # auto-started server instead of leaving it to atexit.
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -10105,9 +9473,6 @@ def test_claude_post_connect_failure_spares_an_attached_server(fake_studio, monk
     assert down == []
 
 
-# Tolerance: callers tear the server down on any exception, so only "is_gguf": false rejects.
-
-
 def _status_raises(monkeypatch, exc):
     def http_json(*args, **kwargs):
         raise exc
@@ -10124,12 +9489,12 @@ def _require_claude_gguf():
 @pytest.mark.parametrize(
     "code,reason",
     [
-        (404, "not found"),  # older server without the endpoint
-        (401, "Unauthorized"),  # key scoped to /v1, not /api
+        (404, "not found"),
+        (401, "Unauthorized"),
         (403, "Forbidden"),
-        (500, "Failed to get status"),  # get_status's own catch-all, GGUF still resident
+        (500, "Failed to get status"),
         (503, "Service Unavailable"),
-        (302, "refusing redirect"),  # urlopen_no_redirect raises this shape
+        (302, "refusing redirect"),
     ],
 )
 def test_require_gguf_never_rejects_on_an_http_error(monkeypatch, capsys, code, reason):
@@ -10151,7 +9516,6 @@ def test_require_gguf_never_rejects_on_an_http_error(monkeypatch, capsys, code, 
     ],
 )
 def test_require_gguf_never_rejects_on_a_transport_failure(monkeypatch, capsys, exc):
-    # Nor as a traceback: only HTTPError was caught before.
     _status_raises(monkeypatch, exc)
     assert _require_claude_gguf() is None
     assert capsys.readouterr().err == ""
@@ -10160,10 +9524,10 @@ def test_require_gguf_never_rejects_on_a_transport_failure(monkeypatch, capsys, 
 @pytest.mark.parametrize(
     "body",
     [
-        {},  # blank 200 body; _http_json turns "" into {}
-        {"model_identifier": "unsloth/Qwen3-1.7B-GGUF"},  # 200 without the key
-        {"error": "API endpoint not found"},  # Studio older than the /api/* 404
-        {"is_gguf": None},  # explicit null from a proxy or hand-rolled server
+        {},
+        {"model_identifier": "unsloth/Qwen3-1.7B-GGUF"},
+        {"error": "API endpoint not found"},
+        {"is_gguf": None},
         ["not", "a", "dict"],
         None,
     ],
@@ -10171,7 +9535,6 @@ def test_require_gguf_never_rejects_on_a_transport_failure(monkeypatch, capsys, 
 def test_require_gguf_treats_an_unreadable_answer_as_unknown(monkeypatch, capsys, body):
     monkeypatch.setattr(start, "_http_json", lambda *a, **k: body)
     assert _require_claude_gguf() is None
-    # The old code claimed "needs a GGUF model", which the server never said.
     assert "needs a GGUF model" not in capsys.readouterr().err
 
 
@@ -10180,7 +9543,7 @@ def test_require_gguf_treats_an_unreadable_answer_as_unknown(monkeypatch, capsys
     [("_CODEX_GGUF_AGENT", "Codex"), ("_CLAUDE_GGUF_AGENT", "Claude Code")],
 )
 def test_require_gguf_still_rejects_a_definite_no(monkeypatch, capsys, agent, label):
-    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)  # no Try: suffix
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -10206,8 +9569,6 @@ def test_require_gguf_still_rejects_a_definite_no(monkeypatch, capsys, agent, la
     ],
 )
 def test_require_gguf_treats_an_idle_server_as_unknown(monkeypatch, body):
-    # is_gguf's False default means an idle server answers False and names no model;
-    # reading that as "not GGUF" refuses a good GGUF that is merely not loaded yet.
     monkeypatch.setattr(start, "_http_json", lambda *a, **k: body)
     start._require_gguf_for_agent(
         start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/gemma-3-4b-it-GGUF"
@@ -10215,7 +9576,6 @@ def test_require_gguf_treats_an_idle_server_as_unknown(monkeypatch, body):
 
 
 def test_require_gguf_still_rejects_a_named_non_gguf_model(monkeypatch, capsys):
-    # The tolerance above must not reach a server that does name what it is holding.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -10229,7 +9589,6 @@ def test_require_gguf_still_rejects_a_named_non_gguf_model(monkeypatch, capsys):
 
 
 def test_require_gguf_does_not_swallow_a_real_exit(monkeypatch):
-    # Guards the exception tuple against being loosened to `except Exception`.
     _status_raises(monkeypatch, typer.Exit(code = 1))
     with pytest.raises(typer.Exit):
         _require_claude_gguf()
@@ -10243,7 +9602,6 @@ def test_require_gguf_does_not_swallow_a_bug(monkeypatch):
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, monkeypatch, agent):
-    # The regression: a 500 from get_status used to reject, then shut down a loaded GGUF.
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
@@ -10328,7 +9686,6 @@ def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatc
 
 @pytest.mark.parametrize("enabled", ["1", "true", "yes", "on"])
 def test_openclaw_launch_disables_the_login_shell_key_fallback(enabled, fake_studio, monkeypatch):
-    # openclaw 2026.9.2 reads dropped keys back from a login shell (src/infra/shell-env.ts).
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
     monkeypatch.setenv("OPENCLAW_LOAD_SHELL_ENV", enabled)
     captured = _capture_launch(monkeypatch, ["openclaw"])
@@ -10342,7 +9699,6 @@ def test_openclaw_no_launch_recipe_disables_the_login_shell_key_fallback(fake_st
 
 
 def test_openclaw_state_dir_is_a_real_path_not_a_blank(fake_studio, monkeypatch):
-    # An empty state dir sends OpenClaw back to the user's real home, undoing the scoping.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
     captured = _capture_launch(monkeypatch, ["openclaw"])
     assert captured["env"]["OPENCLAW_STATE_DIR"].strip()
@@ -10373,8 +9729,6 @@ def _openclaw_without_the_settings_route(monkeypatch, exc = RuntimeError("404"))
 def test_openclaw_memory_search_asks_for_keyword_only_without_the_settings_route(
     fake_studio, tmp_path, monkeypatch
 ):
-    # A server that cannot name its embedder will not serve it either, and that name
-    # beside fallback "none" is the one shape OpenClaw cannot degrade out of.
     _openclaw_without_the_settings_route(monkeypatch)
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
@@ -10387,7 +9741,6 @@ def test_openclaw_memory_search_asks_for_keyword_only_without_the_settings_route
 def test_openclaw_memory_search_drops_a_stale_remote_when_the_route_is_gone(
     fake_studio, tmp_path, monkeypatch
 ):
-    # A --persist config must not keep the old endpoint and key for a dropped provider.
     _openclaw_without_the_settings_route(monkeypatch)
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
@@ -10416,7 +9769,6 @@ def test_openclaw_memory_search_drops_a_stale_remote_when_the_route_is_gone(
 
 
 def test_openclaw_memory_search_model_is_stripped(fake_studio, tmp_path, monkeypatch):
-    # The model goes to /v1/embeddings verbatim, so padding would reach the request.
     real = start._http_json
 
     def padded(method, url, *args, **kwargs):
@@ -10433,7 +9785,6 @@ def test_openclaw_memory_search_model_is_stripped(fake_studio, tmp_path, monkeyp
 
 
 def test_openclaw_memory_search_does_not_swallow_a_cli_abort(fake_studio, tmp_path, monkeypatch):
-    # typer.Exit is a RuntimeError subclass: a bare except would degrade the config silently.
     _openclaw_without_the_settings_route(monkeypatch, exc = typer.Exit(2))
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
@@ -10545,7 +9896,6 @@ def test_model_download_progress_counts_the_base_a_load_reports(monkeypatch, cap
 
     assert progress.downloaded_bytes == 8 * 1024**2 + 2 * GiB + 3 * GiB
     assert server.count("someone%2Felse") == 0
-    # The line follows the base as it grows, not the attached job first seen at 3 GiB.
     out = capsys.readouterr().out
     assert "1.0 GiB / 4.0 GiB" in out and "3.0 GiB" not in out
 
@@ -10567,7 +9917,6 @@ def test_model_download_progress_lists_load_jobs_at_most_every_interval(monkeypa
         clock[0] += 1.0
 
     assert server.count("/active-downloads") == 3
-    # A finished base is not scanned again, but its bytes still count.
     assert server.count("owner%2Fbase") == 2
     assert progress.downloaded_bytes == 1024 + 4 * GiB
 

@@ -44,7 +44,6 @@ def _run(runner, monkeypatch, argv):
     seen = {}
 
     def stub(cmd, env = None):
-        # the input notebook is the positional argument before --output
         seen["input"] = cmd[cmd.index("--output") - 1]
         out_dir = cmd[cmd.index("--output-dir") + 1]
         name = cmd[cmd.index("--output") + 1]

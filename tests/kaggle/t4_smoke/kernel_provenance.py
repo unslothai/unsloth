@@ -21,10 +21,7 @@ at all, which is the one outcome worse than a missing field.
 
 from __future__ import annotations
 
-# The kernels worth asking about for a Qwen3.5-class model, and what each answer
-# is allowed to mean. `_EXPECTED` is deliberately NOT "all of these must be
-# present": two of them are measured absent on this path and asserting them
-# would be red on correct behaviour. See vision_kernel_failures below.
+# Not all must be present: two are absent on this path by design. See vision_kernel_failures.
 _KERNELS = ("fla", "causal_conv1d", "mamba_ssm", "flash_attn", "triton", "xformers")
 
 
@@ -38,16 +35,12 @@ def probe_kernels() -> dict:
             entry["importable"] = True
             entry["file"] = getattr(module, "__file__", None)
             entry["version"] = getattr(module, "__version__", None)
-            # The distinction the whole module exists for. A vendored copy lives
-            # inside unsloth_zoo; a pip-installed one does not.
             entry["vendored"] = "_vendored" in (entry["file"] or "")
         except BaseException as exc:  # noqa: BLE001
             entry["error"] = f"{type(exc).__name__}: {exc}"[:200]
         out[name] = entry
 
-    # Distributions separately, because a package can be installed and NOT
-    # importable -- a wheel with the wrong CUDA ABI is exactly that -- and
-    # reporting only the import would call that "absent".
+    # A package can be installed but not importable (wrong CUDA ABI).
     try:
         from importlib import metadata
 
@@ -92,7 +85,6 @@ def _is_turing(capability) -> bool:
     text = str(capability or "").strip().lower().replace("sm_", "").replace("sm", "")
     if not text:
         return False
-    # "7.5" -> 7, "75" -> 7. Both spellings appear in this repo.
     head = text.split(".")[0]
     if "." in text:
         return head == "7"
@@ -144,11 +136,7 @@ def vision_kernel_failures(
             f"kernels; a pip-installed fla is a different thing"
         )
 
-    # Normalised, because the two spellings in this repo are BOTH live and a
-    # rule that silently never fires is the exact failure this file is about:
-    # environment_fingerprint() records "sm_75", while the recon probe and
-    # torch.cuda.get_device_capability report "7.5". A startswith("7.") check
-    # against "sm_75" matches nothing, and an FA2 regression would sail past it.
+    # Normalised: "sm_75" and "7.5" are both live spellings.
     turing = _is_turing(capability)
     if turing:
         chosen = (attention or {}).get("config")

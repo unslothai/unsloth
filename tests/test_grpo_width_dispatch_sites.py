@@ -40,8 +40,7 @@ RAW_LOGITS_HELPER = "chunked_selective_log_softmax"
 DISPATCH_HELPER = "_unsloth_grpo_returns_hidden_states"
 SIGNAL_HELPER = "_unsloth_grpo_hidden_states_signal"
 
-# One shared parse: nodes from separate parses never compare equal, which would
-# silently make every containment check below vacuously true.
+# One shared parse: nodes from separate parses never compare equal.
 TREE = ast.parse(open(SOURCE_PATH, "r", encoding = "utf-8").read())
 
 
@@ -166,7 +165,6 @@ def test_the_dispatch_helper_prefers_the_explicit_signal():
         "dispatching on an ambiguous dimension comparison alone"
     )
 
-    # The signal has to come from an explicit marker, not from a shape.
     signal_source = ast.unparse(helpers[SIGNAL_HELPER])
     for marker in (
         "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__",

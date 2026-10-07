@@ -43,8 +43,8 @@ from . import CellFailure
 class Point:
     """One rung of one series, tagged with the session that produced it."""
 
-    length: float  # the treatment axis, e.g. thread tokens or characters
-    value: float  # the measured quantity, e.g. self ms
+    length: float
+    value: float
     session: str  # opaque session identity; fits refuse to mix these
     rung: str = ""
 
@@ -52,7 +52,7 @@ class Point:
 @dataclass(frozen = True)
 class Fit:
     a: float  # intercept in log space
-    b: float  # exponent
+    b: float
     r2: float
     n: int
     session: str

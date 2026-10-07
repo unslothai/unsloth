@@ -136,7 +136,7 @@ def _output_accessor_is_broken(model):
 
 def _fill_missing_loss(cls):
     original = cls.__dict__.get("forward")
-    # Own dict only: a subclass of an already repaired class has its own unwrapped forward.
+    # Own dict only: a subclass of a repaired class has its own unwrapped forward.
     if original is None or "_unsloth_original_forward" in cls.__dict__:
         return False
     try:
@@ -244,7 +244,7 @@ def _fill_missing_loss(cls):
                 "so the causal LM loss is computed from its logits."
             )
         if isinstance(output, dict):
-            # `loss` must come first: positional readers take output[0] as the loss.
+            # `loss` first: positional readers take output[0] as the loss.
             fields = {k: v for k, v in output.items() if k != "loss"}
             try:
                 return type(output)(loss = loss, **fields)
@@ -313,7 +313,7 @@ def _repair_multimodal_cache_indexing(cls):
         source = inspect.getsource(original)
     except (OSError, TypeError):
         return False
-    # Code already on the Cache API (get_seq_length, isinstance Cache) must keep the real cache.
+    # Code already on the Cache API must keep the real cache.
     if re.search(r"past_key_values\s*\[", source) is None:
         return False
     position = parameters.index("past_key_values") - 1
@@ -338,7 +338,7 @@ def _repair_multimodal_cache_indexing(cls):
 
     prepare_inputs_labels_for_multimodal._unsloth_cache_view = True
     setattr(cls, name, prepare_inputs_labels_for_multimodal)
-    # Static cache: prefill mask arrives as 4D / BlockMask, not the 2D padding mask this prep compacts by.
+    # Static cache prefill mask is 4D / BlockMask, not the 2D padding mask this prep compacts by.
     cls._supports_static_cache = False
     return True
 
@@ -358,7 +358,7 @@ _PER_HEAD_PARAMETERS = ("A_log",)
 
 
 def _narrow_zero_padded_head_parameters(model):
-    # Kimi-K3 ships KDA A_log zero-padded ([128] for 96 heads); fla's backward does dA.view_as(A_log). vLLM narrows it too.
+    # Kimi-K3 zero-pads KDA A_log; fla's backward does dA.view_as(A_log). vLLM narrows it too.
     narrowed = []
     for name, module in model.named_modules():
         if not _is_remote_code(type(module)):

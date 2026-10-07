@@ -57,9 +57,7 @@ def _studio_guard():
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(DISABLE_SENTENCEPIECE_VARIABLE, raising = False)
-    # The rule declines once transformers is imported, and the test session has imported it.
-    # Removed here so each test states its own starting point; the one test that wants it
-    # present puts it back.
+    # The rule declines once transformers is imported, which the session already did.
     monkeypatch.delitem(sys.modules, "transformers", raising = False)
     yield
 
@@ -107,8 +105,7 @@ def test_it_installs_the_sentinel_and_the_import_then_fails_like_an_absent_packa
     assert sys.modules["sentencepiece"] is None
 
     with pytest.raises(ImportError):
-        # ModuleNotFoundError, which is an ImportError, so every `try/except ImportError`
-        # already in transformers handles it as "not installed".
+        # ModuleNotFoundError subclasses ImportError, so transformers treats it as absent.
         import sentencepiece  # noqa: F401
 
 
@@ -185,8 +182,7 @@ def test_the_studio_parent_applies_the_same_rule_without_importing_unsloth():
     guard = source.index("from utils.sentencepiece_guard import")
     assert guard > marker
 
-    # Real import statements only. Matching the bare word finds the surrounding comments,
-    # which say nothing about execution order.
+    # Real imports only: the bare word also matches comments.
     imports = [
         m.start()
         for m in re.finditer(r"^\s*(?:import transformers|from transformers)", source, re.M)
@@ -222,9 +218,7 @@ def test_the_two_spellings_agree(platform, env, expect_disabled, monkeypatch):
     assert studio.DISABLE_SENTENCEPIECE_VARIABLE == DISABLE_SENTENCEPIECE_VARIABLE
     assert studio.sentencepiece_should_be_disabled() is expect_disabled
 
-    # A stub sys, because the real one already has sentencepiece imported by the test session,
-    # and the rule correctly declines to replace a live module. Running it against the real
-    # sys.modules would test the fixture, not the rule.
+    # Stub sys: the real one already holds sentencepiece, which the rule won't replace.
     monkeypatch.setattr(studio, "sys", types.SimpleNamespace(platform = platform, modules = {}))
     assert studio.disable_sentencepiece_on_windows() is expect_disabled
     assert (studio.sys.modules.get("sentencepiece", "absent") is None) is expect_disabled
@@ -280,7 +274,6 @@ def test_the_shared_worker_entrypoint_installs_it_before_the_worker_module(tmp_p
     it applied in time. So the shared entrypoint installs it before the worker module."""
     out = _run_shared_entrypoint(tmp_path, {**os.environ, DISABLE_SENTENCEPIECE_VARIABLE: "1"})
     assert "SENTINEL AT IMPORT True" in out.stdout, (out.stdout, out.stderr[-2000:])
-    # The captured cache environment still lands first: the rule reads the environment.
     assert "ENV APPLIED yes" in out.stdout, (out.stdout, out.stderr[-2000:])
 
 

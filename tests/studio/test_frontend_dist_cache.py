@@ -151,7 +151,7 @@ def _key_patterns() -> tuple[set[str], set[str]]:
     hashed, excluded = set(), set()
     for literal in re.findall(r"'([^']*)'", inner):
         if "studio/" not in literal:
-            continue  # the format spec's own placeholder, or a prefix argument
+            continue
         glob = literal.replace("{0}", "")
         target = excluded if glob.startswith("!") else hashed
         target.add(glob.lstrip("!").removesuffix("/**").rstrip("/*").rstrip("/"))
@@ -192,27 +192,23 @@ def _staleness_inputs_ps1() -> set[str]:
     """
     text = SETUP_PS1.read_text(encoding = "utf-8")
     block = re.search(
-        # Terminator matched on the stable "# Provision Node" prefix, not the whole sentence:
-        # pinning the full prose would make this reader return None and fail every check below.
+        # Matched on the stable "# Provision Node" prefix, not the whole sentence.
         r'\$DistDir = Join-Path \$FrontendDir "dist"(.*?)\n# Provision Node ',
         text,
         re.S,
     )
     assert block, "could not find the frontend staleness check in studio/setup.ps1"
     body = block.group(1)
-    # The anchor that proves this is the mtime comparison and not some other block.
     assert re.search(r"\(Get-Item \$DistDir\)\.LastWriteTime", body), (
         "the setup.ps1 block found does not read (Get-Item $DistDir).LastWriteTime, so "
         "it is not the staleness check this key is supposed to agree with"
     )
 
     found = set()
-    # The recursive subdirectory sweep: foreach ($subDir in @("src", "public")).
     sub = re.search(r"foreach \(\$subDir in @\(([^)]*)\)\)", body)
     assert sub, "setup.ps1's staleness check no longer sweeps a list of subdirectories"
     for name in re.findall(r'"([^"]+)"', sub.group(1)):
         found.add(f"studio/frontend/{name}")
-    # The non-recursive top-level file sweep over $FrontendDir itself.
     assert re.search(
         r"Get-ChildItem -Path \$FrontendDir -File", body
     ), "setup.ps1's staleness check no longer scans the top-level frontend files"
@@ -321,7 +317,6 @@ def test_the_key_excludes_the_frontend_subdirs_the_rebuild_check_never_reads() -
         pytest.skip("studio/frontend is absent")
     _, excluded = _key_patterns()
     read = {Path(p).name for p in _staleness_inputs_sh() if Path(p).name != "frontend"}
-    # dist is the cache payload itself; node_modules is never committed.
     ignored = {"dist", "node_modules"}
     unread = {
         d.name
@@ -346,11 +341,6 @@ def test_the_dist_cache_has_no_restore_keys() -> None:
         "download cache in install-unsloth-local does want them, and that contrast is "
         "the point: a near-miss download still supplies most of the wheels."
     )
-
-
-# ---------------------------------------------------------------------------
-# The touch, which is where a hit stops being a hit.
-# ---------------------------------------------------------------------------
 
 
 def _touch_steps() -> list[dict]:
@@ -417,13 +407,10 @@ def test_the_posix_touch_still_touches() -> None:
     ), f"the POSIX branch no longer touches the dist directory: {_code(step)!r}"
 
 
-# What each branch has to do AFTER stamping the directory, expressed as the two things that distinguish "I called the
-# API" from "the dist actually ended up newer": re-READ the timestamp, and COMPARE it against the sources with a branch
-# that can fail.
+# After stamping, each branch must re-read the timestamp and compare it with a branch that
+# can fail.
 _READBACK = {
-    # `find ... -newer "$DIST"` is setup.sh's own predicate, re-run.
     "posix": (r'-newer\s+"\$DIST"', r'if\s+\[\s+-n\s+"\$newer"\s+\]'),
-    # A second Get-Item read (the first one is the assignment), then the comparison.
     "Windows": (r"\$distTime\s*=\s*\(Get-Item[^)]*\)\.LastWriteTime", r"if\s*\(\$newer\)"),
 }
 
@@ -538,11 +525,6 @@ def test_no_windows_job_reaches_the_posix_install_composite() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# The save half, and the assertion that a hit was actually reused.
-# ---------------------------------------------------------------------------
-
-
 def test_the_dist_cache_is_saved_on_main_only() -> None:
     step = _step(SAVE_ACTION, "Save the built frontend")
     assert step is not None, "the dist cache is restored but never saved, so it can only ever miss"
@@ -580,9 +562,7 @@ def test_a_cache_hit_that_rebuilt_anyway_fails_the_job() -> None:
     assert (
         "building frontend" in body
     ), "the reuse assertion does not look for the rebuild marker both installers emit"
-    # Each guarded condition, and the failure that must follow it. Counting `exit 1`s
-    # instead let a mutation through: turning the missing-log branch into a warning plus
-    # `exit 0` left the total unchanged, because the `exit 1` beneath it stayed.
+    # Each condition paired with its failure: counting `exit 1`s let a warning-plus-exit-0 through.
     for condition, what in (
         (r'\[\s+!\s+-f\s+"\$INSTALL_LOG"\s+\]', "a missing install log"),
         (r'\[\s+!\s+-d\s+"\$DIST"\s+\]', "a dist that vanished during the install"),
@@ -624,11 +604,6 @@ def test_the_markers_the_reuse_assertion_greps_for_still_exist(script: Path, mar
         f"frontend-dist-save greps for a string that never appears. Update both "
         f"together."
     )
-
-
-# ---------------------------------------------------------------------------
-# One definition of the key, and where it may be referenced from.
-# ---------------------------------------------------------------------------
 
 
 def test_the_cache_key_has_exactly_one_definition() -> None:
@@ -863,9 +838,7 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
         }
         if "restore" not in idx:
             continue
-        # The step that INVOKES the installer, not every step that mentions it.
-        # These workflows also parse install.ps1 with the AST and grep logs/install.log, and a bare `install\.(ps1|sh)`
-        # match picks those up and reports a false ordering bug.
+        # The step that INVOKES the installer: others AST-parse install.ps1 or grep its log.
         installs = [
             i
             for i, s in enumerate(steps)
@@ -881,9 +854,6 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
     assert not offenders, "\n  ".join(["misordered frontend-dist steps:"] + offenders)
 
 
-# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list
-# ---------------------------------------------------------------------------
-
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
@@ -891,7 +861,6 @@ COLD_INSTALL_WORKFLOWS = (
     "release-desktop.yml",
 )
 
-# Cold at JOB level, inside a workflow whose other jobs legitimately use the cache.
 COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
 
 

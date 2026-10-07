@@ -162,7 +162,6 @@ def test_wrapper_inherits_support_and_every_layer_is_switched_on():
     assert model.supports_gradient_checkpointing is True
     model.gradient_checkpointing_enable()
     assert all(layer.gradient_checkpointing for layer in model.language_model.layers)
-    # the class default is untouched: a fresh wrapper starts from False again
     assert _Wrapper.supports_gradient_checkpointing is False
 
 
@@ -266,7 +265,6 @@ def test_multimodal_intent_keeps_the_wrapper(capsys):
     assert hasattr(model, "vision_model")
     out = capsys.readouterr().out
     assert "pixel_values" in out and "text_only = True" in out
-    # A wrapper that can take a text batch prints nothing either way.
     vlm = _VlmWrapper(_Cfg())
     assert _text_trainable_core(vlm, text_intent = False) is vlm
     assert capsys.readouterr().out == ""

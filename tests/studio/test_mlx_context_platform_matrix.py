@@ -50,12 +50,9 @@ STUDIO_BACKEND = REPO_ROOT / "studio" / "backend"
 if str(STUDIO_BACKEND) not in sys.path:
     sys.path.insert(0, str(STUDIO_BACKEND))
 
-# The studio backend pulls in torch. A runner without it cannot answer any question this
-# file asks, so skip the module rather than fail collection on it.
 pytest.importorskip("torch", reason = "the studio backend imports torch at module scope")
 
-# Imported eagerly, before any fake torch can be in place: these modules are the subject
-# of the test, and importing them under a spoof would measure the spoof.
+# Imported before any fake torch, or the test would measure the spoof.
 from core.inference.inference import runtime_context_length  # noqa: E402
 from core.inference.mlx_inference import MLXInferenceBackend  # noqa: E402
 from core.inference.orchestrator import _mirrored_model_entry  # noqa: E402
@@ -63,8 +60,7 @@ import routes.inference as routes_inference  # noqa: E402
 
 WORKER_SOURCE = (STUDIO_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
 HARDWARE_PACKAGE = STUDIO_BACKEND / "utils" / "hardware"
-# The real torch, before anything here shadows it. Re-seated at the top of every spoof so
-# a second cell in one test does not build its profile against the previous fake.
+# Re-seated at the top of every spoof so a later cell does not build on the previous fake.
 _REAL_TORCH = sys.modules.get("torch")
 
 
@@ -92,8 +88,7 @@ def _load_sibling(name: str, path: Path):
     """
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    # Registered before execution: @dataclass resolves annotations through
-    # sys.modules[cls.__module__], which is None for a module that is only half loaded.
+    # Registered before execution: @dataclass resolves annotations via sys.modules.
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
@@ -108,11 +103,8 @@ _DISPATCH = _load_sibling(
     REPO_ROOT / "tests" / "studio" / "test_hardware_dispatch_matrix.py",
 )
 
-# The four simulated hosts, exactly as #7624 spells them.
 OS_KEYS = _OS_MATRIX.OS_KEYS
-# The three GPU vendors. "amd" is the ROCm wheel shape (torch.version.hip set); the AMD
-# SDK / Radeon wheel shape that leaves it unset is covered as an extra row below, because
-# it is the one that reaches IS_ROCM through torch.__version__ instead.
+# "amd" is the ROCm wheel shape; the Radeon wheel without torch.version.hip is a row below.
 VENDORS = ("nvidia", "amd", "cpu")
 CELLS = [(os_key, vendor) for os_key in OS_KEYS for vendor in VENDORS]
 CELL_IDS = [f"{os_key}-{vendor}" for os_key, vendor in CELLS]
@@ -131,8 +123,6 @@ class Expectation:
     note: str = ""
 
 
-# The machine a cell runs on. Darwin cells are arm64 (the only Apple Silicon shape);
-# everything else is x86_64. Windows-on-ARM and Intel Mac get their own rows below.
 _MACHINE = {"windows": "x86_64", "linux": "x86_64", "wsl": "x86_64", "macos": "arm64"}
 
 _NOT_A_REAL_CELL = (
@@ -140,12 +130,10 @@ _NOT_A_REAL_CELL = (
     "macOS build. Kept as an expectation about the detector's ordering, not a machine."
 )
 
-# The reasons hardware.py groups as "no GPU this torch can use" (see its own tuple in
-# _chat_only_reason): a CPU-only wheel and an unusable CUDA build are not "no_gpu".
+# A CPU-only wheel and an unusable CUDA build are not "no_gpu" (see _chat_only_reason).
 _CPU_ONLY_REASONS = ("no_gpu", "torch_cpu_build", "torch_cuda_unavailable")
 
 EXPECTED: dict[tuple[str, str], Expectation] = {
-    # --- Windows -----------------------------------------------------------------
     ("windows", "nvidia"): Expectation(
         "CUDA",
         False,
@@ -172,11 +160,9 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
         real = True,
         note = "MLX stack present and healthy, and still CPU: the gate requires Darwin.",
     ),
-    # --- Linux -------------------------------------------------------------------
     ("linux", "nvidia"): Expectation("CUDA", False, False, False, None, real = True),
     ("linux", "amd"): Expectation("CUDA", True, False, False, None, real = True),
     ("linux", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real = True),
-    # --- WSL (indistinguishable from Linux; see the dedicated tests) --------------
     ("wsl", "nvidia"): Expectation(
         "CUDA",
         False,
@@ -188,7 +174,6 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
     ),
     ("wsl", "amd"): Expectation("CUDA", True, False, False, None, real = True),
     ("wsl", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real = True),
-    # --- macOS -------------------------------------------------------------------
     ("macos", "nvidia"): Expectation(
         "CUDA",
         False,
@@ -248,8 +233,6 @@ def spoof_cell(monkeypatch, spoof_hardware):
     ):
         machine = machine or _MACHINE[os_key]
         _, system_name = _OS_MATRIX._OS_CELLS[os_key]
-        # A test that presents two cells (the linux/wsl comparison) would otherwise build
-        # the second profile against the first cell's fake torch, which has no .backends.
         if _REAL_TORCH is not None:
             monkeypatch.setitem(sys.modules, "torch", _REAL_TORCH)
         spoof_hardware(
@@ -275,8 +258,7 @@ def spoof_cell(monkeypatch, spoof_hardware):
             "torch",
             _OS_MATRIX._fake_torch(_devices_for(vendor), vendor = vendor),
         )
-        # Neither hint may leak in from the host running this: an inherited
-        # ZE_AFFINITY_MASK plus a CPU-only torch would route the cell to XPU.
+        # An inherited ZE_AFFINITY_MASK plus a CPU-only torch would route the cell to XPU.
         for var in ("ZE_AFFINITY_MASK", "UNSLOTH_FORCE_XPU", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(var, raising = False)
         return _DISPATCH._import_studio_hardware_module()
@@ -290,11 +272,6 @@ def spoof_hardware(monkeypatch):
     return _DISPATCH.spoof_hardware.__wrapped__(monkeypatch)
 
 
-# ======================================================================================
-# 1. Detection
-# ======================================================================================
-
-
 @pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids = CELL_IDS)
 def test_detected_device_per_cell(os_key, vendor, spoof_cell):
     """Each cell resolves to the DeviceType recorded above, with a healthy MLX stack."""
@@ -305,20 +282,13 @@ def test_detected_device_per_cell(os_key, vendor, spoof_cell):
         hw.DeviceType, expected.device
     ), f"{os_key}/{vendor}: expected {expected.device}, got {device!r}. {expected.note}"
     assert hw.IS_ROCM is expected.is_rocm, f"{os_key}/{vendor}: IS_ROCM"
-    # A CPU cell names one of the three reasons hardware.py itself groups: which one
-    # depends on whether the HOST has GPUs this torch cannot use, so pinning a single
-    # spelling would pass on a GPU-less runner and fail on a GPU box, and vice versa.
+    # Which CPU reason depends on whether the HOST has GPUs this torch cannot use.
     if expected.chat_only_reason == "no_gpu":
         assert hw.CHAT_ONLY_REASON in _CPU_ONLY_REASONS, f"{os_key}/{vendor}: chat-only reason"
     else:
         assert (
             hw.CHAT_ONLY_REASON == expected.chat_only_reason
         ), f"{os_key}/{vendor}: chat-only reason"
-
-
-# ======================================================================================
-# 2. Backend selection
-# ======================================================================================
 
 
 @pytest.mark.parametrize(("os_key", "vendor"), CELLS, ids = CELL_IDS)
@@ -359,20 +329,12 @@ def test_worker_selects_mlx_on_device_type_alone():
     assert guards, "no if-statement in worker.py constructs MLXInferenceBackend"
     for guard in guards:
         assert "_hw.DEVICE == _hw.DeviceType.MLX" in guard, guard
-        # A guard that also consulted the platform would make the DEVICE comparison a
-        # partial answer, and every cell above would be measuring the wrong thing.
         for forbidden in ("platform", "sys.platform", "is_apple_silicon", "machine"):
             assert forbidden not in guard, f"{forbidden!r} in the MLX guard: {guard}"
 
 
-# ======================================================================================
-# 3. The context triple
-# ======================================================================================
-
-# A model config carrying a trained window, in the shape mlx-lm attaches it.
 _MLX_MODEL = SimpleNamespace(args = SimpleNamespace(max_position_embeddings = 131072))
-# What a transformers load attaches: Unsloth writes the served length onto the model and
-# nothing else, so there is no native window to read back.
+# Unsloth writes only the served length onto a transformers model.
 _TORCH_MODEL = SimpleNamespace(max_seq_length = 4096)
 
 
@@ -433,19 +395,12 @@ def test_context_triple_reported_per_cell(os_key, vendor, requested, spoof_cell,
         assert mirrored["max_context_length"] == 131072
         assert mirrored["requested_context_length"] == requested
     else:
-        # A window is still reported -- transformers serves one -- but the model's own
-        # length and the ceiling are unknown, and reporting a guess is what the PR's
-        # frontend rule (loadedContextFields) reads as "this backend sized a window".
-        #
-        # 4096 under BOTH requests, and that is not a rounding of the pin: the request is
-        # only runtime_context_length's FALLBACK, so whatever Unsloth attached to the
-        # model wins and an 8192 pin does not show up in the report at all. The MLX rows
-        # above are the contrast -- there the request is the served window.
+        # 4096 under both requests: the request is only runtime_context_length's fallback, so
+        # the attached length wins.
         assert mirrored["context_length"] == 4096
         assert mirrored["native_context_length"] is None
         assert mirrored["max_context_length"] is None
 
-    # /v1/models, through the real projection.
     monkeypatch.setattr(
         routes_inference,
         "get_llama_cpp_backend",
@@ -482,11 +437,6 @@ def test_only_the_mlx_backend_resolves_a_native_window():
     assert set(_model_info_for(False, 0)) == {"is_mlx", "context_length"}
 
 
-# ======================================================================================
-# 4. The cells that are not measurements
-# ======================================================================================
-
-
 def test_wsl_is_indistinguishable_from_linux_in_the_detector():
     """No file under ``utils/hardware`` can tell WSL from Linux.
 
@@ -495,9 +445,7 @@ def test_wsl_is_indistinguishable_from_linux_in_the_detector():
     Windows free-VRAM cap deliberately does NOT engage under WSL) -- that is the point:
     the discrimination lives in the llama.cpp probe, not in device detection.
     """
-    # Every way a Python process can learn it is under WSL. Not the bare token "WSL":
-    # hardware.py carries two comments saying WSL is deliberately left alone, and a
-    # comment is the opposite of a discriminator.
+    # Not the bare token "WSL": hardware.py mentions it in comments.
     markers = (
         "WSL_DISTRO_NAME",
         "WSLENV",
@@ -516,11 +464,8 @@ def test_wsl_is_indistinguishable_from_linux_in_the_detector():
                 "indistinguishable from Linux here, so the wsl rows in this file became "
                 "real cells and their expectations must be re-derived."
             )
-    # And the one string that IS a Windows-only lookup, named so this test cannot be read
-    # as claiming the package never mentions Microsoft.
     assert "Microsoft" in _code_without_comments(HARDWARE_PACKAGE / "hardware.py")
     assert "_WINDOWS_DIRECTX_KEY" in (HARDWARE_PACKAGE / "hardware.py").read_text(encoding = "utf-8")
-    # And the llama.cpp side, which does, so this stays an accurate statement of scope.
     llama_cpp = (STUDIO_BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding = "utf-8")
     assert "_wsl_system_rocm_lib_dirs" in llama_cpp
 
@@ -623,6 +568,5 @@ def test_every_cell_in_the_product_has_an_expectation():
     assert unreal == {("macos", "nvidia"), ("macos", "amd")}
     for cell in unreal:
         assert EXPECTED[cell].note == _NOT_A_REAL_CELL
-    # Exactly one cell serves MLX, and it is the only one that reports the triple.
     assert {cell for cell, exp in EXPECTED.items() if exp.mlx_selected} == {("macos", "cpu")}
     assert {cell for cell, exp in EXPECTED.items() if exp.reports_triple} == {("macos", "cpu")}

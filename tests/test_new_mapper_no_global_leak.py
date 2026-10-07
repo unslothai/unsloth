@@ -20,7 +20,6 @@ def _mapper_source():
 
 
 def _extract_get_new_mapper(namespace):
-    # loader_utils imports this from .mapper, so the stand-in module globals need it too.
     from unsloth.models.mapper import build_mappers
     import unsloth.models.loader_utils as loader_utils
 
@@ -44,9 +43,7 @@ class _FakeRaw:
     decode_content = False
 
     def read1(self, amount = -1):
-        # The probe must ASK for decoding;
-        # `requests` only enables it inside `iter_content`, so a raw read of a gzip response would hand compressed bytes
-        # to `ast.parse`.
+        # requests decodes gzip only in iter_content; a raw read hands ast.parse compressed bytes.
         if not self.decode_content:
             return b"not-decoded"
         return next(self._chunks, b"")
@@ -110,18 +107,14 @@ def test_get_new_mapper_does_not_rebind_the_installed_fp8_tables(monkeypatch):
     row = installed["FLOAT_TO_FP8_ROW_MAPPER"]
     assert block and row, "the installed FP8 tables should not be empty"
 
-    # Stand in for loader_utils' module globals, which import the FP8 tables.
     namespace = {"FLOAT_TO_FP8_BLOCK_MAPPER": block, "FLOAT_TO_FP8_ROW_MAPPER": row}
     get_new_mapper = _extract_get_new_mapper(namespace)
 
     int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row = get_new_mapper()
 
-    # _get_new_mapper swallows every exception and returns empty dicts, so assert it actually ran before trusting
-    # anything below.
+    # _get_new_mapper swallows every exception, so assert it actually ran.
     assert int_to_float and float_to_int and map_to_16bit, "the fetch/exec path did not run"
 
-    # the probe has to hand the FETCHED fp8 tables back, or a newly added fp8 repo would miss both the installed tables
-    # and the probe and skip the upgrade message
     assert fp8_block and fp8_row
     assert fp8_block is not block and fp8_row is not row
 
@@ -158,8 +151,7 @@ def test_the_byte_cap_stops_the_read_instead_of_measuring_it_afterwards(monkeypa
     get_new_mapper = _extract_get_new_mapper({})
 
     assert get_new_mapper() == ({}, {}, {}, {}, {})
-    # The cap at 64KB a chunk is a few dozen chunks; anything near the guard above means the cap is not being enforced
-    # while reading.
+    # At 64KB a chunk the cap is a few dozen chunks.
     assert len(served) < 200, len(served)
 
 
@@ -172,11 +164,9 @@ def test_a_redirect_body_is_bounded_too(monkeypatch):
     def endless():
         while True:
             served.append(1)
-            if len(served) > 5_000:  # the probe should have stopped long before this
+            if len(served) > 5_000:
                 raise AssertionError("the probe kept reading a redirect body past its cap")
             yield b"x" * 65_536
-
-    # A redirect body must not be read at all, so `served` should stay empty.
 
     module = types.ModuleType("requests")
     module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)

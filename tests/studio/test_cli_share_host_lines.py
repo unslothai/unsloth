@@ -107,6 +107,5 @@ def test_launch_line_never_resolves_the_internet_facing_address():
 
 def test_run_banner_keeps_the_public_address_for_the_reachability_probe_only():
     called = _called_names(_function("run"))
-    # The remaining call feeds public reachability.
     assert called.count("_display_host_for_bind") == 1
     assert "_openable_host_for_bind" in called

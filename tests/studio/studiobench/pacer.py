@@ -47,14 +47,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
-# The field's own arrival rate: 90,262 characters in 276 seconds is 327 a second, which at 24
-# characters a chunk is one chunk every 73ms. Getting it wrong is how the earlier harness
-# failed to reproduce anything: at a 2ms gap the renderer is the bottleneck from the first
-# chunk, the run opens at 45 fps instead of 59, and there is no healthy baseline to degrade
-# FROM. The trace's shape is 'idle between chunks at the start, not idle at the end'.
+# Field arrival rate (327 chars/s, 24-char chunks every 73ms); a faster cadence saturates the renderer.
 CAD_FIELD = (24, 73)
-# For the small rungs, where the field cadence would spend four minutes streaming a reply nobody
-# is measuring the cadence of.
 CAD_FAST = (64, 8)
 
 CADENCES = {"field": CAD_FIELD, "fast": CAD_FAST}
@@ -71,12 +65,9 @@ class Script:
     chunk_chars: int = CAD_FIELD[0]
     gap_ms: int = CAD_FIELD[1]
     model: str = "studiobench-pacer"
-    # Emitted first, so a driver can prove the stream it is watching is the one it asked for rather
-    # than a leftover from the previous cell.
+    # Emitted first so a driver can tell this stream from a leftover of the previous cell.
     tag: str = ""
-    # Set by the driver to stop the pacer mid-reply for the stop-generation action. The socket is
-    # kept OPEN and idle rather than closed, because a close is a different event from a cancel and
-    # the app distinguishes them.
+    # Holds mid-reply for stop-generation; the socket stays open since close and cancel differ in the app.
     hold_after_chars: Optional[int] = None
 
 
@@ -99,12 +90,8 @@ class StreamStats:
     bytes_sent: int = 0
     reasoning_chars_sent: int = 0
     content_chars_sent: int = 0
-    # How often the deficit scheduler had to send more than one chunk to catch up, and the worst
-    # shortfall. Zero here means no backpressure at all; a max_deficit of 40 means the socket was
-    # blocked for three seconds.
     bursts: int = 0
     max_deficit: int = 0
-    # Time spent inside a blocking write. This IS the backpressure, measured rather than inferred.
     write_block_ms: float = 0.0
     keepalives: int = 0
     completed: bool = False
@@ -112,8 +99,6 @@ class StreamStats:
     held: bool = False
     error: Optional[str] = None
     duration_ms: Optional[float] = None
-    # The cadence achieved against the one asked for: a gap of 91ms when 73 was requested is a
-    # machine that could not keep up, and it belongs next to the numbers it distorted.
     requested_gap_ms: int = 0
     achieved_gap_ms: Optional[float] = None
 
@@ -141,8 +126,6 @@ class PacerState:
         self.stats: list[StreamStats] = []
         self.requests_seen = 0
         self.model_ids: list[str] = ["studiobench-pacer"]
-        # Flipped by the driver to release a held stream (the stop-generation action asserts the app's
-        # cancel, so the pacer must sit still while it happens).
         self.release = threading.Event()
 
     def set_script(self, script: Script) -> None:
@@ -194,15 +177,13 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "studiobench-pacer"
 
-    # Quiet: a per-request line on stderr at 24 characters a chunk is 4,000 lines a reply.
+    # Quiet: per-request logging would print thousands of lines per reply.
     def log_message(self, fmt, *args) -> None:  # noqa: A003
         pass
 
     @property
     def state(self) -> PacerState:
         return self.server.state  # type: ignore[attr-defined]
-
-    # ── plumbing ────────────────────────────────────────────────────
 
     def _json(self, code: int, body: dict) -> None:
         raw = json.dumps(body).encode("utf-8")
@@ -287,8 +268,6 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": {"message": f"no route {path}"}})
 
-    # ── the stream ──────────────────────────────────────────────────
-
     def _stream(self, body: dict) -> None:
         script = self.state.get_script()
         with self.state.lock:
@@ -303,8 +282,6 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
         if not body.get("stream", True):
-            # A non-streaming request is a bug in the driver, not a mode: every mechanism this tool measures
-            # is on the streaming path.
             self._json(
                 400,
                 {
@@ -321,18 +298,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache, no-transform")
         self.send_header("Connection", "keep-alive")
-        # CHUNKED, explicitly. On HTTP/1.1 a response with neither Content-Length nor Transfer-Encoding
-        # is a keep-alive response of unknown length, and the reader blocks forever waiting for a body
-        # that already arrived, measured here as a client hanging past a 60s timeout having received
-        # every byte. Uvicorn, which Unsloth's backend streams through, sends chunked for a
-        # StreamingResponse, so this is also the production framing.
+        # Explicit chunked framing: without it HTTP/1.1 readers block forever; Uvicorn also sends chunked.
         self.send_header("Transfer-Encoding", "chunked")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
-        # The role chunk first, as every OpenAI-compatible server sends it. The app tolerates its
-        # absence, but its presence makes the first delta an APPEND rather than a create, which is the
-        # path every chunk after it takes.
+        # Role chunk first so the first delta takes the append path like every later chunk.
         chunks: list[tuple[str, str]] = []
         for piece in _split(script.reasoning, script.chunk_chars):
             chunks.append(("reasoning", piece))
@@ -347,8 +318,7 @@ class _Handler(BaseHTTPRequestHandler):
             last_activity = time.monotonic()
             while sent < len(chunks):
                 now = time.monotonic()
-                # DEFICIT SCHEDULING: how many chunks SHOULD have gone out by now, from wall clock alone; send
-                # the shortfall in one burst. Never sleep(gap) per chunk.
+                # Deficit scheduling: send the wall-clock shortfall in one burst, never sleep(gap) per chunk.
                 should_have_sent = int((now - t0) / gap_s)
                 deficit = min(should_have_sent, len(chunks)) - sent
                 if deficit <= 0:
@@ -356,8 +326,6 @@ class _Handler(BaseHTTPRequestHandler):
                         self._write(b": keep-alive\n\n", stats)
                         stats.keepalives += 1
                         last_activity = now
-                    # Sleep to the next boundary, not a fixed tick: waking late is the SIGNAL, and the burst on the
-                    # next pass is what a real backend does when a backed-up socket clears.
                     target = t0 + (sent + 1) * gap_s
                     time.sleep(max(0.0, min(target - now, KEEPALIVE_S)))
                     continue
@@ -368,9 +336,7 @@ class _Handler(BaseHTTPRequestHandler):
                 for _ in range(deficit):
                     kind, piece = chunks[sent]
                     if kind == "reasoning":
-                        # `content: ""` alongside, exactly as the backend's own `_gguf_chat_delta_line` emits. Without
-                        # it the app takes a different delta-accumulation branch and the cumulative <think> buffer is
-                        # assembled by a path the shipping build never uses.
+                        # Empty content as _gguf_chat_delta_line emits; without it the app takes another branch.
                         delta = {"reasoning_content": piece, "content": ""}
                         stats.reasoning_chars_sent += len(piece)
                     else:
@@ -394,19 +360,14 @@ class _Handler(BaseHTTPRequestHandler):
                     script.hold_after_chars is not None
                     and stats.chars_sent >= script.hold_after_chars
                 ):
-                    # HOLD, do not close: the stop-generation action needs the app visibly mid-stream while it
-                    # presses stop, and closing would end the stream on its own so the action would measure a
-                    # stream that had already finished. The keep-alives make the hold indistinguishable from a
-                    # model thinking.
+                    # Hold, do not close: stop-generation needs the app visibly mid-stream.
                     stats.held = True
                     while not self.state.release.wait(KEEPALIVE_S):
                         self._write(b": keep-alive\n\n", stats)
                         stats.keepalives += 1
                     break
 
-            # BOTH terminal signals: `streamChatCompletions` throws StreamInterruptedError at EOF unless it
-            # saw a finish_reason or a [DONE], so sending one and not the other measures the app's error
-            # path and calls it a benchmark.
+            # Send both finish_reason and [DONE]; streamChatCompletions throws at EOF without one of them.
             self._write(_sse(_chunk_frame(request_id, model, {}, finish_reason = "stop")), stats)
             prompt_tokens = max(1, len(script.reasoning) // 4)
             completion_tokens = max(1, stats.chars_sent // 4)
@@ -431,8 +392,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._end_chunked(stats)
             stats.completed = True
         except (BrokenPipeError, ConnectionResetError, socket.timeout) as exc:
-            # The app cancelled, or the relay went away. A first-class outcome, not an error: the
-            # stop-generation action produces exactly this.
             stats.disconnected = True
             stats.error = f"{type(exc).__name__}: {exc}"
         except Exception as exc:  # noqa: BLE001
@@ -505,8 +464,6 @@ class Pacer:
             pass
         if self._thread is not None:
             self._thread.join(timeout = 5)
-
-    # ── driver-side control ─────────────────────────────────────────
 
     def load(
         self,
@@ -637,8 +594,6 @@ def check_planned_streams(streams: list[dict], planned: list[dict]) -> dict:
         "checked": bool(planned),
         "planned_turns": len(planned),
         "turns": turns,
-        # The throwaway turns and any retry, kept so a reader can see what else the fixture served
-        # without mistaking it for a planned turn that failed.
         "extra": remaining,
         "reason": None if ok else "; ".join(t["reason"] for t in failures),
     }
@@ -706,8 +661,6 @@ def _selftest() -> int:
         stats = pacer.last_stats()
         assert stats and stats["completed"], f"stream did not complete: {stats}"
         expected = pacer.expected_duration_ms(reasoning, content, "fast")
-        # The deficit scheduler's whole promise: duration is set by wall clock, not by how fast the
-        # reader is. Generous bound because a loaded CI box is the case it must hold in.
         assert (
             elapsed_ms >= expected * 0.75
         ), f"stream finished in {elapsed_ms:.0f}ms, faster than the {expected:.0f}ms cadence"
@@ -715,7 +668,6 @@ def _selftest() -> int:
             elapsed_ms <= expected * 2.5 + 1000
         ), f"stream took {elapsed_ms:.0f}ms against a {expected:.0f}ms cadence"
 
-        # /v1/models, which the SPA's model list may probe.
         models = json.loads(urllib.request.urlopen(f"{pacer.base_url}/models", timeout = 10).read())
         assert models["data"][0]["id"] == "studiobench-pacer", models
 
@@ -726,20 +678,13 @@ def _selftest() -> int:
             f"{stats['bursts']} bursts, max deficit {stats['max_deficit']}"
         )
 
-        # PHASE 2: the deficit claim itself. A stalled reader must NOT slow the stream down; it must
-        # come back to a burst and the run must still end on wall clock, the difference between
-        # measuring a renderer and measuring a server that waits for one.
         pacer.reset()
-        # Big enough to exhaust the loopback send buffer, which autotunes to `wmem_max` (4MB on this
-        # kernel). A 400KB reply does not block a loopback write however long the reader sleeps.
+        # Large enough to exhaust the loopback send buffer (wmem_max autotune) so writes actually block.
         body = "D" * 12_000_000
         cad = {"chunk_chars": 12_000, "gap_ms": 1}
         pacer.load("", body, tag = "backpressure", **cad)
         conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # A small receive buffer is what makes this a test: with the default buffer the kernel absorbs a
-        # 17KB reply whole, the pacer's writes never block and there is correctly no deficit, which the
-        # first version of this check measured and wrongly called a failure. Backpressure needs a reader
-        # that cannot keep up AND a pipe that fills.
+        # A small receive buffer is needed so the pipe fills and the pacer's writes block.
         conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
         conn.settimeout(60)
         conn.connect((pacer.host, pacer.port))
@@ -759,8 +704,6 @@ def _selftest() -> int:
             + payload
         )
         started = time.monotonic()
-        # Read nothing for a stretch several gaps long, then drain: the socket buffer absorbs it, so the
-        # pacer keeps its own clock and owes a shortfall when it next looks.
         time.sleep(0.4)
         conn.setblocking(True)
         seen = b""
@@ -778,11 +721,7 @@ def _selftest() -> int:
             "a 400ms reader stall produced no deficit burst, so the pacer is sleeping per chunk "
             f"rather than scheduling against wall clock: {s2}"
         )
-        # The honest form of the machine-independence claim. No scheduler can make a stream finish
-        # faster than the reader consumes it, so total duration is NOT bounded by the cadence when the
-        # reader is the throughput limit. What is checked is narrower: the pacer adds no delay beyond
-        # the cadence, so every millisecond of overrun is accounted for by time blocked in a write.
-        # Sleeping a gap per chunk instead, the overrun would exceed the blocked time by the stall.
+        # Duration cannot beat a slow reader; check that every ms of overrun is time blocked in a write.
         unblocked_ms = stalled_ms - s2["write_block_ms"]
         assert unblocked_ms <= expected2 * 2.5 + 1000, (
             f"the stream spent {unblocked_ms:.0f}ms not blocked on a write, against a "

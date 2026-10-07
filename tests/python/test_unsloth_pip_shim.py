@@ -54,8 +54,7 @@ class _BakedImage:
         self._mod = mod
 
     def __contains__(self, name):
-        # transformers is baked too; it is out of _KEEP only because the sidecar
-        # replaces its VERSION rather than the distribution
+        # transformers is out of _KEEP only because the sidecar replaces its version.
         if name == "transformers":
             return True
         return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
@@ -77,9 +76,7 @@ def shim(tmp_path, monkeypatch):
         raise _Exec(path, argv)
 
     monkeypatch.setattr(mod.os, "execv", _fake_execv)
-    # the shim now skips a protected package only when it is really installed, so pin
-    # the fully baked image here: otherwise these assertions read the CI venv, which
-    # has no torchcodec, and pass or fail on the runner rather than on the shim
+    # Pin the fully baked image so results do not depend on the CI venv.
     monkeypatch.setattr(mod, "_installed_names", lambda: _BakedImage(mod))
     mod._marker_path = marker
     return mod
@@ -132,7 +129,6 @@ KEPT = object()
     "args, expected",
     [
         pytest.param(["-e", UNSLOTH_VCS, "snac"], ["snac"], id = "sep-protected"),
-        # a protected editable drops the flag WITH its value: never a dangling `-e`
         pytest.param(["-e", UNSLOTH_VCS], None, id = "sep-only-protected-noop"),
         pytest.param(["-e", "./localpkg"], KEPT, id = "sep-unprotected-kept"),
         pytest.param(["--editable=" + UNSLOTH_VCS, "snac"], ["snac"], id = "inline-protected"),
@@ -287,7 +283,6 @@ def test_nested_requirement_transformers_pin_recorded(shim, tmp_path):
 
 
 def test_attached_short_requirement_file_filtered(shim, tmp_path):
-    # attached `-rreqs.txt` must filter the file AND count as a target, or the cell no-ops
     req = tmp_path / "reqs.txt"
     req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
     execd, _ = _run(shim, "pip", ["-r" + str(req)])
@@ -356,7 +351,6 @@ def test_vcs_url_without_egg_unprotected_kept(shim):
     assert execd == [url], execd
 
 
-# remote requirement/constraint files are refused: their pins cannot be inspected first
 R_URL = "https://example.com/reqs.txt"
 
 
@@ -385,9 +379,6 @@ def test_nested_remote_include_dropped(shim, tmp_path):
     assert "example.com" not in filtered and "://" not in filtered
 
 
-# resolver-wide reinstall / ignore-installed flags cannot rebuild satisfied baked deps
-
-
 @pytest.mark.parametrize(
     "args, expected, expected_marker",
     [
@@ -414,7 +405,6 @@ SDIST_URL = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
         pytest.param([SDIST_URL, "snac"], ["snac"], id = "url-protected"),
         pytest.param(["torch-2.11.0.tar.gz"], None, id = "bare-protected"),
         pytest.param(["./transformers-4.55.0.zip", "snac"], ["snac"], id = "zip-protected"),
-        # a hyphenated protected name must survive the sdist hyphen split
         pytest.param(["flashinfer-python-0.5.0.tar.gz"], None, id = "hyphenated-name"),
         pytest.param(["numpy-2.1.0.tar.gz"], KEPT, id = "unprotected-kept"),
     ],
@@ -434,7 +424,6 @@ def test_uv_plural_constraints_filtered(shim, tmp_path):
     assert "torch" not in filtered
 
 
-# --upgrade-strategy eager would let a kept target rebuild satisfied baked deps
 @pytest.mark.parametrize(
     "args, expected",
     [
@@ -450,8 +439,7 @@ def test_upgrade_strategy_forms(shim, args, expected):
     assert execd == expected, execd
 
 
-# every forwarded install carries a constraints file, so an incompatible dependency
-# fails loudly instead of replacing the wheel
+# Every forwarded install carries a constraints file.
 def _raw_execd(shim, tool, args):
     argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
     with pytest.MonkeyPatch.context() as mp:
@@ -506,8 +494,7 @@ def test_noop_install_gets_no_constraints(shim):
     assert execd is None
 
 
-# pip expands ${UPPERCASE} in requirements files after the shim classifies the literal
-# text, so classification must expand the same way or `${PKG}==` walks past _KEEP
+# pip expands ${VAR} in requirements files, so classification must too.
 def test_env_expanded_protected_requirement_dropped(shim, tmp_path, monkeypatch):
     monkeypatch.setenv("PKG", "torch")
     req = tmp_path / "reqs.txt"
@@ -535,8 +522,7 @@ def test_unset_env_reference_left_verbatim(shim, tmp_path, monkeypatch):
     assert execd == ["-r", str(req)], execd
 
 
-# a filtered-copy write failure must fail CLOSED: forwarding the original hands pip
-# exactly what must be filtered
+# Must fail closed: forwarding the original passes unfiltered pins to pip.
 def test_filter_write_failure_refuses_original_file(shim, tmp_path, monkeypatch):
     req = tmp_path / "reqs.txt"
     req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
@@ -549,10 +535,7 @@ def test_filter_write_failure_refuses_original_file(shim, tmp_path, monkeypatch)
         shim._filter_requirements_file(str(req))
 
 
-# transformers is already out of the real arguments by the time the marker is written,
-# so a swallowed failure reported a plain success while the model cells went on
-# importing the baked version. It must warn instead: aborting would turn an unwritable
-# path the user cannot act on into a hard notebook failure, but silence is worse.
+# Must warn, not abort or stay silent: transformers is already dropped from the args.
 def test_marker_write_failure_warns_and_does_not_claim_success(shim, monkeypatch, capsys):
     def denied(*args, **kwargs):
         raise OSError(30, "Read-only file system")
@@ -565,8 +548,7 @@ def test_marker_write_failure_warns_and_does_not_claim_success(shim, monkeypatch
     assert "will activate its sidecar" not in err.out
 
 
-# dirname() is "" for a bare relative MARKER and makedirs("") raises FileNotFoundError,
-# an OSError: without the guard, failing closed would turn that config into a hard abort
+# makedirs("") raises for a bare relative MARKER.
 def test_bare_relative_marker_still_records(shim, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(shim, "MARKER", "requested_transformers")
@@ -587,10 +569,7 @@ def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypa
     assert path == str(req) and recorded is None and dropped == []
 
 
-# the constraints file is the ONLY thing holding the baked stack when a forwarded
-# package pulls an incompatible transitive pin, and `_extras_only_target` forwards a
-# protected `name[extras]` because of it, so its write must fail CLOSED too instead of
-# reading like "nothing to protect"
+# The constraints file is the only guard on transitive pins, so its write must fail closed.
 def test_protected_constraints_write_failure_refuses_install(shim, monkeypatch):
     _fake_distributions(monkeypatch, ("torch", "2.11.0"))
 
@@ -611,8 +590,7 @@ def test_protected_metadata_enumeration_failure_refuses_install(shim, monkeypatc
         _raw_execd(shim, "pip", ["snac"])
 
 
-# an interrupted install leaves a `.dist-info` with no METADATA behind, and that one
-# unreadable dist must not take the pins for every other package down with it
+# An interrupted install's .dist-info without METADATA must not drop the other pins.
 def test_one_unreadable_dist_does_not_drop_the_other_pins(shim, monkeypatch):
     class _BrokenDist:
         @property
@@ -633,11 +611,10 @@ def test_one_unreadable_dist_does_not_drop_the_other_pins(shim, monkeypatch):
     assert pins == ["torch==2.11.0"], pins
 
 
-# uv --exact is an exact SYNC: it removes packages outside the kept target's closure
+# uv --exact removes packages outside the kept target's closure.
 
 
-# a local project dir naming a protected package needs its name from the project
-# metadata: a same-version dev build slips past the constraints file
+# A local project's name comes from its metadata; a same-version dev build slips past constraints.
 def _make_local_project(tmp_path, dirname, project_name):
     proj = tmp_path / dirname
     proj.mkdir()
@@ -679,8 +656,7 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
     assert execd == [str(plain)], execd
 
 
-# every uv/pip value-taking flag must be in _VALUE_FLAGS, or its VALUE is misread as
-# an install target (`--extra torch snac` swallowed snac behind a dangling --extra)
+# Unknown value-taking flags make their value read as an install target.
 @pytest.mark.parametrize(
     "tool, flag, value",
     [
@@ -690,7 +666,7 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
         pytest.param("uv", "--exclude-newer", "2026-01-01", id = "uv-exclude-newer"),
         pytest.param("uv", "-b", "build-constraints.txt", id = "uv-build-constraints-short"),
         pytest.param("uv", "--prerelease-package", "snac", id = "uv-prerelease-package"),
-        # uv 0.12 added `uv pip install --output-format text|json`, which failed the image build
+        # Added in uv 0.12.
         pytest.param("uv", "--output-format", "json", id = "uv-output-format"),
         pytest.param("pip", "--proxy", "http://proxy:3128", id = "pip-proxy"),
         pytest.param("pip", "--retries", "3", id = "pip-retries"),
@@ -722,7 +698,6 @@ def test_extra_value_is_not_a_protected_target(shim):
 
 
 def test_uv_per_package_value_flags_classified(shim):
-    # the whole family, so the next sibling uv adds fails here, not in the image build
     known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
     family = {
         "--config-settings-package",
@@ -753,9 +728,7 @@ def _value_flags_from_help(cmd):
     return flags
 
 
-# opt-in: repo CI runs whatever pip/uv are current, so a hard assert would redden every
-# upstream flag addition. The image build's --unsloth-selfcheck-value-flags is
-# authoritative, being run against the baked tools.
+# Opt-in: CI runs current pip/uv; the image build's selfcheck is authoritative.
 _DRIFT_OPT_IN = os.environ.get("UNSLOTH_SHIM_FLAG_DRIFT_CHECK") == "1"
 
 
@@ -776,8 +749,7 @@ def test_uv_help_value_flags_all_classified(shim):
     assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"
 
 
-# a VCS @ref may contain a slash (@feature/foo); strip it before the last-segment
-# split, else the ref's basename dodges _KEEP
+# A VCS @ref may contain a slash; strip it before taking the last segment.
 @pytest.mark.parametrize(
     "url",
     [
@@ -803,8 +775,7 @@ def test_vcs_slash_ref_unprotected_kept(shim):
     assert execd == [url], execd
 
 
-# the constraints pair must go BEFORE `--`: both pip and uv parse everything after
-# the terminator as a requirement and reject "Invalid requirement: '--constraint'"
+# Constraints must go before `--`, which pip and uv treat as the start of requirements.
 def _execd_full(shim, tool, args):
     argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
     with pytest.MonkeyPatch.context() as mp:
@@ -840,8 +811,7 @@ def test_without_a_terminator_the_pair_is_still_appended_last(shim, tool):
     assert execd[-2] == "--constraint", execd
 
 
-# PEP 503: a name compares equal under any run of `-`, `_` or `.`, so `unsloth.zoo`
-# IS `unsloth-zoo`. Every _canon early return must normalise, not just collapse "_".
+# PEP 503: names compare equal under any run of -, _ or .
 @pytest.mark.parametrize(
     "token",
     [
@@ -878,8 +848,7 @@ def test_normalization_does_not_merge_distinct_distributions(shim):
         assert shim._canon(token) not in shim._KEEP, token
 
 
-# --group and --requirements-from-script ARE the install target, with no package on
-# the command line; as ordinary option/value pairs the shim no-op'd while printing "ok"
+# --group and --requirements-from-script are the install target themselves.
 @pytest.mark.parametrize(
     "args",
     [
@@ -915,14 +884,7 @@ def test_flag_only_or_fully_protected_cells_still_no_op(shim, args):
         shim.main()
 
 
-# --- hashed lock files: a requirement continues across physical lines --------------
-# `pip-compile --generate-hashes` / `uv pip compile --generate-hashes` emit
-#     torch==2.11.0 \
-#         --hash=sha256:... \
-#         --hash=sha256:...
-# Filtering physical lines dropped only the first row and published the orphaned
-# `--hash` rows; uv then refuses the whole file with
-# "Unexpected '-', expected '-c', '-e', '-r' or the start of a requirement".
+# Hashed lock files continue a requirement across lines with `\` and --hash rows.
 HASHED_LOCK = (
     "colorama==0.4.6 \\\n"
     "    --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \\\n"
@@ -942,7 +904,6 @@ def test_hashed_requirement_drops_its_continuation_lines(shim, tmp_path):
     execd, _ = _run(shim, "uv", ["-r", str(req)])
     assert execd is not None and execd[0] == "-r", execd
     filtered = Path(execd[1]).read_text(encoding = "utf-8")
-    # no ORPHANED option row: every `--hash` must continue the line above it
     prev = ""
     for line in filtered.splitlines():
         if line.strip().startswith("--hash"):
@@ -950,7 +911,6 @@ def test_hashed_requirement_drops_its_continuation_lines(shim, tmp_path):
         prev = line
     assert "torch" not in filtered, filtered
     assert "1111111111111111" not in filtered and "2222222222222222" not in filtered, filtered
-    # the untouched requirements keep BOTH their pin and every hash row
     assert "colorama==0.4.6 \\" in filtered, filtered
     assert "08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44" in filtered
     assert "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6" in filtered
@@ -982,16 +942,12 @@ def test_continued_protected_requirement_leaves_no_orphan_specifier(shim, tmp_pa
     assert "snac==1.2.0" in filtered, filtered
 
 
-# --- extras of a baked package ----------------------------------------------------
-# `pip install "datasets[audio]"` against an installed datasets ADDS the extra's
-# dependencies, it does not replace datasets, so dropping the token lost every one of
-# them and still printed "ok". The injected --constraint pins the baked version.
+# Installing extras of a baked package adds deps; --constraint pins the baked version.
 @pytest.mark.parametrize(
     "arg, expected",
     [
         pytest.param("datasets[audio]", "datasets[audio]", id = "bare"),
         pytest.param("unsloth[studio]", "unsloth[studio]", id = "unsloth-studio"),
-        # the pin is what would replace the bake, so only the pin is dropped
         pytest.param("datasets[audio]==4.3.0", "datasets[audio]", id = "pinned"),
         pytest.param("datasets[audio, vision]", "datasets[audio, vision]", id = "multi"),
         pytest.param(
@@ -1009,7 +965,6 @@ def test_extras_of_baked_package_are_forwarded(shim, arg, expected):
 @pytest.mark.parametrize(
     "arg",
     [
-        # a direct reference REPLACES the distribution, extras or not
         "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
         "torch[opt] @ https://example.com/torch-2.11.0-py3-none-any.whl",
     ],
@@ -1030,11 +985,7 @@ def test_extras_of_baked_package_in_requirements_file(shim, tmp_path):
     assert "snac==1.2.0" in filtered, filtered
 
 
-# transformers is the one protected name outside _KEEP, because the sidecar replaces its
-# VERSION rather than the distribution. `pip install "transformers[deepspeed]"` is a
-# documented HF install line, so the extras must be forwarded here exactly as they are
-# for every _KEEP package; dropping the whole token recorded the pin and then printed
-# "nothing to install ... ok" while deepspeed never arrived.
+# transformers extras must be forwarded like _KEEP packages.
 @pytest.mark.parametrize(
     "arg, expected, expected_marker",
     [
@@ -1059,7 +1010,6 @@ def test_transformers_extras_are_forwarded_and_the_pin_is_still_recorded(
 
 
 def test_transformers_extras_direct_reference_still_dropped(shim):
-    # a direct reference REPLACES transformers, which is what the sidecar is for
     execd, marker = _run(
         shim, "pip", ["transformers[torch] @ git+https://github.com/huggingface/transformers"]
     )
@@ -1087,12 +1037,7 @@ def test_transformers_extras_are_dropped_when_transformers_is_not_installed(shim
     assert marker == "5.5.0", marker
 
 
-# unsloth_nb_compat and unsloth_run PREPEND an activated transformers sidecar to
-# PYTHONPATH, and each sidecar is built with `uv pip install --target`, so it carries
-# a real transformers-X.dist-info. A bare distributions() walks sys.path in order and
-# would report the sidecar's transformers first, pinning the SIDECAR version into the
-# protected constraints. The pin is what stops the resolver moving the shared base
-# install, so pinning the sidecar version defeats it for every later kernel.
+# A sidecar's transformers dist-info comes first on PYTHONPATH and must not set the pin.
 def _sidecar_dir(tmp_path, version):
     d = tmp_path / f"t_{version.replace('.', '_')}"
     info = d / f"transformers-{version}.dist-info"
@@ -1109,7 +1054,6 @@ def test_protected_pins_ignore_a_sidecar_on_pythonpath(shim, tmp_path, monkeypat
     """The pin must name the BAKED transformers, not the activated sidecar."""
     baked = _sidecar_dir(tmp_path / "base", "4.57.6")
     sidecar = _sidecar_dir(tmp_path / "sc", "5.5.0")
-    # the real thing: sidecar first on the search path, venv second
     monkeypatch.setattr(shim, "_base_site_packages", lambda: [str(baked)])
     monkeypatch.syspath_prepend(str(sidecar))
 
@@ -1130,11 +1074,7 @@ def test_base_site_packages_never_returns_a_pythonpath_entry(shim, tmp_path, mon
     assert str(sidecar) not in scope, scope
 
 
-# uv's command path is `uv [opts] pip [opts] install`, but it has other subcommands
-# ending in `install`. Selecting the first bare "install" claimed those too: `uv python
-# install 3.13` and `uv tool install ruff` got the protected --constraint appended,
-# which neither accepts, and `uv tool install transformers` was filtered to nothing and
-# reported ok, so NO tool was installed at all.
+# Only `uv pip install` is guarded, not `uv tool install` or `uv python install`.
 def _full_argv(shim, argv):
     """The whole command line the shim would run, or None when it ran nothing."""
     with pytest.MonkeyPatch.context() as mp:
@@ -1188,18 +1128,12 @@ def test_a_protected_target_under_uv_tool_install_is_not_swallowed(shim, monkeyp
     assert ran[-1] == "transformers", ran
 
 
-# uv accepts its global options between `pip` and `install`, e.g.
-# `uv pip --directory /tmp install torch==9.9`. Locating the subcommand by stepping
-# back over anything starting with "-" stopped at the VALUE (/tmp) and gave up, so the
-# install ran with no filtering and no protected constraints -- free to replace the
-# baked torch/CUDA stack. Missing the command is far worse than over-matching it.
+# uv globals with values may sit between `pip` and `install`.
 @pytest.mark.parametrize(
     "argv",
     [
         ["uv", "pip", "--directory", "/tmp", "install", "snac"],
-        # aimed AT the guarded venv on purpose: an interpreter elsewhere is a
-        # destination and is deliberately bypassed, which would not exercise the
-        # subcommand search this test is about
+        # Targets the guarded venv; other interpreters are bypassed on purpose.
         ["uv", "pip", "--python", "/opt/unsloth-venv/bin/python", "install", "snac"],
         ["uv", "pip", "--cache-dir", "/c", "--color", "never", "install", "snac"],
         ["uv", "pip", "--directory=/tmp", "install", "snac"],
@@ -1224,11 +1158,7 @@ def test_a_protected_pin_behind_a_value_option_is_still_held(shim, monkeypatch):
     assert ran is None or "torch==9.9" not in ran, f"the baked torch was replaceable: {ran}"
 
 
-# `!pip install -qr requirements.txt` is a standard notebook idiom, and a short-option
-# CLUSTER reached no handler: only tok[:2] is tested against the attached-value flags,
-# the exact-token comparisons never match, and the fallback keeps any unrecognised
-# `-...` verbatim. The ORIGINAL requirements file was forwarded, unfiltered and with
-# nothing recorded, so the sidecar was never activated for the pin it contained.
+# Short-option clusters like -qr must be parsed.
 @pytest.mark.parametrize(
     "cluster",
     ["-qr", "-Ur", "-vr", "-nr", "-Ir", "-qqr"],
@@ -1251,8 +1181,7 @@ def test_an_attached_short_value_is_left_alone(shim, monkeypatch, tmp_path):
     """`-rfoo.txt` already worked; splitting clusters must not break it."""
     _fake_distributions(monkeypatch, ("transformers", "4.57.6"))
     reqs = tmp_path / "reqs.txt"
-    # it needs a protected pin, else nothing is rewritten and forwarding the ORIGINAL
-    # path is the correct answer, which makes the assertion below vacuous
+    # Needs a protected pin, else forwarding the original is correct.
     reqs.write_text("transformers==5.5.0\nsnac==1.2.1\n", encoding = "utf-8")
     ran = _full_argv(shim, ["pip", "install", f"-r{reqs}"])
     assert ran is not None and str(reqs) not in ran, ran
@@ -1266,9 +1195,7 @@ def test_reinstall_flags_inside_a_cluster_are_still_handled(shim, monkeypatch, t
     assert "-I" not in ran and "-qI" not in ran, ran
 
 
-# `uv pip sync` UNINSTALLS everything absent from the file, so unlike install there is
-# nothing to strip: leaving a protected package out of the file is exactly what deletes
-# it, and --constraint bounds versions rather than preventing removals.
+# `uv pip sync` uninstalls anything absent from the file, so it cannot be filtered.
 @pytest.mark.parametrize(
     "argv",
     [
@@ -1305,15 +1232,7 @@ def test_a_byte_order_mark_does_not_hide_the_first_pin(shim, monkeypatch, tmp_pa
     )
 
 
-# _is_protected drops a package only when it is REALLY installed. The Dockerfile lets
-# the torchcodec bake and the non-amd64 vLLM bake fail on purpose, so without that
-# check a recovery `pip install vllm` prints "kept baked versions, skipped: vllm" over
-# an image that has no vLLM and the GRPO fast_inference path stays broken.
-#
-# Nothing exercised it, and not merely by omission: the shared `shim` fixture pins
-# _installed_names to _BakedImage, "an image where every bake succeeded", which is
-# exactly the case where the check cannot fire. These override it, because the whole
-# point of the check is the image where a bake DID fail.
+# The Dockerfile lets the torchcodec / non-amd64 vLLM bakes fail; the fixture assumes none did.
 def test_a_baked_name_that_is_not_installed_is_still_forwarded(shim, monkeypatch):
     assert "vllm" in shim._KEEP, "this test is meaningless if vllm is not protected"
     _fake_distributions(monkeypatch, ("torch", "2.11.0"))
@@ -1331,11 +1250,7 @@ def test_a_baked_name_that_IS_installed_is_still_dropped(shim, monkeypatch):
     assert ran is None or "vllm" not in ran, ran
 
 
-# A value-taking flag the scanner does not know is read as an install TARGET, so the
-# real target is never examined: the install forwards with the protected package kept
-# and no --constraint at all. The `=` form is unaffected, which is why this hides.
-# pip's --help prints one spelling per option, so seven hidden ALIASES were invisible
-# to a help scrape; --python-preference is a uv global documented in no help output.
+# Unknown value flags hide the real target; pip help lists one alias per option.
 @pytest.mark.parametrize(
     "argv",
     [
@@ -1376,11 +1291,7 @@ def test_the_value_flag_selfcheck_cannot_certify_what_it_cannot_inspect(shim):
     assert '[REAL["uv"], "--help"]' in body, "uv globals must be checked too"
 
 
-# uv changes directory BEFORE it resolves a relative `-r`/`-c` path, so the shim has
-# to read the file from there too. Reading it from our own cwd misses, and the miss
-# is silent: _filter_requirements_file forwards the untouched relative path and uv,
-# now chdir'd, installs a file we never inspected and recorded no transformers pin
-# from. `--directory` is a uv GLOBAL, so every argv position below is valid.
+# uv chdirs before resolving relative -r/-c, so the shim must read from there.
 
 
 def _working_dir_case(tmp_path):
@@ -1472,12 +1383,7 @@ def test_pip_keeps_resolving_a_relative_requirements_file_from_the_cwd(shim, mon
     assert shim._marker_path.read_text() == "4.99.0"
 
 
-# A local project target is a filesystem lookup too: _classify_flag_target -> _canon
-# -> _local_project_name stats the directory to learn the project's real name. uv
-# stats it from ITS working directory, so resolving it from ours reports a protected
-# project as unknown and forwards it. That one is silent where the requirements-file
-# case is loud, because the injected constraint only rejects a version MISMATCH: a
-# local checkout whose version equals the baked one resolves cleanly and installs.
+# Local project names are resolved from uv's working directory too.
 
 
 def _local_project(
@@ -1572,10 +1478,7 @@ def test_a_fragment_does_not_hide_a_local_protected_project(shim, monkeypatch, t
     ), f"the baked unsloth was forwarded for replacement: {ran}"
 
 
-# --target/--prefix/--root/--python send the install to an environment this shim does
-# not guard. Filtering the baked stack out of one of those drops the packages the
-# caller actually asked for, and the "nothing to install" path then prints ok and
-# installs nothing at all.
+# --target/--prefix/--root/--python install elsewhere, so they are not filtered.
 
 BAKED_VENV = "/opt/unsloth-venv"
 
@@ -1655,11 +1558,9 @@ def test_a_sync_aimed_elsewhere_is_not_refused(shim, monkeypatch):
     [
         ["pip", "install", "torch==2.5.0"],
         ["uv", "pip", "install", "torch==2.5.0"],
-        # a bare name or version may well BE the baked interpreter, so it must not
-        # buy a bypass
+        # A bare name or version may be the baked interpreter, so it buys no bypass.
         ["uv", "pip", "install", "--python", "python3", "torch==2.5.0"],
         ["uv", "pip", "install", "--python", "3.12", "torch==2.5.0"],
-        # and a destination INSIDE the guarded venv is still the guarded venv
         [
             "pip",
             "install",
@@ -1681,12 +1582,7 @@ def test_the_baked_venv_is_still_protected(shim, monkeypatch, argv):
     ), f"the baked torch was forwarded for replacement: {ran}"
 
 
-# Each tool ignores the other's environment variables, and a bypass granted on a
-# variable the invoked tool never reads is the dangerous direction: the install lands
-# in the BAKED venv having skipped every filter. Measured against both CLIs: with
-# UV_PYTHON set, `pip install idna==3.18` reported "already satisfied" from the base
-# environment, and with PIP_PYTHON set, `uv pip install` reported "environment at:
-# <base>"; each honoured only its own.
+# pip and uv each honour only their own env vars, so a bypass must match the tool.
 @pytest.mark.parametrize(
     "tool, var",
     [
@@ -1719,12 +1615,7 @@ def test_the_other_tools_destination_variable_buys_no_bypass(shim, monkeypatch, 
     )
 
 
-# pip reads PIP_<OPTION> for EVERY option, so an install target can arrive with
-# nothing on the command line to show for it. Measured: `PIP_REQUIREMENT=r.txt pip
-# install --dry-run` reported "Would install idna-3.6" where the same command with no
-# variable reports "You must give at least one requirement to install", and
-# PIP_EDITABLE=<project> reported "Would install dummyproj26-1.2.3". Both are space
-# separated for multiple values. uv has no environment form for --requirements.
+# pip reads PIP_<OPTION> for every option, so targets can come from env.
 
 
 def _full_argv_env(shim, monkeypatch, argv):
@@ -1765,8 +1656,7 @@ def test_an_editable_hidden_in_the_environment_is_classified(shim, monkeypatch, 
 
     proj = str(tmp_path / "unsloth")
     ran, env = _full_argv_env(shim, monkeypatch, ["pip", "install", "packaging"])
-    # NOT a substring test for "unsloth": the injected constraints file we add is
-    # itself named unsloth-nb-protected-*, so that would always match
+    # Not a substring test: our constraints file is named unsloth-nb-protected-*.
     assert ran is not None, "the shim ran nothing"
     assert (
         proj not in ran and "-e" not in ran
@@ -1816,11 +1706,7 @@ def test_nothing_is_added_when_no_hidden_target_is_set(shim, monkeypatch):
     assert env is None, "the environment was rebuilt when nothing needed clearing"
 
 
-# pip's --root is a relocation PREFIX, not a destination directory: it keeps the
-# computed scheme path and re-anchors it under the root, so `--root /` is the identity
-# and still writes the venv's own site-packages. Measured with the real pip: `pip
-# install --root / idna==3.6` landed in the venv purelib, while `--root <dir>` put it
-# under that directory and left the venv untouched.
+# pip --root / is the identity relocation and still writes the venv.
 IDENTITY_ROOT = "/" + ""
 
 
@@ -1861,8 +1747,6 @@ def test_a_real_root_relocation_is_still_a_bypass(shim, monkeypatch):
     ), f"a genuine --root relocation was filtered: {ran}"
 
 
-# URL schemes are case insensitive and pip normalises them, so `name@GIT+HTTPS://...`
-# is the same direct reference as the lowercase spelling.
 @pytest.mark.parametrize(
     "spec",
     [
@@ -1903,12 +1787,7 @@ def test_an_uppercase_scheme_without_a_double_slash_is_still_classified(shim, mo
     ), f"a protected direct reference was forwarded because of scheme casing: {ran}"
 
 
-# --group (PEP 735, pip 25.3+ and uv) and --requirements-from-script (PEP 723, pip 26+,
-# which an image built today bakes because docker/Dockerfile installs pip unpinned)
-# supply install targets from a pyproject table or a script header. Nothing in the scan
-# can read those, and the injected constraints do not cover them: pip reinstalls a
-# same-version LOCAL PATH or sdist, so `unsloth @ file:///checkout` at the baked
-# version installs over the baked code.
+# --group/--requirements-from-script targets cannot be scanned or constrained.
 @pytest.mark.parametrize(
     "argv",
     [

@@ -60,8 +60,7 @@ LLAMA_DESCRIPTOR = core.ComponentDescriptor(
     sha256_asset_name = "llama-prebuilt-sha256.json",
     metadata_filename = "UNSLOTH_LLAMA_PREBUILT_INFO.json",
     user_agent = "unsloth-studio-llama-prebuilt",
-    # A GPU-selection miss reports "no prebuilt" so the caller can fall back to a source build instead of silently
-    # degrading to CPU.
+    # A GPU-selection miss reports 'no prebuilt' so the caller source-builds instead of using CPU.
     fallback_backend = None,
     server_binary_name = lambda host: "llama-server",
     runtime_bin_dir = lambda install_dir, host: install_dir / "build" / "bin",
@@ -74,7 +73,7 @@ class Component:
     def __init__(self, descriptor):
         self.descriptor = descriptor
         self.namespace = core.component_namespace(descriptor)
-        self.namespace["log"] = lambda message: None  # keep test output quiet
+        self.namespace["log"] = lambda message: None
         self.ops = core.ModuleOps(self.namespace)
 
     @property
@@ -117,8 +116,7 @@ def make_host(
             rocm_gfx = rocm_gfx,
             macos_version = macos_version,
         )
-    # Descriptor-only component: the core default host_platform_tokens hook reads .os_token/.arch_token off a plain host
-    # object.
+    # Descriptor-only component: the default host_platform_tokens hook reads .os_token/.arch_token.
     return SimpleNamespace(
         os_token = os_token,
         arch_token = arch_token,
@@ -156,14 +154,12 @@ def manifest_for(component, artifacts, **extra):
     return payload
 
 
-# ── Manifest parsing ──
 def test_parse_manifest_normalizes(component):
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(), "not-a-dict", {"os": "linux"}]), label = "m"
     )
     assert manifest["component"] == component.descriptor.component
     assert manifest["upstream_tag"] == "v1.0.0"
-    # Non-dict entries and entries without an asset name are dropped.
     assert [a["asset"] for a in manifest["artifacts"]] == ["bundle.tar.gz"]
 
 
@@ -184,14 +180,12 @@ def test_parse_manifest_rejects_unknown_schema(component):
 def test_parse_manifest_rejects_non_object(component):
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(["nope"], label = "m")
-    # An object without an 'artifacts' list is rejected too.
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(
             {"schema_version": 1, "component": component.descriptor.component}, label = "m"
         )
 
 
-# ── Selection matrix ──
 def test_select_cpu_first_match(component):
     manifest = component.ops.parse_manifest(
         manifest_for(
@@ -217,9 +211,7 @@ def test_select_respects_os_arch(component):
 
 
 def test_fallback_policy_differs_per_descriptor(component):
-    # No asset for the requested backend: whisper degrades to the CPU asset of
-    # the same release, the llama-flavored descriptor reports no prebuilt
-    # (source-build fallback).
+    # No asset for the backend: whisper degrades to CPU; the llama-flavored descriptor reports none.
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
     )
@@ -331,20 +323,17 @@ def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
     # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
     assert component.ops.macos_min_os_ok(host14, "macos-14.0") is True
     assert component.ops.macos_min_os_ok(host14, "macos-15.0") is False
-    assert component.ops.macos_min_os_ok(host14, "13.3") is True  # bare also parses
-    assert component.ops.macos_min_os_ok(host14, None) is True  # unknown -> defer
+    assert component.ops.macos_min_os_ok(host14, "13.3") is True
+    assert component.ops.macos_min_os_ok(host14, None) is True
     host_unknown = _arm_mac_host(component, None)
     assert component.ops.macos_min_os_ok(host_unknown, "macos-15.0") is True
 
 
-# ── Backend resolution ──
 def test_resolve_backend_auto_and_validation(component):
     gpu_host = make_host(component, has_usable_nvidia = True)
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = True) == "cpu"
-    # cpu-fallback wins over an explicit backend too.
     assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback = True) == "cpu"
-    # An explicit supported backend passes through untouched.
     assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback = False) == "vulkan"
     mac_host = make_host(
         component, os_token = "macos", arch_token = "arm64", is_macos = True, is_apple_silicon = True
@@ -361,7 +350,6 @@ def test_resolve_backend_auto_and_validation(component):
         component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback = False)
 
 
-# ── Checksum index: fail closed ──
 def _index_for(
     component,
     tag = "v1",
@@ -426,7 +414,6 @@ def test_expected_sha256_manifest_disagreement_fails_closed(component):
     )
 
 
-# ── Extraction guards ──
 def test_extract_archive_rejects_traversal(tmp_path):
     archive = tmp_path / "evil.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
@@ -563,7 +550,6 @@ def test_restore_tar_exec_bits(tmp_path):
     assert extracted.stat().st_mode & 0o111
 
 
-# ── Resolver payload ──
 def _fake_release(component, artifacts):
     ns = component.namespace
     manifest = component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
@@ -631,7 +617,6 @@ def test_emit_resolver_output_formats(capsys):
     assert json.loads(capsys.readouterr().out) == {"prebuilt_available": False}
 
 
-# ── Marker / fingerprint ──
 def test_install_fingerprint_is_stable_and_sensitive(component):
     kwargs = dict(
         published_repo = component.descriptor.published_repo,
@@ -668,14 +653,12 @@ def test_write_and_match_marker(component, tmp_path):
     bin_dir = component.ops.runtime_bin_dir(install_dir, host)
     bin_dir.mkdir(parents = True)
     component.ops.write_prebuilt_metadata(install_dir, selection)
-    # Marker alone is not enough:
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     (bin_dir / component.ops.server_binary_name(host)).write_bytes(b"bin")
     marker = json.loads((install_dir / component.descriptor.metadata_filename).read_text())
     assert marker["component"] == component.descriptor.component
     assert marker["install_fingerprint"] == selection.fingerprint()
     assert component.ops.existing_install_matches(install_dir, host, selection)
-    # A different selection (new sha) must force a reinstall.
     other = core.InstallSelection(
         **{
             **selection.__dict__,
@@ -708,7 +691,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
         linked_from = "/llama/build/bin",
         linked_libraries = ("libggml.so.0", "libggml-base.so.0"),
     )
-    assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
+    assert slim.fingerprint() == selection.fingerprint()
 
     fat_dir, slim_dir = tmp_path / "fat", tmp_path / "slim"
     fat_dir.mkdir(), slim_dir.mkdir()
@@ -731,8 +714,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
 
 
 def test_core_slim_hooks_default_inert(component, tmp_path):
-    # A component without its own hooks stages nothing extra and adds no resolver fields (llama's probe output must stay
-    # byte-identical).
+    # A hookless component adds nothing: llama's probe output must stay byte-identical.
     assert component.ops.resolver_payload_extra({"install_kind": "slim"}) == {}
     host = make_host(component)
     selection = object()
@@ -762,9 +744,6 @@ def test_busy_activation_restores_previous_install(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".whisper.cpp.old-*"))
 
 
-# ── Host/GPU token helpers (component-independent core functions) ──
-# Value tables moved verbatim from the llama characterization suite; these are pure functions with no
-# descriptor sensitivity, so they run unparameterized.
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -835,12 +814,12 @@ _GPU_ROWS = [
 @pytest.mark.parametrize(
     "visible,expected_indices",
     [
-        (None, [0, 1, 2]),  # no filter returns all
+        (None, [0, 1, 2]),
         ([], []),
-        (["0", "2"], [0, 2]),  # filter by index
+        (["0", "2"], [0, 2]),
         (["gpu-bbb"], [1]),  # UUID match is case insensitive
-        (["0", "0"], [0]),  # same device requested twice is deduplicated
-        (["99"], []),  # unknown token matches nothing
+        (["0", "0"], [0]),
+        (["99"], []),
     ],
 )
 def test_select_visible_gpu_rows(visible, expected_indices):
@@ -886,23 +865,21 @@ def test_host_is_blackwell_includes_datacenter_parts():
     assert core.host_is_blackwell(_caps_host(["10.3"])) is True  # B300 sm_103
     assert core.host_is_blackwell(_caps_host(["12.0"])) is True  # RTX 50 sm_120
     assert core.host_is_blackwell(_caps_host(["12.1"])) is True  # DGX Spark sm_121
-    assert core.host_is_blackwell(_caps_host(["9.0"])) is False  # Hopper
-    assert core.host_is_blackwell(_caps_host(["8.0"])) is False  # Ampere
-    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True  # highest cap wins
+    assert core.host_is_blackwell(_caps_host(["9.0"])) is False
+    assert core.host_is_blackwell(_caps_host(["8.0"])) is False
+    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True
 
 
 def test_blackwell_min_toolkit_is_sm_aware():
     # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
     f = core.blackwell_min_toolkit_for_host
-    assert f(_caps_host(["10.0"])) == (12, 8)  # B200
-    assert f(_caps_host(["12.0"])) == (12, 8)  # RTX 50
+    assert f(_caps_host(["10.0"])) == (12, 8)
+    assert f(_caps_host(["12.0"])) == (12, 8)
     assert f(_caps_host(["10.3"])) == (12, 9)  # B300
     assert f(_caps_host(["12.1"])) == (12, 9)  # DGX Spark
-    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
+    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)
 
 
-# The ops seam ──
-# ── The ops seam ──
 def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns = dict(component.namespace)
     calls = []
@@ -914,7 +891,6 @@ def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns["download_file"] = fake_download_file
     ops = core.ModuleOps(ns)
     assert ops.download_file is fake_download_file
-    # Core defaults still resolve (and come back bound) for everything else.
     assert callable(ops.fetch_json)
     with pytest.raises(AttributeError):
         _ = ops.does_not_exist_anywhere
@@ -968,10 +944,7 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
     assert len(requests) == 1
 
 
-# urllib wraps only a failure to SEND in URLError: an exception out of getresponse() or a
-# body read reaches the retry loop raw. These are what a dropped GitHub release download
-# looks like ("Remote end closed connection without response" sent a Windows install with
-# no Visual Studio to the source build on its first attempt).
+# urllib wraps only a failure to SEND in URLError; getresponse()/read errors arrive raw.
 _DROPPED_CONNECTIONS = [
     http.client.RemoteDisconnected("Remote end closed connection without response"),
     ConnectionResetError(104, "Connection reset by peer"),
@@ -1190,7 +1163,6 @@ def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
         core.walk_back_stands(marker, SimpleNamespace(is_macos = False, macos_version = None), "r2")
         is False
     )
-    # What a kept marker owes this run's plan.
     assert core.walk_back_patch({}, walk_back) == walk_back.marker_fields()
     assert core.walk_back_patch(marker, walk_back) == {}
     assert core.walk_back_patch({"walked_back_from": "r2"}, walk_back) == {

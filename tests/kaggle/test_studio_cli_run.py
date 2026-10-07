@@ -94,7 +94,6 @@ def test_the_key_is_registered_as_a_secret_before_anything_reads_the_log():
     parse_at = src.index('text.split("UNSLOTH_START_API_KEY:"')
     add_at = src.index("self.secrets.add(api_key)")
     assert parse_at < add_at, "the key must be registered where it is parsed"
-    # And the log must actually be in the bundle, or nothing redacts it.
     assert '"unsloth_run.log",' in _body("emit_evidence")
 
 
@@ -105,10 +104,7 @@ def test_gpu_use_is_measured_and_an_unmeasurable_reading_is_a_failure():
     body = _body()
     assert "baseline = nvidia_used_mib()" in body
     assert "settled = nvidia_used_mib()" in body
-    # The verdict itself moved into `cli_run_gpu_failure` when the device delta
-    # stopped being a valid ruler under --studio-concurrent, so it is DRIVEN
-    # rather than grepped -- see the rules at the end of this file. What stays
-    # here is that the assertion consults it and reports what it says.
+    # The verdict lives in cli_run_gpu_failure and is driven by the rules at the end of this file.
     assert "cli_run_gpu_failure(" in body
     assert "failures.append(failure)" in body
     verdict = _verdict()
@@ -182,8 +178,7 @@ def test_a_co_tenant_freeing_memory_does_not_read_as_a_CPU_fallback():
     failure, detail = _verdict()({}, {6841: 2628}, 2816.0, 2634.0)
     assert failure is None, failure
     assert detail["process_vram_mib"] == 2628
-    # The device delta is still RECORDED -- it is evidence, it is just not the
-    # verdict -- and it is still the number that misled.
+    # The device delta is still recorded as evidence, just not the verdict.
     assert detail["vram_delta_mib"] == -182.0
 
 
@@ -231,8 +226,7 @@ def test_the_before_sample_is_taken_before_the_launch():
     """An `apps_before` read after the server started would contain the server,
     so nothing would ever have `appeared` and every run would fail."""
     body = _body()
-    # Anchored on the sample, not one spelling of it: one nvidia_compute_apps_listing() call, so
-    # the attributed mapping and the listed pids describe the same moment.
+    # One listing call, so the attributed mapping and the listed pids describe the same moment.
     assert body.index("_listing_before = nvidia_compute_apps_listing()") < body.index(
         "subprocess.Popen"
     )

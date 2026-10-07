@@ -31,8 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
 _TESTS_DIR = REPO_ROOT / "tests"
 
-# Directories under tests/ that no shard runs, and what runs them instead. A shard losing a
-# directory would otherwise look exactly like one of these.
+# Directories under tests/ that no shard runs, and what runs them instead.
 _NOT_IN_ANY_SHARD = {
     "tests/qlora": "GPU-bound: needs real weights",
     "tests/saving": "GPU-bound: needs real weights",
@@ -116,7 +115,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
             if any(_covers(excluded, path) for excluded in _NOT_IN_ANY_SHARD):
                 continue
             if any(_covers(named, path) for named in isolated):
-                continue  # run by its own step, for a state or timing reason
+                continue
             claiming = _claiming_shards(path, shards)
             if not claiming:
                 dropped.append(path)

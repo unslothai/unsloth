@@ -62,9 +62,6 @@ def frame(
     return base
 
 
-# ── the detector fires on the thing it is for ───────────────────────
-
-
 def test_a_one_frame_collapse_to_the_placeholder_is_a_collapse() -> None:
     """The measured shape: 1722px, one frame at 226px, back to 1722px."""
     frames = [frame([1722.0])] * 3 + [frame([226.0])] + [frame([1722.0])] * 3
@@ -116,9 +113,6 @@ def test_a_collapsing_block_takes_the_scroll_height_with_it() -> None:
         + [frame([1700.0, 1700.0], scroll_height = 3400.0)] * 2
     )
     assert analyse_stream(frames)["scrollHeightDips"] == 1
-
-
-# ── and not on things that are not it ───────────────────────────────
 
 
 def test_a_still_thread_reports_nothing() -> None:
@@ -201,9 +195,6 @@ def test_content_relaid_out_above_the_anchor_is_a_shift() -> None:
     assert analyse_stream(frames)["anchorShiftPx"] == 900.0
 
 
-# ── the sweep half ──────────────────────────────────────────────────
-
-
 def test_a_sweep_over_a_thread_that_knows_its_own_size_reports_no_shift() -> None:
     tops = [0.0, 1700.0, 3400.0]
     frames = [{"tops": tops, "scrollHeight": 5100.0, "heights": [1700.0] * 3} for _ in range(20)]
@@ -229,9 +220,6 @@ def test_sub_pixel_wobble_is_not_a_shift() -> None:
     a = {"tops": [0.0, 1700.0], "scrollHeight": 3400.0, "heights": [1700.0, 1700.0]}
     b = {"tops": [0.0, 1700.4], "scrollHeight": 3400.4, "heights": [1700.0, 1700.4]}
     assert analyse_sweep([a, b])["shiftFrames"] == 0
-
-
-# ── the harness itself ──────────────────────────────────────────────
 
 
 def harness_source() -> str:
@@ -262,7 +250,6 @@ def test_the_run_drives_a_variant_that_is_required_to_flicker() -> None:
     assert must_not is not None, "the harness declares no variant that must not flicker"
     assert isinstance(must, ast.Set) and must.elts, "MUST_FLICKER is empty"
     assert isinstance(must_not, ast.Set) and must_not.elts, "MUST_NOT_FLICKER is empty"
-    # The exit code has to rest on both halves, not just on the tree behaving.
     verdict = source[source.index("if variant in MUST_FLICKER") :]
     assert "failures.append" in verdict
 

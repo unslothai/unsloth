@@ -53,9 +53,7 @@ from .readiness import (
 from .seeder import Seeder, SeededThread, compare_signatures, dom_signature, measure_chars_per_token
 from .types import BenchContext, Cell, Paths, Recorder, Window, make_cell_id, new_session_id
 
-# A 1x1 PNG, written once per run so image-upload has a real file. Generated rather than shipped:
-# the artifact is a zipapp with no fixture directory, and an action reporting `ran = False` at
-# every rung is a hole that looks like a decision.
+# A 1x1 PNG generated at runtime: the zipapp artifact has no fixture directory.
 _PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d494844520000000100000001080600000"
     "01f15c4890000000d49444154789c6360000002000100ffff03000006"
@@ -71,22 +69,14 @@ def ensure_probe_image(paths: Paths) -> Path:
 
 
 IDLE_CALIBRATION_MS = 1500
-# The rung the seeded-vs-streamed equivalence is CHECKED at. 10K, because both paths are
-# affordable there; below it there is nothing to seed, above it streaming the thread is hours.
+# 10K is the only rung where both seeding and streaming are affordable.
 EQUIVALENCE_RUNG = "10K"
 MOUNT_TIMEOUT_S = 180
 
-#: How much of the streaming phase the thread must stay pinned for `follows_the_stream` to pass.
-#: 0.95 rather than 1.0, since the sampler ticks four times a second and a legitimate pin can land
-#: a tick late. Paired with `ever_fell_behind`, which is absolute: being yanked back is the other
-#: half of the intent contract being broken.
+# 0.95, not 1.0: the sampler ticks at 4 Hz and a legitimate pin can land a tick late.
 FOLLOW_PINNED_MIN = 0.95
 
-#: How much of the STREAMING TIME the attached phases must cover before `pinned_fraction` may
-#: stand as a verdict. It is computed over attached samples only, and with `detached` latching on
-#: the first deliberate scroll the shipped film produced a verdict from the first ~3s -- 13%
-#: coverage, reported as 100% pinned. The latch is fixed; this makes the coverage a condition.
-# That scroll is 1.5s into an 18s opening stream.
+# Minimum stream-time coverage before `pinned_fraction` counts, else an early verdict reads 100%.
 FOLLOW_MIN_STREAM_COVERAGE = 0.50
 
 
@@ -136,19 +126,10 @@ def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
     pinned_ok = pinned is not None and pinned >= FOLLOW_PINNED_MIN
     fell_behind = bool(follow.get("ever_fell_behind"))
     coverage_short = coverage is None or coverage < FOLLOW_MIN_STREAM_COVERAGE
-    # THE DETACHMENT HAS TO BE THE SCHEDULE'S, AND ONLY A RE-ATTACHMENT PROVES IT. The waiver rests
-    # on `attached_fraction_of_stream` being set by the film and identical on both arms, but half of
-    # it is the BUILD'S: `scene/dom.js` clears `detached` only when a run begun after the gesture is
-    # observed at the bottom, so an arm that stops re-pinning never re-attaches and every sample
-    # lands in the detached branch, leaving `pinned_fraction: 1.0` intact while coverage collapses.
-    # A reply that leaves the viewport stops costing anything to paint, so the cell is CHEAPER for
-    # the defect and `readings_by_arm` would have admitted it against a healthy partner.
-    # `reattachments` is the sampler's own record of the app coming back.
+    # Only a re-attachment proves detachment came from the film: a build that never re-pins
+    # keeps `pinned_fraction` at 1.0 while coverage collapses.
     reattached = bool(follow.get("reattachments"))
-    # THE COVERAGE AS A NUMBER, WHATEVER THE VERDICT, next to the floor it is read against: it was
-    # only ever visible as a pass or a fail, which is why it took a campaign to notice the floor sat
-    # above the film's ceiling.
-    # Every reader saw "FAILED its stream-follow gate"; nobody saw the 0.481.
+    # Record coverage beside its floor whatever the verdict, so the number is visible.
     recorded: dict[str, Any] = {
         "stream_coverage": coverage,
         "stream_coverage_floor": FOLLOW_MIN_STREAM_COVERAGE,
@@ -166,11 +147,8 @@ def follow_verdict(follow: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
     return bool(pinned_ok and not coverage_short and not fell_behind), recorded
 
 
-# How long the composer may take to accept the click that starts the film. Not a performance
-# budget: the point is that the cell survives and the number gets recorded. 90s, well clear of
-# the worst real reading and still bounded.
+# Not a performance budget: just long enough that the cell survives and the number is recorded.
 COMPOSER_CLICK_TIMEOUT_S = 90
-# Above this the log says so out loud, because a multi-second click is the user complaint itself.
 SLOW_COMPOSER_CLICK_MS = 1_000
 
 
@@ -237,8 +215,6 @@ class Session:
     _open: Optional[Window] = None
     cell: Optional[Cell] = None
 
-    # ── windows ─────────────────────────────────────────────────────
-
     @contextlib.contextmanager
     def window(
         self,
@@ -259,7 +235,7 @@ class Session:
             yield w
         finally:
             w.t_close_ms = self._now_ms()
-            # REVERSE order on close, so an instrument that wrapped another's state unwinds after the one it wrapped.
+            # Reverse order, so an instrument that wrapped another's state unwinds after it.
             for inst in sorted(self.instruments, key = lambda i: i.name, reverse = True):
                 got = self._safe(inst, "close", w)
                 if got is not None:
@@ -317,31 +293,18 @@ class CellRunner:
     log: Callable[[str], None] = print
     image_path: Optional[Path] = None
     cadence: str = "field"
-    #: Record the NORMALISED signature text beside each digest. Off by default: the text is megabytes
-    #: per capture, and `sweep/parity_null_control.py --hunt` is the only consumer -- it needs it
-    #: because a digest pair can say THAT two DOMs differ, never which bytes moved.
+    # Off by default: the text is megabytes per capture and only `parity_null_control --hunt` uses it.
     parity_raw: bool = False
-    #: Directory for the per-action viewport PNGs, or None. Set only when the caller intends
-    #: before/after evidence; the encode is cheap but the files are not free.
     parity_shots: Optional[str] = None
-    #: Which ARM this runner drives, burned into every filename: both arms share a fixture, a password
-    #: and a film, so the image itself carries nothing that identifies the side.
+    # Burned into filenames: both arms share fixture and film, so images cannot tell sides apart.
     arm_label: str = "base"
-    # Set once the 10K check fails, and it then labels every LARGER rung: those rungs are mostly
-    # seeded and their fidelity depends on this one answer.
+    # Set when the 10K check fails; labels every larger (mostly seeded) rung.
     equivalence_failed: bool = False
-    # Run the click attribution probe before the film. Off by default: it costs a great deal at large
-    # rungs and makes the cell's timings incomparable with a cell that did not run it.
+    # Off by default: costly at large rungs and makes timings incomparable with cells that skip it.
     click_probe: bool = False
-    # WHICH READINESS GATE. `full` is the default every normal arm runs; an arm that mounts a WINDOW
-    # on purpose sets `windowed` and is held to a different set of conditions, none of them weaker.
-    # See runtime/readiness.py.
-    # Per TARGET, so a base-versus-virtualised A/B keeps the base arm on its strict gate.
+    # Per target, so a base-vs-virtualised A/B keeps the base arm on the strict gate. See readiness.py.
     readiness_mode: str = MODE_FULL
-    # Scroll a windowed thread to its top once per cell, before the measured window, to prove the arm
-    # still holds the head of the conversation. Costs a full traversal, so it is off for `full` and
-    # on by default for `windowed`, where it is the only check that separates a virtualised thread
-    # from one that has lost most of its messages.
+    # Proves a windowed arm still holds the thread head; costs a full traversal, so off for `full`.
     completeness_probe: Optional[bool] = None
 
     def run(self, cell: Cell, plan: RungPlan) -> dict:
@@ -367,8 +330,7 @@ class CellRunner:
             "target_tokens": plan.target_tokens,
             "instruments": {},
         }
-        # Cleared HERE, not beside the click that produces it, so the preservation in the `finally` below
-        # cannot attach the PREVIOUS cell's attribution to a cell that died before its own probe ran.
+        # Cleared here so the `finally` below cannot attach the previous cell's attribution.
         self._click_attribution_result = None
         try:
             self._run_inner(cell, plan, row)
@@ -380,8 +342,6 @@ class CellRunner:
                 "traceback": traceback.format_exc()[-3000:],
             }
             if isinstance(exc, ThreadNotReady):
-                # WHICH CONDITION, not just that it timed out: the old message named a count and left the reader
-                # to guess whether the app was slow, the thread short, or the arm windowed on purpose.
                 row["failure"]["readiness"] = exc.detail
                 row["readiness"] = exc.detail
                 rec.gate(
@@ -396,23 +356,14 @@ class CellRunner:
                 dump_diagnostics(page, self.paths.logs, f"fail_{cell.cell_id}", self.log)
         finally:
             row["instruments"].update(s.each_instrument("end_cell", cell))
-            # A cell that could not complete is a FIRST-CLASS RESULT with its failure mode and its RSS at
-            # death, not a gap in the table.
+            # A failed cell is a first-class result with its failure mode and RSS at death.
             rss = row["instruments"].get("rss") or {}
             row["rss_at_death_mb"] = rss.get("rss_peak_mb") if not row["completed"] else None
-            # AND SO IS THE PROBE THAT ALREADY RAN: `--click-probe` finishes inside `_press_send`, and
-            # everything after it there still runs under the default 8s action timeout, which a large rung
-            # exceeds. Assigned only on the way out of `_run_inner`, the attribution was dropped from the
-            # cell it was measured for, and unlike `composer_click_ms` it has no window row to survive in.
+            # Keep a click probe that already ran: the cell may die later in `_press_send`.
             if self._click_attribution_result is not None:
                 row["click_attribution"] = self._click_attribution_result
             rec.emit(row)
-            # A TERMINAL MARKER FOR A CELL THAT DID NOT FINISH, so a reader scanning FORWARD can discard its
-            # windows without joining backwards. `window` rows are written as the film runs and the `cell`
-            # row when it ends, so an aborted cell leaves a complete-looking set nothing owns. It cost a
-            # headline: reading `stream:gap` windows without the guard reported the 1M rung at 28.7 fps
-            # against a 46.7 fps baseline, drawn entirely from an unfinished cell.
-            # And 21.8% of frames over 33 ms.
+            # Terminal marker so forward readers can discard window rows of a cell that did not finish.
             if not row["completed"]:
                 rec.emit(
                     {
@@ -427,8 +378,6 @@ class CellRunner:
                     }
                 )
         return row
-
-    # ── the cell ────────────────────────────────────────────────────
 
     def _run_inner(self, cell: Cell, plan: RungPlan, row: dict) -> None:
         s = self.session
@@ -449,8 +398,6 @@ class CellRunner:
             raise ValueError(f"unknown readiness mode {self.readiness_mode!r}")
         readiness = self._wait_for_thread(page, seeded)
         row["readiness"] = readiness.as_dict()
-        # RECORDED AS A GATE, so no reader can pick up a windowed cell's frame rate without also seeing
-        # that its readiness was established a different way.
         rec.gate(
             f"thread_ready:{self.readiness_mode}",
             True,
@@ -458,8 +405,7 @@ class CellRunner:
             cell_id = cell.cell_id,
         )
 
-        # THE COMPLETENESS PROBE, before the idle window and therefore before anything is measured. It
-        # scrolls the whole thread, which mounts rows and dirties the page, so the idle window follows.
+        # Completeness probe runs before the idle window: it dirties the page by mounting rows.
         do_probe = (
             self.completeness_probe
             if self.completeness_probe is not None
@@ -474,11 +420,8 @@ class CellRunner:
             )
             row["completeness"] = completeness
             record_completeness_gate(rec, cell, completeness)
-            # Back to the resting state the gate described, or the idle calibration below runs against a page
-            # still settling from the traversal.
             self._wait_for_thread(page, seeded)
 
-        # ── the enforced idle window ────────────────────────────────
         frames = next((i for i in s.instruments if i.name == "frames"), None)
         with s.window("idle:calibrate", kind = "idle") as w:
             clamp = (
@@ -489,8 +432,7 @@ class CellRunner:
             w.note("clamp", clamp)
         row["clamp"] = clamp
         if clamp.get("clampMs") is None:
-            # NOT fatal, and NOT silently zero: blocked time is a subtraction against this floor, so without
-            # it busy_pct is null with the reason attached and every other column stands.
+            # Not fatal: without the clamp floor busy_pct is null with a reason; other columns stand.
             self.log(f"  timer clamp NOT established: {clamp.get('reason')}")
             rec.gate("timer_clamp", False, clamp, cell_id = cell.cell_id)
         else:
@@ -543,19 +485,15 @@ class CellRunner:
             f"content chars, cadence {self.cadence}, {expected_ms / 1000:.0f}s expected"
         )
 
-        # RESET THE FOLLOW SAMPLER FOR THIS CELL, immediately before the film starts: the counters now
-        # survive a navigation via sessionStorage, and a cell boundary IS a navigation, so without this
-        # cell 2 reports cell 1's samples plus its own and one bad cell poisons every later reading.
+        # Reset per cell: sampler counters survive navigation via sessionStorage.
         with contextlib.suppress(Exception):
             page.evaluate("() => window.__sb.follow && window.__sb.follow.reset()")
 
         before_metrics = cdp_metrics(s.ctx.cdp)
         self._composer_click_ms = None
-        # `click_attribution` is NOT filed here but in `run`'s `finally`, because a cell that dies after
-        # the probe has to keep it.
+        # `click_attribution` is filed in `run`'s `finally` so a cell dying after the probe keeps it.
         t0 = self._press_send(page)
-        # On the cell rather than in `actions`, because it happens before the first slot opens and filing
-        # it as an action would put a reading outside the film into a list scoring pairs by slot.
+        # On the cell, not in `actions`: it happens before the first slot and is not a slot reading.
         row["composer_click_ms"] = self._composer_click_ms
 
         scene = scene_schedule.SCENES.get(self.tier, scene_schedule.QUICK)
@@ -576,13 +514,12 @@ class CellRunner:
                 "parity_shots": self.parity_shots,
                 "arm_label": self.arm_label,
                 "image_path": str(self.image_path) if self.image_path else None,
-                # The follow-up turns `send_turn` streams mid-film, and the pacer it reloads to serve them.
                 "_pacer": self.pacer,
                 "_stream_queue": [
                     {"reasoning": u.reasoning, "content": u.content, "kind": u.kind}
                     for u in (plan.follow_up_units or [])
                 ],
-                # Shared and MUTABLE, so consecutive sends advance through the queue. See send_turn.
+                # Shared and mutable so consecutive sends advance through the queue. See send_turn.
                 "_stream_cursor": {"i": 0},
                 "_input_instrument": next((i for i in s.instruments if i.name == "input"), None),
             },
@@ -598,11 +535,7 @@ class CellRunner:
             drained = self._drain_stream(page, expected_ms)
             w.note("drained", drained)
         row["stream"] = drained
-        # DID THE THREAD FOLLOW THE STREAM? Read once, here, after the last window has closed, so the
-        # reading is charged to nothing. A GATE, not a column, because of how it fails: a thread that
-        # stops following lets the streamed message leave the viewport, a windowed list unmounts it, and
-        # the streaming cost collapses -- an excellent frame rate about nothing. A number with a caveat
-        # attached is still quoted without the caveat.
+        # A gate, not a column: a thread that stops following unmounts the stream and fakes a fast frame rate.
         follow = self._read_follow(page)
         row["follow"] = follow
         pinned = follow.get("pinned_fraction")
@@ -610,18 +543,9 @@ class CellRunner:
         passed, recorded = follow_verdict(follow)
         follow.update(recorded)
         rec.gate("follows_the_stream", passed, follow, cell_id = cell.cell_id)
-        # THE OTHER HALF OF THE CONTRACT, RECORDED AND DELIBERATELY NOT GATED. It was a gate for one run
-        # and failed on BOTH arms at nearly the same rate, the signature of a reading about the film:
-        # `send_turn` and `stop_generation` each START A RUN, where pinning is intended, and
-        # `scroll_after` ends its gesture near the bottom by design. Separating a legitimate re-pin from
-        # a yank needs to know which pins the app was ASKED for, which this sampler does not know, so it
-        # is a per-arm figure compared BETWEEN arms where the confounds cancel.
-        #
+        # Recorded but not gated: run-starting actions legitimately re-pin, so compare it between arms.
         row["scroll_intent"] = {
-            # THE ATTESTATION, without which this block fails the bare-zero ban: `yanked_back_samples: 0`
-            # beside a non-zero `detached_samples` is the GOOD outcome, and the walker in scoring/schema.py
-            # cannot tell that from a counter nobody wrote. False here rather than absent, so "not measured"
-            # stays distinguishable from "measured zero".
+            # Attestation for the bare-zero ban in scoring/schema.py; False rather than absent on purpose.
             "follow_attempted": bool(follow.get("follow_attempted")),
             "detached_samples": follow.get("detached_samples"),
             "yanked_back_samples": follow.get("yanked_back_samples"),
@@ -651,10 +575,7 @@ class CellRunner:
                 f"after the user scrolled away"
                 + (" -- THE USER WAS YANKED DOWN" if follow.get("yanked_after_scroll") else "")
             )
-        # EVERY STREAM THE CELL SERVED, not just the last one: `last_stats()` describes whichever turn
-        # finished last, so for a multi-turn cell it says nothing about the opening reply the rung is
-        # named for. Everything stays under `pacer` because that subtree is exempt from the bare-zero
-        # rule.
+        # Every stream, not `last_stats()`; kept under `pacer`, which is exempt from the bare-zero rule.
         streams = self.pacer.all_stats()
         planned = self._planned_streams(cell, plan, row)
         row["pacer"] = {
@@ -662,32 +583,18 @@ class CellRunner:
             "streams": streams,
             "check": check_planned_streams(streams, planned),
         }
-        # A REPLY THAT NEVER FINISHED IS A FAILED CELL, not a completed one with a note. `_drain_stream`
-        # reports rather than raises, and the value was read by nothing, so an app still generating three
-        # times past its own cadence came back as `completed: true`, exit 0, paired into the A/B ratio.
-        # And 120 s beyond that, after the whole film had run.
-        # Raised AFTER the drain reading and the pacer's counters are on the row, so how long was waited
-        # ships with the failure. The censuses below are not taken, because a census of a still-growing
-        # thread describes nothing that was measured.
+        # An unfinished reply fails the cell; raised after the drain stats are on the row.
         if not drained.get("finished"):
             raise RuntimeError(
                 f"the reply never finished: {drained.get('reason') or 'the run was still going'} "
                 f"({drained.get('drain_ms')}ms waited, {drained.get('expected_ms')}ms expected)"
             )
-        # A CELL THAT DID NOT STREAM WHAT IT PLANNED IS A FAILED CELL, for the same reason: the drain
-        # check only asks whether the UI stopped running, and a later turn that finishes satisfies it on
-        # behalf of an earlier one that did not, so an opening reply that disconnected left a
-        # complete-looking cell thousands of characters short of its rung.
+        # A later finished turn can satisfy the drain check for an earlier disconnected one.
         check = row["pacer"]["check"]
         if check["checked"] and not check["ok"]:
             self.log(f"  the cell did not stream what it planned: {check['reason']}")
             raise RuntimeError(f"the cell did not stream what it planned: {check['reason']}")
-        # AND THE SAME RULE FOR THE TURN THAT STREAMED BUT NEVER LANDED: the stream check asks whether
-        # the bytes went out, while `send_turn` asserts that the thread GREW. Scoped to `send_turn`
-        # DELIBERATELY -- an action whose own assertion fails already has its timing voided, and what
-        # that does not cover is an action whose failure changed the workload the REST of the cell
-        # measured. `send_turn` is the only one that can.
-        # The covered case is `expect_ok is False`.
+        # Only `send_turn` failures change the workload the rest of the cell measured.
         missed_turns = [
             a
             for a in (row["actions"] or [])
@@ -704,26 +611,14 @@ class CellRunner:
         row["census_after"] = dom_signature(page)
         row["cdp"] = cdp_counters(before_metrics, cdp_metrics(s.ctx.cdp))
 
-        # THE PEAK, over every window's census, not the state at the end of the film: the film ENDS with
-        # thread_reopen and delete_message, so an end-of-cell census reports the thread the benchmark has
-        # just deleted. The first working run recorded 0 assistant messages against a delivered reply.
-        # The pacer's own log proved it: 150 chunks, 3,581 characters, at exactly the 73 ms cadence.
-        # 0 messages and 0 characters.
+        # Peak over all window censuses: the film ends by deleting messages, so the final census is empty.
         censuses = [w.get("census") for w in row["actions"] if isinstance(w.get("census"), dict)]
         censuses = [c for c in censuses if c.get("elements")]
         peak = max(censuses, key = lambda c: c.get("elements", 0)) if censuses else {}
         row["census_peak"] = peak
         row["census_peak_attempted"] = bool(censuses)
 
-        # WHICH ACTION THE PEAK CAME FROM, and a standing refusal to compare it across arms. The census
-        # attached to an action is taken after it returns, and `reasoning_toggle` opens every pane and
-        # closes them again, so that census races the close and which action wins the max() DIFFERS
-        # BETWEEN ARMS. Measured on a null control the winner flipped between two actions, a 70.1% swing
-        # WITHIN one arm, which produced a published wrong number. Kept as a diagnostic high-water mark,
-        # carrying its provenance and an explicit refusal.
-        # The winner flipped between `settings` at 64,648 elements and `reasoning_toggle` at 106,067,
-        # published as main mounting 48% more Shiki spans.
-        # Settled, the two trees mount the same document to within 0.3%.
+        # Diagnostic only, never compare across arms: which action wins the max() races and differs by arm.
         peak_from = next(
             (
                 w.get("action")
@@ -748,9 +643,7 @@ class CellRunner:
         if chars is None:
             chars = page.evaluate("() => window.__sb.dom.assistantChars()")
         row["assistant_chars_in_dom"] = chars
-        # The span density the fixture ACHIEVED, measured in the DOM rather than assumed: the field
-        # capture ran 5.6 characters per span, and a corpus far from that is not standing in for the same
-        # highlighter load per character.
+        # Measured span density; the field capture ran 5.6 characters per span.
         row["chars_per_span"] = round(chars / spans, 2) if spans else None
         row["chars_per_span_target"] = 5.6
         self.log(
@@ -760,7 +653,6 @@ class CellRunner:
 
         row["fidelity"] = "streamed_and_seeded" if plan.seeded_units else "streamed_only"
 
-        # ── the seeded-vs-streamed equivalence check ────────────────
         if cell.rung == EQUIVALENCE_RUNG and plan.streamed_unit is not None:
             eq = self._check_equivalence(plan, row)
             row["equivalence"] = eq
@@ -771,9 +663,6 @@ class CellRunner:
                 cell_id = cell.cell_id,
             )
             if not eq.get("equivalent"):
-                # A FINDING, printed, not a bug to hide: it says which of this tool's numbers are about the
-                # streaming path and which are about a thread that was put there, and it is why the higher rungs
-                # carry a fidelity label at all.
                 self.log(
                     "  SEEDED IS NOT EQUIVALENT TO STREAMED at the 10K rung. Rungs above it "
                     "are labelled fidelity: seeded_only."
@@ -790,8 +679,7 @@ class CellRunner:
                     "  seeded and streamed agree on CONTENT at the 10K rung within "
                     f"{eq['tolerance']:.0%}"
                 )
-                # Passing the content gate is not the same as the two threads being identical: a seeded rung
-                # carries the same rendered content and materially less mounted DOM.
+                # Passing the content gate does not mean identical: seeded rungs mount materially less DOM.
                 fields = eq.get("fields") or {}
                 for key in ("reasoning_spans", "highlight_spans", "assistant_chars"):
                     field = fields.get(key) or {}
@@ -883,11 +771,7 @@ class CellRunner:
         """
         s = self.session
         page = s.ctx.page
-        # THE STREAMED SIDE IS THE PEAK, AND THE PEAK IS TAKEN AT AN UNSTABLE MOMENT, recorded on the row
-        # because the seeded side below is read after an explicit 4 s wait -- so this gate differences a
-        # racing census against a stable one, the same shape as the defect that made `census_peak`
-        # unquotable across arms. NOT the same harm: both sides come from ONE cell on ONE build, so the
-        # instability widens the tolerance rather than pointing a difference in a direction.
+        # The streamed peak is racy vs the stable seeded read; it widens the tolerance, not the direction.
         streamed = row.get("census_peak") or row.get("census_after") or {}
         streamed_from = "census_peak" if row.get("census_peak") else "census_after"
         follow_ups = self._streamed_follow_ups(plan, row)
@@ -924,17 +808,13 @@ class CellRunner:
         out["seeded_census_settled"] = True
         out["readiness_mode"] = self.readiness_mode
         if self.readiness_mode == MODE_WINDOWED:
-            # SAID OUT LOUD RATHER THAN SCORED QUIETLY: both sides are loaded by the SAME build, so under a
-            # windowed arm both censuses count the mounted window. The comparison is still like for like, but
-            # it is no longer evidence that seeding reproduces the whole streamed thread.
+            # Under a windowed arm both censuses count only the mounted window.
             out["scope"] = "the mounted window only, not the whole thread"
             out["caveat"] = (
                 "this arm mounts a window, so `assistant_messages`, `content_spans` and "
                 "`content_code_blocks` are counts over what is mounted at the end of the thread. "
                 "A pass is equivalence of the WINDOW, not of the thread."
             )
-        # What the mirror was built from, so a drift can be read against the corpus it compared rather
-        # than an assumption about which turns were in the thread.
         out["mirrored_follow_ups"] = len(follow_ups)
         out["planned_follow_ups"] = len(plan.follow_up_units or [])
         return out
@@ -1021,31 +901,17 @@ class CellRunner:
             page.evaluate("() => document.body.offsetHeight")
             return (time.monotonic() - started) * 1000.0
 
-        # FIRST, before anything else touches the page: the same trivial operation N times. The biggest
-        # number in the ladder is one nobody could attribute -- the first thing touched after a large
-        # thread mounts costs 11 to 24 seconds, and in every probe the cost vanished because whatever ran
-        # first absorbed it. Measuring the decay directly is the way out: a first reading in seconds and
-        # the rest in milliseconds means the cost is ONE TIME. A no-op body on purpose.
+        # First, before anything else touches the page: the first touch after mount absorbs a one-time cost.
         decay = [settled(lambda: None) for _ in range(5)]
         out: dict[str, Any] = {
-            # The harness layer's attestation, load-bearing rather than decorative:
-            # `scoring/schema._walk_for_bare_zeros` rejects a bare zero with no sibling `*_attempted` flag,
-            # and this block has legitimate zeros -- a thread with no mounted code blocks records
-            # `code_token_spans: 0`, and `blur_inpage_ms` and `forced_layout_ms` come from
-            # `performance.now()`, which Chromium coarsens to 100 us outside a cross-origin-isolated
-            # context, so an operation shorter than that reads exactly 0. Without this flag `--report`
-            # refuses the whole payload of a completed probe run.
+            # Required by `scoring/schema._walk_for_bare_zeros`: this block has legitimate zeros
+            # (performance.now() is coarsened to 100 us), and without the flag `--report` refuses it.
             "click_attribution_attempted": True,
             "first_touch_ms": decay[0],
             "settled_touch_ms": min(decay[1:]),
             "touch_decay_ms": [round(v, 1) for v in decay],
         }
-        # The blur, timed, and timed again from INSIDE the page. The decay series says the first touch
-        # after mount costs 10.6 ms at 500K, yet the reading right after the first blur came back at
-        # 10,052 ms in two of three runs -- and 10.0 seconds to three digits is the shape of a TIMEOUT.
-        # And 10,017 ms in the other.
-        # `blur_inpage_ms` decides which: it runs the same blur inside one evaluate, so if the page
-        # reports a millisecond while the outer reading is ten seconds, the ten seconds is the driver.
+        # Inner `blur_inpage_ms` vs outer timing tells a 10 s driver timeout apart from page cost.
         out["blur_outer_ms"] = settled(
             lambda: page.evaluate("() => document.activeElement && document.activeElement.blur()")
         )
@@ -1073,12 +939,10 @@ class CellRunner:
         page.mouse.move(2, 2)
         page.wait_for_timeout(250)
         out["hover_thread_ms"] = settled(lambda: page.mouse.move(x, 300))
-        # The reading that decides what `roundtrip_ms` meant: near zero means the cost is a ONE-TIME
-        # layout of the mounted thread, expensive again means every interaction pays it.
+        # Near zero means a one-time layout cost; expensive again means every interaction pays it.
         blur()
         out["roundtrip_again_ms"] = settled(lambda: None)
-        # Measured INSIDE the page, so the protocol round trip is not in the number. `offsetHeight` is
-        # read after a write that dirties layout, so it cannot be served from a clean tree.
+        # Measured in-page; `offsetHeight` follows a layout-dirtying write so it cannot hit a clean tree.
         out["forced_layout_ms"] = page.evaluate(
             "() => { const t = performance.now();"
             " document.body.style.minHeight = (1 + Math.random()) + 'px';"
@@ -1129,16 +993,9 @@ class CellRunner:
         page.wait_for_selector(selector, timeout = 60_000)
         if self.click_probe:
             self._click_attribution_result = self._click_attribution(page, selector)
-        # In a window, so every instrument covers it: at 500K this single click is the largest cost in the
-        # run by an order of magnitude and was the one moment the tool could not see inside. `setup`, NOT
-        # `action`: the scoring layer pools every non-excluded window into the three frame metrics, and
-        # this window is mostly Playwright's own actionability script running ON THE PAGE'S MAIN THREAD,
-        # so filed as an `action` it would put an 11 s driver stall into three weighted headline metrics.
-        # It would peg `max_frame_ms`, `jank_index` and `time_in_jank_pct`.
+        # Kind `setup`, not `action`: this is mostly Playwright driver stall and would peg frame metrics.
         with self.session.window("setup:composer_click", kind = "setup"):
-            # Timed INSIDE the window, like `Window.duration_ms`: the session opens every instrument before
-            # this block and closes them after, and at instrument level 1-3 those hooks stop a CPU profile,
-            # collect coverage and analyse a trace, so timing around the `with` would grow with the level.
+            # Timed inside the window: instrument open/close cost grows with the instrument level.
             clicked_at = time.monotonic()
             page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
             self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
@@ -1154,15 +1011,12 @@ class CellRunner:
             raise RuntimeError("the send button is not on the page, so no reply can be started")
         t0 = time.monotonic()
         send.click()
-        # The composer must be EMPTY for the rest of the film, or the Stop control is replaced by a Queue
-        # control and the stop action presses the wrong button. Sending clears it, but the keystroke
-        # action refills it, which is why the stop action clears it again itself.
+        # The composer must stay empty, or Stop becomes Queue; the stop action clears it again itself.
         return t0
 
     def _drain_stream(self, page, expected_ms: float) -> dict:
         """Wait for the run to end, or say plainly that it did not."""
-        # Generous: deficit scheduling makes the stream's own duration machine-independent, so anything
-        # much past it is the RENDERER failing to keep up, which is a finding rather than a timeout.
+        # Deficit scheduling makes stream duration machine-independent; overrun is a renderer finding.
         deadline = time.monotonic() + (expected_ms / 1000) * 3 + 120
         started = time.monotonic()
         while time.monotonic() < deadline:
@@ -1192,9 +1046,7 @@ def make_context(
     out_lock = None,
 ) -> tuple[BenchContext, Session]:
     session_id = new_session_id()
-    # THE LOCK THE CALLER IS ALREADY HOLDING: `run()` takes the output directory before it archives a
-    # payload, so the `Recorder` adopts that lock rather than opening a second against the same path.
-    # Without a caller's lock it takes its own.
+    # Adopt the caller's output-directory lock; without one the Recorder takes its own.
     recorder = Recorder(paths.payload_jsonl, session_id, lock = out_lock)
     ctx = BenchContext(
         browser = browser_bundle.browser,
@@ -1227,11 +1079,7 @@ def make_context(
     return ctx, Session(ctx = ctx, instruments = instruments)
 
 
-#: The sources that may SIZE a rung. `measure_chars_per_token`'s last-resort whitespace estimate
-#: labels itself "off by tens of percent on dense code", and this corpus is mostly dense code,
-#: where it reads 6.7 against tiktoken's 3.3 -- sizing from it would move the error and, past
-#: `MANIFEST_CHARS_PER_TOKEN`, make `plan_rung` refuse the whole run on any machine with no
-#: tokeniser. The estimate is still measured and reported.
+# Whitespace estimates misread dense code (6.7 vs 3.3 chars/token), so they may not size rungs.
 LADDER_RATIO_SOURCES = ("tiktoken/cl100k", "studio /api/inference/chat/count_tokens")
 
 
@@ -1328,9 +1176,7 @@ def build_cells(
         }
     out: list[tuple[Cell, RungPlan]] = []
     for rung in rungs:
-        # The ladder is sized by `ratio`, not the raw `chars_per_token` argument: the argument may be None
-        # meaning "measure it", and the measured value is what every cell's `meta` reports, so passing the
-        # argument through would size the rungs from a number the payload does not carry.
+        # Size from `ratio`, the measured value the payload reports, not the possibly-None argument.
         plan = plan_rung(
             corpus,
             rung,

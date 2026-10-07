@@ -123,23 +123,16 @@ METRIC_ANCHORS: tuple[MetricAnchor, ...] = (
 
 METRIC_BY_KEY: Mapping[str, MetricAnchor] = {m.key: m for m in METRIC_ANCHORS}
 
-#: The rung ladder, in tokens of thread content. Log-spaced on purpose: aggregation integrates over
-#: log(tokens), so evenly spaced rungs on the log axis give evenly spaced evidence.
+#: Log-spaced because aggregation integrates over log(tokens).
 RUNG_TOKENS: tuple[int, ...] = (1_000, 10_000, 100_000, 500_000, 1_000_000)
 
-#: A rung counts as usable when its score clears this AND no single metric is catastrophic. The
-#: onset rung, the largest usable rung, is the human headline, because it survives being carried to
-#: a different machine in a way a 0-100 score does not.
+#: Usable = clears this and no catastrophic metric; the onset rung is the portable headline.
 ONSET_SCORE_THRESHOLD = 50.0
 ONSET_METRIC_FLOOR = 10.0
 
-#: A rung whose measured metrics do not cover at least this fraction of the declared weight is
-#: INCOMPLETE, which scores 0. It does not drop out: a build that crashes at 500K must not outscore
-#: one that limps through it.
+#: Below this weight coverage a rung is INCOMPLETE and scores 0, so crashing never outscores.
 MIN_WEIGHT_COVERAGE = 0.60
 
-#: Ratios inside this band are indistinguishable from run-to-run noise. Anything an A/B claims must
-#: clear it, and the NULL calibration arm must land inside it.
 DEFAULT_NOISE_FLOOR_PCT = 5.0
 
 

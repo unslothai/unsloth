@@ -41,9 +41,6 @@ def _run_auditor(
     )
 
 
-# ---------------------------------------------------------------------------
-
-
 def test_malicious_lockfile_exits_1(tmp_path):
     """Non-registry URL + IOC substring + missing integrity hash -> auditor exits 1."""
     fixture = FIXTURES / "malicious_lockfile.json"
@@ -57,8 +54,7 @@ def test_malicious_lockfile_exits_1(tmp_path):
     assert "non-registry-resolved-url" in combined
     assert "missing-integrity-hash" in combined
     assert "known-ioc-string" in combined
-    # IOC literal built at runtime so CodeQL's py/incomplete-url-substring-sanitization rule doesn't false-positive on
-    # the source-literal + `in` (the operand is the scanner's own output).
+    # IOC built at runtime so CodeQL's url-substring-sanitization rule does not false-positive.
     _ioc_host = "filev2." + "getsession.org"
     assert _ioc_host in combined
 
@@ -81,10 +77,6 @@ def test_audit_npm_lockfile_direct_call_findings():
     assert "missing-integrity-hash" in kinds
     assert "known-ioc-string" in kinds
 
-
-# ---------------------------------------------------------------------------
-# IOC string table -- gated on Fork 1's NPM_IOC_STRINGS additions.
-# ---------------------------------------------------------------------------
 
 _MAY12_IOCS = (
     "git-tanstack.com",
@@ -127,10 +119,6 @@ def test_lockfile_auditor_blocked_versions_match_scanner():
         lsa.BLOCKED_NPM_VERSIONS == snp.BLOCKED_NPM_VERSIONS
     ), "auditor and scanner BLOCKED_NPM_VERSIONS tables drifted"
 
-
-# ---------------------------------------------------------------------------
-# Cargo.lock audit.
-# ---------------------------------------------------------------------------
 
 _MALICIOUS_CARGO_LOCK = """\
 version = 3
@@ -230,12 +218,6 @@ def test_audit_cargo_lockfile_direct_call(tmp_path):
     assert "non-registry-cargo-source" in kinds
 
 
-# ::warning::
-
-
-# ---------------------------------------------------------------------------
-
-
 def test_gha_escape_collapses_finding_to_one_line():
     """_gha_escape() encodes \\n/\\r/% so GHA annotations aren't truncated; % must escape first."""
     assert lsa._gha_escape("a\nb\nc") == "a%0Ab%0Ac"
@@ -309,16 +291,10 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         assert "missing-resolved-url" in line
 
 
-# ---------------------------------------------------------------------------
-# SF4: skip env var requires a justification value.
-# ---------------------------------------------------------------------------
-
-
 def test_skip_env_var_with_short_value_rejected(tmp_path):
     """SF4: a short/boolean UNSLOTH_LOCKFILE_AUDIT_SKIP is rejected; a real justification is honored."""
     fixture = FIXTURES / "clean_lockfile.json"
 
-    # Case 1 -- "1" rejected, audit RUNS.
     env_bad = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": "1"}
     proc_bad = subprocess.run(
         [
@@ -337,16 +313,13 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
     combined_bad = proc_bad.stdout + proc_bad.stderr
     assert "::warning::" in combined_bad, combined_bad
     assert "REQUIRES a justification" in combined_bad, combined_bad
-    # Per-file banner proves the audit ran.
     assert "[lockfile-audit] npm:" in combined_bad, combined_bad
-    # Clean fixture -> exit 0, but the audit was performed.
     assert proc_bad.returncode == 0, (
         f"expected rc 0 on clean fixture, got {proc_bad.returncode}\n"
         f"--- stdout ---\n{proc_bad.stdout}\n"
         f"--- stderr ---\n{proc_bad.stderr}"
     )
 
-    # Case 2 -- a real-looking justification accepted, audit skipped.
     env_ok = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": "ticket-5397"}
     proc_ok = subprocess.run(
         [
@@ -367,10 +340,8 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
     assert "::warning::" in combined_ok
     assert "skipped" in combined_ok.lower()
     assert "ticket-5397" in combined_ok
-    # Skip path: no "npm:" banner means the audit body never ran.
     assert "[lockfile-audit] npm:" not in combined_ok, combined_ok
 
-    # Case 3 -- the booleanish tokens are ALL rejected.
     for bad_val in ("true", "yes", "on", "0", ""):
         env_b = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": bad_val}
         p = subprocess.run(
@@ -396,14 +367,8 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
         )
 
 
-# ---------------------------------------------------------------------------
-# Followup regression tests for #5604:
-#   - unsupported lockfile versions must block in default mode (v1 downgrade would otherwise pass with rc=0 because
-#     the structural walk only runs on v2/v3)
-#   - the ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` warning must be routed through ``_gha_escape()`` so an attacker-controlled
-#     value cannot inject a second workflow-command line via embedded ``\n::error::...``
-#   - the audit script must be invoked BEFORE ``npm install`` in any workflow that consumes the audited lockfiles
-# ---------------------------------------------------------------------------
+# Followups for #5604: unsupported lockfile versions block, the skip warning is escaped,
+# and the audit runs before npm install.
 
 
 def test_unsupported_lockfile_version_blocks_default(tmp_path):
@@ -462,7 +427,7 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         # Any such line BEYOND the first warning is an injected command.
         return [ln for ln in stderr.splitlines() if ln.lstrip().startswith("::")]
 
-    injected_bad = "%inject\n::error::bad"  # contains %, \n, and ::
+    injected_bad = "%inject\n::error::bad"
     env_a = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_bad}
     proc_a = subprocess.run(
         [
@@ -478,8 +443,7 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         timeout = 30,
         env = env_a,
     )
-    # The stripped value is "%inject\n::error::bad" (len 21) and is not a booleanish token -> accepted-skip path; rc 0,
-    # audit skipped.
+    # The stripped value is not a booleanish token, so the skip is accepted; rc 0.
     assert proc_a.returncode == 0
     assert "%0A" in proc_a.stderr and "%25" in proc_a.stderr, (
         "skip value containing \\n and %% must be %0A / %25 escaped; "
@@ -491,9 +455,7 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
         f"::warning::); injection split the message into: {cmd_lines_a}"
     )
 
-    # Branch B
-    # test_skip_env_var_with_short_value_rejected covers this branch with a plain "1", which carries no control
-    # character and so cannot tell escaped from unescaped.
+    # The plain '1' case carries no control character, so it cannot tell escaped from unescaped.
     injected_short = "1\n%"
     env_b = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_short}
     proc_b = subprocess.run(
@@ -512,8 +474,6 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
     )
     combined_b = proc_b.stdout + proc_b.stderr
     assert "REQUIRES a justification" in combined_b, combined_b
-    # Per-file banner: a rejected value must fall through to the audit, not skip it. Clean fixture, so rc 0 with the
-    # audit performed.
     assert "[lockfile-audit] npm:" in combined_b, combined_b
     assert proc_b.returncode == 0, (
         f"rejected skip must still run the audit and pass a clean fixture; "
@@ -567,8 +527,7 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
         for job_id, job in (doc.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
-            # (step index, offset within that step) of the job's first audit, so an audit and an install sharing one
-            # step are still ordered against each other.
+            # (step index, offset within step) so an audit and install in one step are still ordered.
             audited_at = None
             for index, step in enumerate(job.get("steps") or []):
                 run = step.get("run") if isinstance(step, dict) else None

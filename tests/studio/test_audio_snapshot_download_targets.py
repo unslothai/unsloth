@@ -44,7 +44,6 @@ if _REPO_ROOT is None:
         allow_module_level = True,
     )
 
-# Every module that fetches a Spark-TTS repo: TTS inference, the GGUF BiCodec decoder and the trainer.
 _AUDIO_SOURCES = (
     "studio/backend/core/inference/inference.py",
     "studio/backend/core/inference/llama_cpp.py",
@@ -95,9 +94,7 @@ def _is_anchored(
         return source is not None and _is_anchored(source, assigned, depth + 1)
     if isinstance(expr, ast.Call):
         func = expr.func
-        # os.path.join(base, ...) / Path(base) / str(base) anchor to something named.
         if isinstance(func, ast.Attribute):
-            # ...but a repo id sliced into a bare name does not.
             return func.attr not in ("split", "rsplit")
         return True
     return False

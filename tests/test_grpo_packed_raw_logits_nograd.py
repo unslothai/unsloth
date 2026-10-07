@@ -46,11 +46,7 @@ VOCAB, HIDDEN = 17, 8
 PAD_ID, SEQ_LEN, KEEP = 0, 8, 4
 
 
-# ---------------------------------------------------------------------------
-# Helpers: the real unsloth_zoo ones when importable, otherwise eager mirrors
-# with identical semantics so a runner without unsloth_zoo still exercises the
-# same arithmetic.
-# ---------------------------------------------------------------------------
+# The real unsloth_zoo helpers when importable, otherwise eager mirrors with identical semantics.
 
 
 def _fallback_chunked_selective_log_softmax(
@@ -154,9 +150,6 @@ _completion_mask_of = HELPERS["create_completion_attention_mask"]
 _left_pad_of = HELPERS["calculate_pad_tokens_in_prompt"]
 
 
-# ---------------------------------------------------------------------------
-
-
 class _Model(torch.nn.Module):
     """`hidden_states = False` ignores UNSLOTH_RETURN_HIDDEN_STATES and returns
     real [.., vocab] logits; True is Unsloth's generated forward.
@@ -180,8 +173,7 @@ class _Model(torch.nn.Module):
         self.hidden_states = hidden_states
         self.calls = []
         if degraded:
-            # What _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py leaves behind when it could
-            # not get hidden states out of the model.
+            # What rl.py's _install_grpo_hidden_states_forward_wrapper leaves when hidden states are unavailable.
             self._unsloth_grpo_hidden_states_forward_wrapped = True
             self._unsloth_grpo_hidden_states_warning_issued = True
 
@@ -202,11 +194,6 @@ class _Model(torch.nn.Module):
         )
         h = torch.tanh(self.emb(input_ids))
         return SimpleNamespace(logits = h if self.hidden_states else self.head(h))
-
-
-# ---------------------------------------------------------------------------
-# Structural extraction of the packed block
-# ---------------------------------------------------------------------------
 
 
 def _statement_lists(node):
@@ -279,9 +266,6 @@ def _packed_block_source():
     first, last = found[0]
     lines = text.splitlines(keepends = True)[first.lineno - 1 : last.end_lineno]
     return textwrap.dedent("".join(lines))
-
-
-# ---------------------------------------------------------------------------
 
 
 def _batch():
@@ -367,9 +351,6 @@ def _reference_logprobs(model, input_ids, max_left_pad):
         for j in range(1, real.shape[1]):
             out[row, cols[j]] = logps[j - 1, real[0, j]]
     return out[:, -width:]
-
-
-# ---------------------------------------------------------------------------
 
 
 def test_packed_path_survives_a_forward_that_returns_real_logits():

@@ -23,8 +23,7 @@ from packaging.version import Version
 from torch.distributed.utils import _apply_to_tensors
 
 
-# Not tensor dunders: the loop after the class binds those as real instance attributes, so
-# only names outside `dir(torch.Tensor)` ever reach `__getattr__`.
+# Not tensor dunders: those are bound as real instance attributes and never reach `__getattr__`.
 PROTOCOL_DUNDERS = (
     "__dataclass_fields__",
     "__fields__",
@@ -34,8 +33,7 @@ PROTOCOL_DUNDERS = (
     "__dataclass_params__",
 )
 
-# The sentinel exactly as unsloth_zoo 2026.9.4 generated it, kept verbatim so the probes below
-# are shown to have teeth on every machine, whatever zoo happens to be installed.
+# The sentinel as unsloth_zoo 2026.9.4 generated it, so the probes have teeth on every machine.
 PRE_FIX_SENTINEL_SOURCE = """
 LOGITS_ERROR_STRING = "Unsloth: Logits are empty, set UNSLOTH_RETURN_LOGITS"
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
@@ -53,19 +51,8 @@ class EmptyLogits:
 """
 
 
-# The first unsloth_zoo release that generates a fixed sentinel, i.e. the one that carries
-# unslothai/unsloth-zoo#1259. Published, and pyproject.toml's floor now names it too.
-#
-# This deliberately does NOT read the `unsloth_zoo>=` floor out of pyproject.toml, which is
-# what it used to do. The two agree again today, but the coupling is only ever correct while
-# the pin and the fix name the same release, and they came apart once already: the pin sat at
-# 2026.9.4 for as long as #1259 was unpublished, and 2026.9.4 is exactly the zoo that still
-# generates the BROKEN sentinel, so a gate reading the pin would have run these probes against
-# a zoo carrying the bug and failed on a correct tree. What the probes assert is a property of
-# the INSTALLED zoo, so the gate names the release that fixes it, directly.
-#
-# Where an older zoo is what is actually installed, every probe below skips and the always-on
-# canary at the bottom of this file is what keeps the assertions honest.
+# The first unsloth_zoo release with a fixed sentinel. Not read from the pyproject floor: the pin
+# once sat on the broken 2026.9.4. Older zoos skip, and the canary below keeps them honest.
 ZOO_RELEASE_WITH_GENERATED_SENTINEL_FIX = Version("2026.9.5")
 
 

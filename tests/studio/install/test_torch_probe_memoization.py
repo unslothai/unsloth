@@ -257,7 +257,6 @@ class TestMemoization:
 
         with patch.dict(os.environ, {"PYTHONPATH": str(before)}):
             assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
-        # Still the remembered answer while nothing has installed anything.
         with patch.dict(os.environ, {"PYTHONPATH": str(after)}):
             assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
 
@@ -312,8 +311,7 @@ class TestMemoization:
         assert mock_run.call_count == 2
 
 
-# Builds a command without dropping the torch classification, which is only safe because it
-# installs nothing into the environment. TestScratchPrefetch runs each one to hold it to that.
+# Safe only because it installs nothing; TestScratchPrefetch holds it to that.
 SCRATCH_PREFETCHERS = {"_prefetch_diffusers_main"}
 
 
@@ -389,7 +387,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_cuda_build(self, mock_pip):
-        out = _probe_result("||12.8")  # no version, cuda "12.8"
+        out = _probe_result("||12.8")
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -402,7 +400,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_rocm_build(self, mock_pip):
-        out = _probe_result("|7.1.12345|")  # no version, hip set
+        out = _probe_result("|7.1.12345|")
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",

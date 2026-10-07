@@ -86,8 +86,6 @@ def test_model_utils_uses_the_patched_hip_probe():
     assert "SUPPORTS_BFLOAT16 = True" not in hip_branch
 
 
-# The tests below exec the real bf16 chain: no CI has gfx10, and a text assert only checks spelling.
-
 _CHAIN_START = 'if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():'
 _CHAIN_END = "\n# For Gradio HF Spaces?"
 
@@ -108,7 +106,7 @@ def _fake_torch(
             raise RuntimeError("device wedged")
         return types.SimpleNamespace(gcnArchName = archs[i])
 
-    # Not *args: the cuda branch sniffs this signature with inspect.signature and would fall back.
+    # Not *args: the cuda branch inspects this signature and would fall back.
     def is_bf16_supported(including_emulation = True):
         return base_bf16
 
@@ -144,11 +142,9 @@ def _namespace(fake_torch, device_type, workarounds):
         "torch": fake_torch,
         "inspect": inspect,
         "DEVICE_TYPE": device_type,
-        # Recorded, not run: the real one writes Triton and Inductor settings into os.environ.
         "apply_gfx101x_triton_workaround": lambda *a, **k: workarounds.append((a, k)),
     }
-    # hip_visible_archs reads unsloth.device_type's own `torch`, not this fake, so the caller
-    # must monkeypatch it.
+    # hip_visible_archs uses unsloth.device_type's own torch, so the caller must monkeypatch it.
     namespace = {
         name: getattr(dt, name) for name in _device_type_imports() if name not in overrides
     }

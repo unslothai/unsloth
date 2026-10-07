@@ -14,7 +14,6 @@ import importlib
 
 import pytest
 
-# These runners do not all ship torch/triton/fla; skip rather than erroring at collection.
 torch = pytest.importorskip("torch")
 triton = pytest.importorskip("triton")
 tl = pytest.importorskip("triton.language")
@@ -71,9 +70,7 @@ CFGS1 = [triton.Config({"BLOCK": 128}, num_warps = 4)]
 
 
 def _grid(n):
-    # A meta-dependent grid, as every real fla kernel uses. A hardcoded grid would silently
-    # under-cover the tensor whenever the tuned BLOCK is smaller than the one assumed here,
-    # which makes the harness, not the patch, the source of any mismatch.
+    # A meta-dependent grid, as real fla kernels use; a hardcoded one would under-cover the tensor.
     return lambda meta: (triton.cdiv(n, meta["BLOCK"]),)
 
 
@@ -98,7 +95,6 @@ def fresh():
     fla_cache.CachedAutotuner.run = orig
 
 
-# --------------------------------------------------------------------------- install
 @needs_patch
 def test_patch_installs_once_and_is_idempotent(fresh):
     assert not getattr(fresh.run, "_unsloth_fast_path", False)
@@ -121,7 +117,6 @@ def test_patch_declines_under_FLA_CACHE_MODE_always(fresh, monkeypatch):
     ), "the debug mode re-reads config files on every launch; the fast path must stand down"
 
 
-# --------------------------------------------------------------------------- behaviour
 @CUDA
 @needs_patch
 def test_multi_config_plain_dict_cache_falls_back(fresh):
@@ -142,7 +137,6 @@ def test_multi_config_plain_dict_cache_falls_back(fresh):
 def test_reuse_best_cache_fast_path_matches_the_original_bit_for_bit(fresh):
     kern_a = _make(CFGS2)
     kern_b = _make(CFGS2)
-    # settle both the same way with the ORIGINAL run
     _run(kern_a)
     _run(kern_b)
     at_a, at_b = kern_a, kern_b
@@ -158,10 +152,10 @@ def test_reuse_best_cache_fast_path_matches_the_original_bit_for_bit(fresh):
     y = torch.randn(n, device = "cuda")
     o_ref = torch.empty_like(x)
     o_fast = torch.empty_like(x)
-    kern_a[_grid(n)](x, y, o_ref, n)  # unpatched
+    kern_a[_grid(n)](x, y, o_ref, n)
 
     PATCHER()
-    kern_b[_grid(n)](x, y, o_fast, n)  # patched
+    kern_b[_grid(n)](x, y, o_fast, n)
 
     assert getattr(at_b, "_unsloth_fixed_config", None) is not None, "fast path did not latch"
     assert at_b._unsloth_fixed_config.all_kwargs() == at_a.best_config.all_kwargs()
@@ -181,7 +175,7 @@ def test_single_config_fast_path_first_and_subsequent_launches(fresh):
     while not hasattr(at, "configs"):
         at = at.fn
     assert at._unsloth_fixed_config is at.configs[0]
-    x2, y2, o2 = _run(kern)  # second launch uses the latch
+    x2, y2, o2 = _run(kern)
     assert torch.equal(o2, x2 + y2)
 
 
@@ -200,7 +194,6 @@ def test_per_config_pre_hook_falls_back_and_the_hook_still_fires(fresh):
     assert len(fired) >= 2, "a per-Config pre_hook must run on every launch"
 
 
-# --------------------------------------------------------------------------- absence
 def test_patch_is_a_no_op_when_fla_is_missing(monkeypatch):
     """fla < 0.5.1 has no fla.ops.utils.cache; the patch must not raise."""
     if PATCHER is None:
@@ -218,7 +211,6 @@ def test_patch_is_a_no_op_when_fla_is_missing(monkeypatch):
     PATCHER()  # must not raise
 
 
-# --------------------------------------------------------------------------- cache probe
 CACHE_PROBE = getattr(U, "_unsloth_cache_reuses_one_config", None)
 needs_probe = pytest.mark.skipif(CACHE_PROBE is None, reason = "tree without the behaviour probe")
 

@@ -36,7 +36,7 @@ def _load_backport():
 
 backport = _load_backport()
 
-# The three decision points, verbatim from trl 0.22.2 sft_trainer.py.
+# Verbatim from trl 0.22.2 sft_trainer.py.
 TRL_022_EXCERPT = textwrap.dedent("""\
     class SFTTrainer:
         def __init__(self, train_dataset, args, data_collator, model):
@@ -73,7 +73,6 @@ def test_patches_all_three_decision_points_on_022():
     assert "if data_collator is None and not (self._is_vlm and self._is_vision_dataset):" in out
     assert "elif data_collator is None and self._is_vlm and self._is_vision_dataset:" in out
     assert "or (self._is_vlm and self._is_vision_dataset)" in out
-    # Every bare `or self._is_vlm` gate must be gone.
     assert 'skip_prepare_dataset", False) or self._is_vlm\n' not in out
 
 

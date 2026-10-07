@@ -53,9 +53,7 @@ def _fired(
     return fired.is_set()
 
 
-# Every deadline in these three has 0.6s of slack, the last one included: a kick at 0.8s
-# moves expiry to 1.8s and observation stops at 1.2s, so only a 600ms overshoot could
-# decide the result rather than the watchdog.
+# Every deadline has 0.6s of slack, so only a 600ms overshoot could decide the result.
 def test_an_unkicked_watchdog_still_fires_at_its_budget():
     assert _fired(0.4, run_for = 1.6)
 
@@ -70,9 +68,7 @@ def test_a_cancelled_watchdog_does_not_fire():
 
 
 def test_a_watchdog_that_expires_during_start_still_exits():
-    # `install_wall_clock_watchdog` builds the handle its own expiry callback reads, so at
-    # a deadline of 0 the thread can reach that callback before the name is bound. It then
-    # dies of NameError in the daemon thread and the run silently loses its watchdog.
+    # At deadline 0 the expiry callback can run before its handle is bound (NameError).
     codes = []
     with mock.patch.object(robust.os, "_exit", codes.append):
         robust.install_wall_clock_watchdog(0.0, label = "ui")
@@ -91,7 +87,7 @@ def test_a_total_cap_is_a_ceiling_no_kick_can_move():
     try:
         while time.monotonic() - started < 1.4:
             time.sleep(0.05)
-            watchdog.kick()  # kicking throughout must not push past the ceiling
+            watchdog.kick()
     finally:
         watchdog.cancel()
     assert fired.is_set()
@@ -117,8 +113,7 @@ def _watchdog_message(kick):
 
 
 def test_the_message_names_what_actually_ran_out():
-    # The scripts that never kick are measuring the whole run, not inactivity; telling
-    # their reader to look for a step sends them after one that never existed.
+    # Scripts that never kick measure the whole run, so the message must not mention a step.
     assert "hit 30s wall-clock deadline" in _watchdog_message(kick = False)
     assert "30s with no step reported" in _watchdog_message(kick = True)
 
@@ -163,16 +158,14 @@ def test_the_wall_budget_outlasts_the_longest_single_wait():
 
 
 def test_a_raised_fetch_budget_also_raises_the_wall():
-    # Every budget in the max is an env var, so none of them may be left out on the
-    # grounds that no lane raises it today.
+    # Every budget is an env var, so none may be left out of the max.
     wall, longest_wait = _chat_ui_wall_timeout_s(180_000, fetch_timeout_ms = 900_000)
     assert longest_wait == 900.0
     assert wall >= 900.0 + 120
 
 
 def test_a_raised_load_budget_also_raises_the_wall():
-    # The Kaggle lane sets STUDIO_UI_LOAD_TIMEOUT_MS to 600000 and leaves the turn timeout
-    # at its default, so the load fetch, not the turn, is the longest wait there.
+    # The Kaggle lane sets the load timeout to 600000, making it the longest wait.
     wall, longest_wait = _chat_ui_wall_timeout_s(180_000, load_timeout_ms = 600_000)
     assert longest_wait == 600.0
     assert wall >= 600.0 + 120
@@ -213,9 +206,6 @@ def test_every_pair_of_turn_scaled_waits_is_separated_by_a_kick():
         ), f"the waits at lines {first} and {second} share one watchdog budget"
 
 
-# Named steps and per-step budgets.
-
-
 def test_a_step_budget_is_a_ceiling_kicks_inside_the_step_cannot_move():
     """A step that keeps reporting progress but never finishes still ends, and ends as that step."""
     fired = threading.Event()
@@ -234,7 +224,7 @@ def test_a_step_budget_is_a_ceiling_kicks_inside_the_step_cannot_move():
 
 
 def test_the_next_step_gets_its_own_budget():
-    # Each of the three steps runs 0.5s against a 0.8s budget: none may inherit the last.
+    # Each step runs 0.5s against a 0.8s budget: none may inherit the last.
     fired = threading.Event()
     watchdog = _WallClockWatchdog(10.0, fired.set).start()
     try:

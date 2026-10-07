@@ -30,24 +30,17 @@ ROW_TYPES = frozenset(
         "action",
         "sample",
         "failure",
-        # The A/B run order, recorded before the first cell. Written even when UNBALANCED, because
-        # whether linear drift cancelled is a property of the run a reader cannot otherwise recover.
+        # Written even when unbalanced: whether linear drift cancelled is otherwise unrecoverable.
         "ab_plan",
-        # A cell that did not finish, announced the moment it fails so a reader scanning FORWARD can
-        # discard its window rows without joining backwards.
         "cell_aborted",
-        # The comparability key: everything that must match for two payloads to be compared, hashed
-        # into one quotable token. Its own row so a reader need not parse the whole meta block.
+        # Everything that must match for two payloads to be comparable, hashed into one token.
         "comparability",
-        # One UI surface swept by the optional `--surfaces` phase. A row type of its own because a
-        # surface has no slot, no budget and no timing to miss, and reusing `action` would put forty
-        # null-`timings` rows into the column the report scores actions from.
+        # Own row type: a surface has no slot or timing, and `action` rows would pollute scoring.
         "surface",
     }
 )
 
-# Required keys per row type. Enforced in Recorder.emit, because a row that lost its `ran` flag
-# reads downstream as a fast action rather than a missing one.
+# Enforced in Recorder.emit: a row missing `ran` would read as a fast action.
 ROW_REQUIRED: dict[str, tuple[str, ...]] = {
     "run_meta": (
         "tier",
@@ -66,8 +59,7 @@ ROW_REQUIRED: dict[str, tuple[str, ...]] = {
     "comparability": ("key", "fields"),
     "sample": ("t_ms",),
     "failure": ("kind", "detail"),
-    # `reason` is REQUIRED: a surface row that lost it reads as a surface that was reached, the one
-    # thing a coverage sweep may never claim by default. Null only on the success path.
+    # `reason` required: a row missing it would read as a reached surface.
     "surface": ("surface", "reached", "reason", "parity"),
 }
 
@@ -115,13 +107,8 @@ def make_cell_id(rung: str, arm: str, rep: int) -> str:
     return f"r{rung}.{arm}.rep{rep}"
 
 
-#: `gap` is the quiet stretch the scheduler holds between two slots. It is NOT `stream`: a gap
-#: window opens before every slot, so most sit long after the reply finished. See
-#: SceneRunner._gap_window.
-#: `setup` is pre-film harness work (the composer click is the costly one) and is NOT `action`:
-#: dominated by the driver rather than the app, so scoring keeps it out of the frame pool. See
-#: `scoring/from_payload.UNSCORED_WINDOW_KINDS`.
-# ── the window ──────────────────────────────────────────────────────
+# `gap` is the quiet stretch between slots, not `stream`. See SceneRunner._gap_window.
+# `setup` is driver-dominated pre-film work, unscored. See from_payload.UNSCORED_WINDOW_KINDS.
 
 WINDOW_KINDS = frozenset({"action", "stream", "gap", "idle", "setup", "settle", "teardown"})
 
@@ -173,17 +160,7 @@ class ActionResult:
     expect_ok: Optional[bool] = None
     expect: dict = field(default_factory = dict)
     timings: dict = field(default_factory = dict)
-    # CORRECTNESS INVARIANTS, not timings, and kept apart on purpose. A count answers 'did the
-    # action still do the whole job'; they move oppositely, a timing falling is the result and a
-    # count falling is a regression.
-    # This exists because `select_all_copy` asserted only `chars > 0`. Its selection is taken over
-    # the viewport's DOM, so anything that stops mounting the whole thread truncates the clipboard
-    # silently and still passes: data loss, and the classic regression of every list that starts
-    # unmounting rows.
-    # The reference is the OTHER ARM rather than an absolute threshold: both arms seed a
-    # byte-identical thread, so a truncating treatment reads as a large negative delta against the
-    # null control's own spread with nothing calibrated per rung or platform. A count is therefore
-    # only meaningful in a paired comparison.
+    # Correctness invariants, kept apart from timings; only meaningful paired against the other arm.
     counts: dict = field(default_factory = dict)
     reason: Optional[str] = None
     slot_missed: bool = False
@@ -191,8 +168,7 @@ class ActionResult:
     def __post_init__(self) -> None:
         if not self.ran:
             self.timings = {}
-            # Same rule as `timings`: an action that did not happen has no invariant to report, and a zero
-            # here would read as 'the whole job was done, and it did nothing'.
+            # An action that did not happen has no invariant; a zero would read as a done job.
             self.counts = {}
             self.expect_ok = None
             if not self.reason:
@@ -246,9 +222,6 @@ class ActionContext:
     budget_ms: int
     dom: Any
     log: Callable[[str], None]
-
-
-# ── instruments ─────────────────────────────────────────────────────
 
 
 class Instrument:
@@ -310,9 +283,6 @@ class BenchContext:
     browser_procs: list = field(default_factory = list)
 
 
-# ── the output directory lock ───────────────────────────────────────
-
-
 class OutDirLock:
     """One output directory, held by one run, FROM BEFORE THE FIRST THING THAT MOVES OR STARTS.
 
@@ -356,9 +326,7 @@ class OutDirLock:
         """
         lock = cls(out)
         lock.out.mkdir(parents = True, exist_ok = True)
-        # The legacy per-session names, swept once: a directory left by an older build still has to be
-        # read, or the guard switches itself off on exactly the runs it was added for. Only the fixed
-        # name is ever a mutex.
+        # Legacy per-session marker names are still checked, but only the fixed name is a mutex.
         lock._refuse_if_legacy_marker_is_live()
         lock._acquire(session_id)
         return lock
@@ -454,11 +422,7 @@ class OutDirLock:
         if fd is None:
             return
         self._fd = None
-        # BLANKED BEFORE IT IS RELEASED, and only while this process holds the lock, so nothing can read
-        # it as authoritative. The file stays; the CONTENT goes, because a retained `pid session` line
-        # outlives its run and the next contender to lose a race would be handed it as the holder. Not
-        # a substitute for the liveness test in `_read_marker_once_written`: a killed run never reaches
-        # this line.
+        # Blank the marker under the lock before release so a stale `pid session` is never read as holder.
         try:
             os.ftruncate(fd, 0)
         except OSError:
@@ -540,15 +504,7 @@ class OutDirLock:
         deadline = time.monotonic() + budget_s
         while True:
             got = cls._read_marker(path)
-            # A RETAINED RECORD IS NOT A HOLDER. The marker is never unlinked, so a reused directory already
-            # holds the PREVIOUS run's `pid session` line; a bare 'did it read' test stops on it and names
-            # a run that finished hours ago, sending the reader after a specific dead pid. Measured: a
-            # clean `close()` leaves `2235618 sessionAAAA`, and a contender meeting a NEW holder in this
-            # window was told that pid while the actual holder was 2235621.
-            # Liveness separates them: the holder is by definition running, and the run that wrote a
-            # retained record has exited. `close()` also blanks the marker under the lock, so this covers
-            # only unclean exits. What is left is a retained record whose pid was RECYCLED onto a live
-            # process, needing an unclean exit and a wrapped pid space in one directory.
+            # The marker is never unlinked, so a retained record only counts as a holder if its pid is alive.
             if got is not None and cls._alive(got[1]):
                 return got
             if time.monotonic() >= deadline:
@@ -582,9 +538,6 @@ class OutDirLock:
             other.unlink(missing_ok = True)
 
 
-# ── the recorder ────────────────────────────────────────────────────
-
-
 class Recorder:
     """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still
     ships rungs 1 to 3 plus the crash record."""
@@ -600,35 +553,8 @@ class Recorder:
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self.session_id = session_id
         self.t0 = t0 if t0 is not None else time.monotonic()
-        # REFUSE A SECOND LIVE SESSION IN ONE OUTPUT DIRECTORY.
-        # Appending is correct across SHARDS, which are deliberate and sequential, and never correct for
-        # two concurrent runs: they contend, so neither measures the machine the other thought it had,
-        # and they write the same `cell_id`s where a reader keyed on `cell_id` sees only the last
-        # writer.
-        # Observed: a launcher started twice produced three `run_meta` rows and every `cell_id` twice,
-        # both completed, with `r1M.treatment.rep1` keystroke `p50_ms` reading 73.4 ms in one session
-        # and 144.5 ms in the other, scored last-wins as a 149.8% regression that does not exist.
-        # The marker carries the pid, so a crashed run leaves a marker naming a dead process and the
-        # next run says so rather than refusing forever.
-        # ONE FIXED NAME, CREATED EXCLUSIVELY. The name used to be `.running.{session_id}`, and a
-        # per-session name cannot be a mutex: the contenders race on DIFFERENT paths, each finding only
-        # the other's absence. Measured before the change, two processes released from a barrier onto
-        # one directory admitted BOTH recorders in 123 of 200 trials; merely launched back to back they
-        # still collided about 3% of the time.
-        # `os.open(..., O_CREAT | O_EXCL)` makes the check and the creation one atomic operation against
-        # other opens of the same name, the documented lock-file idiom, on Unix and Windows alike.
-        # `fcntl.flock` is deliberately NOT used: `fcntl` does not exist on Windows, and external
-        # testers run this there.
-        # TAKEN BEFORE THIS POINT WHEN THE CALLER HAS ONE, AND THAT IS THE NORMAL PATH: `run()` holds
-        # the directory from its first millisecond, because by the time the payload is opened a
-        # duplicate has already archived the live payload and installed two Unsloth instances. A
-        # `Recorder` built without one still takes its own, so the guard cannot be switched off by
-        # forgetting to pass it.
-        # See `OutDirLock`.
-        # WHO OWNS THE LOCK IS RECORDED HERE, because it decides who may let go of it. A lock this
-        # `Recorder` took is its to release on close; a lock ADOPTED from the caller outlives the
-        # recording, since `run()` closes the recorder and then reads the payload back to render
-        # `ab.md`, so releasing it in `close` would free the directory for the length of the report.
+        # Refuse a second live session in one output directory: concurrent runs corrupt each other.
+        # One fixed name via O_CREAT|O_EXCL (no fcntl on Windows); only a self-taken lock is released.
         self._owns_lock = lock is None
         if lock is None:
             lock = OutDirLock.take(self.path.parent, session_id)
@@ -708,14 +634,7 @@ class Recorder:
             self._fh.close()
         except OSError:
             pass
-        # RELEASED, NOT DELETED, and ONLY IF THIS RECORDER TOOK THE LOCK ITSELF.
-        # AN ADOPTED LOCK IS NOT THIS OBJECT'S TO DROP. `run()` hands the directory here, then closes
-        # the recorder in the `finally` and goes on to READ THE PAYLOAD BACK. Releasing the adopted
-        # lock here freed the directory for that window, and a second invocation arriving in it renames
-        # the finished `payload.jsonl` before cloning, so reporting either fails with
-        # `FileNotFoundError` on a run whose cells all completed or writes an `ab.md` describing
-        # another run's rows while exiting 0.
-        # A `Recorder` that took its own lock has nobody else to release it, so it still does so here.
+        # Release only a self-taken lock: `run()` reads the payload back after close under its own lock.
         lock = getattr(self, "_lock", None)
         if lock is not None and getattr(self, "_owns_lock", True):
             lock.release()

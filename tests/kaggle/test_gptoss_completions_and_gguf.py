@@ -65,11 +65,7 @@ def test_the_leg_asks_for_completions_and_for_mxfp4():
 
     leg = LEGS["gptoss"]
     assert "--no-train-on-completions" not in leg.args
-    # The export is OFF on this leg now: 13153.7 MB of MXFP4 in 348.1s, the
-    # most expensive conversion in the suite and the least representative of
-    # the claim, which `default` makes on a 609.8 MB file in 40.6s. The payload
-    # keeps the capability and the mxfp4 accept rule, so a dispatch can turn it
-    # back on; what it does not do is pay for it on every PR.
+    # Export is off on this leg for cost; the payload keeps the capability.
     assert "--export-gguf" not in leg.args
     assert "gguf_export.py" in leg.files, (
         "the payload still imports it lazily behind --export-gguf, so it stays "
@@ -157,7 +153,6 @@ def test_the_off_gpu_walk_names_the_tensors_and_not_only_the_bytes():
     record = placement(stub)
     assert record["parameters_by_device"] == {"cpu": 16}
     assert record["off_gpu_parameter_count"] == 2
-    # Largest first, so the reader sees the tensor that matters.
     assert [p["name"] for p in record["off_gpu_parameters"]] == [
         "model.embed_tokens.weight",
         "model.layers.0.mlp.weight",
@@ -248,8 +243,6 @@ def test_a_second_tensor_off_the_card_is_still_a_failure():
     failures = _placement_failures(record)
     assert failures
     assert "model.layers.7.mlp.down_proj.weight" in failures[0]
-    # The bracketed list is the "what is wrong" half; the embedding is still
-    # printed after it as context, which is what makes the verdict readable.
     listed = failures[0].split("[", 1)[1].split("]", 1)[0]
     assert (
         "model.embed_tokens.weight" not in listed
@@ -309,7 +302,6 @@ def test_skipping_every_cycle_is_still_a_failure():
     excuse that fires on cycle 0 too would be silent."""
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "every cycle skipped the GGUF export" in src
-    # The excuse is keyed on a cycle having really exported, not on the flag.
     assert (
         'exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]'
         in src

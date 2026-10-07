@@ -29,7 +29,7 @@ def _load_module():
 _MODULE = _load_module()
 _backfill_dataclass_defaults = _MODULE._backfill_dataclass_defaults
 _transformers_configs_are_kw_only = _MODULE._transformers_configs_are_kw_only
-ifx = _MODULE  # for monkeypatching its internals
+ifx = _MODULE
 
 
 def test_an_inherited_default_is_not_shadowed():

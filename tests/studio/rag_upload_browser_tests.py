@@ -27,7 +27,6 @@ def request(path, body = None):
 
 
 def wait_state(predicate):
-    # Same contention as the browser waits below: three engines on a two-core runner.
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         state = request("/__state")
@@ -80,7 +79,7 @@ def run_case(browser, mode, action):
 
 
 def complete(page):
-    # Three engines share a 2-core runner, so this waits on scheduling, not on the app.
+    # Three engines share a 2-core runner, so this waits on scheduling, not the app.
     page.wait_for_function(
         "window.sim.documents.length>0 && window.sim.documents.every(d=>d.status==='completed') && !window.sim.uploading && !window.sim.hasIndexing",
         timeout = 30000,

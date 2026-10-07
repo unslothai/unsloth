@@ -36,7 +36,6 @@ WRAPPER_NAMES = (
     "_grpo_hidden_states_reproduce_logits",
 )
 
-# present only once the per-call degradation fix has landed
 OPTIONAL_NAMES = ("_note_grpo_hidden_states_success",)
 
 CONSTANT_NAMES = (
@@ -79,7 +78,7 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
         "inspect": inspect,
         "logger": logging.getLogger("unsloth-repro"),
         "torch": torch,
-        # rl.py imports these at module level; None skips the one-time head check, which needs zoo.
+        # None skips the one-time head check, which needs zoo.
         "detect_logit_transforms": None,
     }
     replacements = SOURCE_PATH.with_name("rl_replacements.py")

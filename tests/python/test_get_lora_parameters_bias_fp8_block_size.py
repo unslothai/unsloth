@@ -6,7 +6,7 @@ _HELPERS = ("_packed_base", "_is_packed_state")
 
 
 def _load_function(name):
-    # Extract a function from kernels/utils.py without importing unsloth (which needs a GPU / torch / bitsandbytes).
+    # Extract without importing unsloth, which needs a GPU.
     source = Path(__file__).parents[2] / "unsloth" / "kernels" / "utils.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     funcs = [
@@ -27,8 +27,6 @@ class _Obj:
 
 
 def _make_disabled_block_fp8_proj(block_size):
-    # A merged/disabled projection whose base layer is a block-fp8 weight that ships a non-default block size on its
-    # checkpoint.
     weight = _Obj()
     weight.quant_state = _Obj()
     base_layer = _Obj()
@@ -44,8 +42,7 @@ def _make_disabled_block_fp8_proj(block_size):
 
 
 def test_bias_variant_propagates_fp8_block_size_on_disabled_path():
-    # Downstream fp8 kernels read getattr(weight_scale, "block_size", [128, 128]), so the checkpoint's real block size
-    # must survive the merged/disabled path, exactly as it does for the non-bias sibling get_lora_parameters.
+    # fp8 kernels read weight_scale.block_size, so the real block size must survive this path.
     get_lora_parameters_bias = _load_function("get_lora_parameters_bias")
 
     proj, weight_scale = _make_disabled_block_fp8_proj([64, 128])
@@ -55,9 +52,6 @@ def test_bias_variant_propagates_fp8_block_size_on_disabled_path():
 
 
 def _make_decompressed_merged_proj():
-    # A merged compressed-tensors layer that was decompressed back to bf16.
-    # It keeps quant_method == "fp8" from the checkpoint metadata, but the live weight is bf16 so there is no quant
-    # state to attach a block size to.
     weight = _Obj()
     weight.dtype = "bfloat16"
     base_layer = _Obj()
@@ -73,9 +67,7 @@ def _make_decompressed_merged_proj():
 
 
 def test_bias_variant_keeps_none_quant_state_for_decompressed_layer():
-    # Such a layer has no quant state, and fast_linear_forward relies on getting
-    # W_quant None back so it can fall back to a plain matmul, so setting the block
-    # size must not assume a quant state is present.
+    # No quant state here; fast_linear_forward needs W_quant None to fall back to matmul.
     get_lora_parameters_bias = _load_function("get_lora_parameters_bias")
 
     W, W_quant = get_lora_parameters_bias(_make_decompressed_merged_proj())[:2]

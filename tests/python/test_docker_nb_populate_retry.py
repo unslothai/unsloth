@@ -56,7 +56,6 @@ def _run(tmp_path: Path, template: Path, dest: Path) -> subprocess.CompletedProc
             os.environ,
             UNSLOTH_NOTEBOOKS_TEMPLATE = str(template),
             UNSLOTH_NOTEBOOKS_DIR = str(dest),
-            # phase 2 needs a clone; the offline half must retry on its own
             UNSLOTH_SKIP_NOTEBOOK_REFRESH = "1",
             UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
             UNSLOTH_KEEP_COLAB_INTRO = "1",
@@ -81,7 +80,7 @@ def test_a_failed_copy_leaves_the_commit_unstamped_and_retries_next_start(tmp_pa
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
-    # a regular file, so the copy into it is ENOTDIR for root too
+    # A regular file, so the copy fails with ENOTDIR even as root.
     (dest / "sub").write_text("blocked", encoding = "utf-8")
 
     first = _run(tmp_path, template, dest)
@@ -120,8 +119,7 @@ def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
     before = _state(dest)
     assert set(before) == {"a.ipynb", "sub/b.ipynb"}
 
-    # a re-run of phase 1 would drop this file's managed record, so an identical
-    # state is what proves the block was skipped
+    # Re-running phase 1 would drop this file's record, so identical state proves a skip.
     (dest / "a.ipynb").write_text("edited", encoding = "utf-8")
 
     assert _run(tmp_path, template, dest).returncode == 0
@@ -131,8 +129,7 @@ def test_a_clean_populate_stamps_the_commit_and_does_not_re_run(tmp_path: Path):
 
 @behavioural
 def test_the_partial_marker_is_not_recorded_as_a_notebook(tmp_path: Path):
-    # record_state() walks every file under DEST, so a dotfile missing from its skip
-    # list reaches users as a notebook to sync
+    # record_state() walks every file, so an unskipped dotfile would sync as a notebook.
     template = _template(tmp_path)
     dest = tmp_path / "dest"
     dest.mkdir()
@@ -163,7 +160,6 @@ def test_the_retry_keeps_records_the_refresh_added(tmp_path: Path):
     assert _run(tmp_path, template, dest).returncode == 0
     assert (dest / ".unsloth_sync_partial").exists()
 
-    # what the refresh does between the two boots
     (dest / "a.ipynb").write_text("A-v2-from-upstream", encoding = "utf-8")
     (dest / "remote_only.ipynb").write_text("R", encoding = "utf-8")
     (dest / ".unsloth_sync_state").write_text(
@@ -203,11 +199,8 @@ def test_a_first_boot_records_only_what_it_populated(tmp_path: Path):
     assert set(_state(dest)) == {"a.ipynb", "sub/b.ipynb"}
 
 
-# Phase 1b restores a notebook the user deleted from the BAKED template, and records
-# the template's hash for it. When the refresh had already moved that notebook past
-# the image, the restore silently walks it backwards -- and phase 2 exits on
-# `remote == last`, so the sync marker has to come off or it stays there until
-# upstream happens to commit again.
+# Restoring from the baked template can move a refreshed notebook backwards, and phase 2
+# exits on `remote == last`, so the sync marker must be cleared.
 
 UPSTREAM_COMMIT = "b" * 40
 
@@ -231,7 +224,6 @@ def test_a_notebook_restored_backwards_drops_the_sync_marker(tmp_path: Path):
     template, dest = _template(tmp_path), tmp_path / "dest"
     assert _run(tmp_path, template, dest).returncode == 0
 
-    # the refresh had taken a.ipynb past the baked "A"; the user then deletes it
     run = _restored_run(tmp_path, template, dest, "c" * 64, None)
     assert run.returncode == 0, run.stdout + run.stderr
 
@@ -273,12 +265,6 @@ def test_a_notebook_still_on_disk_is_not_touched(tmp_path: Path):
     assert (dest / ".unsloth_sync_commit").read_text(encoding = "utf-8").strip() == UPSTREAM_COMMIT
 
 
-# --- a stale state staging file the populate cannot truncate --------------------------
-# A run killed between the truncate and the mv leaves $STATE.tmp behind. When that run
-# was a different uid (root once, then `--user`) the populate cannot empty it, every
-# append fails, and the mv -- which needs write on DEST, not on the file -- publishes
-# the FOREIGN file as our state. 0444 on a file this uid owns reproduces that, since
-# open-for-write consults the owner bits.
 @behavioural
 def test_a_stale_unwritable_state_temp_is_not_published_as_our_state(tmp_path: Path):
     template = _template(tmp_path)
@@ -326,18 +312,13 @@ def test_an_unstageable_state_leaves_the_marker_off_instead_of_copying(tmp_path:
     assert "could not be staged" in run.stdout, run.stdout
 
 
-# Staging the temp file proves DEST was writable ONCE, not that it stays so. A quota
-# or ENOSPC that lands on a post-copy `printf >> "$STATE.tmp"` leaves the notebook on
-# disk with no record, and an unrecorded file is read as a user edit and never
-# refreshed again -- while the marker is stamped anyway, because only `cp` failures
-# were counted. RLIMIT_FSIZE reproduces it without needing a real full filesystem:
-# the tiny notebooks copy fine, the growing state file is what hits the ceiling.
+# A failed state append after copy leaves an unrecorded file; RLIMIT_FSIZE simulates ENOSPC.
 def _run_capped(template: Path, dest: Path, max_bytes: int):
     import resource
     import signal
 
     def _cap():
-        # SIGXFSZ would kill the script outright; the shell must SEE the write error
+        # SIGXFSZ would kill the script; the shell must see the write error.
         signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
         resource.setrlimit(resource.RLIMIT_FSIZE, (max_bytes, max_bytes))
 
@@ -405,17 +386,9 @@ def test_the_retry_after_a_failed_append_converges(tmp_path: Path):
     assert not (dest / ".unsloth_sync_partial").exists()
 
 
-# CLASS GUARD, not another instance test. An unchecked append to a staged state file
-# has now been found four separate times in this script: the populate copy loop, the
-# populate merge block, the refresh restore loop (RS_TMP) and the refresh publish loop
-# (TMPSTATE). Each time the record was lost while the failure counter stayed 0, so a
-# truncated state was published AND the commit marker advanced, which strands every
-# notebook whose hash was dropped. Rather than wait for the fifth, require every append
-# to a staged state file to be accounted for.
+# Class guard: every append to a staged state file must handle or count its failure.
 _STAGED_STATE_TARGETS = ('>> "$STATE.tmp"', '>> "$TMPSTATE"', '>> "$RS_TMP"')
 
-# an append is accounted for if it handles its own failure, or if the very next lines
-# count one
 _ACCOUNTED = (
     "|| populate_failed=",
     "|| failed=",
@@ -518,13 +491,7 @@ def test_record_state_is_still_uncalled():
     assert not calls, f"record_state gained a caller; the exemption is now unsound: {calls}"
 
 
-# Section 1b (restore deleted notebooks) rewrites the WHOLE state on every boot, and
-# it was the one state writer using mktemp instead of a sibling of $STATE. That gave
-# it /tmp (a different filesystem from $DEST in the shipped image, so the publish was
-# a cross-device copy that can leave a half-written state) and mode 0600 owned by
-# whoever booted. A root boot then left $STATE unreadable to a later `--user` boot,
-# and an unreadable $STATE is the dangerous input: there is no `set -e`, so the failed
-# redirect just skips the loop body and an EMPTY state gets published over a valid one.
+# State must be staged beside $STATE (same fs, readable by later --user boots).
 def _state_path(dest: Path) -> Path:
     return dest / ".unsloth_sync_state"
 
@@ -561,7 +528,7 @@ def test_the_restore_loop_does_not_downgrade_the_state_file(tmp_path: Path):
     _run(tmp_path, template, dest)
     first = _state_path(dest).stat().st_mode & 0o777
 
-    _run(tmp_path, template, dest)  # a second boot re-runs section 1b
+    _run(tmp_path, template, dest)
     second = _state_path(dest).stat().st_mode & 0o777
 
     assert second == first, f"the state mode changed across boots: {oct(first)} -> {oct(second)}"

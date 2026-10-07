@@ -53,9 +53,6 @@ _UTILS = _ROOT / "unsloth" / "models" / "_utils.py"
 _BEGIN = "UNSLOTH_PATCH_REPORT_BEGIN"
 _END = "UNSLOTH_PATCH_REPORT_END"
 
-# Imports unsloth for real, then dumps what `_run_temporary_patches` recorded.
-# The injection point is where a mutation control installs an extra patch and
-# re-runs the pass, so the control travels the same code path as the gate.
 _CHILD = """
 import json
 import unsloth  # noqa: F401
@@ -151,9 +148,6 @@ def _clean_report():
     return _collect()
 
 
-# ------------------------------------------------------------------ the gate
-
-
 _PHASES = ("init", "pre_compile", "post_compile")
 
 
@@ -166,19 +160,13 @@ def test_no_temporary_patch_raised_on_this_library_version(_clean_report):
 
 @pytest.mark.parametrize("phase", _PHASES)
 def test_every_pass_actually_ran_some_patches(_clean_report, phase):
-    # Guards the degenerate green: an empty TEMPORARY_PATCHES, or a pass that
-    # was never driven, would satisfy the gate above without applying anything.
-    # No upper or exact bound, and no names, so adding or removing a patch never
-    # touches this file.
+    # Guards the degenerate green of an empty TEMPORARY_PATCHES or an undriven pass.
     assert _clean_report[phase][
         "completed"
     ], f"no temporary patch completed in the {phase} pass, so the gate above is vacuous there"
 
 
-# ------------------------------------------------- mutation controls
-# The gate is only worth having if it is sensitive to a patch that breaks and
-# insensitive to one that declines because this library version has nothing for
-# it to patch. Both controls go through the real import and the real recording.
+# Controls: gate must catch a breaking patch but ignore one that declines on this version.
 
 
 _RAISES = """
@@ -249,12 +237,6 @@ def test_mutation_control_a_cleanly_declining_patch_does_not():
     ), "a patch that declined cleanly was not recorded as completed"
 
 
-# ---------------------------------------------- the recording itself
-# Fast, no import of unsloth: the function is loaded out of the file the way
-# tests/test_import_time_floors.py does, so these run everywhere including a
-# host that cannot import the model stack at all.
-
-
 class _CollectingLogger:
     def __init__(self):
         self.warnings = []
@@ -310,8 +292,7 @@ def test_outcomes_are_recorded_per_phase():
 
 
 def test_a_repeated_pass_replaces_rather_than_grows_its_phase():
-    # `_run_temporary_patches` runs again on every model load, so an appending
-    # record would be a leak in a long-lived process.
+    # `_run_temporary_patches` reruns on every model load, so appending records would leak.
     def declines():
         return None
 
@@ -324,14 +305,7 @@ def test_a_repeated_pass_replaces_rather_than_grows_its_phase():
 
 
 def test_a_recorded_failure_does_not_pin_the_frames_it_raised_from():
-    # The count check above uses a patch that returns cleanly, which is the
-    # cheap half of the question. The half that can cost memory is a patch that
-    # RAISES: `raised` stores the exception object, an exception carries its
-    # __traceback__, and a traceback keeps every frame in it and every local in
-    # those frames alive. Measured before the trim went in: the raising frame's
-    # local stayed reachable for as long as the phase entry lived, and the
-    # "init" entry is written once per process and never replaced, so an
-    # import-time failure pinned them until the process ended.
+    # A raising patch stores an exception whose traceback pins frames; init entry lives forever.
     class _Held:
         pass
 
@@ -339,7 +313,6 @@ def test_a_recorded_failure_does_not_pin_the_frames_it_raised_from():
 
     def explodes():
         heavy = _Held()
-        # A weak reference, so the probe itself is not what keeps `heavy` alive.
         probes.append(weakref.ref(heavy))
         raise RuntimeError("boom")
 
@@ -356,8 +329,6 @@ def test_a_recorded_failure_does_not_pin_the_frames_it_raised_from():
         "frames and their locals alive for the lifetime of the phase entry"
     )
 
-    # And the frame's local really is gone, not merely unreachable through the
-    # attribute that was cleared.
     gc.collect()
     assert probes[0]() is None, (
         "an object local to the failed patch is still alive after the pass, so the record "
@@ -366,10 +337,7 @@ def test_a_recorded_failure_does_not_pin_the_frames_it_raised_from():
 
 
 def test_an_exception_that_refuses_the_trim_does_not_break_the_pass():
-    # __traceback__, __context__ and __cause__ are ordinary settable attributes,
-    # and a subclass can shadow them with a property that refuses the write.
-    # This loop runs inside `import unsloth`, so the trim must never be the thing
-    # that ends the import.
+    # Traceback attrs can be property-shadowed; the trim runs in `import unsloth` so must not raise.
     class _Stubborn(Exception):
         @property
         def __traceback__(self):
@@ -395,9 +363,6 @@ def test_an_exception_that_refuses_the_trim_does_not_break_the_pass():
 
 
 def test_an_unnamed_callable_does_not_break_the_recording():
-    # The success path stores the callable itself and formats nothing, so a
-    # callable with no __name__ cannot make the bookkeeping raise inside
-    # `import unsloth`.
     class _Callable:
         def __call__(self):
             return None
@@ -411,8 +376,6 @@ def test_an_unnamed_callable_does_not_break_the_recording():
 
 
 def test_the_recording_is_wired_into_the_patch_loop():
-    # DRIFT: the gate is only as good as its wiring, and a refactor that drops
-    # these lines would leave every test above green while recording nothing.
     source = _UTILS.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     for node in tree.body:

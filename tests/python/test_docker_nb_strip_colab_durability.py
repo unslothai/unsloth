@@ -28,8 +28,7 @@ INTRO = (
     'To run this, press "*Runtime*" and press "*Run all*" on a **free** '
     "Tesla T4 Google Colab instance!\n"
 )
-# json.dumps escapes the quotes in INTRO, so the raw sentence never appears in the file
-# text; this fragment does, and only in the intro.
+# json.dumps escapes quotes in INTRO; this fragment appears verbatim and only there.
 MARK = "Tesla T4 Google Colab instance"
 
 
@@ -225,7 +224,7 @@ def test_a_publish_cut_off_after_its_record_is_recovered(strip, tree, monkeypatc
 
     def _killed(tmp, path, before):
         strip._unlink(tmp)
-        raise KeyboardInterrupt  # docker stop, between the two renames
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(strip, "_publish", _killed)
     with pytest.raises(KeyboardInterrupt):

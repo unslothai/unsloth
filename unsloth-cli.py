@@ -48,7 +48,6 @@ class _CallableTokenizerProxy:
         return getattr(self._tokenizer, name)
 
     def __call__(self, text, *args, **kwargs):
-        # MLX/torch-free: never request torch tensors; keep plain python ids.
         kwargs.pop("return_tensors", None)
         wrapped = getattr(self._tokenizer, "_tokenizer", None)
         if callable(wrapped):
@@ -109,7 +108,7 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         print("Warning: The model is not saved!")
         return
 
-    # Enter the GGUF branch when saving or pushing GGUF, so --push_gguf works without --save_gguf.
+    # Enter on push_gguf too, so --push_gguf works without --save_gguf.
     if args.save_gguf or args.push_gguf:
         if not args.save_gguf:
             print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")

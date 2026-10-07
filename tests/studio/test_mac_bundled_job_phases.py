@@ -57,7 +57,6 @@ def _boot_defaults() -> tuple[str, str]:
     return log.group(1), pid.group(1) if pid else "STUDIO_PID"
 
 
-# The phases, in the order they must run.
 PHASE_MARKERS = (
     "Drive the chat UI with Playwright",
     "Run Unsloth API & Auth tests",
@@ -97,9 +96,8 @@ def _phase_starts(steps: list[dict]) -> list[int]:
     boots = [i for i, n in enumerate(names) if "boot unsloth" in n.lower()]
     assert boots, "no server boot step found; every scan below would be vacuous"
 
-    # The absorbed phases declare their port and model in a "Phase N environment" step several steps ahead of the boot,
-    # so a boundary drawn at the boot alone files that port under the PREVIOUS phase and reports a collision against
-    # itself.
+    # Phases declare their port in a "Phase N environment" step ahead of the boot, so the
+    # boundary is drawn there.
     declarations = [i for i, n in enumerate(names) if re.fullmatch(r"Phase \d+ environment", n)]
 
     starts: list[int] = []
@@ -136,7 +134,6 @@ def test_the_uninstall_phase_runs_last(steps: list[dict]) -> None:
     names = [str(s.get("name") or "") for s in steps]
     uninstall = next(i for i, n in enumerate(names) if n == "Uninstall and verify clean")
     after = [n for n in names[uninstall + 1 :] if n]
-    # Artifact upload is the only legitimate follower: it needs no install.
     assert all("Upload" in n for n in after), (
         f"steps run after the uninstall phase: {after}. That phase removes Unsloth, so "
         f"anything below it that needs an install now runs against a machine it just "
@@ -152,8 +149,7 @@ def test_no_two_phases_bind_the_same_port(steps: list[dict]) -> None:
     A phase that finds a previous phase's server still listening does not error:
     it connects, and tests the wrong model.
     """
-    # A port legitimately appears several times inside ONE phase: the boot step, the health wait and
-    # the stop step all name it. So group by phase, not by step, and fail only when two phases share one.
+    # Group by phase: one phase names its port in several steps.
     starts = _phase_starts(steps)
     by_phase: dict[str, set[int]] = defaultdict(set)
     for i, step in enumerate(steps):
@@ -177,8 +173,7 @@ def test_no_two_phases_write_the_same_server_log(steps: list[dict]) -> None:
     the later phase truncates the earlier one's log, so a run that went red in an
     early phase uploads the log of a later phase that passed.
     """
-    # Grouped by phase for the same reason the port scan is: within one phase the health wait is
-    # *given* the log path so it can tail it on failure, which is a read, not a second writer.
+    # Grouped by phase: the health wait is given the log path to read, not write.
     starts = _phase_starts(steps)
     default_log, _ = _boot_defaults()
     logs: dict[str, set[int]] = defaultdict(set)
@@ -187,10 +182,8 @@ def test_no_two_phases_write_the_same_server_log(steps: list[dict]) -> None:
         for pattern in (r"--log (logs/[\w.\-]+)", r"> (?:\")?(logs/[\w.\-]+)"):
             for found in re.findall(pattern, script):
                 logs[found].add(_phase_of(starts, i))
-        # An invocation with no --log is the case that actually bit: neither workflow line named a
-        # file, so a text scan saw no collision while both phases wrote the same one. Checked over
-        # the whole step rather than the matched call, since the invocations are backslash-continued
-        # across lines.
+        # An invocation with no --log writes the default file; checked over the whole step since
+        # calls are backslash-continued.
         if "boot-studio-api-only.sh" in script and "--log" not in script:
             logs[default_log].add(_phase_of(starts, i))
 

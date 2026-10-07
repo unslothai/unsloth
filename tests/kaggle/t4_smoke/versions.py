@@ -18,7 +18,6 @@ wrapped, since dying while collecting diagnostics reports nothing at all.
 
 from __future__ import annotations
 
-# Libraries whose version bumps this CI exists to detect.
 GOAL_PACKAGES = (
     "torch",
     "transformers",
@@ -30,12 +29,7 @@ GOAL_PACKAGES = (
     "triton",
     "xformers",
     "datasets",
-    # The transitive runtime packages the canary and frontier resolutions are allowed to move, which are not optional
-    # extras here: the frontier leg installs transformers and trl WITH their dependencies precisely so pip repairs them,
-    # and legs.py records the resolution doing it
-    # "Would install datasets-5.0.1 huggingface_hub-1.27.0 transformers-5.15.0 trl-1.9.2", and before that the two
-    # errors that forced the change, "tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1" and
-    # "safetensors>=0.8.0 is required, but found safetensors==0.7.0".
+    # Transitive packages the canary and frontier legs let pip move (e.g. tokenizers, safetensors).
     "tokenizers",
     "safetensors",
     "huggingface_hub",
@@ -43,8 +37,7 @@ GOAL_PACKAGES = (
     "unsloth_zoo",
 )
 
-# Exactly one of the above has a distribution name differing from its import
-# name; getting it wrong records "not installed" for a package that is.
+# Only unsloth_zoo has a distribution name differing from its import name.
 _DISTRIBUTION = {"unsloth_zoo": "unsloth-zoo"}
 
 

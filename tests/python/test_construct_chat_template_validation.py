@@ -58,7 +58,7 @@ def test_single_pair_template_raises_clear_error_not_attribute_error():
 def test_error_message_excerpt_is_bounded():
     """Error messages must include a bounded excerpt of the offending
     template, not dump arbitrarily large content into the traceback."""
-    huge = ("garbage " * 5000) + "{INPUT}"  # ~40 KB, missing {OUTPUT}
+    huge = ("garbage " * 5000) + "{INPUT}"
     with pytest.raises(RuntimeError) as exc_info:
         construct_chat_template(
             tokenizer = _FakeTokenizer(),
@@ -78,7 +78,7 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
     added_tokens_decoder: dict = {}
 
     def __call__(self, text):
-        # input_ids[0] must differ from bos_token_id so the BOS-handling branch is skipped.
+        # input_ids[0] != bos_token_id, so the BOS-handling branch is skipped.
         return SimpleNamespace(input_ids = [5])
 
 
@@ -154,7 +154,6 @@ def test_system_message_is_consumed_by_the_system_part(default_system_message):
     )
     assert rendered.count("Be terse.") == 1
     assert rendered.count("Hi") == 1
-    # A caller system message overrides the default; the default must not leak in.
     if default_system_message is not None:
         assert default_system_message not in rendered
 
@@ -269,7 +268,6 @@ _APOSTROPHE_CHAT_TEMPLATE = (
         "Answer the user's question.",
         r"Put the answer in \boxed{}.",
         r"Files live in C:\Users\me",
-        # Windows CRLF: Jinja rewrites a raw \r to \n.
         "Answer briefly.\r\nBe polite.",
     ],
 )

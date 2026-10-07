@@ -42,15 +42,12 @@ PLATFORMS = {
 }
 MOD = {"macOS": "Meta", "Windows": "Control", "Linux": "Control"}
 
-# Drop the highlight registry before the app loads, so the bar takes the
-# selection fallback exactly as it does on an engine that never had one.
 NO_HIGHLIGHT_API = """
 delete window.Highlight;
 try { delete CSS.highlights; } catch (e) { /* getter-only on some engines */ }
 """
 
-# An engine from before the option rename: it answers only checkVisibilityCSS
-# and checkOpacity, and ignores the modern spellings the way Web IDL does.
+# Pre-rename engines answer only checkVisibilityCSS/checkOpacity and ignore modern option names.
 LEGACY_CHECK_VISIBILITY = """
 const real = Element.prototype.checkVisibility;
 Element.prototype.checkVisibility = function (options) {
@@ -68,9 +65,7 @@ Element.prototype.checkVisibility = function (options) {
 };
 """
 
-# An engine with no checkVisibility at all, which is Safari below 17.4 and the
-# WebKitGTK the desktop build is handed. The optional call answers undefined
-# there, and read as "not false" it put every display: none subtree back in.
+# Safari < 17.4 and desktop WebKitGTK lack checkVisibility; an undefined answer must not read as visible.
 NO_CHECK_VISIBILITY = """
 delete Element.prototype.checkVisibility;
 """
@@ -103,8 +98,6 @@ def state(page) -> dict:
 
 def open_bar(page, mod: str) -> None:
     page.keyboard.press(f"{mod}+f")
-    # The production bar crosses a lazy boundary so the first open can include
-    # one dev-server transform. Assert that it resolves, not that Vite is warm.
     page.wait_for_function(
         "() => window.__findSmoke.state().open",
         timeout = 10000,
@@ -147,7 +140,6 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
         page.locator('[role="search"]').count() == 1,
     )
 
-    # Re-pressing the chord keeps the search open and returns focus to its field.
     page.evaluate("() => document.activeElement?.blur()")
     check(
         engine,
@@ -177,8 +169,7 @@ def check_counting(page, engine: str, mode: str, mod: str) -> None:
     shown = counter(page)
     check(engine, mode, "a query is counted", bool(shown), f"counter={shown!r}")
 
-    # An off-route workspace is kept mounted under `inert`; its matches must not
-    # be counted or walked to.
+    # An off-route workspace stays mounted under `inert`; its matches must not count.
     page.evaluate("() => window.__findSmoke.setWorkspace('other')")
     page.wait_for_timeout(700)
     other = counter(page)
@@ -218,7 +209,6 @@ def check_walk(page, engine: str, mode: str, mod: str) -> None:
         f"scrollTop {start} -> {moved}",
     )
 
-    # Shift+Enter walks back.
     page.keyboard.press("Shift+Enter")
     page.wait_for_timeout(200)
     check(
@@ -279,11 +269,7 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
             str(painted),
         )
     else:
-        # No registry, so the bar falls back to selecting the active match. Whether that selection
-        # survives is the engine's call - Gecko keeps it, WebKit and Blink drop it to give the caret
-        # back - so the invariant here is the one that is not negotiable: the field still works.
-        # Moving the selection out from under a focused field used to swallow every keystroke after
-        # the first, which froze the query at one character on exactly the engines that land here.
+        # Engines differ on keeping the fallback selection; the invariant is that the field keeps accepting input.
         typed = page.evaluate("() => document.querySelector('[role=\"search\"] input')?.value")
         check(
             engine,
@@ -417,9 +403,7 @@ def check_content_visibility_reveal(page, engine: str, mode: str, mod: str) -> N
     )
     page.wait_for_timeout(600)
     open_bar(page, mod)
-    # Inserted whole, the way a paste arrives, rather than typed. Typing hides this: every
-    # keystroke reveals again, and those repeats do by accident what the fix does on purpose.
-    # One change is what a paste, an Enter, or a click on the walk button each produce.
+    # Insert whole like a paste: typing reveals on every keystroke and would hide the bug.
     page.keyboard.insert_text("zqxjcvneedle")
     page.wait_for_timeout(1200)
     where = page.evaluate(
@@ -468,7 +452,6 @@ def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
     check(engine, mode, "the planted text really is decomposed", planted is True)
     page.wait_for_timeout(500)
     open_bar(page, mod)
-    # Typed composed, against text written decomposed.
     page.keyboard.type("caf\u00e9 vbnmqz")
     page.wait_for_timeout(700)
     shown = counter(page)
@@ -479,8 +462,6 @@ def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
         shown == "1/1",
         f"counter={shown!r}",
     )
-    # Only the registry path exposes a range; fallback selection is intentionally released so the
-    # field remains usable.
     if page.evaluate("() => typeof CSS !== 'undefined' && !!CSS.highlights"):
         covers = page.evaluate(
             """() => {
@@ -684,9 +665,7 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
     before = counter(page)
     check(engine, mode, "the planted panel is counted", bool(before), f"{before!r}")
 
-    # Adding the attribute is the direction that used to be filtered out of the
-    # observer's own batch, leaving the region counted until something else
-    # happened to mutate.
+    # Adding the attribute used to be filtered out of the observer's own batch.
     page.evaluate("() => document.getElementById('probe-skip')?.setAttribute('data-find-skip', '')")
     page.wait_for_timeout(900)
     after = counter(page)
@@ -1071,7 +1050,6 @@ def run_engine(pw, engine: str) -> None:
             browser.close()
         return
     try:
-        # The platform sweep, on the engine's own capabilities.
         for platform, (nav_platform, agent) in PLATFORMS.items():
             context = browser.new_context(user_agent = agent)
             context.add_init_script(
@@ -1082,8 +1060,6 @@ def run_engine(pw, engine: str) -> None:
             run_page(page, engine, platform, MOD[platform])
             context.close()
 
-        # The two degraded engines, on one platform each: what they exercise is
-        # the capability, and the platform sweep above already covered the chord.
         for mode, script in (
             ("no-highlight-api", NO_HIGHLIGHT_API),
             ("legacy-checkVisibility", LEGACY_CHECK_VISIBILITY),

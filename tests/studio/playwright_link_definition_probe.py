@@ -38,7 +38,6 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 
 CASES = ("code", "link", "plain")
 
-# Two fences in the code reply, one in each of the others.
 EXPECTED_FENCES = {"code": 2, "link": 1, "plain": 1}
 
 
@@ -68,17 +67,13 @@ def run_case(page, case: str) -> dict:
     page.goto(f"{BASE}/{PAGE}?case={case}", wait_until = "domcontentloaded")
     page.wait_for_function("() => window.__probe && window.__probe.ready()", timeout = 60_000)
 
-    # The fences themselves mount independently of the action bar, and their count is known per
-    # case, so this is a real completion signal rather than an interval. The button count is
-    # deliberately NOT waited on: `code` is legitimately zero before the fix, and waiting for a
-    # number that never arrives would fail the branch that is supposed to reproduce the defect.
+    # Do not wait on the button count: `code` is legitimately zero before the fix.
     expected = EXPECTED_FENCES[case]
     page.wait_for_function(
         f"() => window.__probe.counts().codeBlocks === {expected}",
         timeout = 60_000,
         polling = 250,
     )
-    # Then let the action bar settle, which is quick now the chunk is warm.
     page.wait_for_function(
         """() => {
             const now = JSON.stringify(window.__probe.counts());

@@ -40,7 +40,7 @@ def _shadowed() -> list[str]:
             try:
                 tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
             except SyntaxError:
-                continue  # a file that does not parse is a different problem, loudly
+                continue
             scopes = [("module", tree.body)]
             scopes += [(n.name, n.body) for n in tree.body if isinstance(n, ast.ClassDef)]
             for scope, body in scopes:

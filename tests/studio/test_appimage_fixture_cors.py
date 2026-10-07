@@ -109,8 +109,7 @@ def test_the_fixture_echoes_rather_than_naming_headers():
         "the fixture's preflight no longer echoes the requested headers, so it has gone "
         "back to a hand-written list that will drift from the backend again"
     )
-    # Comments stripped first: the block deliberately names the two headers when
-    # explaining what drifted, and that history is worth keeping. Only code counts.
+    # Comments stripped first: the block names both headers when explaining the drift.
     code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
     for name in frontend_request_headers():
         assert name not in code, (

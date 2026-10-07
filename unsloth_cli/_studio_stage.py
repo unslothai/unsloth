@@ -17,8 +17,8 @@ from pathlib import Path
 
 STAGE_DIR_NAME = ".update-stage"
 STAGE_ROOT_ENV = "UNSLOTH_STUDIO_STAGE_ROOT"
-# Where a staged update parks the uv cache it used; the live marker is written only once the
-# stage is accepted, so an update that never activates cannot redirect the environment.
+# Where a staged update parks its uv cache; the live marker is written only once the stage is
+# accepted, so an update that never activates cannot redirect the environment.
 UV_CACHE_MARKER = "uv-cache-dir"
 SHELL_VERSION_ENV = "UNSLOTH_TAURI_SHELL_VERSION"
 VENV_NAME = "unsloth_studio"
@@ -76,7 +76,7 @@ def _relocatable_script(body: bytes, original: int) -> bytes:
     deficit = original - len(shebang) - len(body)
     if deficit <= 0:
         return shebang + body
-    # `# ` plus the newline is 3 bytes. Longer than the original is fine; only shorter reads as damage.
+    # `# ` plus the newline is 3 bytes. Only shorter than the original reads as damage.
     return shebang + b"# " + b"#" * max(deficit - 3, 0) + b"\n" + body
 
 

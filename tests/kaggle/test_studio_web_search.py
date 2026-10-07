@@ -73,9 +73,7 @@ def test_it_counts_only_what_this_request_wrote():
     this one, which is a green tick for a search that never happened."""
     body = _body()
     assert "before = self.server_log.read_text" in body
-    # Whitespace-insensitive: the repo's formatter rewrites this slice to
-    # `after[len(before) :]`, and a guard that matched the unformatted spelling
-    # went red on a reformat rather than on a regression.
+    # Whitespace-insensitive: the formatter rewrites the slice spacing.
     assert "fresh=after[len(before):]" in "".join(body.split())
     assert "fresh.count(marker)" in body, "counted over the fresh slice, not the file"
 
@@ -105,9 +103,7 @@ def test_an_empty_result_set_is_reported_and_not_failed():
 
 def test_the_failure_fires_when_nothing_executed():
     func = _func("assert_web_search")
-    # Only the branches that DECIDE the verdict. The loop also breaks early on
-    # a positive count, which is a control-flow test rather than a rule, and
-    # reading it as one made this guard red on a correct body.
+    # Only verdict branches; the early break on a positive count is control flow.
     guarded = [
         node
         for node in ast.walk(func)
@@ -144,9 +140,7 @@ def test_the_search_tool_call_is_FORCED_rather_than_hoped_for():
     thing it is about rather than weakening it.
     """
     body = _body()
-    # BY NAME, not the bare "required": that was tried on kernel
-    # unsloth-probe-studio-r3-0b85d4 and the model still answered from
-    # parametric knowledge with executions 0.
+    # By name: a bare "required" still let the model answer without searching.
     assert '"function": {"name": "web_search"}' in body
     assert 'tool_choice = "required"' not in body
 

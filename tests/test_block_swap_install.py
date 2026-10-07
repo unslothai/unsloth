@@ -369,7 +369,6 @@ def test_prewrapped_peft_and_quantized_checkpoints_are_covered():
 
 
 def test_every_custom_decode_loop_is_served():
-    # A FastXModel with its own model-level decode loop must call block_swap.enter/leave.
     models = os.path.join(HERE, "unsloth", "models")
     for name in sorted(os.listdir(models)):
         if not name.endswith(".py"):
@@ -510,7 +509,7 @@ def _load_host_helpers(device_count = 1, cuda = True):
         ({"": "cuda:1"}, 2, 1),
         ("cuda:1", 2, 1),
         ("sequential", 1, 0),
-        ("sequential", 2, None),  # a strategy would split across the two cards
+        ("sequential", 2, None),
         ({"a": 0, "b": 1}, 2, None),
         ({"": "cpu"}, 1, None),
         (None, 1, 0),
@@ -677,7 +676,6 @@ def test_load_time_swappers_allocate_the_planned_prefetch_depth():
         _Headless(), types.SimpleNamespace(layers = _Layers([]), indices = [0]), depth
     )
     assert built == [1] and ns["planned_prefetch_depth"](None) == 2
-    # Both load paths hand the planner's depth to the swapper they build.
     for path, call in (
         ("llama.py", "attach_offload_layers"),
         ("vision.py", "finish_block_swap_load"),
@@ -703,11 +701,9 @@ def test_block_swap_layers_still_works_as_the_old_name_of_offload_layers():
     legacy = ns["legacy_offload_layers"]
     kwargs = {"block_swap_layers": "auto"}
     assert legacy(kwargs, None) == "auto" and kwargs == {}
-    # The new name wins whenever it was given, an explicit 0 included.
     assert legacy({"block_swap_layers": 4}, 2) == 2
     assert legacy({"block_swap_layers": 4}, 0) == 0
     assert legacy({}, None) == 0 and legacy({}, 3) == 3
-    # Every entry point maps the old name before reading the new one.
     for path, count in (("llama.py", 2), ("vision.py", 2)):
         src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
         assert src.count("legacy_offload_layers(kwargs, ") == count, path

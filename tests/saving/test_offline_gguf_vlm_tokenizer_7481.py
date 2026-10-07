@@ -178,8 +178,7 @@ def test_has_tokenizer_model_offline_skips_model_info(tmp_path, monkeypatch):
 
     tok = SimpleNamespace(name_or_path = _REPO)
 
-    # A raising side_effect proves nothing: _has_tokenizer_model wraps the call
-    # in `except Exception: return False`, so it passes with the fix reverted.
+    # A raising side_effect proves nothing: _has_tokenizer_model swallows exceptions and returns False.
     with patch("huggingface_hub.HfApi.model_info") as model_info:
         assert _has_tokenizer_model(tok, token = None) is False
     assert model_info.call_count == 0
@@ -212,8 +211,7 @@ def test_offline_aware_load_persists_local_only_for_saving(tmp_path, monkeypatch
     """
     from unsloth.save import _TOKENIZER_MODEL_CACHE, _has_tokenizer_model
 
-    # Snapshot has tokenizer metadata but deliberately no tokenizer.model, so the cache probe misses and only the
-    # local-only stamp can stop the Hub request.
+    # No tokenizer.model, so the cache probe misses and only the local-only stamp stops the Hub request.
     _write_gemma4_cache(tmp_path)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -223,7 +221,6 @@ def test_offline_aware_load_persists_local_only_for_saving(tmp_path, monkeypatch
     @L._offline_aware_load
     def _load(model_name, **kwargs):
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
-        # A processor keeps the Hub repo id and carries no local_files_only.
         return object(), SimpleNamespace(
             tokenizer = SimpleNamespace(name_or_path = model_name, init_kwargs = {}),
         )
@@ -282,7 +279,6 @@ def test_preserve_sentencepiece_after_local_only_load_never_downloads(tmp_path, 
         _preserve_sentencepiece_tokenizer_assets(processor, str(save_dir), token = None)
 
     assert model_info.call_count == 0
-    # Every hf_hub_download here must be a cache probe, never a Hub fetch.
     assert seen_local_files_only and all(seen_local_files_only)
     assert not (save_dir / "tokenizer.model").exists()
 

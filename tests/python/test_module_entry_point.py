@@ -33,20 +33,17 @@ from pathlib import Path
 
 import pytest
 
-# Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs, $script:UnslothCliTrampoline in
-# install.ps1, and _WINDOWS_CLI_ENTRYPOINT in unsloth_cli/commands/studio.py.
+# Byte-identical to WINDOWS_CLI_ENTRYPOINT (process.rs), $script:UnslothCliTrampoline
+# (install.ps1) and _WINDOWS_CLI_ENTRYPOINT (unsloth_cli/commands/studio.py).
 TRAMPOLINE = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
-# No -I.
-# It implies -E, which would discard every PYTHON* variable the console script honours, and that divergence is exactly
-# what the sys.path[:1] filter in the trampoline exists to avoid needing.
+# No -I: it implies -E, dropping PYTHON* vars the console script honours.
 INTERPRETER = [sys.executable, "-X", "utf8"]
 
-# Not .resolve(): a POSIX venv's bin/python is a symlink to the base interpreter, and resolving it would look for the
-# console script next to /usr/bin/python3.
+# Not .resolve(): a venv's bin/python symlinks to the base interpreter.
 _SCRIPT_DIR = Path(sys.executable).parent
 _CONSOLE_SCRIPT = _SCRIPT_DIR / ("unsloth.exe" if os.name == "nt" else "unsloth")
 
@@ -119,8 +116,6 @@ def _console_argv(*args: str) -> list[str]:
     return [str(_CONSOLE_SCRIPT), *args]
 
 
-# Cover a clean exit, both help renderers (rich draws box characters here), and the two error
-# shapes: an unknown option at the root and inside a subcommand.
 PARITY_CASES = [
     pytest.param(["--version"], id = "version"),
     pytest.param(["--help"], id = "help"),
@@ -177,7 +172,6 @@ def test_the_program_name_is_unsloth_not_the_launcher(argv_builder):
     text = result.stdout.decode("utf-8", "replace")
     assert "unsloth" in text
     assert "__main__.py" not in text
-    # `-c` would surface as the program name in the Usage line.
     assert "Usage: -c" not in text
 
 
@@ -209,7 +203,6 @@ def test_the_attached_np_short_is_still_canonicalised(monkeypatch):
     monkeypatch.setattr(unsloth_cli, "_entry_point_prepared", False)
     monkeypatch.setattr(sys, "argv", ["-m", "studio", "run", "-np8"])
 
-    # SystemExit, because __main__ ends in sys.exit(app()) exactly as the console script does.
     with pytest.raises(SystemExit) as exit_info:
         runpy.run_module("unsloth_cli", run_name = "__main__", alter_sys = True)
     assert exit_info.value.code in (None, 0)
@@ -217,8 +210,7 @@ def test_the_attached_np_short_is_still_canonicalised(monkeypatch):
     assert recorded["argv"] == ["unsloth", "studio", "run", "-np", "8"], (
         "__main__ must apply the console-script argv canonicalisation; got " f"{recorded['argv']}"
     )
-    # Without this click prints `Usage: python -m unsloth_cli`, because it reads __main__.__package__ rather than
-    # argv[0].
+    # click reads __main__.__package__, not argv[0], so prog_name must be set.
     assert recorded["kwargs"].get("prog_name") == "unsloth"
 
 
@@ -270,13 +262,9 @@ def test_the_module_entry_source_keeps_its_two_load_bearing_details():
         "argv[0] must be rewritten before the package is imported, or a direct "
         "`python path/to/__main__.py` run misses the console-script gate"
     )
-    # `-m` imports the package to locate this module, so __init__ has already run
-    # with argv[0] == "-m" and its gate cannot fire; __main__ has to say so.
+    # `-m` runs __init__ with argv[0] == "-m", so __main__ must call it.
     assert "_prepare_entry_point()" in source
-    # click reads __main__.__package__ rather than argv[0] and would otherwise print `Usage: python -m unsloth_cli` in
-    # every usage and error string.
     assert 'prog_name = "unsloth"' in source
-    # The generated console script is `sys.exit(app())`.
     assert "sys.exit(unsloth_cli.app(" in source
 
 
@@ -329,8 +317,6 @@ def test_every_advertised_module_route_is_isolated():
         for line in source.splitlines():
             if "-m unsloth_cli" not in line:
                 continue
-            # click prints its own `Usage: python -m unsloth_cli` when prog_name is missing; that is the symptom being
-            # described, not a command we offer.
             if "Usage:" in line:
                 continue
             assert "-I -m unsloth_cli" in line, f"{name}: unisolated module route: {line.strip()}"

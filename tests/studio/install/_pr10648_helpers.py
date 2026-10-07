@@ -32,21 +32,18 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 STUDIO_DIR = PACKAGE_ROOT / "studio"
 if str(STUDIO_DIR) not in sys.path:
-    # The installers import each other by module name; spec-based loading needs studio/ reachable.
     sys.path.insert(0, str(STUDIO_DIR))
 
 
 WINDOWS_HOST = os.name == "nt"
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
-# os.access(path, os.X_OK) answers "does this exist" on Windows, and os.chmod cannot clear
-# an execute bit Windows does not have, so the mode-bit rows are indistinguishable there.
+# On Windows os.access X_OK only checks existence and chmod cannot clear an execute bit.
 POSIX_ONLY = pytest.mark.skipif(
     WINDOWS_HOST,
     reason = "mode bits and os.access(X_OK) are POSIX only",
 )
-# root reads and executes regardless of the bits, so "unreadable" and "not executable"
-# stop being the corruptions those tests apply.
+# root reads and executes regardless of mode bits.
 NOT_ROOT = pytest.mark.skipif(
     IS_ROOT,
     reason = "root bypasses the permission bits this asserts on",

@@ -136,7 +136,6 @@ def test_no_git_on_path_runs_nothing(monkeypatch):
 
 
 def test_the_shim_path_matches_install_sh():
-    # Both probes have to agree on which git is the dialog shim, or one of them regresses alone.
     install_sh = (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
     assert '"${_CLT_GIT_SHIM:-/usr/bin/git}"' in install_sh
     assert stack._CLT_GIT_SHIM == "/usr/bin/git"

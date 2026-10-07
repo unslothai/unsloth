@@ -46,10 +46,8 @@ UNSLOTH_FP8_TO_NF4_ATTR = "_unsloth_fp8_to_nf4"
 _ENV = "UNSLOTH_FP8_TO_NF4"
 _ENV_QUANTIZE_ALL = "UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT"
 
-# None outside a load; True / False once the outermost from_pretrained has looked at its call.
 _EXPLICIT_4BIT = contextvars.ContextVar("unsloth_explicit_load_in_4bit", default = None)
-# Configs armed inside the outermost from_pretrained; disarmed when it returns or raises, so an
-# exception before the load's own restore (prefetch, device-map planning) cannot leak a stripped config.
+# Disarmed on return or raise, so an early exception cannot leak a stripped config.
 _ARMED_CONFIGS = contextvars.ContextVar("unsloth_fp8_to_nf4_armed_configs", default = None)
 
 _FP8_DTYPES = tuple(
@@ -59,7 +57,6 @@ _FP8_DTYPES = tuple(
 )
 _FP8_SAFETENSORS = ("F8_E4M3", "F8_E5M2", "F8_E4M3FNUZ", "F8_E5M2FNUZ")
 _SCALE_SUFFIXES = (".weight_scale_inv", ".activation_scale")
-# Checkpoint dtypes a scaled weight may be stored in; anything else (int8-packed FP4) is refused.
 _FLOAT_SAFETENSORS = _FP8_SAFETENSORS + ("BF16", "F16", "F32")
 _PACKED_EXPERT_DTYPES = ("fp4", "mxfp4", "nvfp4", "int4")
 
@@ -204,7 +201,6 @@ def _transformers_supports_fp8_to_nf4() -> Optional[str]:
         return "transformers' WeightTransform has no add_tensor"
     if not isinstance(getattr(quantizers_auto, "AUTO_QUANTIZER_MAPPING", None), dict):
         return "transformers has no AUTO_QUANTIZER_MAPPING"
-    # Converters are rebuilt with these (5.5 to 5.16 added them one by one).
     if not hasattr(cml, "_IdentityOp"):
         return "transformers.core_model_loading has no `_IdentityOp`"
     if not callable(getattr(Bnb4BitHfQuantizer, "update_weight_conversions", None)):
@@ -255,7 +251,6 @@ def maybe_arm_fp8_to_nf4(
     from .mistral_format import mistral_format_conversions_active
 
     if mistral_format_conversions_active():
-        # Mistral-named scales go through the view's own renames, which this converter does not compose with.
         if verbose and explicit_4bit_requested():
             print(
                 "Unsloth: 4bit loading of a Mistral-format fp8 checkpoint is not supported yet. "
@@ -263,7 +258,6 @@ def maybe_arm_fp8_to_nf4(
             )
         return False
     if str(quant.get("expert_dtype") or "").lower() in _PACKED_EXPERT_DTYPES:
-        # DeepSeek-V4-Flash: fp8 attention, packed FP4 experts. Not handled here.
         if verbose and explicit_4bit_requested():
             print(
                 "Unsloth: this fp8 checkpoint packs its experts in FP4, which the fp8 -> 4bit load does "
@@ -348,7 +342,6 @@ def disarm_fp8_to_nf4(config) -> bool:
     plan = getattr(config, UNSLOTH_FP8_TO_NF4_ATTR, None) if config is not None else None
     if plan is None:
         return False
-    # A load that raised never reached _process_model_after_weight_loading.
     _STATE = None
     original = plan["original_quantization_config"]
     if plan.get("stripped_root_config"):
@@ -380,7 +373,6 @@ def fp8_to_nf4_planner_quantization_config(config, llm_int8_skip_modules = None)
     if plan is None:
         return None
     skip = list(llm_int8_skip_modules or [])
-    # Quantize-all mode quantizes the checkpoint's 16-bit Linears too: size them as 4bit.
     for name in [] if _quantize_16bit_requested() else plan.get("modules_to_not_convert") or []:
         if name not in skip:
             skip.append(name)
@@ -401,18 +393,16 @@ class _LoadState:
         self.block = plan["weight_block_size"]
         self.dtype = dtype
         self.fp8_keys = {k for k, v in headers.items() if v in _FP8_SAFETENSORS}
-        # `<module>.scale` is DeepSeek-V4's name for weight_scale_inv (renamed by the fp8 quantizer too).
+        # `<module>.scale` is DeepSeek-V4's name for weight_scale_inv.
         self.dot_scale_keys = {
             k
             for k in headers
             if k.endswith(".scale") and (k[: -len(".scale")] + ".weight") in self.fp8_keys
         }
-        # Activation scales (static fp8) are not needed for a weight dequant, so they are not tracked.
         self.scale_keys = {
             k for k in headers if k.endswith(".weight_scale_inv")
         } | self.dot_scale_keys
         self.native_keys = self.fp8_keys | self.scale_keys
-        # Refined once renaming is known: dropped MTP layers never reach a converter.
         self.expected_fp8 = set(self.fp8_keys)
         self.expected_scales = set(self.scale_keys)
         self.headers = headers
@@ -572,8 +562,6 @@ def _build_classes():
         ):
             self.generic = generic
             self.stack = stack
-            # (patterns in merge order, concat dim): replaces MergeModulelist + Concatenate by writing
-            # each expert straight into the final stack, the only 16-bit tensor ever held.
             self.fuse = fuse
 
         def _fused(
@@ -659,7 +647,6 @@ def _build_classes():
                 )
             block, dtype = state.block, _output_dtype(model, full_layer_name, state.dtype)
             if _target_keeps_fp8(model, full_layer_name):
-                # modules_to_convert (Qwen3.8's n-gram table): stays fp8 with its own per-tensor scale.
                 state.kept_fp8 += sum(
                     len(v) if isinstance(v, list) else 1
                     for k, v in input_dict.items()
@@ -713,7 +700,6 @@ def _build_classes():
                         )
                         state.dequantized += 1
                     elif weight.is_floating_point() and weight.element_size() >= 2:
-                        # A 16-bit tensor that shipped a scale anyway: take it as stored.
                         converted = weight.to(dtype)
                         if out is not None:
                             out[i].copy_(converted)
@@ -750,7 +736,7 @@ def _build_classes():
             if state is not None and source_key in state.native_keys:
                 native = getattr(future, "_unsloth_native_materialize", None)
                 if native is None:
-                    # Cast to the model dtype, a fp32 scale would round to bf16: refuse, do not guess.
+                    # A cast to the model dtype would round a fp32 scale: refuse, do not guess.
                     raise RuntimeError(
                         f"Unsloth: cannot read `{source_key}` at its stored dtype during an fp8 -> 4bit load. "
                         f"Set {_ENV}=0 to load the fp8 weights as they are."
@@ -878,7 +864,7 @@ def _high_precision_linears(model, headers, weight_conversions) -> tuple:
     from copy import deepcopy
     from transformers import core_model_loading as cml
 
-    # Copies: renaming marks a transform used, and the used ones are what saving reverses.
+    # Copies: renaming marks a transform used, and saving reverses the used ones.
     conversions = deepcopy(list(weight_conversions))
     renamings = [c for c in conversions if isinstance(c, cml.WeightRenaming)]
     converters = [c for c in conversions if isinstance(c, cml.WeightConverter)]
@@ -1009,9 +995,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
         _unsloth_fp8_kept = 0
 
         def __init__(self, quantization_config, **kwargs):
-            # The device-map planner builds this from the rewritten config without `pre_quantized`
-            # (transformers' own load always passes it). An armed load quantizes at runtime, so size
-            # its expert merges in the load dtype, not as packed 4bit (a 4x smaller transient).
+            # The planner omits `pre_quantized`; an armed load quantizes at runtime, so size in load dtype.
             if "pre_quantized" not in kwargs and _ARMED_CONFIGS.get():
                 kwargs["pre_quantized"] = False
             super().__init__(quantization_config, **kwargs)
@@ -1022,7 +1006,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
             plan = getattr(config, UNSLOTH_FP8_TO_NF4_ATTR, None) if config is not None else None
             if plan is not None:
                 self._unsloth_fp8_plan = plan
-                # preprocess_model does not forward dtype; the meta model was built in the load dtype.
+                # preprocess_model does not forward dtype.
                 dtype = kwargs.get("dtype", None)
                 if not isinstance(dtype, torch.dtype):
                     dtype = getattr(model, "dtype", None)
@@ -1041,7 +1025,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
                 return super().update_weight_conversions(weight_conversions)
             model = self._unsloth_fp8_model
             self._unsloth_fp8_model = None
-            # Here, not before loading: only now are the caller's key_mapping renamings known.
+            # Only now are the caller's key_mapping renamings known.
             keep, quantize = [], []
             quantize_all = _quantize_16bit_requested()
             if model is not None:
@@ -1055,12 +1039,11 @@ def install_fp8_to_nf4_quantizer() -> bool:
                     if _weight_key_of_scale(key) in _STATE.expected_fp8
                 }
             if quantize_all:
-                # UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT=1 quantizes them too, like a load of the bf16 repo.
                 keep = []
             self._unsloth_fp8_kept = _restore_plain_linears(model, keep, _STATE.dtype)
             if keep:
                 patterns = _compress_patterns(keep, quantize)
-                # A copy: the caller may reuse their BitsAndBytesConfig for another load.
+                # A copy: the caller may reuse their BitsAndBytesConfig.
                 quantization_config = copy.copy(self.quantization_config)
                 skip = list(quantization_config.llm_int8_skip_modules or [])
                 quantization_config.llm_int8_skip_modules = skip + patterns
@@ -1119,7 +1102,7 @@ def _finish_fp8_to_nf4_load(model, state, rebuilt_from, kept):
             delattr(config, UNSLOTH_FP8_TO_NF4_ATTR)
         except AttributeError:
             config.__dict__.pop(UNSLOTH_FP8_TO_NF4_ATTR, None)
-    # Saving reverses model._weight_conversions: put the model's own converters back.
+    # Saving reverses model._weight_conversions: restore the model's own converters.
     conversions = getattr(model, "_weight_conversions", None)
     if isinstance(conversions, list):
         restored = []

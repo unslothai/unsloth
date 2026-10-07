@@ -36,14 +36,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTION = REPO_ROOT / ".github" / "actions" / "install-unsloth-local" / "action.yml"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list deliberately,
-# in a diff someone reads.
+# Named, not detected: removing a cold-machine lane must be a deliberate diff.
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
     "interrupted-install-ci.yml",
-    # Publishes the desktop app from a clean checkout; a restored dist would ship a
-    # bundle this run never built.
+    # A restored dist would ship a bundle this run never built.
     "release-desktop.yml",
 )
 
@@ -87,18 +85,9 @@ def _index_of(predicate) -> int:
     return -1
 
 
-# What this action is allowed to cache, and the argument for each. Anything else has to be added here in a diff
-# someone reads, with its own argument written down.
-#
-#   .uv-cache            uv's download cache. Content-addressed by URL and hash, so a stale entry cannot serve wrong
-#                        content; the worst it can do is miss.
-#   studio/frontend/dist the built frontend. NOT a download, so it does not get the argument above and needs its own:
-#                        it is a directory of static assets with no absolute paths, no interpreter coupling and no
-#                        console scripts, which is exactly what makes a venv unsafe to cache and this safe. Its key
-#                        hashes the same inputs studio/setup.sh checks before rebuilding, so a hit means the build
-#                        inputs are byte-identical rather than merely similar.
-#                        tests/studio/test_frontend_dist_cache.py holds that agreement together and is where the
-#                        reasoning lives.
+# Allowed cache paths. .uv-cache is content-addressed, so a stale entry can only miss.
+# studio/frontend/dist is static assets keyed on setup.sh's rebuild inputs; see
+# tests/studio/test_frontend_dist_cache.py.
 CACHEABLE_PATHS = (".uv-cache", "studio/frontend/dist")
 
 
@@ -188,9 +177,7 @@ def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
         f"{name} uses install-unsloth-local, which warms uv's cache. A cached "
         f"cold-install test proves nothing and still goes green."
     )
-    # Named separately because the frontend dist cache can now be adopted WITHOUT this action -- that is the whole
-    # point of splitting it out for the Windows jobs, which call install.ps1 from a hand-written step. Checking only
-    # for install-unsloth-local would let a cold lane paste in the two `uses:` lines and stay green.
+    # The Windows jobs adopt the dist cache without this action, so check it separately.
     assert "frontend-dist-" not in text, (
         f"{name} restores a prebuilt frontend. A cold-install lane handed a bundle built "
         f"on another machine last week is not testing a cold install."
@@ -207,22 +194,17 @@ def test_the_action_is_actually_used() -> None:
     assert len(users) >= 5, f"only {len(users)} workflows use the action: {users}"
 
 
-# The Windows jobs run install.ps1 from a hand-written pwsh step and never come through
-# install-unsloth-local, so the restore and the save are their own composite actions,
-# which that composite delegates to and the Windows jobs call directly. What follows
-# holds that shape: one key, every warm installer job restoring it, every restore paired
-# with a save that reads its outputs, and the cold lanes untouched.
+# The Windows jobs run install.ps1 from a hand-written step, so dist restore/save are their own
+# composite actions; each warm job restores one key and pairs it with a save.
 
 ACTIONS = REPO_ROOT / ".github" / "actions"
 UV_RESTORE = ACTIONS / "uv-cache-restore" / "action.yml"
 UV_SAVE = ACTIONS / "uv-cache-save" / "action.yml"
 
-# Cold at JOB level, inside a workflow whose other jobs legitimately use the cache; the
-# same list tests/studio/test_frontend_dist_cache.py keeps for the dist.
+# Cold at job level; mirrors the list in tests/studio/test_frontend_dist_cache.py.
 COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
 
-# An INVOCATION, not a mention: mlx-ci.yml explains in a comment why it does NOT run
-# `install.sh --local`, and a bare substring match called that an uncached install.
+# An invocation, not a mention: mlx-ci.yml's comment names `install.sh --local`.
 _INSTALLER = re.compile(r"(?m)^\s*[^#\n]*?(?:^|[\s/&'\"])install\.(?:ps1|sh) --local")
 _HELPER = re.compile(r"\.github/scripts/([A-Za-z0-9_.-]+\.sh)")
 

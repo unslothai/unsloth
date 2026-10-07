@@ -13,11 +13,8 @@ from packaging.version import Version
 
 VISION_PATH = Path(__file__).parents[1] / "unsloth" / "models" / "vision.py"
 
-# The exec'd copy below needs the same two module globals vision.py imports at its
-# top. packaging and importlib.metadata rather than unsloth_zoo.utils.Version and
-# transformers.__version__, because importing unsloth_zoo pulls in bitsandbytes and
-# CUDA -- the whole reason this file rebuilds the function from source. Only the names
-# have to resolve: NUM_LOGITS_TO_KEEP is seeded below, so neither branch touches kwargs.
+# packaging/importlib.metadata instead of unsloth_zoo: importing zoo pulls in bitsandbytes and
+# CUDA, which is why this file rebuilds the function from source.
 TRANSFORMERS_VERSION = installed_version("transformers")
 
 
@@ -218,7 +215,6 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
-        # Qwen3-VL is multimodal, so the real helper answers False for it too.
         "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
@@ -283,8 +279,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
 
 
 def test_flash_attention_fallback_pins_a_dynamic_cache():
-    # Delegating is not enough on its own: a static cache still reaches FlashAttention via an
-    # explicit kwarg, the caller's generation_config, or the model default.
+    # A static cache still reaches FlashAttention via a kwarg, generation_config, or the model default.
     namespace = {
         "torch": SimpleNamespace(
             Tensor = type("FakeTensor", (), {"shape": (1, 3)}),
@@ -305,7 +300,6 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "transformers_version": TRANSFORMERS_VERSION,
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
-        # Qwen3-VL is multimodal, so the real helper answers False for it too.
         "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)

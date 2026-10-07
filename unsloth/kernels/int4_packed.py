@@ -236,7 +236,6 @@ def _gemv_kernel(
     BLOCK_KP: tl.constexpr,
     SPLIT_K: tl.constexpr,
 ):
-    # Decode: one activation row per program axis 2 (M tiny), CUDA-core reduction.
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
     m = tl.program_id(2)
@@ -560,7 +559,6 @@ def _dequant_repacked_kernel(
     HAS_Z: tl.constexpr,
     RAW: tl.constexpr,
 ):
-    # One program: tile row tn, R tiles along K, written as [TN, R * TK] contiguous rows.
     pid = tl.program_id(0)
     tn = pid // (NT_K // R)
     tk0 = (pid % (NT_K // R)) * R
@@ -724,7 +722,6 @@ def _fast_args(packed, qs):
                 ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
             )
         except RuntimeError:
-            # An op signature this code does not know: keep the exact dequantize + matmul path.
             _FAST_CHECKED[key] = False
     call = call if call is not None and _FAST_CHECKED[key] else None
     qs._fast = (packed.data_ptr(), call)

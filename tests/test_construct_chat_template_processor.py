@@ -84,7 +84,6 @@ def test_processor_is_unwrapped_to_its_inner_tokenizer():
     tokenizer = _FakeTokenizer()
     unwrapped = _run(_FakeProcessor(tokenizer))
     assert unwrapped is tokenizer
-    # The get_vocab() call that used to raise now lands on the tokenizer.
     assert unwrapped.get_vocab() == {"<eos>": 0}
 
 
@@ -99,8 +98,7 @@ def test_a_tokenizer_backend_with_a_tokenizer_attribute_is_left_alone():
 
 
 def test_the_unwrap_precedes_every_tokenizer_shaped_use():
-    # get_vocab() is the first of them and the one that raised. If the unwrap ever drifts
-    # below it, the processor reaches get_vocab again and the AttributeError is back.
+    # get_vocab() is the call that raised, so the unwrap must stay above it.
     unwrap = _unwrap_branch()
     uses = [
         node.lineno

@@ -29,7 +29,7 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
     class Neither:
         pass
 
-    # 5.0 to 5.3 define the new flag but their dispatch check still accepts the old one.
+    # transformers 5.0 to 5.3 define the new flag but dispatch still accepts the old one.
     legacy_ok = not hasattr(PreTrainedModel, "_supports_flash_attn") or (
         U._flash_dispatch_reads_legacy_flag(PreTrainedModel)
     )
@@ -41,7 +41,7 @@ def test_old_flag_alone_is_not_flash_support_on_new_transformers():
 
 def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     U = _utils()
-    # Without flash-attn installed the ladder never reaches flash, and this would pass either way.
+    # Without flash-attn installed the ladder never reaches flash, so this would pass anyway.
     monkeypatch.setattr(U, "HAS_FLASH_ATTENTION", True)
     from transformers.modeling_utils import PreTrainedModel
 
@@ -61,7 +61,6 @@ def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
     config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
     impl = U.resolve_attention_implementation(OldRemote, config, dtype = torch.bfloat16)
     assert "flash" not in str(impl)
-    # Control: the same config does reach flash for a class carrying the dispatched flag.
     config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
     impl = U.resolve_attention_implementation(NewRemote, config, dtype = torch.bfloat16)
     assert impl == "flash_attention_2"
@@ -167,7 +166,6 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
     got = U.resolve_model_class(AutoModelForCausalLM, config, trust_remote_code = True)
     assert got is Remote and got is not local_cls
-    # Unsplit, with the model path, as from_pretrained calls it.
     assert seen == dict(
         class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo"
     )
@@ -211,18 +209,17 @@ class _MoE(torch.nn.Module):
         self.gate = _Router(n)
 
 
-# Nemotron-Labs-Teacher's expert classes come from the checkpoint's own modeling file.
 _Expert.__module__ = "transformers_modules.fake_teacher.modeling_nemotron_h"
 sys.modules.setdefault(_Expert.__module__, sys.modules[__name__])
 
 
-class _Router(torch.nn.Module):  # a Parameter-backed router, as in Nemotron-H
+class _Router(torch.nn.Module):
     def __init__(self, n):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.zeros(n, 8))
 
 
-class _Mamba(torch.nn.Module):  # a mixer with a Linear directly under it, like the Mamba layers
+class _Mamba(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.in_proj = torch.nn.Linear(8, 32, bias = False)
@@ -278,9 +275,9 @@ def test_expert_submodule_leaves_and_regex_reach_every_expert():
     linears = {n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
     experts = {n for n in linears if ".experts." in n or ".shared_experts." in n}
     assert experts <= matched
-    assert "model.layers.1.mixer.gate" not in matched  # the router is not a Linear
-    assert "model.layers.1.mixer.fc1_latent_proj" not in matched  # Identity, not a Linear
-    assert "model.layers.0.mixer.in_proj" in matched  # the block-level leaves stay
+    assert "model.layers.1.mixer.gate" not in matched
+    assert "model.layers.1.mixer.fc1_latent_proj" not in matched
+    assert "model.layers.0.mixer.in_proj" in matched
     assert all(isinstance(dict(model.named_modules())[n], torch.nn.Linear) for n in matched)
 
 
@@ -320,7 +317,6 @@ def test_only_a_generated_regex_is_widened_to_the_routed_experts():
     matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
     assert any(".experts." in n for n in matched)
 
-    # A leaf list as the detection target keeps its own identity through the widening.
     widened, detect, leaves = U.widen_target_regex_to_expert_submodules(
         model, generated, ["down_proj"], auto_regex = True
     )

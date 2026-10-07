@@ -1,10 +1,7 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Argument contract for scripts/uninstall.ps1. Tests run against a temporary
-# copy that aborts before the first uninstall action, so a broken guard cannot
-# perform a real uninstall.
-#
+# Runs against a temporary copy that aborts before the first uninstall action.
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
 
 $ErrorActionPreference = "Stop"
@@ -40,9 +37,7 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Windows PowerShell 5.1 turns a native command's stderr into a terminating
-# NativeCommandError under $ErrorActionPreference = "Stop"; 7.1+ does not. This
-# suite can run under 5.1, where every rejected-argument case writes to stderr.
+# PS 5.1 turns native stderr into a terminating NativeCommandError under "Stop"; 7.1+ does not.
 function Invoke-Native([scriptblock]$Command) {
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -67,7 +62,6 @@ try {
         if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "uninstall.ps1 has parse errors" }
     }
 
-    # Prove instrumentation did not break the normal entry path.
     $r = Invoke-Uninstaller @()
     Check "no arguments reach the instrumented body" ($r.Output -match $bodyMarker)
     Check "the instrumented body aborts"              ($r.Code -ne 0)
@@ -95,7 +89,6 @@ try {
     Check "'--dry-run --help' exits nonzero"               ($r.Code -ne 0)
     Check "'--dry-run --help' never starts the uninstall"  ($r.Output -notmatch $bodyMarker)
 
-    # Embedded invocation must report failure without exiting the caller.
     $probe = @'
 $s = Get-Content -Raw '__PATH__'
 try { & ([scriptblock]::Create($s)) --dry-run } catch { Write-Host $_.Exception.Message }

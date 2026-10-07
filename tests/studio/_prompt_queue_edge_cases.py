@@ -47,7 +47,6 @@ def check_edge_cases(page):
         expect(attempts).to_have_text("0")
         assert rows.evaluate_all("rows => rows.every(row => !row.style.transform)")
 
-    # A short click and a secondary pointer must not reorder anything.
     reset()
     handle = rows.first.get_by_role("button", name = re.compile("^Reorder"))
     handle.click()
@@ -56,7 +55,6 @@ def check_edge_cases(page):
     expect(attempts).to_have_text("0")
     expect(page.locator('[data-queue-dragging="true"]')).to_have_count(0)
 
-    # Mixed keyboard and pointer input commits at most one move.
     reset()
     grab()
     page.keyboard.press("End")
@@ -139,7 +137,6 @@ def check_performance(browser, url):
             started = time.monotonic()
             page.goto(f"{url}?size={size}")
             rows = page.locator("[data-queue-item-id]")
-            # Cold Vite imports are outside the drag frame measurement.
             expect(rows).to_have_count(size, timeout = 30000)
             print(
                 f"MOUNT: rows={size}, cold_page_ms={round((time.monotonic() - started) * 1000)}",

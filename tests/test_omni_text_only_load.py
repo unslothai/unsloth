@@ -19,7 +19,6 @@ omni_config = pytest.importorskip(
 omni_modeling = pytest.importorskip("transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe")
 
 VOCAB = 64
-# Unsloth's patched kernels are Triton on a GPU host, so the tiny model runs where they do.
 DEVICE = "cuda" if has_real_cuda() else "cpu"
 
 
@@ -108,7 +107,7 @@ def _tiny_config():
         ),
     )
     config.architectures = ["Qwen3OmniMoeForConditionalGeneration"]
-    # transformers 5.4's top-level config does not declare the field its _init_weights reads.
+    # transformers 5.4's config lacks the field its _init_weights reads.
     if getattr(config, "initializer_range", None) is None:
         config.initializer_range = 0.02
     return config
@@ -118,7 +117,7 @@ def _tiny_omni():
     torch.manual_seed(0)
     try:
         return omni_modeling.Qwen3OmniMoeForConditionalGeneration(_tiny_config()).to(DEVICE).eval()
-    except Exception as error:  # a transformers whose Omni config takes other names
+    except Exception as error:
         pytest.skip(f"cannot build a tiny Qwen3-Omni here: {error}")
 
 
@@ -154,7 +153,6 @@ def test_text_only_loads_qwen3_omni_through_its_own_auto_class(monkeypatch, tmp_
     auto_model = seen["auto_model"]
     assert auto_model is not AutoModelForCausalLM
     assert resolve_model_class(auto_model, _tiny_config()) is not None
-    # The full composition loads; the caller's text intent hands it to the thinker.
     assert seen["text_only"] is False
     assert seen["text_intent"] is True
     assert seen["text_only_decoder"] is False
@@ -174,7 +172,6 @@ def test_text_intent_hands_qwen3_omni_to_its_thinker(monkeypatch):
     model = _tiny_omni()
     core = _text_trainable_core(model, text_intent = True)
     assert type(core).__name__ == "Qwen3OmniMoeThinkerForConditionalGeneration"
-    # generate and save read the architecture off the core; a sub-config names none.
     assert core.config.architectures == ["Qwen3OmniMoeThinkerForConditionalGeneration"]
     ids = torch.tensor([[1, 2, 3, 4]], device = DEVICE)
     out = core(input_ids = ids, labels = ids)
@@ -191,7 +188,6 @@ def test_a_kept_qwen3_omni_wrapper_forwards_through_its_thinker(capsys, monkeypa
     model = _tiny_omni()
     kept = _text_trainable_core(model, text_intent = False)
     assert kept is model
-    # Nothing dropped: the talker still generates audio.
     assert hasattr(model, "talker") and hasattr(model, "code2wav")
     assert "text_only = True" in capsys.readouterr().out
     ids = torch.tensor([[1, 2, 3, 4]], device = DEVICE)
@@ -208,13 +204,11 @@ def test_a_kept_qwen3_omni_wrapper_forwards_through_its_thinker(capsys, monkeypa
     if isinstance(text, tuple):  # transformers 4.x returns (sequences, None) without audio
         text = text[0]
     assert text.shape == (1, 6)
-    # deepcopy (and so a reference model for KD or DPO) follows the copy's own thinker.
     import copy
 
     clone = copy.deepcopy(model)
     assert clone.get_output_embeddings() is clone.thinker.lm_head
     assert clone.forward.__self__ is clone.thinker
-    # Only this instance changed; the class still has no forward.
     assert type(model).forward is torch.nn.Module.forward
     fresh = _tiny_omni()
     with pytest.raises(TypeError, match = "input_ids"):
@@ -226,8 +220,7 @@ def test_a_kept_wrapper_trains_through_peft():
     from unsloth.models.vision import _text_trainable_core
 
     model = _text_trainable_core(_tiny_omni(), text_intent = False)
-    # Reentrant checkpointing with frozen embeddings trains LoRA only when the embedding
-    # output requires grad, which goes through the wrapper's get_input_embeddings.
+    # Reentrant checkpointing trains LoRA only if the embedding output requires grad.
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     model.enable_input_require_grads()
     config = peft.LoraConfig(
@@ -273,7 +266,6 @@ def test_a_kept_wrapper_scopes_lora_to_the_thinker_decoder():
     assert not any(
         name.startswith(("talker.", "code2wav.", "thinker.audio_tower.")) for name in targets
     )
-    # Without the core's prefix only the vision tower matched, so a text batch trained nothing.
     before = get_peft_regex(model)
     assert not any(
         name.startswith("thinker.model.layers.")
@@ -363,8 +355,6 @@ def _capture_adapter_reload(monkeypatch, tmp_path, target_modules):
 
 
 def test_an_adapter_trained_on_the_thinker_reloads_onto_the_thinker(monkeypatch, tmp_path):
-    # A text_only adapter's regex is rooted at model.layers; the composition names them
-    # thinker.model.layers, so a default reload could not find its targets.
     seen = _capture_adapter_reload(
         monkeypatch, tmp_path, r"(?:\bmodel\.layers\.[\d]{1,}\.(?:self_attn)\.(?:q_proj))"
     )
@@ -397,8 +387,6 @@ def _tiny_omni_checkpoint(path):
 def test_an_omni_adapter_reloads_onto_the_model_it_was_trained_on(
     tmp_path, text_only, target_modules
 ):
-    # A leaf-name list reloads as a set that matches either layout, so the saved weight
-    # keys (model.layers vs thinker.model.layers) are what decide.
     if not has_real_cuda():
         pytest.skip("FastModel needs a GPU")
     from unsloth import FastModel
@@ -435,7 +423,6 @@ def test_saved_weight_keys_decide_over_the_target_regex():
     wrapper_keys = ["base_model.model.thinker.model.layers.0.self_attn.q_proj.lora_A.weight"]
     assert _adapter_targets_text_core(config, thinker_keys) is True
     assert _adapter_targets_text_core(config, wrapper_keys) is False
-    # Without keys a leaf list cannot tell the layouts apart, so the composition is kept.
     assert _adapter_targets_text_core(config, None) is False
     regex = type("Config", (), {"target_modules": r".*\.q_proj"})()
     assert _adapter_targets_text_core(regex, wrapper_keys) is False
@@ -443,7 +430,6 @@ def test_saved_weight_keys_decide_over_the_target_regex():
 
 @pytest.mark.parametrize("saved_as", ["adapter_model.safetensors", "adapter_model.bin"])
 def test_hub_adapter_keys_are_read_from_the_saved_file(monkeypatch, tmp_path, saved_as):
-    # Resolved through hf_hub_download (cache first, offline honoured) in either format.
     huggingface_hub = pytest.importorskip("huggingface_hub")
     safetensors_torch = pytest.importorskip("safetensors.torch")
     from unsloth.models.loader import _adapter_weight_keys
@@ -480,7 +466,6 @@ def test_local_bin_adapter_keys_are_read_without_weights(tmp_path):
 
 
 def test_an_audio_only_wrapper_adapter_stays_on_the_wrapper():
-    # Trained on the kept wrapper's talker only: no thinker. key, but still wrapper-rooted.
     from unsloth.models.loader import _adapter_targets_text_core, _composition_children
 
     children = _composition_children(_tiny_config())

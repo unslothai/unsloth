@@ -127,7 +127,6 @@ class _Canonicalise(ast.NodeTransformer):
         )
 
     def visit_Name(self, node):
-        # `is_tracing_` only avoids shadowing the imported helper.
         if node.id == "is_tracing_":
             return ast.Name(id = "is_tracing", ctx = node.ctx)
         return node
@@ -277,7 +276,6 @@ def test_vendored_module_exports_everything_unsloth_imports():
     upstream = _symbols(upstream_src, False, False)
     vendored = _symbols(_COMPAT_PATH.read_text(encoding = "utf-8"), False, False)
 
-    # Anything vendored must actually exist upstream; inventing symbols under an upstream module's name would be a
-    # silent behavioural fork.
+    # Inventing symbols under an upstream module's name would be a silent fork.
     invented = sorted(set(vendored) - set(upstream))
     assert invented == [], f"vendored symbols with no upstream counterpart: {invented}"

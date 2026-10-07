@@ -48,9 +48,6 @@ def _posix(monkeypatch, tmp_path):
     return studio
 
 
-# ── where the installer comes from ─────────────────────────────────────────────────
-
-
 def test_the_installer_is_fetched_from_unsloth_ai():
     studio = _studio()
     assert studio._INSTALLER_URL_BASH == "https://unsloth.ai/install.sh"
@@ -113,9 +110,6 @@ def test_a_wheel_install_fetches_and_pipes_to_bash(monkeypatch, tmp_path):
     )
     studio._refresh_desktop_shortcuts()
     assert runs == [(["bash", "-s", "--", "--shortcuts-only"], b"FETCHED")]
-
-
-# ── what a bad response must not do ────────────────────────────────────────────────
 
 
 def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path, capsys):
@@ -219,7 +213,6 @@ def test_a_truncated_body_is_never_executed(monkeypatch, tmp_path):
             self.calls += 1
             if self.calls == 1:
                 return short
-            # What http.client raises when the body is shorter than Content-Length.
             raise http.client.IncompleteRead(b"", len(full) - len(short))
 
         def __enter__(self):
@@ -270,8 +263,7 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     command whose real work is done.
     """
     studio = _studio()
-    # Captured BEFORE any patching: studio.tempfile is the tempfile module itself, so patching through
-    # it replaces the global.
+    # Captured before patching: studio.tempfile is the global tempfile module.
     real_mkstemp = tempfile.mkstemp
     calls = []
 
@@ -287,7 +279,6 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert calls == []
 
-    # And a write that fails after the file exists still cleans up and skips.
     made = {}
 
     def _ok_mkstemp(*a, **k):
@@ -321,8 +312,6 @@ def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_p
     monkeypatch.setattr(studio.os, "fdopen", lambda fd, *a, **k: _BadHandle(fd))
     studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
     assert not Path(made["path"]).exists(), "the temp script must not be left behind"
-    # Asserted directly so the descriptor leak is caught on Linux too, rather than only surfacing as an
-    # unlink failure on Windows.
     with pytest.raises(OSError):
         os.fstat(made["fd"])
 
@@ -367,8 +356,7 @@ def test_a_local_installer_that_cannot_be_launched_falls_back_to_the_network(mon
     checkout.mkdir()
     (checkout / "install.sh").write_text("#!/bin/sh\n")
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
-    # The tests run from a clone, so _PACKAGE_ROOT would otherwise supply a second usable installer and
-    # the network would never be the fallback under test.
+    # The tests run from a clone, so _PACKAGE_ROOT would supply a second installer.
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
 

@@ -50,27 +50,20 @@ from pathlib import Path
 
 import pytest
 
-# The fixture module execs studio/install_llama_prebuilt.py and caches it in sys.modules.
-# Taking ILP from it keeps the monkeypatched and the probed module the same object.
+# Take ILP from the fixture module so the patched and probed module are the same object.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_installed_runtime_health_matrix as MF  # noqa: E402
 
 ILP = MF.ILP
 
-# Three platforms. The arm64 rows are dropped because the payload intersection is picked by
-# the platform prefix, so they walk the same rows as their x64 twins, and each step costs a
-# real install_prebuilt call.
+# arm64 rows walk the same rows as their x64 twins, and each step is a real install_prebuilt.
 HOSTS = [
     ("linux", MF.LINUX),
     ("windows", MF.WINDOWS),
     ("macos", MF.MACOS_ARM64),
 ]
-# "metal" is dropped for the same reason: a metal marker on Linux only re-tests the fall-open
-# path the static file already pins.
 BACKENDS = ["cpu", "cuda", "rocm", "vulkan"]
-# A spread of shipped shapes rather than all thirteen: the ones differing in what the deciders
-# read (no release_tag, no fingerprint, no backend key, a legacy vulkan override, a rocm arch,
-# today's shape, and a marker a real run produced).
+# Shapes that differ in what the deciders read, not all thirteen.
 SHAPES = [
     ("S1", MF.S1),
     ("S2", MF.S2),
@@ -89,9 +82,7 @@ CELLS = [
 ]
 CELL_IDS = [cell[0] for cell in CELLS]
 
-# The install kind a fresh install lands on per host and backend. macOS publishes one
-# universal Metal bundle, so its backend axis is a marker carried in from elsewhere and the
-# plan below is the Metal one whatever the marker says.
+# macOS publishes one universal Metal bundle, so the plan is Metal whatever the marker says.
 _INSTALL_KIND = {
     ("linux", "cpu"): "linux-cpu",
     ("linux", "cuda"): "linux-cuda",
@@ -102,10 +93,6 @@ _INSTALL_KIND = {
     ("windows", "rocm"): "windows-rocm",
     ("windows", "vulkan"): "windows-vulkan",
 }
-
-
-# ---------------------------------------------------------------------------
-# State
 
 
 def fingerprint(root: Path) -> str:
@@ -133,10 +120,6 @@ def fingerprint(root: Path) -> str:
 
 def probe(root: Path, host) -> tuple[bool, str] | None:
     return ILP.installed_runtime_health(root, host = host)
-
-
-# ---------------------------------------------------------------------------
-# The plan a reachable release listing would produce, and the tree it installs
 
 
 def _platform_of(host) -> str:
@@ -237,10 +220,6 @@ def install_fresh_source_build(root: Path, host) -> None:
     MF.build_tree(root, host = host, marker = None, backend = "cpu")
 
 
-# ---------------------------------------------------------------------------
-# The three repair models
-
-
 @pytest.fixture
 def offline(monkeypatch):
     """Make the release listing fail the way a dropped connection does, and silence the log.
@@ -273,24 +252,13 @@ def offline_repair(root: Path, host, monkeypatch, *, shell_stage: bool) -> str:
     except SystemExit as exc:
         code = exc.code
     if code != ILP.EXIT_FALLBACK:
-        # Exit 1/3/5 all reach setup_fail, so the update stops and says why. The tree stays
-        # broken, but the user has an error to act on, which is not the loop being hunted.
+        # Exit 1/3/5 reach setup_fail: the user gets an error to act on, which is not a loop.
         return f"aborted-exit{code}"
     if not shell_stage:
         install_fresh_source_build(root, host)
         return "source-rebuilt"
-    # setup.sh's source-build stage keeps a reusable local build instead of rebuilding. The
-    # executable test used to be the whole condition, which kept every tree that had lost only
-    # a library; reusable_existing_install is the gate the shell now asks first. Defaults
-    # assumed: no UNSLOTH_LLAMA_FORCE_COMPILE, no UNSLOTH_LLAMA_PR.
-    #
-    # Both shells, because both have a reuse shortcut. This comment used to say setup.ps1
-    # had none and that a Windows update reaching the source stage always builds; that was
-    # wrong, and the mistake is what let the Windows half of this loop survive (Codex
-    # 3963478816). setup.ps1's shortcut is an elseif on Test-PathQuiet $LlamaServerBin, so
-    # on Windows the entrypoint test is llama-server.exe under build/bin/Release, and the
-    # gate it now asks first is Test-LlamaTreeStillHealthy, which is the same
-    # --check-existing-install call the shell makes.
+    # Both shells have a reuse shortcut; each must ask reusable_existing_install /
+    # Test-LlamaTreeStillHealthy first, or a tree missing only a library is kept.
     if host.is_windows:
         entrypoints = [root / "build" / "bin" / "Release" / "llama-server.exe"]
         reusable = ILP.reusable_existing_install(root, host) and all(
@@ -311,8 +279,7 @@ def online_repair(root: Path, host, backend: str) -> str:
     """The reachable-plan branch: keep and re-record the selection, or reinstall."""
     plan, _ = current_plan(host, backend)
     if ILP.existing_install_matches_plan(root, host, plan):
-        # The keep is not a no-op: it rewrites the marker, which is an input to the next
-        # probe, so a keep could hand the probe a tree it then rejects.
+        # The keep rewrites the marker, an input to the next probe, so it can hand over a rejected tree.
         ILP.sync_marker_selection(
             root,
             choice = plan.attempts[0],
@@ -325,10 +292,6 @@ def online_repair(root: Path, host, backend: str) -> str:
         return "kept"
     install_fresh_prebuilt(root, host, backend)
     return "reinstalled"
-
-
-# ---------------------------------------------------------------------------
-# The cycle
 
 
 MAX_CYCLES = 6
@@ -384,22 +347,18 @@ def damage_modes(host, backend: str, marker: dict) -> list[tuple[str, object]]:
         ("remove-server", server),
         ("remove-quantize", quantize),
         ("remove-both-entrypoints", (server, quantize)),
-        # Two at once, since quarantine takes whole signatures rather than one file.
         ("remove-server-and-library", (server, libraries[0])),
         ("remove-first-and-last-library", (libraries[0], libraries[-1])),
         ("remove-runtime-dir", "@runtime-dir"),
         ("remove-tree", "@tree"),
         ("remove-marker", "@marker"),
         ("corrupt-marker", "@corrupt-marker"),
-        # A corrupt marker with an incomplete payload: does the damage under it still get
-        # seen.
         ("corrupt-marker-and-library", "@corrupt-marker+library"),
     ]
     return modes
 
 
-# The damages that already decide the marker's fate, so pairing them with "and the marker is
-# corrupt too" is a no-op or a different damage under the same name.
+# Damages that already decide the marker's fate; pairing them with a corrupt marker is a no-op.
 _MARKER_DAMAGES = {"@tree", "@marker", "@corrupt-marker", "@corrupt-marker+library"}
 
 
@@ -441,10 +400,6 @@ def build_damaged(
     return root
 
 
-# ---------------------------------------------------------------------------
-# The online model
-
-
 @pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
 def test_the_online_repair_reaches_a_fixed_point_from_every_damaged_tree(
     tmp_path, cell, host, backend, shape
@@ -470,17 +425,13 @@ def test_the_online_keep_never_rewrites_the_marker_into_a_tree_it_then_rejects(
     probe's input. ``runtime_asset`` is the dangerous key: it turns the Windows cudart trio
     from optional into required, so stamping it onto a pair-less tree would reject on the next
     launch. Cycled from the already-healthy tree, the state a keep is reached from."""
-    del shape  # the keep path is only reachable from the marker the current plan describes
+    del shape
     root = tmp_path / "healthy"
     install_fresh_prebuilt(root, host, backend)
     assert probe(root, host) == (True, ""), cell
     for _ in range(3):
         assert online_repair(root, host, backend) == "kept", cell
         assert probe(root, host) == (True, ""), f"{cell}: a keep made the tree unhealthy"
-
-
-# ---------------------------------------------------------------------------
-# The offline model, install_prebuilt for real
 
 
 @pytest.mark.parametrize(("cell", "host", "backend", "shape"), CELLS, ids = CELL_IDS)
@@ -554,9 +505,7 @@ def test_both_shells_gate_their_reuse_shortcut_on_the_same_check():
     assert (
         "--check-existing-install" in ps1
     ), "the PowerShell gate must ask install_llama_prebuilt, not reimplement healthy"
-    # On the shortcut itself, not somewhere else in the file: an elseif that reaches
-    # "already built" without it is the exact defect. The shortcut now reads one
-    # predicate, so the gate has to be inside what computes it.
+    # The gate must be inside the reuse predicate itself: an elseif reaching 'already built' is the bug.
     plan = ps1[ps1.index("$CanReuseLlamaBuild = ") :]
     plan = plan[: plan.index("$WillBuildLlamaFromSource = ")]
     assert "Test-LlamaTreeStillHealthy" in plan, "the reuse shortcut skips the health gate again"
@@ -575,7 +524,7 @@ def test_the_windows_build_plan_asks_the_same_question_as_its_reuse_shortcut():
     assert (
         "$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild" in ps1
     ), "the build plan must derive from the same predicate the shortcut reads"
-    # Once, so the helper runs once and its "incomplete" line is not printed twice.
+    # Once, so its 'incomplete' line is not printed twice.
     assert ps1.count("Test-LlamaTreeStillHealthy $LlamaCppDir") == 1, ps1.count(
         "Test-LlamaTreeStillHealthy $LlamaCppDir"
     )
@@ -633,10 +582,6 @@ def test_no_damaged_tree_survives_the_shell_rebuild_skip(
         assert cycles <= 1, f"{cell}/{label}: {cycles} repairs ({trail})"
 
 
-# ---------------------------------------------------------------------------
-# The cases the report has to keep apart from a loop
-
-
 @pytest.mark.parametrize(("host_id", "host"), HOSTS, ids = [h[0] for h in HOSTS])
 def test_a_runtime_quarantined_again_after_every_repair_is_not_a_code_loop(tmp_path, host_id, host):
     """Antivirus that re-quarantines after each repair never converges, and must not read as
@@ -689,8 +634,7 @@ def test_the_two_kinds_of_missing_marker_stay_apart(tmp_path):
 
     absent = build_damaged(tmp_path / "absent", host, backend, shape, "@marker")
     assert probe(absent, host) is None
-    # confirm_install_tree requires the marker file, so the keep path refuses this tree
-    # outright and there is nothing to loop on.
+    # confirm_install_tree requires the marker file, so the keep path refuses this outright.
     assert ILP._existing_install_runs(absent, host) is False
 
     corrupt = build_damaged(tmp_path / "corrupt", host, backend, shape, "@corrupt-marker")

@@ -45,9 +45,6 @@ def _load_module():
 im = _load_module()
 
 
-# -- digests -------------------------------------------------------------------
-
-
 def test_pass_inputs_are_a_superset_of_the_tracked_requirements() -> None:
     """The pass reads more files than verify_install fingerprints, and they stay two lists:
     verify_install compares the whole `requirement_files` dict, so widening THAT one reports
@@ -87,9 +84,6 @@ def test_a_one_byte_edit_changes_the_digest(tmp_path: pathlib.Path) -> None:
     before = im.digest_file(target)
     target.write_text("structlog \n", encoding = "utf-8")
     assert im.digest_file(target) != before
-
-
-# -- additive manifest keys ----------------------------------------------------
 
 
 def _payload(root: pathlib.Path) -> dict:
@@ -185,8 +179,7 @@ def test_update_manifest_merges_into_the_manifest_it_replaces(
 
     @contextlib.contextmanager
     def _lock_with_a_peer_ahead_of_us(root = None):
-        # The second updater got there first: it removed the manifest, ran its pass and wrote
-        # a new one. Everything it did is complete before this call takes the lock.
+        # The second updater already removed, re-passed and rewrote the manifest before this takes the lock.
         if not done:
             done.append(1)
             assert im.remove_manifest(root = tmp_path) is True
@@ -265,7 +258,6 @@ def test_the_advisory_write_declines_rather_than_publish_unserialised(
         assert (tmp_path / "held").exists(), "the child never took the lock"
         assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
         assert _payload(tmp_path) == before
-        # The two that must never fail an install still do their work.
         assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
         assert im.remove_manifest(root = tmp_path) is True
     finally:
@@ -282,7 +274,6 @@ def test_a_symlink_on_the_lock_name_is_not_followed(tmp_path: pathlib.Path) -> N
     with im._manifest_lock(tmp_path) as locked:
         assert locked is False
     assert not elsewhere.exists(), "the symlink's target was created"
-    # ...and the writers still work, unserialised, as they did before the lock existed.
     assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
 
 
@@ -333,7 +324,6 @@ def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatc
             pass
         waited = time.monotonic() - started
         assert waited < 10, f"waited {waited:.1f}s on a peer that never lets go"
-        # ...and the writers still answer while that peer holds it.
         assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     finally:
         child.kill()
@@ -391,7 +381,6 @@ def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_clear
     assert im.remove_manifest(root = tmp_path) is False
     assert live.exists(), "the venv must still verify when the pass cannot be entered"
 
-    # Cleared, the same call parks as usual.
     (blocked / "keep.txt").unlink()
     blocked.rmdir()
     assert im.remove_manifest(root = tmp_path) is True
@@ -443,7 +432,6 @@ def test_the_manifest_keeps_the_mode_it_had(tmp_path: pathlib.Path) -> None:
         im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
         live = tmp_path / im.MANIFEST_NAME
         assert stat.S_IMODE(live.stat().st_mode) == 0o644
-        # ...and a mode the user tightened stays tightened.
         os.chmod(live, 0o600)
         assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
         assert stat.S_IMODE(live.stat().st_mode) == 0o600
@@ -470,7 +458,6 @@ def test_two_writers_do_not_share_a_temp_file(tmp_path: pathlib.Path) -> None:
         assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
     assert len(seen) == 2 and seen[0] != seen[1], seen
     assert all(name.startswith(im.MANIFEST_NAME + ".") for name in seen)
-    # Neither copy outlives its writer.
     assert not list(tmp_path.glob("*.tmp"))
     assert _payload(tmp_path)["mlx_health"] == {"ok": True}
 
@@ -531,7 +518,6 @@ def test_update_manifest_cannot_shadow_a_field_verify_install_reads(tmp_path: pa
     after = _payload(tmp_path)
     for key in ("schema", "package_version", "requirement_files", "prefix", "steps_total"):
         assert after[key] == before[key], key
-    # The additive key it was actually called for still lands.
     assert after["mlx_health"] == {"ok": True}
 
 
@@ -566,7 +552,6 @@ def test_both_writers_refuse_the_same_keys() -> None:
         assert key in im.PROTECTED_MANIFEST_KEYS, key
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert source.count("PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (") == 1
-    # Both writers, and no third spelling of the rule.
     assert source.count("key not in PROTECTED_MANIFEST_KEYS") == 1
     assert source.count("or key in PROTECTED_MANIFEST_KEYS") == 1
 
@@ -581,9 +566,6 @@ def test_an_optional_field_cannot_be_invented_by_evidence(tmp_path: pathlib.Path
         root = tmp_path, req_root = tmp_path, package_name = "pytest", extra = {"no_torch": True}
     )
     assert "no_torch" not in _payload(tmp_path)
-
-
-# -- constraints ---------------------------------------------------------------
 
 
 def test_an_absent_distribution_does_not_violate_a_constraint(tmp_path: pathlib.Path) -> None:
@@ -615,9 +597,6 @@ def test_the_shipped_constraints_file_parses() -> None:
     readable by the parser the skip gate relies on."""
     real = REPO_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
     assert isinstance(im.violated_constraints(real, installed = {}), list)
-
-
-# -- sidecar predicate ---------------------------------------------------------
 
 
 def _sidecar(
@@ -891,9 +870,6 @@ def test_the_scan_is_bounded(sidecar: pathlib.Path) -> None:
     assert im.sidecar_is_current(sidecar, PINS, budget_seconds = 0.0)[0] is True
 
 
-# -- the CLI shim both shells call ---------------------------------------------
-
-
 def _shim(*args: str):
     import subprocess
     return subprocess.run(
@@ -1028,7 +1004,6 @@ def test_the_pass_lock_reads_as_contended_only_while_a_peer_holds_it(
             assert uncontended is False
     finally:
         child.wait(timeout = 30)
-    # And the moment it lets go, the next pass is free to trust its evidence again.
     with im.pass_lock(tmp_path) as uncontended:
         assert uncontended is True
 

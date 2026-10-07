@@ -48,19 +48,11 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Cancelling the GitHub runner cannot stop a Kaggle kernel it has already pushed, and an
-# orphaned kernel bills quota to its own ceiling with nobody left to read the result.
-# Superseded runs that have not STARTED are still discarded, which is the cheap half.
+# Cancelling the runner cannot stop a pushed Kaggle kernel, which keeps billing quota.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
-# The other exemption this rule admits has no instance in THIS repo, and is written down
-# because the next one will look like it: a workflow triggered by `types: [labeled]` only.
-# Concurrency is claimed before the job-level `if` runs, so an unrelated label added to the
-# same pull request takes the group and cancels a live matrix that the label has nothing to
-# do with. unsloth-zoo's gemma4-audio-probe.yml is that shape. Both label-triggered
-# workflows here -- windows-installer-differential-ci.yml and
-# windows-amsi-defender-differential-ci.yml -- instead put the label in the GROUP, which
-# separates the unrelated label rather than exempting the workflow, and is the better fix.
+# A `types: [labeled]`-only workflow would also need care: concurrency is claimed before
+# the job `if`. Putting the label in the group is the better fix.
 EXEMPT = QUOTA_BOUND
 
 A_PULL_REQUEST = "refs/pull/9082/merge"
@@ -161,7 +153,7 @@ def _cancel_setting(document: dict):
     concurrency = document.get("concurrency")
     if isinstance(concurrency, dict):
         return concurrency.get("cancel-in-progress")
-    return None  # A bare string group is the default, which is false.
+    return None
 
 
 def _on_pull_requests(document: dict) -> bool:
@@ -202,11 +194,11 @@ def test_every_pull_request_workflow_cancels_the_superseded_run():
     offenders = {}
     for name, document in _scanned().items():
         if not _group(document):
-            continue  # Reported by the test above; one cause, one failure.
+            continue
         try:
             cancels = _cancels(_cancel_setting(document), ref = A_PULL_REQUEST)
         except Unparsed as exc:
-            continue  # Reported by test_every_cancel_expression_is_understood.
+            continue
         if not cancels:
             offenders[name] = _cancel_setting(document)
     assert not offenders, (
@@ -242,9 +234,7 @@ def test_cancelling_is_still_gated_off_main():
     )
 
 
-# Where each non-pull-request trigger can run. schedule and repository_dispatch always run on
-# the default branch. workflow_dispatch runs on whatever ref the person picked, a tag included.
-# push is taken from the workflow's own branch filter.
+# schedule and repository_dispatch run on the default branch; workflow_dispatch on any ref.
 _DISPATCH_REFS = ("refs/heads/main", "refs/heads/a-feature-branch", "refs/tags/v2026.9.1")
 _DEFAULT_BRANCH_ONLY = ("schedule", "repository_dispatch")
 
@@ -285,7 +275,7 @@ def test_only_a_superseded_pull_request_run_is_cancelled():
                 if _cancels(_cancel_setting(document), ref = ref, event_name = event):
                     offenders.setdefault(name, []).append(f"{event}@{ref}")
         except Unparsed:
-            continue  # Reported by test_every_cancel_expression_is_understood.
+            continue
     assert not offenders, (
         f"{offenders} cancel a running job that is not a superseded pull request push. Use "
         f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' }}}} so pushes to main, "
@@ -328,17 +318,14 @@ def test_the_evaluator_reads_the_direction_of_the_comparison():
     assert not _cancels(False, ref = A_PULL_REQUEST)
     assert not _cancels(None, ref = A_PULL_REQUEST), "absent means false, which is the default"
 
-    # Keyed on the event: true for a pull request on any ref, false for everything else,
-    # main included.
     by_event = "${{ github.event_name == 'pull_request' }}"
     assert _cancels(by_event, ref = A_PULL_REQUEST)
     assert not _cancels(by_event, ref = MAIN, event_name = "push")
     assert not _cancels(by_event, ref = "refs/heads/a-feature-branch", event_name = "workflow_dispatch")
     assert not _cancels(by_event, ref = MAIN, event_name = "schedule")
-    # ... which the ref-keyed form gets wrong for a dispatch off main.
     assert _cancels(gated, ref = "refs/heads/a-feature-branch", event_name = "workflow_dispatch")
 
-    # The ternary form, which renders to a string rather than to a bool.
+    # The ternary form renders to a string rather than a bool.
     ternary = "${{ github.ref == 'refs/heads/main' && 'false' || 'true' }}"
     assert _cancels(ternary, ref = A_PULL_REQUEST)
     assert not _cancels(ternary, ref = MAIN)
@@ -360,8 +347,7 @@ def test_the_exemptions_still_name_workflows_that_exist():
     missing = sorted(name for name in EXEMPT if name not in documents)
     assert not missing, f"EXEMPT names workflows that no longer exist: {missing}"
 
-    # ... and each one must still be declining to cancel. An exemption for a workflow that
-    # now cancels anyway is dead weight that hides the next real one.
+    # An exemption for a workflow that now cancels anyway hides the next real one.
     pointless = sorted(
         name
         for name in EXEMPT

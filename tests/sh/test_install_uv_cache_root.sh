@@ -1,8 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Exercise the real install-time uv cache selector under POSIX sh and bash.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -87,8 +85,7 @@ run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, 
     _mode=$3
     _message=$4
     _launch=$5
-    # The marker is a selector INPUT now (an install reuses the cache it recorded), and these
-    # cases share one studio root, so each starts from the state _PRESET_MARKER asks for.
+    # The marker is a selector input and cases share one root, so each starts from _PRESET_MARKER.
     if [ "${_KEEP_MARKER:-0}" != 1 ]; then
         rm -f "$_root/cache/uv-cache-dir" 2>/dev/null || true
         if [ -n "${_PRESET_MARKER:-}" ]; then
@@ -259,8 +256,7 @@ for shell in sh bash; do
         chmod 755 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null || true
     fi
 
-    # The marker `unsloth studio update` reads: content cannot tell a Studio cache the
-    # installer filled from one a runtime install dropped a single wheel into.
+    # Content cannot tell an installer-filled Studio cache from one a runtime install touched.
     MARKER="$ROOT/cache/uv-cache-dir"
     check_marker() { # label, expected
         if [ "$(cat "$MARKER" 2>/dev/null)" = "$2" ]; then
@@ -284,30 +280,26 @@ for shell in sh bash; do
         "$STUDIO_CACHE"
     check_marker "shared mode records the shared cache, not the Studio one" "$BUILDS_CACHE"
 
-    # A rerun must not abandon the cache this install recorded while it is still warm: uv's
-    # default reads as warm on ONE unrelated wheel, and switching re-downloads Torch and CUDA.
+    # uv's default reads as warm on one unrelated wheel; switching would re-download Torch and CUDA.
     mkdir -p "$STUDIO_CACHE/archive-v0/torch"
     : > "$STUDIO_CACHE/archive-v0/torch/libtorch.so"
     _PRESET_MARKER="$STUDIO_CACHE"
     run_case "$shell" "a warm recorded Studio cache outranks a warm default" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" studio \
         "reusing this install's Unsloth Studio cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
-    # ...and it does NOT outrank an explicit isolation request.
     run_case "$shell" "isolation still wins over a warm marker" unset "" true \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
         "forced Unsloth Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
         "$STUDIO_CACHE"
-    # A marker naming a cache that EXISTS and is no longer warm loses to uv's default, so a
-    # machine that really has moved on still reaches the shared cache.
+    # A marker naming an existing but cold cache loses to uv's default.
     mkdir -p "$CASE/coldrec/uv"
     _PRESET_MARKER="$CASE/coldrec/uv"
     run_case "$shell" "a cold recorded cache falls through to shared" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
         "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
-    # A marker naming a directory that is GONE used to be treated the same, but it is a stale
-    # pointer, not a decision. Treating it as one abandoned cached Torch and CUDA for uv's
-    # default, which offline is an install that used to succeed and then failed.
+    # A marker naming a missing dir is a stale pointer: abandoning cached Torch for uv's default
+    # breaks offline installs.
     _PRESET_MARKER="$CASE/gone/uv"
     run_case "$shell" "a marker naming a deleted cache keeps Studio" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$STUDIO_CACHE" "$STUDIO_CACHE" studio \
@@ -316,7 +308,6 @@ for shell in sh bash; do
     _PRESET_MARKER=""
     rm -rf "$STUDIO_CACHE"
 
-    # These cases drive the marker themselves, so the per-case reset stands down.
     _KEEP_MARKER=1
     rm -f "$MARKER"
     run_case "$shell" "isolation still forces the Studio cache" unset "" true \
@@ -325,8 +316,7 @@ for shell in sh bash; do
         "$STUDIO_CACHE"
     check_marker "isolated mode records the Studio cache" "$STUDIO_CACHE"
 
-    # A custom cache holds this install's wheels too, so it is recorded; the caller still
-    # wins on any run that sets the variable.
+    # A custom cache is recorded too; the caller still wins on any run that sets the variable.
     printf '%s\n' "$STUDIO_CACHE" > "$MARKER"
     run_case "$shell" "custom mode is still preserved" value "$OVERRIDE" false \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$OVERRIDE" custom \
@@ -348,7 +338,6 @@ for shell in sh bash; do
         fi
     }
 
-    # One we cannot read is one we cannot put back, so leave it alone.
     rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
     printf '%s\n' "/previous/install/cache" > "$MARKER"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 200 "$MARKER" 2>/dev/null; then
@@ -365,8 +354,7 @@ for shell in sh bash; do
 
     _KEEP_MARKER=0
 
-    # uv resolves a relative cache against its own working directory, which --directory
-    # and UV_WORKING_DIR move.
+    # uv resolves a relative cache against its working dir, which --directory and UV_WORKING_DIR move.
     rm -rf "$ROOT/cache"
     WORKDIR_PROBE="$WORK/$shell workdir.sh"
     {
@@ -389,7 +377,6 @@ WORKDIR
         bad "$shell: recorded [$_wd], wanted [$CASE/uvdir/relcache]"
     fi
 
-    # Which may itself be relative, against the directory the installer ran from.
     rm -rf "$ROOT/cache"
     REL_PROBE="$WORK/$shell relworkdir.sh"
     {
@@ -412,7 +399,6 @@ RELWD
         bad "$shell: recorded [$_rw], wanted [$CASE/uvdir/relcache]"
     fi
 
-    # The marker describes the environment, so a rolled-back install puts it back.
     ROLLBACK_PROBE="$WORK/$shell rollback.sh"
     {
         printf '%s\n' "$HELPERS"
@@ -468,9 +454,7 @@ RELATIVE
         bad "$shell: relative cache recorded as [$_rel], wanted [$CASE/relcache]"
     fi
 
-    # And the exported variable is absolute too, not only the marker: setup.sh changes
-    # into its own directory before the dependency pass, so a relative value would put
-    # that phase's artifacts somewhere neither the install phase nor the marker names.
+    # setup.sh changes into its own dir before the dependency pass, so the export must be absolute.
     EXPORT_PROBE="$WORK/$shell custom export.sh"
     {
         printf '%s\n' "$HELPERS"
@@ -493,9 +477,8 @@ EXPORTED
         bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
     fi
 
-    # UV_NO_CACHE leaves the caller's UV_CACHE_DIR completely empty, CACHEDIR.TAG included
-    # (checked against uv 0.10.7), so recording it would point the next repair at a cache this
-    # install never filled. Both branches that choose a directory without probing have to ask.
+    # UV_NO_CACHE leaves UV_CACHE_DIR empty (uv 0.10.7), so recording it would point the next
+    # repair at a cache this install never filled.
     NOCACHE_PROBE="$WORK/$shell nocache.sh"
     for _nc_mode in custom isolated; do
         {
@@ -523,8 +506,6 @@ NOCACHED
             bad "$shell: $_nc_mode under UV_NO_CACHE (mode [$_nc_out], marker [$(cat "$MARKER" 2>/dev/null)])"
         fi
     done
-    # ...and with UV_NO_CACHE absent the same two branches still record, so the guard above is
-    # not simply switching recording off.
     for _nc_mode in custom isolated; do
         {
             printf '%s\n' "$HELPERS"
@@ -552,13 +533,11 @@ RECORDED
     done
     rm -f "$MARKER"
 
-    # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
+    # An unwritable STUDIO_HOME skips the marker, never fails the install.
     rm -rf "$ROOT/cache"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
-        # ...and the launch keeps the shared cache rather than repointing at the Studio one.
-        # The only way shared is reachable with an unwritable root: the early block must have
-        # failed its own write probe for the selection to run at all. Repointing would hand the
-        # autostarted backend a cache uv aborts on, after an install that just succeeded.
+        # The launch keeps the shared cache: repointing at the Studio one with an unwritable root
+        # would hand the backend a cache uv aborts on.
         run_case "$shell" "an unwritable Studio root still installs" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
             "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \

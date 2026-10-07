@@ -90,7 +90,7 @@ def dequantize_mxfp4_packed(
 
 
 def _fused_max_rows():
-    # Rows up to which the fused GEMM (bytes decoded in registers) beats decode + cuBLAS; B200 sweep.
+    # Rows up to which the fused GEMM beats decode + cuBLAS (B200 sweep).
     try:
         return int(os.environ.get("UNSLOTH_MXFP4_FUSED_MAX_ROWS", "64"))
     except ValueError:
@@ -173,7 +173,6 @@ class Mxfp4PackedLinear(nn.Linear):
             x.requires_grad or (bias is not None and bias.requires_grad)
         ):
             return _Mxfp4PackedLinearFunction.apply(x, self.weight_packed, self.weight_scale, bias)
-        # Inference / frozen input: no autograd node, less per-call overhead on the decode path.
         return _packed_linear(x, self.weight_packed, self.weight_scale, bias, _compute_dtype(x))
 
     def mxfp4_quant_state(self):
@@ -198,7 +197,7 @@ class Mxfp4PackedLinear(nn.Linear):
 
     @property
     def weight(self):
-        # Fresh exact decode per read, never kept: writes are lost (merge densifies first).
+        # Fresh decode per read: writes are lost (merge densifies first).
         return self.dequantize_weight()
 
     def reset_parameters(self):
@@ -482,7 +481,7 @@ def install_compressed_tensors_keep_packed() -> bool:
                 plan_mxfp4_keep_packed,
             )
 
-            # Skip planning non-MXFP4 checkpoints: key matching is slow on large ones.
+            # Key matching is slow on large checkpoints.
             if not keep_mxfp4_experts_packed(config.to_dict()):
                 return result
             keys = _checkpoint_keys(kwargs.get("checkpoint_files"))
@@ -533,8 +532,7 @@ def install_compressed_tensors_keep_packed() -> bool:
     return True
 
 
-# PEFT merge on a packed base: `weight.data += delta` would hit a throwaway decode, silently a no-op.
-# Merge densifies to an exact-decode nn.Linear (bytes kept aside); unmerging the last adapter restores them.
+# PEFT merge on a packed base would hit a throwaway decode; merge densifies, last unmerge restores.
 
 _PACKED_STATE = "_unsloth_mxfp4_packed_state"
 
@@ -604,7 +602,7 @@ def patch_peft_merge_for_mxfp4_packed_linears() -> bool:
     return True
 
 
-# These inits subtract the adapter from `weight.data`, a throwaway decode on a packed base: silent model change.
+# These inits subtract the adapter from a throwaway decode on a packed base: silent model change.
 _BASE_WEIGHT_INITS = ("pissa_init", "olora_init", "corda_init", "loftq_init", "lora_ga_init")
 
 

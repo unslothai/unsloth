@@ -81,9 +81,6 @@ def _auth_db(
     conn.close()
 
 
-# --- studio-password: the login line and the ready summary -----------------------
-
-
 def _run(
     home: Path,
     *,
@@ -96,7 +93,6 @@ def _run(
     must never reach a real Studio on the test host."""
     bin_dir = home / "stub-bin"
     _stub(bin_dir, "curl", curl or ("exit 0\n" if services_up else "exit 7\n"))
-    # the admin row is "committed" unless the test parks a not-initialized marker
     _stub(
         bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n'
     )
@@ -105,9 +101,7 @@ def _run(
         UNSLOTH_STUDIO_HOME = str(home),
         UNSLOTH_STUDIO_PASSWORD_WAIT = wait,
         UNSLOTH_STUDIO_READY_WAIT = "2",
-        # The summary is coloured, which splits the lines these tests match on.
-        # Assert the text here and the colour in its own test below, so a change
-        # to either one fails for the right reason.
+        # Colour splits the matched lines; colour has its own test below.
         NO_COLOR = "1",
     )
     e.update(env or {})
@@ -200,7 +194,6 @@ def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path
     bin_dir = tmp_path / "stub-bin"
     log = tmp_path / "curl.log"
     _stub(bin_dir, "curl", 'echo "$*" >> "$STUB_LOG"\nexit 0\n')
-    # the script's first candidate, so a real /usr/local/bin/cloudflared is never run
     _stub(tmp_path / "bin", "cloudflared", 'echo "STUB-CLOUDFLARED $*"\n')
     e = _clean_env(bin_dir)
     e.update(UNSLOTH_JUPYTER_CLOUDFLARE = "1", UNSLOTH_STUDIO_HOME = str(tmp_path), STUB_LOG = str(log))
@@ -295,9 +288,6 @@ def test_a_stored_password_is_reported_at_once(tmp_path: Path):
     assert "reset-password" in res.stdout
 
 
-# --- unsloth-studio-run: the initial password is applied only while none is stored
-
-
 def _run_wrapper(
     home: Path,
     *,
@@ -305,7 +295,6 @@ def _run_wrapper(
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     bin_dir = home / "bin"
-    # what supervisord would spawn: prints what the CLI would have been handed
     _stub(bin_dir, "unsloth", 'printf "%s|%s\\n" "${UNSLOTH_STUDIO_PASSWORD:-<unset>}" "$*"\n')
     e = _clean_env(home / "stub-bin")
     (home / "stub-bin").mkdir(exist_ok = True)
@@ -335,7 +324,6 @@ def test_stored_means_an_admin_row_whose_password_was_changed(
     elif db == "changed":
         _auth_db(tmp_path, must_change = 0)
     elif db == "legacy":
-        # the CLI migrates this row with default 0 and then rejects an initial password
         _auth_db(tmp_path, must_change = None, legacy = True)
     res = _run_wrapper(tmp_path, args = ["--stored"])
     assert (res.returncode == 0) is stored, res.stderr
@@ -408,9 +396,6 @@ def test_the_staged_password_reaches_the_cli_byte_for_byte(tmp_path: Path):
 def test_no_file_means_no_initial_password(tmp_path: Path):
     res = _run_wrapper(tmp_path, env = {"UNSLOTH_STUDIO_PASSWORD": "hunter22hunter"})
     assert res.stdout.startswith("<unset>|"), res.stdout + res.stderr
-
-
-# --- the launcher: where the initial password goes -------------------------------
 
 
 def _launcher_banner_block() -> str:
@@ -491,11 +476,10 @@ def test_the_image_wires_the_scripts_in():
     assert "autorestart=false" in block and "stdout_logfile=/dev/stdout" in block
     studio = conf.split("[program:studio]", 1)[1].split("[program:", 1)[0]
     assert "command=/usr/local/bin/unsloth-studio-run" in studio
-    # the bootstrap timeout ends Studio with exit 0; autorestart=true would bring it
-    # straight back with the same default credential and a fresh timer
+    # Bootstrap timeout exits 0; autorestart=true would restart with the default credential.
     assert "autorestart=unexpected" in studio and "exitcodes=0" in studio
     dockerfile = DOCKERFILE.read_text(encoding = "utf-8")
-    # the Studio build uses context ./docker behind a deny-all .dockerignore
+    # The Studio build uses context ./docker behind a deny-all .dockerignore.
     allow = (DOCKER / ".dockerignore").read_text(encoding = "utf-8").splitlines()
     for script, target in (
         ("studio_password.sh", "unsloth-studio-password"),

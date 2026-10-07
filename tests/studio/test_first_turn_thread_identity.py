@@ -28,7 +28,6 @@ PROVIDER = (WORKSPACE / "studio/frontend/src/features/chat/runtime-provider.tsx"
 
 
 def test_the_tracked_promise_carries_the_assigned_thread_id():
-    # Resolving to void threw the id away, which is what forced the "__default" detour.
     assert "Promise<string | undefined>\n>();" in PROVIDER
     assert re.search(
         r"trackRunStartReady\(\s*message\.id,\s*initializeThread\.then\(\(\{ remoteId \}\) => remoteId\),",
@@ -46,8 +45,6 @@ def test_wait_for_run_start_returns_the_id():
 
 
 def test_the_run_is_given_its_real_thread_id():
-    # The whole point: the adapter must not start under the unresolved key when the id is already known by the
-    # time the await above resolves.
     block = re.search(
         r"async \*run\(options\) \{.*?const result = adapter\.run\(.*?\);",
         PROVIDER,
@@ -67,8 +64,7 @@ def test_the_run_is_given_its_real_thread_id():
 
 
 def test_an_existing_thread_id_is_never_overwritten():
-    # A resolved thread already streams under its own id; replacing it would move a running chat's handles out from
-    # under the sidebar row watching them.
+    # Replacing a resolved id would move a running chat's handles out from under the sidebar.
     block = re.search(
         r"const result = adapter\.run\((.*?)\);",
         PROVIDER,

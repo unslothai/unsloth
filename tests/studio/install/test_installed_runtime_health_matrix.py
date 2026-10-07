@@ -100,8 +100,7 @@ HOSTS = [
 ]
 
 
-# The payload each platform's install kinds share. Literal file names rather than the module's
-# globs, so these are an independent statement of the requirement.
+# Literal names, not the module's globs: an independent statement of the requirement.
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -110,10 +109,7 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
-        # The Linux half of the same impl split as llama-server-impl.dll below:
-        # llama-server and llama-quantize load these by DT_NEEDED. Written for every
-        # shape, like the Windows one, and taken back out by required_runtime_files
-        # for the shapes that do not owe them.
+        # Loaded by DT_NEEDED; required_runtime_files drops them for shapes that do not owe them.
         "libllama-server-impl.so",
         "libllama-quantize-impl.so",
     ],
@@ -127,8 +123,6 @@ _SHARED_PAYLOAD = {
         "ggml-cpu.dll",
         "mtmd.dll",
     ],
-    # The names the real macos-arm64 bundle ships, one per library the runtime
-    # links against.
     "macos": [
         "libllama-common.dylib",
         "libllama.dylib",
@@ -136,7 +130,6 @@ _SHARED_PAYLOAD = {
         "libggml-base.dylib",
         "libggml-cpu.dylib",
         "libmtmd.dylib",
-        # The macOS half of the same split; the real b11007 arm64 bundle ships both.
         "libllama-server-impl.dylib",
         "libllama-quantize-impl.dylib",
     ],
@@ -156,8 +149,7 @@ _PUBLISHED_PAYLOAD = {
 }
 _CUDART_TRIO = ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll")
 
-# ggml-org/llama.cpp#23462 split the per-binary entry code out between b9279 and b9283, so an
-# older Windows archive is monolithic and healthy without llama-server-impl.dll.
+# llama.cpp#23462 split entry code out between b9279 and b9283; older Windows archives lack the impl dll.
 _IMPL_SPLIT_BUILD = 9283
 
 
@@ -173,10 +165,9 @@ def _runtime_dir(install_dir: Path, host: HostInfo) -> Path:
     )
 
 
-# ---------------------------------------------------------------------------
-# The shipped marker shapes, oldest first, trimmed to the keys the health path reads.
+# Shipped marker shapes, oldest first, trimmed to the keys the health path reads.
 
-S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
+S1 = {
     "requested_tag": "b6099",
     "tag": "b6099",
     "asset": "llama-b6099-bin-ubuntu-x64.tar.gz",
@@ -187,7 +178,7 @@ S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
     "prebuilt_fallback_used": False,
     "installed_at_utc": "2026-03-26T04:11:07Z",
 }
-S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
+S2 = {
     **S1,
     "release_tag": "b6210",
     "published_repo": "unslothai/llama.cpp",
@@ -197,29 +188,28 @@ S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
     "runtime_line": "cuda12",
     "install_fingerprint": "aa" * 32,
 }
-S3 = {**S2, "prebuilt_fallback_used": True}  # a fallback install, same keys
-S4 = {**S2, "coverage_class": "older"}  # coverage_class starts being filled in
-S5 = {**S2, "force_cpu": False}  # 2026-07-20 #7228
+S3 = {**S2, "prebuilt_fallback_used": True}
+S4 = {**S2, "coverage_class": "older"}
+S5 = {**S2, "force_cpu": False}
 S6 = {
     **S5,
-    "llama_backend": "vulkan",  # 2026-07-27 #7373
+    "llama_backend": "vulkan",
     "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz",
     "runtime_line": None,
 }
-S7 = {**S5, "ggml_tree": "b7440"}  # 2026-08-04 #7817
+S7 = {**S5, "ggml_tree": "b7440"}
 S8 = {
     **S7,
-    "rocm_gfx": "gfx1151",  # 2026-08-08 #8050
+    "rocm_gfx": "gfx1151",
     "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
     "runtime_line": None,
 }
-S9 = {**S7, "backend": "cuda", "backend_request": "auto"}  # 2026-08-13 #8520
-S10 = {**S9, "gfx_target": None, "mapped_targets": []}  # 2026-08-13 #7670
-S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}  # 2026-08-18 #8841 == main
-S12 = {**S11, "runtime_asset": None}  # this PR
+S9 = {**S7, "backend": "cuda", "backend_request": "auto"}
+S10 = {**S9, "gfx_target": None, "mapped_targets": []}
+S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}
+S12 = {**S11, "runtime_asset": None}
 
-# A real marker, produced by running studio/install_llama_prebuilt.py. Its tag is past the
-# impl split, so it is the one shape that owes llama-server-impl.dll on Windows.
+# From a real install_llama_prebuilt.py run; past the impl split, so it owes llama-server-impl.dll.
 S12_REAL = {
     "requested_tag": "latest",
     "tag": "b10698",
@@ -261,12 +251,10 @@ SHAPES = [
     ("S12real", S12_REAL),
 ]
 
-# "metal" only exists on macOS, but a tree can be carried between machines, so it is
-# exercised on every platform.
+# metal is macOS-only, but trees move between machines, so test it everywhere.
 BACKENDS = ["cpu", "cuda", "rocm", "vulkan", "metal"]
 
-# An asset name per backend, so shapes predating the ``backend`` key still resolve one the way
-# a real old install does, through backend_from_asset_name.
+# Asset per backend so pre-`backend` shapes resolve via backend_from_asset_name.
 _ASSET_TOKEN = {
     "cpu": "app-b1-linux-x64-cpu.tar.gz",
     "cuda": "app-b1-linux-x64-cuda12.tar.gz",
@@ -306,10 +294,7 @@ def required_runtime_files(platform: str, backend: str, marker: dict) -> list[st
             files.remove("llama-server-impl.dll")
             files.remove("llama-quantize-impl.dll")
         files.append("llama-server.exe")
-    # The same split, on the side that names the libraries lib<binary>-impl.so.
-    # llama-server and llama-quantize load them by DT_NEEDED, so a Linux bundle from
-    # a published or upstream release owes both; a source build and a pre-split
-    # archive ship neither, and requiring one of those would reinstall forever.
+    # Published/upstream Linux bundles owe both impl .so; source builds and pre-split archives ship neither.
     if platform == "linux":
         build = ILP._release_build_number(marker.get("tag"))
         owed = source in {"published", "upstream"} and (build is None or build >= _IMPL_SPLIT_BUILD)
@@ -383,8 +368,6 @@ def build_tree(
     return root
 
 
-# Every (host, backend, shape) cell. The decision is driven by the platform booleans and the
-# marker's backend only, so this is the full space the probe can distinguish.
 CELLS = [
     (f"{host_id}-{backend}-{shape_id}", host, backend, shape)
     for host_id, host in HOSTS
@@ -412,8 +395,6 @@ def test_removing_any_single_required_file_is_reported_broken(tmp_path, cell, ho
     marker = shape_with_backend(shape, backend)
     platform = _platform_of(host)
     ext = ".exe" if host.is_windows else ""
-    # Deduplicated: llama-server.exe is both an entrypoint and a member of the Windows shared
-    # payload. One tree is built per victim, under its own name.
     victims = required_runtime_files(platform, backend, marker)
     victims += [f"llama-server{ext}", f"llama-quantize{ext}"]
     for victim in dict.fromkeys(victims):
@@ -497,8 +478,7 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     ), cell
     assert ILP._existing_install_runs(without_dir, host) is False, cell
 
-    # No marker is a source build this path never owned: not installed, not broken. Reporting
-    # it broken would offer a repair for a runtime the user never installed here.
+    # No marker is a source build this path never owned: not installed, not broken.
     without_marker = build_tree(
         tmp_path / "no-marker",
         host = host,
@@ -507,10 +487,7 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     )
     assert ILP.installed_runtime_health(without_marker, host = host) is None, cell
 
-    # A present but unreadable marker is graded on its tree, not short-circuited to "nothing
-    # installed"; load_prebuilt_metadata cannot tell the two apart, so the file itself does.
-    # A complete tree stays healthy, which keeps the repair from looping, since the keep path
-    # keeps it too (confirm_install_tree only checks the marker file exists).
+    # An unreadable marker is graded on its tree; a complete tree stays healthy so repair cannot loop.
     corrupt = build_tree(
         tmp_path / "corrupt-marker",
         host = host,
@@ -520,8 +497,6 @@ def test_the_structural_damage_cases_are_broken_and_never_kept(
     assert ILP.installed_runtime_health(corrupt, host = host) == (True, ""), cell
     assert ILP._existing_install_runs(corrupt, host) is True, cell
 
-    # Damaged as well as unreadable: the case the old behaviour missed, leaving preflight
-    # Ready with a library gone.
     corrupt_and_gutted = build_tree(
         tmp_path / "corrupt-marker-gutted",
         host = host,
@@ -550,8 +525,7 @@ def test_removing_a_file_this_install_kind_does_not_owe_stays_healthy(tmp_path):
     (_runtime_dir(win, WINDOWS) / "llama-server-impl.dll").unlink()
     assert ILP.installed_runtime_health(win, host = WINDOWS) == (True, "")
 
-    # S11 and older cannot record a cudart pairing, so demanding the trio would reject every
-    # Windows CUDA install that exists today, on every launch.
+    # S11 and older cannot record a cudart pairing, so the trio cannot be demanded.
     unpaired = build_tree(
         tmp_path / "unpaired",
         host = WINDOWS,
@@ -581,8 +555,7 @@ def test_the_split_dylibs_are_owed_on_a_post_split_macos_bundle(tmp_path):
         "llama_runtime_payload_incomplete",
     )
 
-    # The control in the loop direction: a pre-split bundle never shipped them, so demanding
-    # them there would reinstall forever.
+    # Pre-split bundles never shipped them; demanding them would reinstall forever.
     pre = build_tree(
         tmp_path / "pre",
         host = MACOS_ARM64,
@@ -592,10 +565,7 @@ def test_the_split_dylibs_are_owed_on_a_post_split_macos_bundle(tmp_path):
     assert ILP.installed_runtime_health(pre, host = MACOS_ARM64) == (True, "")
 
 
-# ---------------------------------------------------------------------------
-# GPU independence. The probe runs with platform_only_host(), which probes no hardware, so a
-# verdict that moved with the GPU would make the same tree healthy or broken depending on
-# which detection the caller paid for.
+# platform_only_host() probes no hardware, so the verdict must not move with the GPU.
 
 GPU_HOSTS = [
     ("no-gpu", {}),
@@ -633,9 +603,7 @@ def test_the_verdict_does_not_move_with_the_detected_gpu(tmp_path, host_id, host
     }, f"{host_id}-{backend}: {gutted_verdicts}"
 
 
-# ---------------------------------------------------------------------------
-# Both entrypoint binaries, since the payload groups name libraries only, so on Linux and
-# macOS a quarantined llama-server would otherwise read as a complete install.
+# Payload groups name libraries only, so check both entrypoint binaries too.
 
 
 @pytest.mark.parametrize(
@@ -664,11 +632,6 @@ def test_a_missing_entrypoint_is_caught_with_a_complete_library_payload(
         assert reason == "llama_runtime_payload_incomplete"
     else:
         assert reason == "llama_runtime_binaries_missing"
-
-
-# ---------------------------------------------------------------------------
-# Robustness. Every case is a real disk state a user can arrive in, and the failure to avoid
-# is the same throughout: an exception or a wrong verdict on the launch path.
 
 
 def test_an_install_dir_reached_through_a_symlink_is_judged_the_same(tmp_path):

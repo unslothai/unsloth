@@ -61,17 +61,14 @@ def _resolve(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         "_BACKEND": str(BACKEND),
         "_AUDIO_INSTALLER": str(REPO / "studio" / "install_audio_cpp_prebuilt.py"),
     }
-    # A hand-built environment has to carry what the interpreter needs: Windows python exits 1
-    # with no usable message when SYSTEMROOT is absent, which read as "the resolver answered
-    # wrongly" on every Windows runner.
+    # Windows python exits 1 with no message when SYSTEMROOT is absent.
     for name in ("SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
         value = os.environ.get(name)
         if value:
             env.setdefault(name, value)
     env.update(env_overrides)
     out = subprocess.run([sys.executable, "-c", PROBE], env = env, capture_output = True, text = True)
-    # Not check = True: the child's stderr is the only thing that says why, and swallowing it is
-    # how a dead interpreter passes for a wrong answer.
+    # Not check = True: the child's stderr is the only thing that says why.
     assert out.returncode == 0, f"probe failed ({out.returncode}): {out.stderr.strip()}"
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -100,7 +97,6 @@ def test_a_default_install_is_untouched(tmp_path):
 
 
 def test_a_plain_custom_studio_home_is_untouched(tmp_path):
-    # No UNSLOTH_HOME: the tools stay children of the Studio root, as before.
     home = tmp_path / "home"
     home.mkdir()
     custom = tmp_path / "custom"
@@ -113,7 +109,6 @@ def test_a_plain_custom_studio_home_is_untouched(tmp_path):
 
 
 def test_a_flat_root_keeps_the_tools_at_that_root(tmp_path):
-    # UNSLOTH_HOME == UNSLOTH_STUDIO_HOME, so "beside studio/" and "inside it" are one directory.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "flat"
@@ -140,8 +135,7 @@ def test_a_studio_home_outside_the_master_root_still_warns(tmp_path):
 
 
 def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):
-    # build_whisper_cpp.sh installs under UNSLOTH_HOME; a resolver one level off reports
-    # dictation unavailable with whisper-server sitting right there.
+    # build_whisper_cpp.sh installs under UNSLOTH_HOME.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
@@ -158,28 +152,26 @@ def _record_note(studio: Path, master: Path) -> None:
 
 
 def test_a_recorded_master_root_outlives_the_command_that_set_it(tmp_path):
-    # UNSLOTH_HOME is settable for one command, which installs node and whisper.cpp BESIDE
-    # studio/, and nothing persists it: the next launch resolved both one level down, at
-    # <studio>/node and <studio>/whisper.cpp, with the real trees untouched next door.
+    # UNSLOTH_HOME is set for one command and not persisted; later launches must still find
+    # node and whisper.cpp beside studio/.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
     studio = root / "studio"
     studio.mkdir(parents = True)
     _record_note(studio, root)
-    # UNSLOTH_STUDIO_HOME alone: what the installer's launcher actually persists.
+    # UNSLOTH_STUDIO_HOME alone is what the installer's launcher persists.
     r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
     assert r["master"] == str(root)
     assert r["studio"] == str(studio)
     assert r["node"] == str(root / "node")
     assert r["whisper"] == str(root / "whisper.cpp")
-    # The installer reads no note; setup.sh / setup.ps1 hand it --install-dir "$UNSLOTH_HOME/audio.cpp".
+    # setup.sh / setup.ps1 pass --install-dir "$UNSLOTH_HOME/audio.cpp".
     assert r["audio"] == str(root / "audio.cpp")
     assert r["warnings"] == []
 
 
 def test_setup_installs_audio_cpp_where_the_backend_looks():
-    # Both shells name the directory outright, so the installer's own default never decides it.
     for script, needle in (
         ("studio/setup.sh", 'AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"'),
         ("studio/setup.ps1", '$AudioCppDir = Join-Path $UnslothHome "audio.cpp"'),
@@ -190,8 +182,7 @@ def test_setup_installs_audio_cpp_where_the_backend_looks():
 
 
 def test_a_note_whose_root_has_since_moved_is_ignored(tmp_path):
-    # A note licenses this process to adopt a root for caches and runtimes both. One naming a
-    # tree that is no longer there must not win over the layout in front of it.
+    # A note naming a tree that no longer exists must not win over the layout in front of it.
     home = tmp_path / "home"
     home.mkdir()
     studio = tmp_path / "custom"
@@ -203,9 +194,7 @@ def test_a_note_whose_root_has_since_moved_is_ignored(tmp_path):
 
 
 def test_a_note_copied_into_an_unrelated_install_is_ignored(tmp_path):
-    # The recorded root exists and has a studio/ child, but it is not THIS install's studio
-    # directory, so the note travelled rather than described. Checking only is_dir() would
-    # redirect this install's runtimes into someone else's tree.
+    # The recorded root is not THIS install's studio dir; is_dir() alone would redirect runtimes.
     home = tmp_path / "home"
     home.mkdir()
     other = tmp_path / "other"
@@ -231,9 +220,8 @@ def test_an_empty_note_is_not_a_root(tmp_path):
 
 
 def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_path):
-    # Two installs on one box, only the legacy tree carrying a note: studio_root() stays on the
-    # named tree, so reading past it would send the runtimes and the portable caches to the
-    # OTHER install while Studio ran from here.
+    # Two installs, only the legacy one with a note: reading past it would send runtimes and
+    # caches to the OTHER install.
     home = tmp_path / "home"
     legacy_master = home / ".unsloth"
     (legacy_master / "studio").mkdir(parents = True)
@@ -248,8 +236,7 @@ def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_pat
 
 
 def test_a_flat_recorded_root_is_still_honoured(tmp_path):
-    # The flat layout is supported, and the note then sits in the root it names rather than in a
-    # studio/ child: an exact <root>/studio match would refuse it, containment satisfies it.
+    # Flat layout: the note sits in the root it names, so containment, not <root>/studio, matches.
     home = tmp_path / "home"
     home.mkdir()
     flat = tmp_path / "flat"
@@ -262,8 +249,7 @@ def test_a_flat_recorded_root_is_still_honoured(tmp_path):
 
 
 def test_a_default_install_reads_no_note(tmp_path):
-    # Nothing writes the note for a default install, so the legacy tree must not acquire a
-    # master root by accident: this is the path every existing user is on.
+    # Default installs write no note, so the legacy tree must not gain a master root by accident.
     home = tmp_path / "home"
     (home / ".unsloth" / "studio" / "share").mkdir(parents = True)
     r = _resolve({}, home)
@@ -297,9 +283,7 @@ print(json.dumps({
 
 
 def _install_llama_server(directory: Path) -> Path:
-    # The name _find_llama_server_binary looks for on THIS platform: it appends .exe on Windows,
-    # so a fixture that only ever writes the POSIX name made discovery correctly answer None and
-    # all three discovery tests fail on a Windows runner for a reason in the fixture.
+    # _find_llama_server_binary appends .exe on Windows.
     name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
     binary = directory / "build" / "bin" / name
     binary.parent.mkdir(parents = True, exist_ok = True)
@@ -315,7 +299,6 @@ def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         "USERPROFILE": str(home),
         "_BACKEND": str(BACKEND),
     }
-    # Same reason as _resolve: the interpreter's own requirements travel with it.
     for name in ("SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
         value = os.environ.get(name)
         if value:
@@ -332,8 +315,7 @@ def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
 
 
 def test_discovery_finds_the_llama_server_the_master_root_holds(tmp_path):
-    # The managed marker makes discovery SKIP the env var for its own derivation, so the two
-    # must name one directory or every GGUF model reports no runtime.
+    # The managed marker makes discovery skip the env var, so both must name one directory.
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"

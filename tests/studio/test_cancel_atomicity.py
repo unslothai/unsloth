@@ -89,7 +89,6 @@ def test_cancel_inference_uses_atomic_helper_for_cancel_id_path():
     fn = _find_function("cancel_inference")
     src = ast.unparse(fn)
     assert "_cancel_by_cancel_id_or_stash" in src
-    # The pre-fix two-step idiom must be gone.
     assert "_remember_pending_cancel(cancel_id)" not in src, (
         "two-step _cancel_by_keys + _remember_pending_cancel produced "
         "the TOCTOU race and must not return"
@@ -252,13 +251,11 @@ def test_cancel_by_keys_tolerates_empty_and_falsy_keys():
     m["_PENDING_CANCELS"].clear()
     assert m["_cancel_by_keys"]([]) == 0
     assert m["_cancel_by_keys"](["", None, "unknown"]) == 0
-    # Non-stashing fallback must never leak into _PENDING_CANCELS.
     assert m["_PENDING_CANCELS"] == {}
 
 
 def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
-    # Compare mode and other flows launch concurrent streams under a shared session_id;
-    # a single session cancel POST must hit all of them.
+    # Compare mode shares one session_id across concurrent streams; one cancel must hit all.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()
@@ -279,7 +276,6 @@ def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
 
 
 def test_cancel_by_cancel_id_is_exclusive_to_single_run():
-    # cancel_id is per-run unique; cancelling run A must not touch run B even when both share a session_id.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()
@@ -300,8 +296,7 @@ def test_cancel_by_cancel_id_is_exclusive_to_single_run():
 
 
 def test_tracked_cancel_exit_is_idempotent():
-    # Outer except BaseException + the generator's finally may both call __exit__ under certain race combos; must not
-    # raise.
+    # The outer except and the generator's finally may both call __exit__; must not raise.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()

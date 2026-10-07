@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(PWSH is None, reason = "needs PowerShell")
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-# PowerShell's error formatter gutters every wrapped continuation line with "   | ".
+# PowerShell's error formatter gutters wrapped continuation lines with "   | ".
 _GUTTER = re.compile(r"^\s*\|\s?")
 
 
@@ -129,8 +129,7 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     finally:
         os.chmod(tmp_path / "locked", 0o700)
 
-    # The bites control first: if the tree were readable throughout, this row would pass on a
-    # walk that stopped at the first directory and never proved anything.
+    # Control first: a readable tree would let a walk that stopped early pass.
     assert any(name.endswith("probe.dll") for name in found), found
     assert any(
         name.endswith("after.cmdline") for name in found
@@ -138,40 +137,10 @@ def test_an_unreadable_directory_costs_only_itself(tmp_path: pathlib.Path) -> No
     assert not any(name.endswith("hidden.dll") for name in found), found
 
 
-# What Windows covers here, and what it does not.
-#
-# Three rows in this file are POSIX-only and SKIP on Windows: the two chmod-denial walks and the
-# vanished-directory row. Nothing replaces them, so on a Windows runner the denial behaviour of
-# this walk is not exercised at all. An earlier version of this comment claimed an ACL-based
-# Windows control existed "below". It never did.
-#
-# Writing one means icacls-denying a directory to the running account and undoing it in a finally,
-# and it cannot be authored honestly from a Linux host: the failure mode worth catching is a
-# control that silently denies nothing and passes, which is exactly what happened when an ACL
-# denial was first tried as a stand-in for the race (see the note below). So it is recorded as a
-# gap rather than guessed at.
-#
-# What Windows DOES cover is the rest of the file, which is platform-neutral and drives the real
-# PowerShell: the traversal ceiling, the extension filter, the withholding comparison, the
-# coverage check and the path-prefix rules. That is not nothing. The separator bug in
-# Test-StudioPathUnder - DirectorySeparatorChar being '/' under pwsh on Linux, which made every
-# Windows-shaped path compare false - is precisely the class those rows catch, and it is why they
-# are written against Windows-shaped literals rather than tmp_path.
-#
-# There is no control here for "the old shape really would have died", and that is deliberate.
-#
-# The CI failure was a RACE: a directory in the shared temp root disappeared partway through a
-# recursive enumeration and the Windows provider raised a Win32Exception, which -ErrorAction
-# SilentlyContinue does not suppress because it governs non-terminating errors. An ACL denial was
-# tried as a stand-in and is not one: a directory the caller cannot open is an ordinary
-# non-terminating access-denied error, which that parameter DOES suppress, so the control reached
-# its SURVIVED line and would have passed while claiming the opposite. A POSIX chmod is the same
-# story.
-#
-# Reproducing the race means deleting directories under a live walk and hoping the timing lands,
-# which is a flaky test rather than a control. What is pinned instead is the shape: enumeration is
-# per-directory and wrapped, and no recursive listing is left in the file. The evidence for the
-# failure itself is the CI log quoted at the top of this module.
+# The POSIX-only denial and vanished-directory rows skip on Windows, and no ACL-based Windows
+# control exists: an ACL denial is suppressed by -ErrorAction, unlike the original race.
+# The race itself is not reproduced; the per-directory wrapped enumeration shape is pinned.
+# Path-prefix rows use Windows-shaped literals, not tmp_path, to catch separator bugs.
 
 
 def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path) -> None:
@@ -182,9 +151,8 @@ def test_the_scan_refuses_to_report_a_truncated_snapshot(tmp_path: pathlib.Path)
     by lowering the ceiling with a stubbed walk is not possible here, so the tree is built: 12
     directories against a ceiling of 8, set by dot-sourcing and re-declaring nothing.
     """
-    # The real ceiling is 200000, far too large to build, so the shape is asserted instead and
-    # the behaviour is driven at a scale that fits: the function is re-defined with the same body
-    # and a smaller limit, taken from the shipped source rather than retyped.
+    # The real ceiling (200000) is too large to build, so the function is redefined from the
+    # shipped source with a smaller limit.
     text = SCRIPT.read_text(encoding = "utf-8")
     assert (
         "throw (" in text and "$visited -gt 200000" in text
@@ -254,8 +222,7 @@ def test_no_recursive_listing_is_left_in_the_script() -> None:
     shows up on a runner whose temp directory happened to change under it.
     """
     text = SCRIPT.read_text(encoding = "utf-8")
-    # Comments first: this file EXPLAINS the shape it removed, and prose naming it is not a
-    # call. Stripping the comment-based help blocks as well, which is where that prose lives.
+    # Strip comments and help blocks first: their prose names the removed shape.
     body, inside_help = [], False
     for line in text.splitlines():
         stripped = line.strip()
@@ -407,9 +374,7 @@ def test_the_prefix_test_does_not_match_a_sibling_by_name() -> None:
         + "\n"
         r"Write-Output ('case=' + (Test-StudioPathUnder -Path 'C:\T\A\x.dll' -Directory 'c:\t\a'))"
         + "\n"
-        # The directory itself. A temp ROOT can be what failed to enumerate, and the root is
-        # also what the watcher attaches to, so descendants-only makes the coverage check
-        # below declare a watched root uncovered and throw.
+        # The root itself counts: it can fail to enumerate and is what the watcher attaches to.
         r"Write-Output ('self=' + (Test-StudioPathUnder -Path 'C:\t\a' -Directory 'C:\t\a'))" + "\n"
         r"Write-Output ('selfslash=' + (Test-StudioPathUnder -Path 'C:\t\a\' -Directory 'C:\t\a'))"
         + "\n"
@@ -575,8 +540,7 @@ def test_the_walk_classifies_the_error_and_never_probes_with_test_path() -> None
             "function Get-StudioTempArtifacts"
         )
     ]
-    # Comments stripped first, like the -Recurse guard above: this function EXPLAINS why it
-    # does not probe, and the prose naming Test-Path is not a call to it.
+    # Comments stripped first: prose naming Test-Path is not a call.
     code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
     assert "Test-Path" not in code, (
         "the walk probes with Test-Path again. That throws on an ACL-denied directory and "

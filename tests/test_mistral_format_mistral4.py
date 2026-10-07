@@ -183,7 +183,7 @@ TINY_PARAMS = {
     },
 }
 
-# Mistral name -> transformers name, written out independently of the module under test.
+# Mistral name -> transformers name, written independently of the module under test.
 _ATTN = {
     "attention.wq_a": "self_attn.q_a_proj",
     "attention.q_a_norm": "self_attn.q_a_layernorm",
@@ -300,7 +300,6 @@ def test_large3_params_translate_to_mistral4():
             "q_a_proj",
         ],
     }
-    # transformers accepts it and derives the MLA head sizes Mistral lists.
     config = Mistral4Config(**{k: v for k, v in cfg.items() if k != "quantization_config"})
     assert config.head_dim == LARGE3_PARAMS["head_dim"] == config.qk_head_dim
 
@@ -358,8 +357,8 @@ def test_bf16_checkpoint_loads_exactly(tmp_path, hub_cache):
     view = mf.prepare_mistral_format_checkpoint(str(source))
     assert view is not None and mf.is_mistral_format_view(view)
     assert str(hub_cache.parent) in view
-    assert not any(n.endswith(".safetensors") for n in os.listdir(view))  # nothing copied
-    assert mf.prepare_mistral_format_checkpoint(str(source)) == view  # reused
+    assert not any(n.endswith(".safetensors") for n in os.listdir(view))
+    assert mf.prepare_mistral_format_checkpoint(str(source)) == view
 
     with mf._mistral_format_conversions():
         model = Mistral4ForCausalLM.from_pretrained(view, dtype = torch.float32)
@@ -465,7 +464,7 @@ def test_redirect_retries_with_the_view(monkeypatch):
     model, tok = from_pretrained("mistralai/Mistral-Large-3", revision = "abc")
     assert calls == [("mistralai/Mistral-Large-3", "abc"), ("/views/large3", None)]
     calls.clear()
-    model, tok = from_pretrained(model_name = "org/other")  # keyword form too
+    model, tok = from_pretrained(model_name = "org/other")
     assert calls == [("org/other", None), ("/views/large3", None)]
 
 
@@ -506,7 +505,6 @@ def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cac
         assert mf.prepare_mistral_format_checkpoint(str(tmp_path / "fp8")) is None
         return
 
-    # Reference weights: the dequantized values put back into the transformers layout.
     inter = params["moe"]["expert_hidden_dim"]
     with torch.no_grad():
         sd = reference.state_dict()
@@ -574,7 +572,6 @@ def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cac
 
 
 def test_redirect_without_a_view_retries_the_same_call_with_conversions():
-    # Raised for a view or an adapter trained on one: same arguments, conversions on.
     calls = []
 
     @mf.mistral_format_redirect
@@ -684,7 +681,7 @@ def test_lora_adapter_trained_on_a_view_reloads_in_a_fresh_process(tmp_path):
         )
         assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-3000:]
     with open(adapter / "adapter_config.json") as f:
-        assert json.load(f)["base_model_name_or_path"] == str(src)  # portable: not the local view
+        assert json.load(f)["base_model_name_or_path"] == str(src)
     trained, reloaded = torch.load(adapter / "train.pt"), torch.load(adapter / "reload.pt")
     assert torch.equal(trained, torch.load(adapter / "reload_lm.pt"))
     assert torch.equal(trained, reloaded)
@@ -718,7 +715,6 @@ def _tiny_tekken(path):
         json.dump(tekken, f)
 
 
-# config.pattern of the Large-3 tekken.json.
 LARGE3_TEKKEN_PATTERN = (
     r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|"
     r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|"
@@ -742,7 +738,6 @@ def test_tekken_only_checkpoint_gets_a_bos_tokenizer(tmp_path, hub_cache):
     text = "hello world 12 é"
     ids = tok(text).input_ids
     n_special = 16
-    # BOS, then byte-level BPE over the inner vocab shifted past the special tokens.
     assert ids[:4] == [1, n_special + 256 + 3, n_special + 256 + 8, n_special + ord(" ")]
     assert tok.decode(ids, skip_special_tokens = True) == text
     assert (tok.bos_token, tok.eos_token, tok.pad_token) == ("<s>", "</s>", "<pad>")
@@ -803,7 +798,7 @@ def test_view_downloads_honour_cache_dir(tmp_path, monkeypatch):
 
 
 def test_adapter_retry_on_a_view_base_refuses_fast_inference(tmp_path, monkeypatch):
-    # An adapter whose base became a view retries with no new path: vLLM cannot read it either.
+    # vLLM cannot read a view either, so no retry with a new path.
     monkeypatch.setattr(mf, "_mistral_format_conversions", _null_context)
     (tmp_path / mf._VIEW_MARKER).write_text("{}")
 

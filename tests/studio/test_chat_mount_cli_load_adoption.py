@@ -32,15 +32,13 @@ def _source_path(relative_path: str) -> Path:
 
 HOOK = _source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
 CHAT_PAGE = _source_path("studio/frontend/src/features/chat/chat-page.tsx")
-# Inlined for real, not stubbed: the gate is shared with the send-path poll, so a stub would
-# only prove this file agrees with itself.
+# Inlined, not stubbed: the gate is shared with the send-path poll.
 WAIT_GATE = _source_path("studio/frontend/src/features/chat/lib/server-model-wait.ts")
 TEMP = WORKDIR / "temp" / "chat_mount_cli_load_adoption"
 OUTGOING = "org/outgoing-A-GGUF"
 INCOMING = "org/incoming-B-GGUF"
 
-# Every module-boundary name the sliced region uses. A missing one is a ReferenceError the
-# sync's catch turns into a toast, so it reads as a wrong-checkpoint failure instead.
+# A missing name is a ReferenceError the sync's catch turns into a misleading toast.
 PREAMBLE = """
 export const EVENTS: any[] = [];
 
@@ -221,7 +219,7 @@ def _require_node() -> None:
             ["node", "--experimental-strip-types", "--version"],
             capture_output = True,
             text = True,
-            # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
+            # A cold Windows runner is slow to start node.
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):
@@ -241,7 +239,6 @@ def _between(source: str, start: str, end: str) -> str:
 def _build_harness(run_dir: Path) -> None:
     """Slice the mount path verbatim out of the hook."""
     source = HOOK.read_text(encoding = "utf-8")
-    # The real gate, with its imports dropped: the preamble supplies those two ponyfills.
     gate = "\n".join(
         line
         for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
@@ -264,7 +261,6 @@ def _build_harness(run_dir: Path) -> None:
         "export async function resyncInferenceStatusAfterServerModelChange(",
     )
     assert "async function syncInferenceStatusToStore(" in sync
-    # The sequencing IS the bug, so refresh runs for real rather than being re-typed here.
     match = re.search(
         r"const refresh = useCallback\(\n"
         r"    async \(options\?: \{(?P<params>.*?)\}\) => \{(?P<body>.*?)\n"
@@ -278,7 +274,6 @@ def _build_harness(run_dir: Path) -> None:
         f"{{{match.group('body')}\n}}\n"
     )
     assert "syncInferenceStatusToStore(options)" in refresh
-    # The handoff owner has to come along, or the wait is registered nowhere.
     assert "async function refreshAndWaitForServerModel(" in sync
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n" + PREAMBLE + "\n" + gate + "\n" + poll + "\n" + sync + "\n" + refresh,
@@ -289,7 +284,7 @@ def _build_harness(run_dir: Path) -> None:
 def _run(script_body: str) -> dict:
     _require_node()
     TEMP.mkdir(parents = True, exist_ok = True)
-    # Its own directory per invocation: a shared file lets one runner read another's rewrite.
+    # Own directory per invocation: a shared file lets one runner read another's rewrite.
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)
     script = (
@@ -369,8 +364,7 @@ def _run(script_body: str) -> dict:
         cwd = str(run_dir),
         capture_output = True,
         text = True,
-        # Explicit: text alone decodes with the Windows ANSI code page, which mangles the
-        # non-ASCII toast copy node emits as UTF-8.
+        # Text mode alone decodes with the Windows ANSI code page and mangles node's UTF-8.
         encoding = "utf-8",
         timeout = 120,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
@@ -380,7 +374,6 @@ def _run(script_body: str) -> dict:
     return json.loads(last)
 
 
-# The ChatPage mount effect, argument for argument (chat-page.tsx).
 MOUNT = """
         setStoreState(emptyStore());
         const mount = refresh({
@@ -563,7 +556,6 @@ def test_mount_still_adopts_a_settled_model_with_no_load_in_flight():
         + "        await mount;\n"
     )
     assert out["checkpoint"] == INCOMING
-    # One read: the sync's own. A settled status must not cost a second round trip.
     assert [event["kind"] for event in out["events"]].count("status") == 1
 
 
@@ -621,7 +613,6 @@ def test_a_wait_from_the_send_path_also_stops_a_refresh_publishing_the_outgoing_
     )
     during = [e for e in out["events"] if e["kind"] == "duringWait"][0]["checkpoint"]
     assert during == "", "a refresh published the outgoing model while a wait was outstanding"
-    # And the gate is a gate, not a mute: once the wait is over the same refresh publishes.
     assert out["checkpoint"] == OUTGOING
 
 
@@ -645,7 +636,6 @@ def test_a_stalled_status_read_does_not_park_the_poll_on_one_request():
         + "        await mount;\n"
     )
     assert out["checkpoint"] == INCOMING
-    # Two capped reads plus the ones on either side: the loop kept going instead of parking.
     assert [event["kind"] for event in out["events"]].count("status.hang") == 2
     assert [event["kind"] for event in out["events"]].count("status") >= 3
 

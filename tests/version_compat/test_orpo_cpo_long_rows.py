@@ -41,7 +41,7 @@ def _row_cap():
 
 
 def _trainer(name):
-    # Importing unsloth (the test conftest does) swaps the exported class for the patched copy, so read TRL's module source.
+    # Importing unsloth swaps the exported class for the patched copy, so read TRL's module source.
     for mod in (f"trl.experimental.{name}.{name}_trainer", f"trl.trainer.{name}_trainer"):
         try:
             module = importlib.import_module(mod)
@@ -147,7 +147,6 @@ def test_rows_that_fit_are_unchanged(name):
 
 @pytest.mark.parametrize("name", ["orpo", "cpo"])
 def test_unpatched_trl_row_overflows(name):
-    # Control: without the cap, TRL 0.29+ really emits rows past max_length for these inputs.
     trainer = _trainer(name)
     if "max_prompt_length" in trainer[1]["tokenize_row"]:
         pytest.skip("this TRL truncates the prompt itself")

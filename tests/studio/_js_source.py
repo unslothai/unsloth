@@ -172,8 +172,7 @@ def assert_guard_holds(
     )
 
 
-# A line ending in one of these is a declaration still in progress, not one that ended
-# where the newline is. Prettier breaks a long `a &&\n  b` exactly there.
+# A line ending in one of these continues onto the next (Prettier breaks `a &&\n  b` there).
 _CONTINUES = ("&&", "||", "??", "?", ":", ",", "+", "-", "*", "/", "=", "(", "[", "{", ".")
 
 

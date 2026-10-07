@@ -124,7 +124,6 @@ def _state(dest: Path) -> dict:
 def test_a_pristine_notebook_deleted_upstream_is_removed(tmp_path: Path):
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
-    # the user edited one of the two that upstream dropped
     (dest / "nb" / "edited.ipynb").write_text("MY OWN WORK", encoding = "utf-8")
 
     run = _refresh(tmp_path, remote, template, dest)
@@ -214,8 +213,6 @@ def test_a_removal_that_cannot_be_unlinked_keeps_its_record_and_retries(tmp_path
     was stamped and the next start exited before it looked."""
     remote, template, dest = _setup(tmp_path)
     _advance(remote)
-    # upstream dropped this one too, but the user owns it now, so doomed is the only
-    # removal candidate and the counters below are about it alone
     (dest / "nb" / "edited.ipynb").write_text("MY OWN WORK", encoding = "utf-8")
     doomed = dest / "nb" / "doomed.ipynb"
     bindir = _refuse_rm(tmp_path, doomed)
@@ -364,7 +361,6 @@ def test_an_unwritable_dest_publishes_nothing_and_recovers(tmp_path: Path):
     finally:
         dest.chmod(0o755)
 
-    # the whole point of bailing: the next start recovers instead of being stranded
     run2 = _refresh(tmp_path, remote, template, dest)
     assert run2.returncode == 0, run2.stdout + run2.stderr
     assert (dest / "nb" / "keep.ipynb").read_text(encoding = "utf-8") == "keep-v2"

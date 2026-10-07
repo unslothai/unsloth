@@ -43,9 +43,7 @@ SOURCES = (RECONCILIATION, SYNC_PROVIDERS)
 
 TEMP = WORKDIR / "temp" / "provider_backfill_awaits_batch"
 
-# The end of syncExternalProvidersFromBackend, which is where the backfill batch is awaited.
-# Anchored on the unique return and walked BACK to the staleness guard, so the slice is taken
-# without matching on the word being tested.
+# Walked back from the unique return so the slice does not match on the tested word.
 TAIL_END = "\n  return syncedProviders;\n}"
 TAIL_START = "if (isCurrent && !isCurrent()) return existingProviders;"
 

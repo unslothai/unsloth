@@ -150,9 +150,7 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
     body = text[start : text.index("\n}\n", start)]
     assert "command -v python" in body
     assert '"$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar' in body
-    # Exactly one grep may precede the interpreter search: the guard for a tree that ships no
-    # shim at all. Every other fall back to the grep is a last resort behind `command -v python`,
-    # or Colab (venv-less but with an ambient python) would never reach the shim.
+    # Only the no-shim guard may grep before the interpreter search, or Colab never reaches the shim.
     shim_guard = body.index('[ ! -f "$SCRIPT_DIR/install_manifest.py" ]')
     assert shim_guard < body.index("command -v python")
     assert body.index("command -v python") < body.rindex("_target_has_pkg_version")
@@ -172,7 +170,6 @@ def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
     assert "[Convert]::ToBase64String" in body and "base64.b64decode" in body
     assert "runpy.run_path(sys.argv[0], run_name='__main__')" in body
     assert body.index("$probe.TimedOut") < body.index('$out = "sidecar: audit did not answer')
-    # The shell mirror: the shim call is bounded where a timeout exists and a timeout is stale.
     sh = SETUP_SH.read_text(encoding = "utf-8")
     call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
     window = sh[call - 400 : call + 900]
@@ -226,8 +223,7 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
     assert "PSVersion.Major -ge 7" not in body
 
 
-# The offline rule: "updating to be safe" is wrong under UV_OFFLINE, where every install can only
-# fail; a complete install is kept, on the incomplete-install guard's own evidence.
+# Under UV_OFFLINE every install can only fail, so a complete install is kept.
 
 
 @pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
@@ -341,8 +337,7 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
         < ps1.index("if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {")
     )
     assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
-    # The legacy migration is itself a wipe above the guard: skipped under the offline keep, and
-    # under UV_OFFLINE without the fast path.
+    # The legacy migration is itself a wipe above the guard.
     assert sh.index(
         '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then'
     ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
@@ -373,8 +368,7 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
         < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
     )
     block_sh = sh[offline_sh : offline_sh + 1100]
-    # Stale AND missing: an absent tier would reach the pip fallback. No path in the loop's word
-    # list (a space in the Studio home would split it).
+    # No path in the loop's word list: a space in the Studio home would split it.
     assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
     assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
     assert (
@@ -390,7 +384,6 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     block_ps1 = ps1[offline_ps1 : offline_ps1 + 1100]
     assert "Test-Path -LiteralPath $tier[2]" not in block_ps1
     assert "Set-Variable -Name $flag -Value $false" in block_ps1
-    # The tiktoken top-up stays home under the offline request too.
     top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
     assert "_uv_offline_requested && return 0" in top_up[:900]
     repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
@@ -424,9 +417,7 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     assert (
         "Find-InstalledUv" in probe
     ), "the uv probe checks PATH only again; on Windows that reinstalls uv every update"
-    # The finder replaced the inline `Test-Path (Join-Path (Get-UvInstallDir) "uv.exe")`, which
-    # saw one destination and never ran what it found: a uv.exe that could not run was put on
-    # PATH anyway. It must still start from the installer's destination, or the two can disagree.
+    # Must start from the installer's destination and actually run the uv.exe it finds.
     finder = text[text.index("function Find-InstalledUv {") :]
     finder = finder[: finder.index("\n}\n") + 3]
     assert "Get-UvInstallDir" in finder, (
@@ -434,14 +425,12 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
         "the installer can now disagree about where uv lives"
     )
     assert 'Combine($dir, "uv.exe")' in finder, "the probe stopped looking for uv.exe itself"
-    # Join-Path terminates on a missing drive under ErrorActionPreference Stop, and this runs
-    # outside the installation branch's try, so XDG_DATA_HOME=Z:\xdg ended setup.
+    # Join-Path terminates on a missing drive under Stop, outside the install try.
     body = finder[finder.index("$candidates") :]
     assert (
         "Join-Path" not in body
     ), "the candidate paths are built with Join-Path again; one missing drive ends setup"
-    # And the run that installs uv has to use it, or it records a manifest with no uv_version and
-    # the next run rewrites it: a no-op update that is not one.
+    # Otherwise the manifest lacks uv_version and the next run rewrites it.
     install_arm = text[text.index('substep "installing uv package manager..."') :][:2000]
     assert "Get-UvInstallDir" in install_arm, (
         "after installing uv, setup.ps1 relies on Refresh-Environment alone; it rebuilds PATH "
@@ -454,8 +443,7 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     [
         ("def verify_install(deep = False): return {'ok': True}", 0),
         ("def verify_install(deep = False): return {'ok': False}", 1),
-        # The hole this replaced: `except TypeError` also caught one raised INSIDE a deep
-        # verify, and retried without the payload scan, so real damage read as verified.
+        # `except TypeError` also caught one raised INSIDE a deep verify.
         ("def verify_install(deep = False): raise TypeError('inside')", 1),
         ("def verify_install(): return {'ok': True}", 0),  # older tree, no such keyword
         ("def verify_install(): return {'ok': False}", 1),
@@ -501,10 +489,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
     )
 
     stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    # `_uv_is_offline` is one caller of `_uv_env_flag`, which is where the boolish set
-    # actually lives, so both are lifted. Naming the callee here rather than lifting the
-    # whole module keeps the test reading the real source instead of an import with side
-    # effects, and a callee that goes missing is a NameError, not a wrong answer.
+    # The boolish set lives in _uv_env_flag, so lift both; a missing callee is a NameError.
     wanted = ("_uv_env_flag", "_uv_is_offline")
     nodes = [
         n for n in _ast.parse(stack).body if isinstance(n, _ast.FunctionDef) and n.name in wanted
@@ -535,8 +520,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
         "maybe",
         "2",
     ):
-        # `sh` with a pinned POSIX PATH, as the sibling test above: `bash` on a Windows
-        # runner resolves to the WSL stub, which answers in UTF-16 and runs nothing.
+        # `sh` with a pinned PATH: on Windows `bash` is the WSL stub, which runs nothing.
         shell = (
             subprocess.run(
                 ["sh", str(probe)],

@@ -26,9 +26,7 @@ the leg reporting nothing at all.
 
 from __future__ import annotations
 
-# Substrings marking a LoRA parameter and, narrower, the B matrices. peft names
-# them `...lora_A.default.weight` / `lora_B...`; matched lowercased so a future
-# capitalisation cannot silently empty the set.
+# Matched lowercased so a capitalisation change cannot silently empty the set.
 LORA_MARKER = "lora_"
 LORA_B_MARKER = "lora_b"
 
@@ -110,8 +108,7 @@ def adapter_update(before, after) -> dict:
             or after.get("error")
             or "the adapter was not fingerprinted",
         }
-    # Rechecked here, not only where the sums were taken: an exact `!=` on a NaN
-    # is the most confident "it changed" this file can produce.
+    # Rechecked here: `!=` on NaN always reports a change.
     unusable = [
         f"{side}.{key}={reading[key]}"
         for side, reading in (("before", before), ("after", after))

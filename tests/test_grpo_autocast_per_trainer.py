@@ -48,9 +48,6 @@ RL_SRC = RL_PY.read_text(encoding = "utf-8")
 REPL_SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
-# ---- the two pieces of source under test ---------------------------------
-
-
 def _mixed_precision_source() -> str:
     """The `mixed_precision = (...)` literal rl.py compiles into __init__."""
     for node in ast.walk(ast.parse(RL_SRC)):
@@ -102,9 +99,6 @@ class _pretend_cuda:
         torch.cuda.is_available, torch.cuda.is_bf16_supported = self._saved
 
 
-# ---- a trainer, as far as any of this code can tell ----------------------
-
-
 class _Args:
     """The fields of TrainingArguments that rl.py writes and the header reads.
 
@@ -148,21 +142,18 @@ def _build_trainer(
     )
     env.setdefault("UNSLOTH_FORCE_FLOAT32", "0")
     if mark_forced_float32:
-        # What from_pretrained stamps on the model.
-        # `forced_float32` sets it apart from the env, which is what an earlier load leaves behind.
+        # Stamped by from_pretrained; `forced_float32` differs from the env an earlier load leaves.
         model._unsloth_forced_float32 = (
             (env["UNSLOTH_FORCE_FLOAT32"] == "1") if forced_float32 is None else forced_float32
         )
     env.setdefault("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
     if mark_full_finetuning:
-        # The other half of the load, stamped the same way and for the same reason.
         model._unsloth_full_finetuning = (
             (env["UNSLOTH_ENABLE_FULL_FINETUNING"] == "1")
             if full_finetuning is None
             else full_finetuning
         )
     env.setdefault("UNSLOTH_MIXED_PRECISION", "float32")
-    # What a load between this one and its trainer leaves in the shared environment.
     if env_override:
         env.update(env_override)
 
@@ -197,7 +188,6 @@ def _build_trainer(
             else:
                 sys.modules[k] = v
     assert scope["_bf16_supported"] is device_type.device_is_bf16_supported
-    # The trainer, as much of one as the autocast header ever touches.
     return types.SimpleNamespace(args = args, model = model)
 
 
@@ -222,9 +212,6 @@ def _generate(trainer, env, has_bf16):
     with _pretend_cuda(has_bf16 = has_bf16):
         exec(_prepare_inputs_snippet() + body, scope)
     return scope["seen"][0]
-
-
-# ---- the bug -------------------------------------------------------------
 
 
 @pytest.mark.parametrize("has_mixed_precision", [True, False])
@@ -281,7 +268,6 @@ def test_a_later_load_cannot_take_this_trainers_float16_autocast_away():
     first = _build_trainer(env, torch.float32, bf16_supported = False)
     assert env["ACCELERATE_MIXED_PRECISION"] == "no"
 
-    # A second from_pretrained, before the first trainer generates.
     env["UNSLOTH_FORCE_FLOAT32"] = "0"
     _build_trainer(env, torch.float16, bf16_supported = False)
 
@@ -310,7 +296,6 @@ def test_a_later_load_cannot_take_full_finetunings_bfloat16_away():
     into the float16 the forced list exists to avoid.
     """
     env = {"UNSLOTH_FORCE_FLOAT32": "1", "UNSLOTH_ENABLE_FULL_FINETUNING": "1"}
-    # A LoRA load between this model and its trainer.
     trainer = _build_trainer(
         env,
         torch.bfloat16,
@@ -345,9 +330,6 @@ def test_the_trainer_init_prefers_the_finetuning_stamp_over_the_shared_flag():
     assert "_unsloth_full_finetuning" in MP_SRC
     reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_ENABLE_FULL_FINETUNING", MP_SRC)
     assert len(reads) == 1, reads
-
-
-# ---- the same question again, inside native generation -------------------
 
 
 def _fast_generate_autocast_source() -> str:
@@ -475,7 +457,6 @@ def test_a_forced_float32_load_cannot_force_an_unforced_trainer():
     assert trainer.model._unsloth_forced_float32 is False
     assert env["ACCELERATE_MIXED_PRECISION"] == "no"
 
-    # A forced float32 family loaded before the first generation batch.
     env["UNSLOTH_FORCE_FLOAT32"] = "1"
 
     assert _generate(trainer, env, has_bf16 = False) == (False, None)
@@ -604,9 +585,6 @@ def test_the_diffusion_dispatch_stamps_both_answers():
     assert "_mark_requested_float32(model, user_float32)" in body
 
 
-# ---- everything that must NOT change -------------------------------------
-
-
 def test_a_float16_trainer_alone_still_autocasts():
     env = {}
     trainer = _build_trainer(env, torch.float16, bf16_supported = False)
@@ -685,11 +663,9 @@ def test_an_outer_autocast_is_inherited_rather_than_overridden():
     trainer._autocast_dtype = torch.float16
     trainer._autocast_force_float32 = False
 
-    # Outside: the helper names its own dtype.
     outside = _unsloth_grpo_autocast_kwargs(trainer)
     assert outside == {"enabled": True, "dtype": torch.float16}, outside
 
-    # Inside: no dtype at all, and it must actually build an autocast.
     with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
         inside = _unsloth_grpo_autocast_kwargs(trainer)
         assert "dtype" not in inside, inside

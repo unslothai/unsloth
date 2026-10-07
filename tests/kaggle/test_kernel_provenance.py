@@ -150,8 +150,6 @@ def test_the_payload_never_calls_a_tokenizer_positionally():
     offenders = []
     for match in re.finditer(r"tokenizer\(\s*(?!text\s*=)(?!\))([^)\n]*)", src):
         arg = match.group(1).strip()
-        # Keyword-only calls are fine; a bare `tokenizer(` opening a keyword
-        # list is what the negative lookahead already allowed through.
         if arg and not arg.split(",")[0].strip().endswith("=") and "=" not in arg.split(",")[0]:
             offenders.append(match.group(0))
     assert offenders == [], f"positional tokenizer calls: {offenders}"

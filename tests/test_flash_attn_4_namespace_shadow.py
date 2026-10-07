@@ -71,7 +71,6 @@ def _write_layout(tmp_path, layout):
     if layout in ("flash_attn_2", "both"):
         pkg.mkdir(parents = True, exist_ok = True)
         if layout == "flash_attn_2":
-            # A real flash-attn 2 wheel is a regular package.
             (pkg / "__init__.py").write_text(
                 "__version__ = '2.8.3'\n"
                 "def flash_attn_func(*a, **k): ...\n"
@@ -81,7 +80,6 @@ def _write_layout(tmp_path, layout):
     return root
 
 
-# The same by-path load as _load_import_fixes, for the subprocess cases.
 _LOAD_MODULE = """
     import importlib.util, pathlib, sys
     _path = pathlib.Path(sys.argv[2]) / "unsloth" / "import_fixes.py"
@@ -122,7 +120,7 @@ def test_layout_is_classified_correctly(tmp_path, layout, expected):
 
 
 _NO_EAGER_IMPORT = textwrap.dedent(
-    # Load the module BEFORE the layout is visible, so this measures the classifier only.
+    # Load the module before the layout is visible, so this measures the classifier only.
     _LOAD_MODULE
     + """
     sys.modules.pop("flash_attn", None)
@@ -199,7 +197,6 @@ def test_fix_is_a_noop_without_xformers(monkeypatch):
     monkeypatch.setattr(import_fixes.importlib.util, "find_spec", _find_spec)
     import_fixes._FA4_NAMESPACE_WARNED[0] = False
     import_fixes.fix_flash_attn_4_namespace_shadow()
-    # Asked once, got nothing, stopped: no import, no warning, find_spec never left swapped.
     assert asked == ["xformers"]
     assert import_fixes.importlib.util.find_spec is _find_spec
     assert import_fixes._FA4_NAMESPACE_WARNED[0] is False

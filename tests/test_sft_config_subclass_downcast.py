@@ -80,7 +80,7 @@ def trl_like(monkeypatch):
     class TrainingArguments:
         pass
 
-    class SFTConfig(TrainingArguments):  # the pristine class
+    class SFTConfig(TrainingArguments):
         pass
 
     class GKDConfig(SFTConfig):  # a TRL config that builds on SFT
@@ -92,13 +92,13 @@ def trl_like(monkeypatch):
             self.lmbda = lmbda
             self.beta = beta
 
-    # `_patch_config_pickle_identity` gives the generated class the pristine module and name so it keeps pickling.
+    # `_patch_config_pickle_identity` gives the generated class the pristine module and name.
     patched = type(
         "SFTConfig",
         (SFTConfig,),
         {NS["_UNSLOTH_PATCHED_CONFIG_FLAG"]: True},
     )
-    # The home module (`sft_config`) differs from the guard's (`sft_trainer`); model both, or the pickle test passes vacuously.
+    # Home module (`sft_config`) differs from the guard's (`sft_trainer`); model both.
     patched.__module__ = "trl.trainer.sft_config"
     patched.__qualname__ = "SFTConfig"
 
@@ -113,7 +113,6 @@ def trl_like(monkeypatch):
     trl_pkg = types.ModuleType("trl")
     trl_pkg.__path__ = []
     trl_pkg.trainer = trainer_pkg
-    # The top level name is the same object, exactly as after patching.
     trl_pkg.SFTConfig = patched
 
     monkeypatch.setitem(sys.modules, "trl", trl_pkg)
@@ -137,7 +136,6 @@ def test_subclass_config_is_downcast_without_the_fix(trl_like):
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     gkd = GKDConfig(lmbda = 0.25, beta = 0.75)
     assert isinstance(gkd, TrainingArguments)
-    # This is the bug: a GKDConfig is not an instance of the installed SFTConfig.
     assert not isinstance(gkd, module.SFTConfig)
 
 
@@ -147,7 +145,6 @@ def test_widening_stops_the_downcast(trl_like):
 
     gkd = GKDConfig(lmbda = 0.25, beta = 0.75)
     assert isinstance(gkd, module.SFTConfig), "the guard still downcasts a GKDConfig"
-    # The subclass keeps its own fields, which is the whole point.
     assert gkd.lmbda == 0.25 and gkd.beta == 0.75
 
 

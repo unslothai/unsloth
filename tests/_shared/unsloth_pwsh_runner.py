@@ -53,44 +53,14 @@ import signal
 import subprocess
 import tempfile
 
-# pwsh aborting mid-flight prints this and leaves stdout empty while still exiting through the normal path, so unlike
-# the SIGABRT case there is no signal to key on.
+# pwsh aborting prints this with empty stdout and a normal exit, so there is no signal to key on.
 PWSH_CRASH_BANNER = "The PowerShell process will exit"
 
-# Resolved once. `None` on a box with no PowerShell, which is what the skipif guards read.
 PWSH = shutil.which("pwsh") or shutil.which("powershell")
 
 
-# --------------------------------------------------------------------------------------
-# Why the crash happens, and the one-line change that stops it
-# --------------------------------------------------------------------------------------
-# Every `-NonInteractive` startup reads and rewrites an ~83 KB
-# $XDG_CACHE_HOME/powershell/StartupProfileData-NonInteractive, and XDG_CACHE_HOME defaults
-# to $HOME/.cache. Under `-n 4` all four xdist workers share one $HOME, so the whole job's
-# pwsh processes race on that single file, and a startup that deserialises a half-written
-# one dies before it reaches our script.
-#
-# Measured on this repo's suite shape, 4000 startups per arm:
-#
-#   shared cache dir   7/4000 died -- returncodes {-11: 3, -6: 4}, stderr 'Stack overflow.'
-#                      and 'The PowerShell process will exit. Unhandled exception.
-#                      System.IO.FileLoadException: The given assembly name ...'
-#   private cache dirs 0/4000
-#
-# That reproduces BOTH crash shapes this repo has hit -- the SIGABRT that made run
-# 32341628757 red and the exit-banner that `_run_pwsh` in test_install_phase_timing.py was
-# written for -- and the FileLoadException names the torn cache outright. It is also the
-# independent confirmation from CI itself: of the pwsh-heavy test files in that run, exactly
-# one had zero failures, tests/test_windows_amd_gpu_scan_fallback.py, and it is the only one
-# that hands its child a private HOME (`{"PATH": ..., "HOME": str(tmp_path)}`) and so never
-# joined the race, across ~80 startups where a 20% rate predicts ~16 failures.
-#
-# So the fix is to stop sharing the file rather than to serialise access to it: one cache
-# directory per xdist worker. Workers run their tests one at a time, so within a worker the
-# startups are sequential and the cache still does its job warm; across workers the
-# directories are disjoint and there is nothing left to race on. This is why the runner does
-# not bound pwsh concurrency with a lock and does not ask for `-n 4` to be given up: the
-# contended resource is removed, not rationed.
+# xdist workers sharing one $HOME race on pwsh's StartupProfileData cache and crash;
+# one cache dir per worker removes the race.
 _CACHE_ROOT = None
 
 
@@ -141,17 +111,13 @@ class PwshInterpreterCrash(AssertionError):
 def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
     """Why this run produced no verdict, or None if it produced one."""
     if proc.returncode < 0:
-        # Popen reports "killed by signal N" as -N. .NET's stack-overflow failfast is SIGABRT; a SIGSEGV or a SIGKILL
-        # from the OOM killer would land here too, and all three mean the same thing to us: the script did not run to
-        # its end.
+        # Negative returncode means killed by signal (SIGABRT, SIGSEGV, OOM SIGKILL): the script did not finish.
         try:
             name = signal.Signals(-proc.returncode).name
         except ValueError:
             name = f"signal {-proc.returncode}"
         return f"killed by {name}"
-    # Only inspectable when the caller captured the streams; a call site that streams to the console gets the signal
-    # check alone, which is the case that actually bit CI. The byte-level tests capture without `text = True`, so the
-    # banner is searched for in whichever form the caller asked for rather than assuming str.
+    # Streams may be bytes or str depending on the caller.
     captured = [stream for stream in (proc.stdout, proc.stderr) if stream]
     if any(isinstance(stream, bytes) for stream in captured):
         streams = b"".join(
@@ -165,14 +131,10 @@ def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
     return None
 
 
-# Prepended to a -Command script so its stdout is UTF-8 whatever the host console is set to.
-# UTF8Encoding($false), not [Text.Encoding]::UTF8: the latter emits a preamble, which lands in
-# stdout as a BOM and breaks the first assertion of whatever reads it.
+# UTF8Encoding($false): [Text.Encoding]::UTF8 would emit a BOM into stdout.
 _UTF8_PROLOGUE = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
 
 
-# Python's own aliases for UTF-8, after "_" is folded to "-". A caller that spells it any of
-# these ways wants what we want and still needs the writing end set.
 _UTF8_ALIASES = frozenset({"utf-8", "utf8", "u8", "utf", "u-8", "cp65001"})
 
 
@@ -209,8 +171,7 @@ def _agree_on_utf8(argv: list[str], kwargs: dict) -> list[str]:
     if named is not None and named.lower().replace("_", "-") not in _UTF8_ALIASES:
         return argv
     kwargs["encoding"] = "utf-8"
-    # -Command only. PowerShell accepts unambiguous prefixes, but every call site here spells
-    # it in full, and prepending to the wrong element would run the prologue as a file path.
+    # Only exact -Command; prepending to the wrong element runs the prologue as a file path.
     try:
         script = argv.index("-Command") + 1
     except ValueError:
@@ -251,8 +212,7 @@ def run_pwsh(
 
     argv = _agree_on_utf8(argv, kwargs)
 
-    # Redirect only pwsh's own startup cache, leaving every other variable as the call site meant it: `env = None`
-    # still means "inherit", and a hermetic env dict still gets exactly the keys it listed plus this one.
+    # Only redirect pwsh's startup cache; env=None still means inherit.
     kwargs["env"] = pwsh_env(kwargs.get("env"))
 
     proc = None

@@ -27,15 +27,7 @@ from pathlib import Path
 import pytest
 
 
-# Ten of the eleven tests below start from one of three identical setups, each of
-# which writes 500 notebooks, commits them and then drives one or two real sync
-# runs over the lot. Build each one once per process and `copytree` it in, which is
-# ~0.04s: nothing any of them writes embeds its own absolute path (the clone lives
-# in the script's own $TMP and is gone by the time the run returns, and `up`'s git
-# repo has no remote), so the copy is the same tree at a different place. Each test
-# still gets a private directory under its own `tmp_path` that it is free to
-# mutate, so the isolation is unchanged -- and the corpus is still 500 notebooks,
-# which is what opens the failure window these tests aim at.
+# Prototypes are built once and copytree'd in; no tree embeds its own absolute path.
 _PROTOTYPES: dict[str, Path] = {}
 
 
@@ -75,14 +67,7 @@ def _build_big_synced(root: Path):
     _run(tpl, dest, up, refresh = False)
 
 
-# The capped refresh is itself shared, not just the tree it ran against: the two
-# tests below drive the SAME capped run over the SAME tree and then ask different
-# questions of it -- whether anything was published without a record, and whether
-# the next refresh restores what was rolled back. Neither mutates anything before
-# it reads the result, so one run answers both, and the file size limit is what
-# makes the window either way: RLIMIT_FSIZE caps a file's SIZE and the state
-# records RELATIVE names, so running it under the prototype's directory rather
-# than the test's changes nothing about where the appends start failing.
+# Two tests read the same capped run; neither mutates before reading.
 _CAPPED_FIRST_REFRESH: subprocess.CompletedProcess | None = None
 
 
@@ -161,7 +146,7 @@ def _run(
         import resource
         import signal
 
-        # SIGXFSZ would kill the script; the shell has to SEE the write error
+        # SIGXFSZ would kill the script; the shell has to see the write error.
         signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
         n = cap_kib * 1024
         resource.setrlimit(resource.RLIMIT_FSIZE, (n, n))
@@ -177,7 +162,6 @@ def _run(
     if keep_removed:
         env["UNSLOTH_KEEP_REMOVED_NOTEBOOKS"] = "1"
     if refresh:
-        # run the refresh inline; the real one detaches and discards its output
         env["UNSLOTH_NB_REFRESH_CHILD"] = "1"
     else:
         env["UNSLOTH_SKIP_NOTEBOOK_REFRESH"] = "1"
@@ -230,8 +214,7 @@ def test_the_next_refresh_recovers_everything_that_was_rolled_back(tmp_path: Pat
     """Rollback is only correct if the retry actually restores them."""
     dest, tpl, up, first = _shared_capped_first_refresh(tmp_path)
     assert "could not be written" in first.stdout, first.stdout + first.stderr
-    # strictly fewer than the full set: `< NOTEBOOKS + 1` was vacuous, since the
-    # run yields NOTEBOOKS either way and seed.ipynb is dropped as deleted upstream
+    # Strictly fewer: seed.ipynb is dropped either way, so < NOTEBOOKS + 1 was vacuous.
     assert (
         len(_published(dest)) < NOTEBOOKS
     ), "nothing was rolled back, so the retry below proves nothing"
@@ -243,7 +226,6 @@ def test_the_next_refresh_recovers_everything_that_was_rolled_back(tmp_path: Pat
         f"{kept} notebook(s) became user-owned after a disk-full refresh; they would "
         f"never be updated again\n{second.stdout}"
     )
-    # seed.ipynb is template-only, so the refresh drops it as deleted upstream
     assert len(_recorded(dest)) == NOTEBOOKS, sorted(_recorded(dest))[:5]
 
 
@@ -271,7 +253,7 @@ def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
     version of this test passed without executing the code it named. The assertion
     that some pristine notebook WAS removed is what keeps it honest.
     """
-    dest, tpl, up = _shared_setup_1(tmp_path)  # uncapped: everything published and recorded
+    dest, tpl, up = _shared_setup_1(tmp_path)
     assert len(_published(dest)) == NOTEBOOKS
 
     edited = {f"nb{i:09d}.ipynb" for i in range(2, NOTEBOOKS + 1, 2)}
@@ -284,7 +266,6 @@ def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
     assert "could not be written" in run.stdout, run.stdout + run.stderr
 
     survivors = _published(dest)
-    # non-vacuity: the rollback has to have actually fired somewhere in this run
     assert pristine - survivors, (
         "no notebook was rolled back, so this test never asked the rollback about a "
         "user edit and proves nothing"
@@ -297,12 +278,6 @@ def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
         ) == "USER EDIT", f"{name} was overwritten while the disk was full"
 
 
-# ---------------------------------------------------------------------------
-# The refresh child reads $STATE too, and IT is the copy that runs by default.
-# The guard added for the section 1b reader did not cover it, and the test that
-# was supposed to prove it passed only because its helper sets
-# UNSLOTH_SKIP_NOTEBOOK_REFRESH=1. These deliberately do not.
-# ---------------------------------------------------------------------------
 def _json_upstream(tmp_path: Path, count: int) -> Path:
     """Valid notebook JSON, so the body-aware comparison can report SAME and the
     `unchanged` branch is reachable. With one-byte files it never is, which is why
@@ -374,11 +349,7 @@ def test_a_failed_record_on_an_unchanged_notebook_rolls_it_back(tmp_path: Path):
     missing one (early return), so the suite could call it seven times and roll back
     zero. The `unchanged` branch is the reachable one that must actually remove.
     """
-    # Its own build, not a shared prototype: this is the only test upstream of
-    # `_json_upstream`, whose notebooks are valid notebook JSON rather than the one
-    # byte the others use. That difference is the whole point -- the body-aware
-    # comparison can only report SAME, and so only reach the `unchanged` branch,
-    # against real JSON.
+    # Own build: only JSON notebooks can reach the body-aware `unchanged` branch.
     tpl, dest = _template(tmp_path), tmp_path / "dest"
     up = _json_upstream(tmp_path, NOTEBOOKS)
     dest.mkdir()
@@ -397,7 +368,6 @@ def test_a_failed_record_on_an_unchanged_notebook_rolls_it_back(tmp_path: Path):
         "no unchanged notebook was rolled back, so drop_unrecordable's removal is "
         "still unexercised\n" + run.stdout
     )
-    # and the retry has to restore them
     second = _run(tpl, dest, up, refresh = True)
     assert len(_published(dest)) == NOTEBOOKS + 1, second.stdout
 
@@ -449,7 +419,6 @@ def test_an_unrecorded_notebook_identical_to_upstream_is_adopted(tmp_path: Path)
         if not ln.endswith("  " + orphan)
     ]
     state.write_text("\n".join(surviving) + "\n", encoding = "utf-8")
-    # the run that lost the record withheld the marker, so the next start refreshes
     (dest / ".unsloth_sync_commit").unlink(missing_ok = True)
     assert orphan not in _recorded(dest)
     assert (dest / orphan).exists()
@@ -527,10 +496,8 @@ def test_a_kept_removed_notebook_survives_a_failed_state_append(tmp_path: Path):
     assert victim in _recorded(dest)
     _delete_upstream(up, victim)
 
-    # The cap has to let the main loop's 499 records through and fail on the removal
-    # loop's single extra append, or the run aborts before ever reaching the branch.
-    # A record costs 67 + len(rel) = 84 B, so the window is 499*84 = 41916 <= cap <
-    # 500*84 = 42000, and 41 KiB = 41984 is the only multiple of 1024 inside it.
+    # A record is 84 B, so 41916 <= cap < 42000; 41 KiB is the only fit, letting the
+    # main loop finish and failing the removal loop's extra append.
     run = _run(tpl, dest, up, cap_kib = 41, refresh = True, keep_removed = True)
 
     assert (dest / victim).exists(), (
@@ -545,10 +512,6 @@ def test_a_kept_removed_notebook_survives_a_failed_state_append(tmp_path: Path):
     )
 
 
-# ---------------------------------------------------------------------------
-# Section 1b and the populate retry, both driven with the refresh switched off so
-# only the parent's own state writers are in play.
-# ---------------------------------------------------------------------------
 def _big_template(tmp_path: Path, count: int) -> Path:
     tpl = tmp_path / "tpl"
     tpl.mkdir()
@@ -569,8 +532,7 @@ def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
     before = _recorded(dest)
     assert len(before) == NOTEBOOKS
 
-    # the LAST 50, so they straddle the point where the appends start failing;
-    # victims processed before it are all restored no matter what the guard does
+    # The last 50 straddle the point where appends start failing.
     victims = [f"nb{i:09d}.ipynb" for i in range(NOTEBOOKS - 49, NOTEBOOKS + 1)]
     for name in victims:
         (dest / name).unlink()
@@ -589,8 +551,6 @@ def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
         f"{still_there[:5]}"
     )
 
-    # and it must STOP restoring once the rewrite is known to be doomed, rather than
-    # keep touching the tree and rely on the undo to clean up after it
     restored = (
         int(run.stdout.split("restored ")[1].split(" ")[0]) if "restored " in run.stdout else 0
     )
@@ -609,8 +569,6 @@ def test_a_lost_merge_record_does_not_publish_the_short_state(tmp_path: Path):
     template."""
     dest, tpl, up = _shared_big_synced(tmp_path)
 
-    # notebooks the refresh had added: present in $DEST and in the state, absent from
-    # the baked template, so only the merge loop can carry their records forward
     state = dest / ".unsloth_sync_state"
     extra = [f"up_only_{i:04d}.ipynb" for i in range(100)]
     import hashlib

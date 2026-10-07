@@ -37,11 +37,7 @@ from studiobench.analysis import parity as P  # noqa: E402
 
 PARITY_JS = Path(__file__).resolve().parents[2] / "scene" / "parity.js"
 
-# A DOM shim, not a DOM: `signature()` touches exactly six things on an element, so those six
-# are what the harness provides; anything richer would be a second browser to keep correct.
-# `capture()` is deliberately NOT exercised here because it needs querySelectorAll,
-# getComputedStyle and the real selector adapter, which is the live null and spike controls'
-# job.
+# Minimal DOM shim: signature() touches only six element properties. capture() is not tested here.
 HARNESS_JS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[2], "utf8");
@@ -132,11 +128,7 @@ def sigs(*trees: dict) -> list[str]:
     return run_js({"trees": list(trees)})["signatures"]
 
 
-# ── the normaliser: things that MUST be erased ──────────────────────
-
-
 def test_rendered_durations_collapse():
-    # unslothai/unsloth#9054: a 295 vs 310 ms difference in the action bar, which is wall clock.
     got = norm_text("copied in 295ms", "copied in 310ms", "took 1.2 s", "ran for 3 min")
     assert got[0] == got[1], got
     assert "#T" in got[2] and "#T" in got[3], got
@@ -148,8 +140,6 @@ def test_relative_and_absolute_times_collapse():
 
 
 def test_backend_minted_uuids_collapse():
-    # The volatile that made the FIRST null control fail on all eighteen actions: every message root
-    # carries `data-message-id`, and the two arms are two installs with two databases.
     a, b = norm_text(
         "id 71ad5735-ede4-464d-a36b-44309ef67624", "id f44017dd-f5f7-45dd-9f53-475c115e61ac"
     )
@@ -174,18 +164,14 @@ def test_urls_lose_their_origin_but_keep_their_path():
         }
     )
     urls = got["urls"]
-    # The two arms of an A/B are two ports by construction, so the origin cannot be signal.
     assert urls[0] == urls[1], urls
-    # ...but a DIFFERENT asset at the same origin still has to move the digest.
     assert urls[0] != urls[2], urls
     assert urls[3] == "#BLOB" and urls[4].startswith("#DATA:"), urls
 
 
-# Every test above widens the set of things the digest cannot see. These are the counterweight:
-# a normaliser that erased them would pass a null control perfectly and detect nothing.
+# Counterweight: a normaliser that erased these would pass every null control and detect nothing.
 
 
-# ── the normaliser: things that MUST SURVIVE ────────────────────────
 def test_a_bare_number_is_not_a_duration():
     a, b = norm_text("3 files changed", "4 files changed")
     assert a != b, (a, b)
@@ -197,7 +183,6 @@ def test_a_word_beginning_with_a_unit_letter_is_not_a_unit():
 
 
 def test_a_short_hex_string_is_not_an_id():
-    # Colours, error codes and the like are eight characters or fewer and are content.
     a, b = norm_text("code deadbeef", "code cafebabe")
     assert a != b, (a, b)
 
@@ -209,17 +194,14 @@ def test_text_content_moves_the_signature():
     assert one != two
 
 
-# ── the signature: every KEPT property, tested as kept ──────────────
-
-
 @pytest.mark.parametrize(
     "attr,before,after",
     [
-        ("data-state", "open", "closed"),  # a reasoning pane that silently collapses
+        ("data-state", "open", "closed"),
         ("data-slot", "reasoning-root", "tool-root"),
         ("data-role", "assistant", "user"),
-        ("aria-hidden", "false", "true"),  # content gone from the accessibility tree
-        ("class", "flex gap-2", "flex-col gap-8"),  # a layout class swap
+        ("aria-hidden", "false", "true"),
+        ("class", "flex gap-2", "flex-col gap-8"),
         ("title", "Copy code", "Copy"),
         ("role", "menu", "listbox"),
     ],
@@ -230,19 +212,15 @@ def test_a_changed_attribute_value_moves_the_signature(attr, before, after):
 
 
 def test_adding_or_removing_a_boolean_attribute_moves_the_signature():
-    # `disabled` has no value to compare, so only its PRESENCE can carry it.
     one, two = sigs({"tag": "button", "attrs": {}}, {"tag": "button", "attrs": {"disabled": ""}})
     assert one != two
 
 
 def test_a_volatile_attribute_keeps_its_presence_even_though_its_value_is_dropped():
-    # Dropping the value must not drop the fact that the attribute is there: an element that gains
-    # an `id` has changed, even though which id it gained is noise.
     plain, with_id = sigs(
         {"tag": "div", "attrs": {}}, {"tag": "div", "attrs": {"id": "radix-:r1a:"}}
     )
     assert plain != with_id
-    # Two different generated ids, however, must read the same.
     a, b = sigs(
         {"tag": "div", "attrs": {"id": "radix-:r1a:"}},
         {"tag": "div", "attrs": {"id": "radix-:r9z:"}},
@@ -285,8 +263,6 @@ def test_added_and_removed_elements_move_the_signature():
 
 
 def test_reordered_siblings_move_the_signature():
-    # Two elements with identical content in the other order. A digest built from a SET rather than
-    # a sequence would read these as equal, and a list that renders backwards is a real bug.
     one, two = sigs(
         {
             "tag": "ul",
@@ -301,7 +277,6 @@ def test_reordered_siblings_move_the_signature():
 
 
 def test_nesting_moves_the_signature():
-    # Same tags, same text, different tree. Closing tags are what make this detectable.
     flat, nested = sigs(
         {"tag": "div", "children": [{"tag": "span", "children": ["x"]}, {"tag": "b"}]},
         {"tag": "div", "children": [{"tag": "span", "children": ["x", {"tag": "b"}]}]},
@@ -310,8 +285,6 @@ def test_nesting_moves_the_signature():
 
 
 def test_attribute_order_does_not_move_the_signature():
-    # React can emit attributes in either order for the same render; sorting them makes the digest a
-    # property of the DOM rather than of the serialiser.
     one, two = sigs(
         {"tag": "div", "attrs": {"class": "a", "data-state": "open"}},
         {"tag": "div", "attrs": {"data-state": "open", "class": "a"}},
@@ -327,8 +300,6 @@ def test_whitespace_only_text_nodes_do_not_move_the_signature():
 
 
 def test_the_depth_cap_leaves_a_visible_marker():
-    # A truncated signature that reads like a complete one is the silent false negative this file
-    # exists to rule out, so the cap has to be legible in the output.
     deep = {"tag": "div"}
     for _ in range(60):
         deep = {"tag": "div", "children": [deep]}
@@ -336,7 +307,7 @@ def test_the_depth_cap_leaves_a_visible_marker():
 
 
 def test_content_below_the_depth_cap_is_not_compared():
-    # The honest statement of the limit: past 40 levels the digest stops looking, recorded here as a KNOWN hole.
+    # Known hole: the digest stops looking past 40 levels.
     def wrap(inner, n):
         for _ in range(n):
             inner = {"tag": "div", "children": [inner]}
@@ -346,9 +317,6 @@ def test_content_below_the_depth_cap_is_not_compared():
         wrap({"tag": "p", "children": ["alpha"]}, 60), wrap({"tag": "p", "children": ["omega"]}, 60)
     )
     assert one == two, "if this now fails the cap moved and the docstring must be updated"
-
-
-# ── the comparison layer, in pure Python ────────────────────────────
 
 
 def capture(
@@ -383,8 +351,7 @@ def test_identical_captures_match():
 
 
 def test_a_failed_capture_is_never_a_match():
-    # The single most dangerous confusion in the instrument: a capture that threw and a capture that
-    # agreed both produce no complaint unless they are told apart here.
+    # A capture that threw must not read the same as one that agreed.
     failed = {"parity_attempted": False, "reason": "threadRoot is not a function"}
     got = P.compare(failed, capture())
     assert got["verdict"] == P.NOT_COMPARABLE
@@ -393,8 +360,6 @@ def test_a_failed_capture_is_never_a_match():
 
 
 def test_two_different_roots_are_not_comparable():
-    # A body-root capture carries the sidebar and its relative timestamps; comparing it with a
-    # thread-root one produces two plausible hashes and a meaningless verdict.
     got = P.compare(capture(root = "thread"), capture(root = "body"))
     assert got["verdict"] == P.NOT_COMPARABLE
     assert "different roots" in got["reason"]
@@ -404,7 +369,6 @@ def test_a_capture_from_an_older_instrument_is_not_silently_compared():
     old = capture()
     del old["root_kind"]
     assert P.compare(old, capture())["verdict"] == P.NOT_COMPARABLE
-    # Both sides old is an old payload, which IS comparable; it just predates the field.
     other = capture("bbbb")
     del other["root_kind"]
     assert P.compare(old, other)["verdict"] == P.DIFFER
@@ -436,8 +400,6 @@ def test_an_added_message_is_localised_as_one_sided():
 
 
 def test_an_overlay_that_changes_without_changing_count_is_still_localised():
-    # The bug this pins: comparing only the NUMBER of overlays passes an open menu whose contents
-    # were rewritten, which is the popover regression the overlay walk was added for.
     one = capture("aaaa", overlays = [{"sel": '[role="menu"]', "digest": "o1", "chars": 40}])
     two = capture("zzzz", overlays = [{"sel": '[role="menu"]', "digest": "o2", "chars": 44}])
     got = P.compare(one, two)
@@ -445,9 +407,7 @@ def test_an_overlay_that_changes_without_changing_count_is_still_localised():
 
 
 def test_an_overlay_change_alone_is_a_difference():
-    # THE FALSE NEGATIVE THE SPIKE CONTROL FOUND. An overlay lives outside the thread root, so a
-    # menu that mounts when it should not leaves the whole-thread digest untouched; testing only
-    # that digest made the entire overlay walk unreachable and reported a clean pass.
+    # Overlays live outside the thread root, so they must be compared on their own.
     one = capture("aaaa", overlays = [])
     two = capture("aaaa", overlays = [{"sel": '[role="menu"]', "digest": "o1", "chars": 40}])
     got = P.compare(one, two)
@@ -456,8 +416,6 @@ def test_an_overlay_change_alone_is_a_difference():
 
 
 def test_a_message_change_alone_is_a_difference():
-    # The same shape one level down: if a per-message digest moves while the whole-thread digest
-    # somehow does not, the pair still differs.
     moved = capture(
         "aaaa",
         messages = [
@@ -469,7 +427,6 @@ def test_a_message_change_alone_is_a_difference():
 
 
 def test_a_difference_outside_every_message_is_reported_as_such():
-    # An empty `moved` list would read as 'nothing differs' next to a DIFFER verdict.
     got = P.compare(capture("aaaa"), capture("zzzz"))
     assert got["verdict"] == P.DIFFER
     assert got["moved"] and "scaffolding" in got["moved"][0]
@@ -478,8 +435,6 @@ def test_a_difference_outside_every_message_is_reported_as_such():
 def test_the_style_probe_is_a_separate_verdict_from_the_structural_one():
     styled = capture(styles = {"digest": "OTHER", "chars": 5, "elements": 4, "capped": False})
     got = P.compare(capture(), styled)
-    # Structure identical, style moved: a stylesheet change is exactly this shape, and folding it
-    # into the structural verdict would put the hard signal's credibility on the soft reading.
     assert got["verdict"] == P.MATCH
     assert got["style_verdict"] == P.DIFFER
 
@@ -490,9 +445,6 @@ def test_a_capped_style_probe_is_not_comparable_rather_than_equal():
     assert got["style_verdict"] == P.NOT_COMPARABLE
 
 
-# ── mutation detection and the derived unstable set ─────────────────
-
-
 def test_mutation_detected_reports_a_real_change():
     got = P.mutation_detected(capture(), capture("zzzz"))
     assert got["detected"] is True
@@ -500,36 +452,26 @@ def test_mutation_detected_reports_a_real_change():
 
 def test_mutation_detected_does_not_claim_a_detection_it_did_not_make():
     assert P.mutation_detected(capture(), capture())["detected"] is False
-    # And a capture that FAILED is not a detection either, in either direction.
     got = P.mutation_detected(capture(), {"parity_attempted": False, "reason": "gone"})
     assert got["detected"] is False and got["verdict"] == P.NOT_COMPARABLE
 
 
 def test_an_action_that_never_ran_is_not_a_matching_surface():
-    # MEASURED, not imagined: on a 100K fast-tier null control, five of eighteen actions did not run
-    # on either arm (no attachments button, no Copy button, a missed slot). The window still closes
-    # and the digest is still captured, so both arms agreed and `image_upload` was reported as a
-    # stable, matching surface that nobody had opened.
+    # Actions that ran on neither arm must not be reported as matching surfaces.
     idle = {"ran": False, "reason": "no visible attachments button", "parity": capture()}
     got = P.compare_rows(idle, idle)
     assert got["verdict"] == P.NOT_EXERCISED
     assert "nothing touched" in got["reason"]
-    # NEITHER arm ran it, so nobody opened the surface on either build and the only thing lost is
-    # coverage. `one_sided` says so, and the caller needs it to keep that apart from the case
-    # below.
     assert got["one_sided"] == ""
 
 
 def test_an_action_only_one_arm_could_perform_is_named_as_such():
-    # A control that stops opening leaves NO digest to differ: the arm that cannot reach it records
-    # `ran: false` and the pair carries no comparison. Folding that into the missed-slot case is
-    # how a button that no longer works reads as lost coverage.
+    # A control that stops opening on one arm is a regression, not lost coverage.
     idle = {"ran": False, "reason": "the control never became visible", "parity": capture()}
     got = P.compare_rows({"ran": True, "parity": capture()}, idle)
     assert got["verdict"] == P.NOT_EXERCISED
     assert got["one_sided"] == "base"
     assert "did not behave the same way" in got["reason"]
-    # And in the other direction, named after the arm that DID run it.
     assert P.compare_rows(idle, {"ran": True, "parity": capture()})["one_sided"] == "treatment"
 
 
@@ -572,8 +514,6 @@ def test_an_action_that_differs_against_itself_is_derived_as_unstable():
 
 
 def test_a_blind_action_is_counted_as_blind_and_not_as_stable():
-    # An action whose digest could never be captured has an observation count of zero, and reporting
-    # it as stable would be the instrument certifying a surface it never looked at.
     got = P.derive_unstable(
         [
             ("image_upload", {"verdict": P.NOT_COMPARABLE}),
@@ -599,7 +539,6 @@ def test_the_cross_check_reports_both_directions_of_disagreement():
 
 
 def test_every_declared_unstable_action_carries_a_mechanism():
-    # An action silenced without a stated reason is a hole nobody can audit later.
     assert P.UNSTABLE_ACTIONS
     for action, mechanism in P.UNSTABLE_ACTIONS.items():
         assert len(mechanism) > 40, f"{action} is silenced without a real mechanism"

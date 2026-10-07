@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-# Guarded import: `import unsloth` raises its own ImportError without torch, which importorskip re-raises.
+# `import unsloth` raises its own ImportError without torch, which importorskip re-raises.
 try:
     from unsloth.models.rl_replacements import RL_PRE_ITEMS, grpo_trainer_compute_loss
 except ImportError as exc:
@@ -82,7 +82,6 @@ def _captured_level(
         captured["level"] = kwargs.get("importance_sampling_level", "<not passed>")
         raise _Stop
 
-    # Exec the real pre-item sources in rl_replacements globals; only the two loss entry points are stubbed.
     import unsloth.models.rl_replacements as _rl_replacements
 
     namespace = dict(vars(_rl_replacements))

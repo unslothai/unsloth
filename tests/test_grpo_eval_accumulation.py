@@ -62,16 +62,13 @@ class _Trainer:
 @pytest.mark.parametrize(
     ("training", "steps", "expected"),
     [
-        # Training: the accumulation window is the divisor, as before.
         (True, 4, 4),
         (True, 1, 1),
         # Evaluating mid-run: the stale training window must not reach the loss.
         (False, 4, 1),
         (False, 16, 1),
-        # Standalone evaluate(): the attribute never existed (#2464).
         (False, None, 1),
         (True, None, 1),
-        # No model to ask: keep reading the attribute rather than guessing.
         (None, 4, 4),
     ],
 )

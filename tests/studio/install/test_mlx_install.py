@@ -82,7 +82,6 @@ def _run_to_extras(
     monkeypatch.setattr(stack, "_progress", stop_before_extras)
     with pytest.raises(_BeforeExtras):
         stack.install_python_stack()
-    # Labels reached before the stop, for callers asserting on the step not the install.
     _run_to_extras.steps = steps
     return [call for call in install.call_args_list if call.args[0].startswith("Installing MLX")]
 
@@ -101,9 +100,7 @@ def _repair_specs():
     )
 
 
-# The MLX grammar engine step (11d) runs after "unsloth extras", where the harness above stops,
-# so the totals below count its slot from here. The guard after them keeps this in step with the
-# installer: the slot and the step have to stay behind the same Apple Silicon gate.
+# The MLX grammar engine slot (11d) runs after the harness stops; it shares the Apple Silicon gate.
 _GRAMMAR_ENGINE_SLOT = 1
 
 
@@ -125,7 +122,6 @@ def _one_unconditional_progress(branch) -> bool:
         and isinstance(stmt.value.func, ast.Name)
         and stmt.value.func.id == "_progress"
     ]
-    # Anything before it that can leave the branch would let a path skip the slot.
     before = branch[: branch.index(direct[0])] if len(direct) == 1 else []
     exits = (ast.Return, ast.Raise, ast.Continue, ast.Break)
     return (
@@ -154,7 +150,6 @@ def test_the_grammar_engine_slot_and_step_share_the_apple_silicon_gate():
         and node.body[0].target.id == "base_total"
         and "# MLX grammar engine" in lines[node.body[0].lineno - 1]
     ]
-    # The step: the top-level `if` of install_python_stack() that announces the grammar engine.
     step_gates = [
         node
         for node in install.body
@@ -165,7 +160,6 @@ def test_the_grammar_engine_slot_and_step_share_the_apple_silicon_gate():
     for gate in (budget_gates[0], step_gates[0]):
         assert isinstance(gate.test, ast.Name) and gate.test.id == "IS_MAC_ARM", ast.dump(gate.test)
     assert not step_gates[0].orelse, "a slot spent off Apple Silicon has no budget"
-    # One slot on every path through the step: a single if/else, and each arm spends one.
     (branch,) = step_gates[0].body
     assert isinstance(branch, ast.If) and branch.orelse, ast.dump(branch)
     assert _one_unconditional_progress(branch.body), ast.get_source_segment(source, branch)
@@ -179,8 +173,7 @@ def test_the_grammar_engine_slot_and_step_share_the_apple_silicon_gate():
 def test_mlx_install_respects_platform_mode_and_pins(
     monkeypatch, platform, skip_base, no_torch, shared_base
 ):
-    # What the repository declares, not what the host's installed zoo narrows it to; the
-    # narrowing has its own tests below.
+    # The repo's declared spec, not the installed zoo's narrowing (tested below).
     monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
     calls = _run_to_extras(
         monkeypatch,
@@ -192,10 +185,8 @@ def test_mlx_install_respects_platform_mode_and_pins(
     enabled = platform == "macos_arm" and not no_torch
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
-        # An update without torch announces the no-torch runtime deps on their own slot.
-        # Two mac-arm slots: the MLX step, and the re-resolve after the core phase.
-        # The +1 is the diffusers main slot (11c), spent on every platform and every path.
-        # The grammar engine slot (11d) is spent on every Apple Silicon run, torch or not.
+        # Slots: no-torch runtime deps, two mac-arm (MLX step + re-resolve), diffusers 11c everywhere,
+        # grammar engine 11d on Apple Silicon.
         assert stack._TOTAL == (
             (12 if skip_base and not shared_base else 13)
             + 1
@@ -273,8 +264,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     for command in commands:
         assert pins <= set(command)
         assert "-c" in command
-    # The upgrade INTENT must survive both spellings: a dropped pip translation made the fallback a
-    # silent no-op, and a bare uv --upgrade refetches ~60 MB per update.
+    # A dropped pip translation was a silent no-op; a bare uv --upgrade refetches ~60 MB per update.
     assert "--upgrade" not in commands[0]
     for name in upgraded:
         assert commands[0][commands[0].index("--upgrade-package") :].count(name) == 1
@@ -296,7 +286,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
         ((3, 9, 6), 15, False),  # macOS ships 3.9; no release in the pinned set has a cp39 wheel
         ((3, 10, 0), 15, True),
         ((3, 12, 0), 13, False),  # Apple Silicon on Ventura: the pins are macosx_14_0 only
-        ((3, 12, 0), 14, True),  # the first macOS the pinned wheels are built for
+        ((3, 12, 0), 14, True),
         ((3, 12, 0), 26, True),
         # Unreadable version: skipping costs a launch, attempting costs the install.
         ((3, 12, 0), None, False),
@@ -343,10 +333,7 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     steps = _run_to_extras.steps
     assert "MLX stack (Apple Silicon)" not in steps
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
-    # A skipped step still spends its slot.
-    # Two mac-arm slots even with no wheel: the re-resolve slot is spent unconditionally.
-    # Plus the diffusers main slot (11c), which is likewise spent whatever it decides, and the
-    # grammar engine slot (11d), which does not depend on an MLX wheel either.
+    # Skipped steps still spend their slots, including the re-resolve, 11c and 11d slots.
     assert (
         stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT
     )

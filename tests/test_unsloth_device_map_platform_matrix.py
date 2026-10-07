@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 
-# (label, sys.platform, os.name, an /proc/version marker for the WSL case)
+# (label, sys.platform, os.name, /proc/version marker for WSL)
 HOSTS = [
     ("linux", "linux", "posix", "Linux version 6.8.0-generic"),
     ("windows", "win32", "nt", None),
@@ -43,8 +43,7 @@ HOSTS = [
     ("macos", "darwin", "posix", None),
 ]
 
-# (label, DEVICE_TYPE_TORCH). A ROCm torch build reports "cuda", so AMD is not a separate
-# branch in the resolver -- it is here so a future one cannot be added unnoticed.
+# (label, DEVICE_TYPE_TORCH). ROCm torch reports "cuda"; listed so a new branch is noticed.
 ACCELERATORS = [
     ("nvidia", "cuda"),
     ("amd", "cuda"),
@@ -55,8 +54,7 @@ ACCELERATORS = [
 
 DEVICE_COUNTS = [0, 1, 2, 8]
 
-# Everything a caller can hand the loader today.
-# None is included because `FastDiffusionModel.from_pretrained` lets the caller clear it.
+# None included: FastDiffusionModel.from_pretrained lets the caller clear it.
 UNTOUCHED_DEVICE_MAPS = [
     "sequential",
     "auto",
@@ -297,15 +295,12 @@ def test_an_old_unsloth_zoo_without_a_planner_still_loads(host, monkeypatch):
     entry point."""
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
 
-    # Shape one: the module is there but predates the entry point.
     ns = _build(
         device_type = "cuda", devices = 4, distributed = False, planner = None, planner_available = False
     )
     assert ns["resolve_unsloth_device_map"]("unsloth", "unsloth/Qwen3-0.6B") == "sequential"
 
-    # Shape two: no such module.
-    # Block the import rather than deleting it from sys.modules, which on a machine that has the real planner installed
-    # just imports it again.
+    # Block the import; deleting from sys.modules would just reimport a real planner.
     class _Blocked:
         def find_module(
             self,
@@ -434,7 +429,7 @@ def test_a_zoo_without_the_shared_skip_list_still_loads_in_4bit(host, four_bit, 
     list" rather than take the load down with an ImportError."""
     build = _planner_quantization_kwargs()
 
-    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")  # no SKIP_QUANTIZATION_MODULES
+    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
     saved = sys.modules.get("unsloth_zoo.peft_utils")
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
     try:

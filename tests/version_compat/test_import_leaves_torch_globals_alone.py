@@ -28,8 +28,7 @@ import pytest
 _HERE = Path(__file__).resolve().parent
 _GUARDED = ("test_trl_fake_train_cpu.py", "test_trl_padding_free_max_length.py")
 
-# Imported in a subprocess: the whole point is that importing these modules must
-# not touch torch, and doing it in this process would be the damage itself.
+# Subprocess: importing in this process would be the damage itself.
 _PROBE = r"""
 import importlib.util, sys
 from pathlib import Path

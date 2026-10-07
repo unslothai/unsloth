@@ -15,20 +15,18 @@ import os
 import sys
 
 # gfx -> (marketing name, (capability major, minor), torch.version.hip).
-# hip is the ROCm build torch was made against (RDNA2/3 ship 6.x;
-# gfx1102/115x/RDNA4 7.2).
 _PROFILES: dict[str, tuple[str, tuple[int, int], str]] = {
-    "gfx1030": ("AMD Radeon RX 6900 XT", (10, 3), "6.4.43483"),  # RDNA2
+    "gfx1030": ("AMD Radeon RX 6900 XT", (10, 3), "6.4.43483"),
     "gfx1031": ("AMD Radeon RX 6700 XT", (10, 3), "6.4.43483"),
     "gfx1032": ("AMD Radeon RX 6600", (10, 3), "6.4.43483"),
     "gfx1034": ("AMD Radeon RX 6400", (10, 3), "6.4.43483"),
-    "gfx1100": ("AMD Radeon RX 7900 XTX", (11, 0), "6.4.43483"),  # RDNA3
+    "gfx1100": ("AMD Radeon RX 7900 XTX", (11, 0), "6.4.43483"),
     "gfx1101": ("AMD Radeon RX 7800 XT", (11, 0), "6.4.43483"),
     "gfx1102": ("AMD Radeon RX 7600", (11, 0), "7.2.1"),
-    "gfx1150": ("AMD Radeon 890M", (11, 5), "7.2.1"),  # RDNA3.5 APU
+    "gfx1150": ("AMD Radeon 890M", (11, 5), "7.2.1"),
     "gfx1152": ("AMD Radeon 860M", (11, 5), "7.2.1"),
     "gfx1151": ("AMD Radeon 8060S", (11, 5), "7.2.1"),
-    "gfx1200": ("AMD Radeon RX 9060 XT", (12, 0), "7.2.1"),  # RDNA4
+    "gfx1200": ("AMD Radeon RX 9060 XT", (12, 0), "7.2.1"),
     "gfx1201": ("AMD Radeon RX 9070 XT", (12, 0), "7.2.1"),
 }
 
@@ -55,7 +53,7 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
         raise KeyError(f"Unknown gfx {gfx!r}; known: {', '.join(_PROFILES)}")
     name, cap, hip = _PROFILES[gfx]
 
-    _cuda_spoof().apply()  # is_available/device_count/streams/rng/amp/...
+    _cuda_spoof().apply()
 
     torch.version.hip = hip
     torch.version.cuda = None
@@ -69,7 +67,7 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
 
     _p = _Props()
     _p.name = name
-    _p.gcnArchName = f"{gfx}:sramecc-:xnack-"  # ROCm advertises feature flags
+    _p.gcnArchName = f"{gfx}:sramecc-:xnack-"
     _p.major, _p.minor = cap
     _p.total_memory = 16 * 1024**3
     _p.multi_processor_count = 40

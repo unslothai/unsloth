@@ -45,8 +45,7 @@ import pytest
 
 _TEST_DIR = Path(__file__).resolve().parent
 if str(_TEST_DIR) not in sys.path:
-    # The canonical corpus lives beside this file; pytest's prepend import mode puts this
-    # directory on sys.path too, but not necessarily before this module body runs.
+    # Prepend import mode may not put this dir on sys.path before the module body runs.
     sys.path.insert(0, str(_TEST_DIR))
 
 from _pr10648_helpers import PACKAGE_ROOT, git, llama_host  # noqa: E402
@@ -61,7 +60,6 @@ NDP = _load("studio_install_node_prebuilt_pr10648_legacy", "install_node_prebuil
 CORE = WSP.core
 
 
-# ── The released tags whose markers are replayed here ──
 LEGACY_TAGS = (
     "v0.1.800-beta",
     "v0.1.802-beta",
@@ -79,8 +77,7 @@ _LEGACY_MODULES = (
 
 _SENTINEL = "@@PR10648-RESULT@@"
 
-# Runs inside the legacy subprocess. Everything it needs is introspected from the tag's own
-# dataclasses, so a tag whose fields differ still gets a marker its own writer produced.
+# Runs inside the legacy subprocess; introspects the tag's own dataclasses.
 _LEGACY_DRIVER = r'''
 import dataclasses
 import json
@@ -222,8 +219,7 @@ def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
     destination.mkdir(parents = True, exist_ok = True)
     wanted = [f"studio/{name}" for name in _LEGACY_MODULES]
     wanted += ["studio/backend/__init__.py", "studio/backend/utils/__init__.py"]
-    # prebuilt_core imports this too, and PYTHONPATH below is REPLACED with this tree.
-    # ls-tree, not a bare append: the tags predating it must resolve rather than skip.
+    # PYTHONPATH below is REPLACED; ls-tree so tags predating auth_safe.py resolve.
     optional = git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/auth_safe.py")
     if optional.returncode == 0:
         wanted += [
@@ -254,8 +250,7 @@ class LegacyRunFailed(RuntimeError):
 def _run_legacy(tree: Path, op: str, spec: dict) -> dict:
     """Run the driver against one legacy tree, with only that tree importable."""
     environment = dict(os.environ)
-    # Replaced, not prepended: the caller's PYTHONPATH points at the CURRENT studio/, and
-    # inheriting it would let the legacy modules import today's prebuilt_core.
+    # Replaced, not prepended, or legacy modules would import today's prebuilt_core.
     environment["PYTHONPATH"] = str(tree)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     proc = subprocess.run(
@@ -276,14 +271,12 @@ def _run_legacy(tree: Path, op: str, spec: dict) -> dict:
     )
 
 
-# ── The install this scenario describes, in each component's dialect ──
 LLAMA_REPO = "unslothai/llama.cpp"
 LLAMA_UPSTREAM_TAG = "b10698"
 LLAMA_RELEASE_TAG = "b10698-mix-67dfc8b"
 LLAMA_ASSET = "app-b10698-mix-67dfc8b-linux-x64-vulkan.tar.gz"
 LLAMA_GGML_TREE = "0034c6eb"
-# Vulkan on a GPU-less Linux box: no CUDA runtime scan, no ROCm probe and no torch
-# preference read, so host_profile is a pure function of the HostInfo constructed here.
+# GPU-less Vulkan box: host_profile is a pure function of this HostInfo.
 LLAMA_CHOICE = {
     "repo": LLAMA_REPO,
     "tag": LLAMA_UPSTREAM_TAG,
@@ -348,8 +341,7 @@ def _fill(cls, wanted: dict):
 
 
 LINUX = llama_host(ILP.HostInfo)
-# Spelled out again as a plain dict: the legacy subprocess builds its own tag's HostInfo by
-# field name, so this is data crossing a process boundary rather than a second factory.
+# The legacy subprocess builds its own HostInfo by field name from this dict.
 LLAMA_HOST_KWARGS = {
     "system": "Linux",
     "machine": "x86_64",
@@ -567,7 +559,6 @@ def _whisper_selection():
     return _fill(CORE.InstallSelection, CURRENT_WHISPER_SELECTION)
 
 
-# ── Backwards compatibility: an old marker is never trusted ──
 @pytest.mark.parametrize("tag", LEGACY_TAGS)
 def test_a_llama_marker_from_a_released_unsloth_never_takes_the_fast_path(
     tmp_path, legacy_markers, tag
@@ -600,8 +591,7 @@ def test_no_shipped_llama_marker_shape_reaches_the_fast_path(tmp_path, name, mar
     """
     install_dir = CORPUS.build_install(tmp_path, host = LINUX, marker = marker, payload_backend = backend)
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True, name
-    # The shape's own release and repo, so the tag comparison AGREES and the verdict turns
-    # on the evidence the shape does not carry rather than on a release mismatch.
+    # Same release and repo, so the verdict turns on missing evidence, not a release mismatch.
     assert (
         _llama_fast_path(
             install_dir,
@@ -646,7 +636,6 @@ def test_a_node_marker_from_a_released_unsloth_never_skips_the_version_probe(
     assert NDP._recorded_runtime_matches(install_dir, NODE_HOST, meta, NODE_VERSION) is False
 
 
-# ── Each new key on its own is what an old marker is missing ──
 @pytest.mark.parametrize("key", ["host_profile", "runtime_files", "runtime_sha256"])
 def test_a_llama_marker_missing_one_new_key_is_not_read_as_agreement(tmp_path, key):
     """Isolates the guard the released markers above rely on, one key at a time.
@@ -719,7 +708,6 @@ def test_the_full_check_env_var_puts_a_current_install_back_on_the_slow_path(tmp
     assert _whisper_fast_path(whisper_dir) is False
 
 
-# ── Backwards compatibility: the full path is paid exactly once ──
 def _newest_loadable_tag(legacy_markers: dict) -> str:
     for tag in reversed(LEGACY_TAGS):
         if "markers" in legacy_markers[tag]:
@@ -755,8 +743,7 @@ def test_an_old_llama_install_pays_the_full_path_once_and_is_fast_afterwards(
     backfilled = ILP.load_prebuilt_metadata(install_dir)
     assert isinstance(backfilled.get("host_profile"), dict)
     assert backfilled.get("runtime_files")
-    # The fingerprint the released installer wrote must still be the one this code
-    # recomputes from the marker's own fields, or the backfill has rewritten history.
+    # The released fingerprint must still recompute, or the backfill has rewritten history.
     assert backfilled["install_fingerprint"] == marker["marker"]["install_fingerprint"]
     assert ILP._marker_install_fingerprint(backfilled) == backfilled["install_fingerprint"]
 
@@ -804,8 +791,7 @@ def test_an_old_whisper_install_pays_the_full_path_once_and_is_fast_afterwards(
     marker = _legacy(legacy_markers, tag)["markers"]["whisper"]
     install_dir = _whisper_install(tmp_path, marker["text"])
     selection = _whisper_selection()
-    # If this ever fails the fingerprint formula itself moved, and the settle below would
-    # silently decline -- leaving every old install on the full path forever.
+    # If the formula moved, the settle silently declines and old installs stay on the full path.
     assert selection.fingerprint() == marker["marker"]["install_fingerprint"]
 
     assert _whisper_fast_path(install_dir) is False
@@ -887,7 +873,6 @@ def test_a_replaced_node_binary_is_probed_again_after_the_record_was_written(
     assert NDP._recorded_runtime_matches(install_dir, NODE_HOST, meta, NODE_VERSION) is False
 
 
-# ── Forwards compatibility: a new marker read by a released installer ──
 @pytest.mark.parametrize("tag", LEGACY_TAGS)
 def test_a_marker_written_today_is_still_read_by_every_released_unsloth(
     tmp_path, legacy_markers, tag

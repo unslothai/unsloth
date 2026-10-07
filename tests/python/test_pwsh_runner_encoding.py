@@ -31,13 +31,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "_shared"))
 
 from unsloth_pwsh_runner import _UTF8_PROLOGUE, _agree_on_utf8, pwsh_env, run_pwsh  # noqa: E402
 
-# Both, where both exist: the two disagree about what a redirected pipe is encoded in, which
-# is the whole reason this module has anything to fix.
+# pwsh and Windows PowerShell disagree on redirected pipe encoding, so test both.
 POWERSHELLS = [p for p in (shutil.which("pwsh"), shutil.which("powershell")) if p]
 
-# One character per interesting width, because the failure mode differs by width: U+00E4 is a
-# single byte in cp437 and two in UTF-8, U+4E2D has no code-page representation at all, and the
-# emoji is a surrogate pair in PowerShell's UTF-16 strings.
+# One char per width: 1 vs 2 bytes, no code-page mapping, and a UTF-16 surrogate pair.
 SAMPLES = {
     "latin1": "käffee",
     "cjk": "中文",
@@ -95,10 +92,7 @@ def test_without_the_fix_the_same_string_does_not_survive(shell: str):
     when it does, and that the fixed one is right when they do not."""
     script = "Write-Output ('<' + [char]::ConvertFromUtf32(0x00e4) + '>')"
     argv = [shell, "-NoProfile", "-NonInteractive", "-Command", script]
-    # pwsh_env, not run_pwsh: this call IS the control, so it has to invoke pwsh the way a
-    # call site did before the prologue existed. What it does not have to do is join the
-    # startup-cache race -- that is orthogonal to the encoding being compared here, and a
-    # crashed interpreter would leave `old` empty and quietly skip the comparison below.
+    # pwsh_env, not run_pwsh: the control must call pwsh as call sites did before the prologue.
     old = subprocess.run(argv, capture_output = True, text = True, timeout = 60, env = pwsh_env()).stdout
     new = run_pwsh(argv, check = True, capture_output = True, text = True, timeout = 60).stdout
     assert new[new.index("<") + 1 : new.rindex(">")] == "ä"

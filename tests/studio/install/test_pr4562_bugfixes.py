@@ -369,7 +369,6 @@ class TestSetupShLogic:
 
         mock_bin = tmp_path / "mock_bin"
         mock_bin.mkdir()
-        # Mock git but NOT cmake.
         (mock_bin / "git").write_text("#!/bin/bash\nexit 0\n")
         (mock_bin / "git").chmod(0o755)
 
@@ -402,7 +401,6 @@ class TestSetupShLogic:
 
         mock_bin = tmp_path / "mock_bin"
         mock_bin.mkdir()
-        # Mock cmake but NOT git.
         (mock_bin / "cmake").write_text("#!/bin/bash\nexit 0\n")
         (mock_bin / "cmake").chmod(0o755)
 
@@ -615,7 +613,6 @@ class TestSourceCodePatterns:
     def test_setup_sh_no_rm_before_prereq_check(self):
         """rm -rf must appear AFTER cmake/git checks, not before."""
         content = SETUP_SH.read_text(encoding = "utf-8")
-        # Anchor on the source-build cmake check block.
         idx_block = content.find("command -v cmake")
         assert idx_block != -1
         block = content[idx_block:]
@@ -666,8 +663,6 @@ class TestSourceCodePatterns:
         # Usability gating (not routing) still distinguishes a hidden GPU.
         assert '[ "$_setup_nvidia_usable" = true ]' in content
         assert "CUDA_VISIBLE_DEVICES" in content
-        # The GPU-tooling probe (PR #4562) stays: ROCm detection goes through
-        # command -v, not a bare presence loop that mishandled a hidden nvidia-smi.
         assert "command -v rocminfo" in content
         assert "command -v amd-smi" in content
 
@@ -703,7 +698,6 @@ class TestSourceCodePatterns:
             "_TRY_METAL_CPU_FALLBACK=false should appear at least 3 times "
             "(init + configure fallback + build fallback)"
         )
-        # Fallback helper must exist and Metal must reach it via the shortcut.
         assert "_gpu_fallback_label()" in content
         assert 'echo "Metal"' in content
 
@@ -731,9 +725,7 @@ class TestSourceCodePatterns:
         assert all(
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must not be pushed into the $CmakeArgs array"
-        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The branch also has an early
-        # GGML_CUDA=OFF (undetectable-arch CPU fallback, #5854), so anchor on GGML_CUDA=ON and the final (no-GPU)
-        # GGML_CUDA=OFF.
+        # Scoped to the CUDA-on branch; it also has an early GGML_CUDA=OFF, so anchor on ON and the final OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
         cuda_guard_idx = content.index("if ($HasNvidiaDriverEvidence -and $NvccPath)")
         cuda_on_idx = content.index("'-DGGML_CUDA=ON'")
@@ -783,18 +775,16 @@ class TestSourceCodePatterns:
         """PS1 clone should use --branch with the resolved tag."""
         content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "--branch" in content and "$ResolvedSourceRef" in content
-        # The old commented-out clone line should be gone.
         assert "# git clone --depth 1 --branch" not in content
 
     def test_setup_ps1_no_git_pull(self):
         """PS1 should use fetch, not pull (which fails in detached HEAD)."""
         content = SETUP_PS1.read_text(encoding = "utf-8")
-        # No "git pull" in the source-build section (only valid on a branch).
+        # `git pull` is only valid on a branch, not a tag checkout.
         lines = content.splitlines()
         for i, line in enumerate(lines):
             stripped = line.strip()
             if "git pull" in stripped and not stripped.startswith("#"):
-                # Allowed elsewhere; fail only in the llama.cpp build section.
                 context = "\n".join(lines[max(0, i - 5) : i + 5])
                 if "LlamaCppDir" in context:
                     pytest.fail(f"Found 'git pull' in llama.cpp build section at line {i + 1}")
@@ -879,8 +869,7 @@ class TestSourceCodePatterns:
         assert found, "binary_path.parent not found in Linux branch of binary_env"
 
 
-# Bash fragment mirroring setup.sh's GPU backend decision chain.
-# _IS_MACOS_ARM64, NVCC_PATH, GPU_BACKEND are injected by tests.
+# Mirrors setup.sh's GPU backend chain; _IS_MACOS_ARM64, NVCC_PATH, GPU_BACKEND are injected.
 _GPU_BACKEND_FRAGMENT = textwrap.dedent("""\
     CMAKE_ARGS="-DLLAMA_BUILD_TESTS=OFF"
     _TRY_METAL_CPU_FALLBACK=false
@@ -1005,7 +994,6 @@ class TestMacOSMetalBuildLogic:
             "TRY_METAL_CPU_FALLBACK=false" in output
         ), "Fallback flag should be reset to false after configure fallback"
 
-        # First cmake call has Metal ON, second has Metal OFF.
         calls = calls_file.read_text().splitlines()
         assert len(calls) >= 2, f"Expected >= 2 cmake calls, got {len(calls)}"
         assert "-DGGML_METAL=ON" in calls[0], f"First cmake call should have Metal ON: {calls[0]}"
@@ -1113,7 +1101,6 @@ class TestMacOSMetalBuildLogic:
             "TRY_METAL_CPU_FALLBACK=false" in output
         ), "Fallback flag should be reset to false after build fallback"
 
-        # configure (Metal ON), build (fails), re-configure (Metal OFF), rebuild.
         calls = calls_file.read_text().splitlines()
         assert len(calls) >= 4, f"Expected >= 4 cmake calls, got {len(calls)}: {calls}"
         assert "-DGGML_METAL=ON" in calls[0]

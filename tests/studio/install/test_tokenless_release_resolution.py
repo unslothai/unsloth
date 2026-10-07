@@ -129,8 +129,7 @@ def _install_web(
     *,
     prerelease: bool = True,
 ) -> _Web:
-    # Every release whose assets are served needs its release page served too, since
-    # that is where the prerelease status is read from.
+    # The release page is where prerelease status is read.
     pages = dict(pages)
     for suffix in [key for key in pages if "expanded_assets/" in key]:
         tag = suffix.rsplit("/", 1)[-1]
@@ -152,17 +151,13 @@ def _boom(*args, **kwargs):
     raise AssertionError("the tokenless path must not be used here")
 
 
-# ── the release feed ──
-
-
 class TestWebReleaseTags:
     def test_parses_tags_newest_first(self, monkeypatch):
         _install_web(monkeypatch, {"releases.atom": _atom(UPSTREAM, ["b11070", "b11069"])})
         assert MOD.web_release_tags(UPSTREAM) == ["b11070", "b11069"]
 
     def test_skips_the_versioned_pointer_release(self, monkeypatch):
-        # Upstream's /releases/latest points at v0.4.1, whose only asset is a text
-        # file naming a nightly. Selecting it would build 404-bound archive URLs.
+        # Upstream /releases/latest is v0.4.1 (one text asset); selecting it builds 404 URLs.
         _install_web(
             monkeypatch, {"releases.atom": _atom(UPSTREAM, ["v0.4.1", "b11070", "b11069"])}
         )
@@ -175,9 +170,6 @@ class TestWebReleaseTags:
             {"releases.atom": _atom(UPSTREAM, [f"b{n}" for n in range(11070, 11060, -1)])},
         )
         assert MOD.web_release_tags(UPSTREAM, limit = 3) == ["b11070", "b11069", "b11068"]
-
-
-# ── the release page ──
 
 
 class TestWebReleasePayload:
@@ -285,9 +277,6 @@ class TestWebReleasePayload:
             assert not any(key.lower() == "authorization" for key in headers)
 
 
-# ── latest_upstream_release_tag ──
-
-
 class TestLatestUpstreamReleaseTag:
     def test_uses_the_rest_api_first(self, monkeypatch):
         monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "b500"})
@@ -311,9 +300,6 @@ class TestLatestUpstreamReleaseTag:
             MOD.latest_upstream_release_tag()
         assert "403" in str(excinfo.value)
         assert "feed fallback also failed" in str(excinfo.value)
-
-
-# ── iter_release_payloads_by_time ──
 
 
 class TestIterReleasePayloads:
@@ -374,8 +360,7 @@ class TestIterReleasePayloads:
         assert [release["tag_name"] for release in got] == ["b11069"]
 
     def test_a_pinned_tag_resolves_through_its_release_page(self, monkeypatch):
-        # The macOS floor pin (b9415) arrives here as requested_tag, and is exactly the
-        # population the pin exists to serve, so it must not be left on the source build.
+        # The macOS floor pin (b9415) arrives as requested_tag and must not be left on source.
         monkeypatch.setattr(MOD, "github_release", _rest_403)
         _install_web(
             monkeypatch,
@@ -408,9 +393,6 @@ class TestIterReleasePayloads:
             list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest"))
         assert "403" in str(excinfo.value)
         assert "feed fallback also failed" in str(excinfo.value)
-
-
-# ── end to end, through the real planner ──
 
 
 def _plans(host, requested = "latest"):
@@ -490,9 +472,6 @@ class TestEndToEnd:
         assert plans[0].attempts[0].name == "llama-b11069-bin-macos-arm64.tar.gz"
 
 
-# ── prerelease parity between the two paths ──
-
-
 class TestPrereleaseStatus:
     def test_the_payload_states_the_status_it_read(self, monkeypatch):
         _install_web(
@@ -519,8 +498,7 @@ class TestPrereleaseStatus:
         assert MOD.web_release_payload(UPSTREAM, "b11070")["prerelease"] is False
 
     def test_an_upstream_build_release_stays_selectable_when_marked_prerelease(self):
-        # ggml-org marks every bNNNN build prerelease; excluding them strands the
-        # upstream path on the newest release that is not one, which ships no prebuilt.
+        # ggml-org marks every bNNNN build prerelease; excluding them strands upstream with no prebuilt.
         assert MOD.release_is_selectable(UPSTREAM, {"tag_name": "b11070", "prerelease": True})
 
     def test_a_non_build_prerelease_is_still_refused(self):
@@ -575,9 +553,6 @@ class TestPrereleaseStatus:
         assert list(MOD.iter_release_payloads_by_time(UPSTREAM, "", "latest")) == []
 
 
-# ── a pinned published release ──
-
-
 class TestPinnedPublishedRelease:
     def test_a_pinned_published_release_resolves_through_its_release_page(self, monkeypatch):
         monkeypatch.setattr(MOD, "github_release", _rest_403)
@@ -629,7 +604,6 @@ class TestPinnedTagHttpFailures:
         assert [release["tag_name"] for release in got] == ["b9415"]
 
     def test_a_404_still_scans_rather_than_reading_the_page(self, monkeypatch):
-        # The tag does not exist, so its release page cannot answer either.
         monkeypatch.setattr(MOD, "github_release", self._http(404))
         monkeypatch.setattr(MOD, "github_releases", lambda repo, **kw: [])
         monkeypatch.setattr(MOD, "web_release_payload", _boom)
@@ -715,7 +689,6 @@ class TestLatestTagNamesABuild:
         assert MOD.latest_upstream_release_tag() == "b11071"
 
     def test_the_rest_tag_is_kept_when_the_feed_cannot_answer(self, monkeypatch):
-        # Better a released version than no source ref at all.
         monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
         _install_web(monkeypatch, {})
         assert MOD.latest_upstream_release_tag() == "v0.4.1"
@@ -826,7 +799,6 @@ class TestTheOptOutIsHonouredEverywhere:
         monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
         monkeypatch.setattr(MOD, "fetch_json", lambda url: {"tag_name": "v0.4.1"})
         monkeypatch.setattr(MOD, "upstream_web_release_tags", _boom)
-        # The REST answer stands rather than nothing at all.
         assert MOD.latest_upstream_release_tag() == "v0.4.1"
 
     def test_latest_tag_raises_when_opted_out_and_rest_is_down(self, monkeypatch):
@@ -844,7 +816,6 @@ class TestABadgeFailureKeepsTheRelease:
                 UPSTREAM, "b11071", {"llama-b11071-bin-macos-arm64.tar.gz": DIGEST_A}
             )
         }
-        # No releases/tag/b11071 page: the badge request 404s.
         web = _Web(pages)
         monkeypatch.setattr(CORE, "download_bytes", lambda ops, url, **kw: web(url, **kw))
         release = MOD.web_release_payload(UPSTREAM, "b11071")

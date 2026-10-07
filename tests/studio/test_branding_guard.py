@@ -67,7 +67,6 @@ def _stage(tmp_path):
     (js_dir / "static" / "logo").mkdir(parents = True)
     (js_dir / "static" / "logo" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\nlogo")
 
-    # config_dirs = [] keeps the tree hermetic: no host jupyter config is scanned
     return ub.resolve_paths(
         venv_share = str(venv_share),
         jupyter_server_dir = str(js_dir),

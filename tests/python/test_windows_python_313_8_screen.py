@@ -93,8 +93,6 @@ $result = Remove-SkippedPython ({candidate})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
-    # The whole verdict is the single RESULT line this script prints, so a pwsh that aborts at startup would read as a
-    # screen that reached the opposite conclusion.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -110,7 +108,6 @@ def test_a_skipped_patch_is_rejected(tmp_path):
 
 
 def test_a_good_patch_of_the_same_minor_is_kept(tmp_path):
-    # The screen is per patch: 3.13 itself is fine and must not be refused.
     out = _run(tmp_path, "3.13.13")
     assert "RESULT: kept" in out, out
 
@@ -121,8 +118,6 @@ def test_nothing_found_stays_nothing(tmp_path):
 
 
 def test_an_unreadable_interpreter_is_not_treated_as_bad(tmp_path):
-    # A probe that cannot run is not evidence of a bad version, and refusing it would send a working machine down the
-    # install path for no reason.
     missing = tmp_path / "does-not-exist"
     skip_block, screen_block = _blocks()
     script = f"""
@@ -138,8 +133,6 @@ $result = Remove-SkippedPython (@{{ Version = "3.13"; Path = "{missing}" }})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
 """
-    # This case asserts the screen KEEPS an interpreter it could not probe, so an
-    # interpreter that dies would masquerade as the screen wrongly rejecting it.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -163,12 +156,7 @@ def test_the_resolver_is_screened_at_every_entry_point():
     assert not bare, f"unscreened resolver calls in the install flow: {bare}"
 
 
-# ── The screen inside the resolver ──
-# The window above starts at the install step, so it never sees the recovery
-# paths: Install-PythonFromPythonOrg and Install-X64Python both end in a bare
-# `return (Find-CompatiblePython)`. Screening every candidate as it is
-# enumerated is what makes those safe, and is also what lets the resolver carry
-# on to its next minor instead of giving up on the machine.
+# Recovery paths end in `return (Find-CompatiblePython)`, so every candidate must be screened.
 def _every_version_match_screens_the_patch() -> list[str]:
     body = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
     lines = body.splitlines()
@@ -199,11 +187,7 @@ def test_every_enumerated_candidate_is_screened():
     )
 
 
-# The launcher below is a /bin/sh script.
-# Windows has no shebang and no PATHEXT entry for an extensionless file, so `Get-Command py` does not find it and the
-# resolver reports "none" whatever the versions are -- which would make the negative case pass for the wrong reason.
-# The PowerShell under test is the same text on every platform, and pwsh runs it here, so these three cases run on POSIX
-# and the rest of the file still covers Windows.
+# The launcher is a /bin/sh script that Windows cannot find via Get-Command, so POSIX only.
 _POSIX_LAUNCHER_ONLY = pytest.mark.skipif(
     os.name == "nt", reason = "the fake py launcher is a /bin/sh script"
 )
@@ -215,7 +199,6 @@ def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
     branches = []
     for minor, full in versions.items():
         exe = root / f"python{minor.replace('.', '')}"
-        # -S -c "import sys; print(sys.base_prefix)" for the conda screen.
         exe.write_text('#!/bin/sh\necho "/usr"\n', encoding = "utf-8")
         exe.chmod(0o755)
         branches.append(f'  {minor}) ver="{full}"; exe="{exe}" ;;')
@@ -242,7 +225,7 @@ def _resolve(tmp_path: Path, versions: dict[str, str]) -> str:
     root = tmp_path / "bin"
     _fake_launcher(root, versions)
     skip_block, screen_block = _blocks()
-    # Hoisted for the same reason as _blocks: a backslash in an f-string expression does not parse before 3.12.
+    # Hoisted: a backslash in an f-string expression does not parse before 3.12.
     conda_block = _extract(r"    function Test-IsCondaPython \{.*?\n    \}")
     tag_block = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}")
     resolver_block = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
@@ -262,8 +245,6 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    # The caller scrapes the resolver's chosen minor out of stdout; a crashed pwsh leaves nothing to scrape and would
-    # fail as if Find-CompatiblePython went silent.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -277,9 +258,6 @@ else {{ Write-Output "RESULT: $($found.Version)" }}
 
 @_POSIX_LAUNCHER_ONLY
 def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
-    # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and nothing installable. Ending the search
-    # on the 3.13 would leave the caller with a Python that cannot import torch; refusing it outright would fail a
-    # machine that has a perfectly good interpreter one entry down the list.
     assert _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
 
 
@@ -290,9 +268,7 @@ def test_a_good_preferred_minor_still_wins(tmp_path):
 
 @_POSIX_LAUNCHER_ONLY
 def test_nothing_usable_is_still_nothing(tmp_path):
-    # Paired with a positive control over the same tree, because "none" is also
-    # what a harness that cannot run the launcher at all reports: without the
-    # control this case would pass on a machine where it proves nothing.
+    # Positive control: "none" is also what a harness unable to run the launcher reports.
     assert _resolve(tmp_path / "good", {"3.13": "3.13.13"}) == "3.13"
     assert _resolve(tmp_path / "bad", {"3.13": "3.13.8"}) == "none"
 
@@ -326,8 +302,6 @@ $found = Find-CompatiblePython
 if ($null -eq $found) {{ Write-Output "RESULT: none" }}
 else {{ Write-Output "RESULT: $($found.Version)" }}
 """
-    # -NoTorch must leave 3.13.8 in place, and dying before the RESULT line is printed is indistinguishable here from
-    # the screen having removed it.
     completed = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,

@@ -134,8 +134,7 @@ def test_the_control_arm_uses_gradient_checkpointing():
     src = (PAYLOAD / "naive_trl_compare.py").read_text(encoding = "utf-8")
     assert "use_gradient_checkpointing = True" in src
     assert "gradient_checkpointing = True," in src
-    # Non-reentrant, or a PEFT model's inputs carry no grad and the backward
-    # fails with "element 0 of tensors does not require grad".
+    # Non-reentrant, or a PEFT model's inputs carry no grad and backward fails.
     assert 'gradient_checkpointing_kwargs = {"use_reentrant": False}' in src
 
 

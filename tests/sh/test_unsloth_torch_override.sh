@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Tests for the torch-trio --overrides guard on the Step-2 unsloth installs in
-# install.sh. A released unsloth wheel can pin an older torch (2026.7.2 declares
-# torch<2.11.0); without the overrides file a with-deps PyPI resolve downgrades
-# the trio Step 1 installed, and the flavor guard misses it (PyPI's torch 2.10
-# default is itself cu128-flavored). Same assertion pattern as test_torch_constraint.sh.
+# Tests the torch-trio --overrides guard on install.sh Step-2 unsloth installs: a released
+# unsloth wheel can pin an older torch and a with-deps resolve would downgrade the trio.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,8 +23,6 @@ assert_true() {
 
 echo "=== test_unsloth_torch_override ==="
 
-# 1. Every with-deps unsloth install carries the overrides expansion (local,
-#    generic, migrated); the --no-deps no-torch paths need no guard.
 _local_block=$(grep -A2 '"install unsloth (local)"' "$INSTALL_SH")
 printf '%s' "$_local_block" | grep -q -- '--overrides "\$_UNSLOTH_TORCH_OVERRIDES"'
 assert_true "local (with-deps) unsloth install passes --overrides" "$?"
@@ -48,17 +43,13 @@ _migrated_nt_block=$(grep -A2 '"install unsloth (migrated no-torch)"' "$INSTALL_
 if printf '%s' "$_migrated_nt_block" | grep -q -- '--overrides'; then _rc=1; else _rc=0; fi
 assert_true "migrated no-torch (--no-deps) unsloth install has no overrides" "$_rc"
 
-# 2. The overrides file is only built when SKIP_TORCH=false.
 grep -B2 '_torch_trio_pins=\$(' "$INSTALL_SH" | grep -q 'SKIP_TORCH" = false'
 assert_true "overrides file build is gated on SKIP_TORCH=false" "$?"
 
-# 3. The pin-collection snippet emits exact ==pins for the installed trio (run
-#    the embedded python against this test's interpreter).
 _snippet=$(sed -n '/_torch_trio_pins=\$("\$_VENV_PY" -c "/,/^" 2>\/dev\/null)/p' "$INSTALL_SH" \
     | sed '1s/.*-c "//' | sed '$d')
 _out=$(python3 -c "$_snippet" 2>&1) || true
-# torch may or may not be importable on the test host; the snippet must not
-# crash and every line it does emit must be an exact pkg==version pin.
+# torch may be missing on the test host; the snippet must not crash either way.
 if [ -n "$_out" ]; then
     printf '%s\n' "$_out" | grep -vqE '^(torch|torchvision|torchaudio)==.+$' && _rc=1 || _rc=0
 else
@@ -66,17 +57,13 @@ else
 fi
 assert_true "pin snippet emits only exact trio ==pins (or nothing)" "$_rc"
 
-# 4. The temp overrides file is cleaned up after Step 2.
 grep -q 'rm -f "\$_UNSLOTH_TORCH_OVERRIDES"' "$INSTALL_SH"
 assert_true "overrides temp file is removed after the unsloth installs" "$?"
 
-# 5. Any UV_OVERRIDE env file is folded in (the CLI --overrides flag would
-#    otherwise replace it, dropping e.g. the macOS arm64 darwin overrides).
+# The CLI --overrides flag replaces UV_OVERRIDE, so env override files must be folded in.
 grep -q 'for _ov_file in \${UV_OVERRIDE:-}' "$INSTALL_SH"
 assert_true "UV_OVERRIDE env files are merged into the overrides file" "$?"
 
-# 6. Exit and signal traps share cleanup, so a failed or interrupted Step 2
-#    cannot leak the overrides file.
 sed -n '/_on_install_exit() {/,/^}/p' "$INSTALL_SH" | grep -q '_cleanup_install_temporaries'
 _exit_cleanup_rc=$?
 sed -n '/_on_install_signal() {/,/^}/p' "$INSTALL_SH" | grep -q '_cleanup_install_temporaries'
@@ -92,17 +79,14 @@ else
 fi
 assert_true "exit and signal traps remove the overrides temp file" "$_rc"
 
-# 7. The UV_OVERRIDE fold filters inherited files instead of cat-ing them (run
-#    the extracted awk program on sample files): (a) inherited torch-trio lines
-#    are dropped so the generated exact pins win (uv intersects duplicates);
-#    (b) every line is newline-terminated so an unterminated file cannot join
-#    two requirements into one.
+# The fold drops inherited torch-trio lines (uv intersects duplicates) and newline-terminates
+# every line so an unterminated file cannot join two requirements.
 _awk_prog=$(sed -n "s/.*awk '\(.*\)' \"\$_ov_file\".*/\1/p" "$INSTALL_SH")
 [ -n "$_awk_prog" ]
 assert_true "UV_OVERRIDE fold uses the trio-filtering awk program" "$?"
 
 _ov_dir=$(mktemp -d)
-printf '%s' 'transformers>=4.57.6' > "$_ov_dir/ov1.txt" # no trailing newline
+printf '%s' 'transformers>=4.57.6' > "$_ov_dir/ov1.txt"
 cat > "$_ov_dir/ov2.txt" <<'EOF'
 # comment survives
 torch<2.11.0
@@ -137,17 +121,16 @@ grep -qx 'torch==2.11.0+cu128' "$_merged" || _rc=1
 assert_true "inherited torch-trio lines are dropped; generated pin wins" "$_rc"
 rm -rf "$_ov_dir"
 
-# 5. The beside-the-caller override must not be world-readable: the merge copies every inherited
-#    requirement in, and a direct URL can carry credentials. The mktemp fallback is already 0600.
+# The override must not be world-readable: it copies inherited requirements, and a direct
+# URL can carry credentials.
 _creation=$(sed -n '/_UNSLOTH_TORCH_OVERRIDES="$_ov_dir\/.unsloth-torch-overrides/,/^            fi$/p' "$INSTALL_SH")
-# `if`, not a bare pipeline: under `set -e` a failing grep would abort the suite, not report.
+# `if`, not a bare pipeline: under `set -e` a failing grep would abort the suite.
 if printf '%s' "$_creation" | grep -q 'umask 077'; then _rc=0; else _rc=1; fi
 assert_true "the adjacent override file is created under umask 077" "$_rc"
 
 if printf '%s' "$_creation" | grep -q 'chmod 600'; then _rc=0; else _rc=1; fi
 assert_true "and chmod'd too, since \`: >\` truncates without changing an existing mode" "$_rc"
 
-# Drive the real construct: a recycled-PID file is what the umask alone cannot fix.
 _mode_dir=$(mktemp -d)
 (
     umask 022
@@ -171,9 +154,7 @@ if [ "$(cat "$_mode_dir/stale_both")" = "600" ]; then _rc=0; else _rc=1; fi
 assert_true "umask plus chmod brings a stale file back to 0600" "$_rc"
 rm -rf "$_mode_dir"
 
-# 6. UV_OVERRIDE is split unquoted, so field splitting is followed by globbing. uv reads the
-#    literal name (uv 0.11.32: "ov[1].txt" beside "ov1.txt" resolves the bracketed file), so
-#    without `set -f` both walks iterate the sibling and the merge carries wrong requirements.
+# UV_OVERRIDE is split unquoted, so without `set -f` a glob like ov[1].txt would match a sibling.
 _arm=$(sed -n '/^        torch==\*)$/,/^            ;;$/p' "$INSTALL_SH")
 _arm_body=$(printf '%s\n' "$_arm" | sed '1d;$d')
 [ -n "$_arm_body" ]
@@ -197,8 +178,7 @@ if printf '%s\n' "$_glob_out" | grep -qx 'torch==2.11.0+cu128'; then _rc=0; else
 assert_true "the generated trio pin still leads the merged file" "$_rc"
 rm -rf "$_glob_dir"
 
-# set -f stops globbing but NOT field splitting, and uv takes UV_OVERRIDE as a space-separated
-# list, so multi-file must keep working. Quoting it instead would fold only the first file.
+# set -f stops globbing but not field splitting, so multi-file UV_OVERRIDE must still work.
 _multi_dir=$(mktemp -d)
 printf 'idna==3.6\n' > "$_multi_dir/a.txt"
 printf 'certifi==2024.1.1\n' > "$_multi_dir/b.txt"
@@ -214,7 +194,7 @@ if printf '%s\n' "$_multi_out" | grep -qx 'idna==3.6' &&
 assert_true "every file of a space-separated UV_OVERRIDE is still folded in" "$_rc"
 rm -rf "$_multi_dir"
 
-# The guard must not leak: callers below rely on globbing (_dir_has_entries walks "$1"/*).
+# Callers below rely on globbing (_dir_has_entries walks "$1"/*).
 _glob_state=$(
     UV_OVERRIDE=""
     _torch_trio_pins='torch==2.11.0+cu128'

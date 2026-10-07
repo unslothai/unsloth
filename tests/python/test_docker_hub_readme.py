@@ -24,7 +24,6 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 REPO_README = REPO_ROOT / "README.md"
 
-# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
 DEFAULT_SECRET = "not-a-secret"
 
 
@@ -42,8 +41,6 @@ def test_the_hub_readme_describes_the_shipped_images():
         "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
-    # the previous image's conventions, none of which exist in this one
-    # Studio writes the generated password to a file and does not print it itself
     for stale in (
         "USER_PASSWORD",
         "/workspace/work",
@@ -69,14 +66,8 @@ def test_the_hub_readme_explains_the_studio_volume():
         "named volume, not a bind mount of a Windows or macOS host directory",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
-    # the helper is described as setting the flags of the quick start, which now
-    # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
     assert "including the `unsloth-studio` volume" in text
-    # The repository README keeps the quick start and hands the details to the Hub page and the
-    # Docker docs, which is where the migration story above lives. It must still mount the volume
-    # and still point at both, or a reader of the short version has no way to the long one.
-    # Read from the section that runs the image: the one-line Docker teaser higher up carries the
-    # same two links, so a check over the whole file would pass with them gone from here.
+    # Check the section that runs the image: the earlier teaser carries the same links.
     running = [
         s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
     ]
@@ -111,10 +102,6 @@ def test_the_repo_readme_run_command_matches_the_image():
     sections = _docker_sections(text)
     assert sections, "the README no longer has a `#### Docker` section"
     running = [s for s in sections if "docker run" in s]
-    # Exactly one, in both directions. Zero means the run command was dropped, which is the
-    # regression this test was written for and which picking by content would otherwise hide.
-    # More than one means two places tell the user how to start the image and only one of
-    # them is pinned here, which is how they drift apart.
     assert len(running) == 1, (
         f"expected exactly one `#### Docker` section carrying a `docker run`, found "
         f"{len(running)} of {len(sections)} Docker sections. Pin the other one too or fold "
@@ -124,8 +111,6 @@ def test_the_repo_readme_run_command_matches_the_image():
     assert "unsloth/unsloth:core" in section
     assert "/workspace/host" in section
     assert "--ipc=host" in section
-    # Across every Docker section, not only the one that runs the image: a stale port or path
-    # left behind in the short pointer misleads exactly as much as one in the full command.
     for stale in ("2222:22", "/workspace/work"):
         for other in sections:
             assert stale not in other, f"a README Docker section still has {stale!r}"
@@ -163,19 +148,13 @@ def _run_sync(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "curl.log"
-    # what the Hub reports after the PATCH; a file, so the README's backticks and
-    # dollar signs never pass through the stub's shell
     live = tmp_path / "live.json"
     live.write_text(json.dumps({"full_description": live_after_patch}), encoding = "utf-8")
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
-        # The request body does not always travel in argv. #11511 moved the token
-        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
-        # in the process list, and a stub that logs only "$*" then records a call
-        # whose payload is simply absent: every assertion about what was SENT passes
-        # vacuously or fails for the wrong reason. Read it where it actually is, and
-        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        # The token request body is sent on stdin (--data-binary @-), so log it from there;
+        # only read stdin when that flag is present, since cat would hang.
         f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
@@ -197,17 +176,7 @@ def _run_sync(
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
-    # Whatever the step declares in its own `env:`, bound here too. The secret used to
-    # be written inline in the run body, where substituting the expression was enough;
-    # #11511 moved it to `env: DOCKER_API_KEY` and read it with `os.environ`, so a
-    # harness that only rewrites the body hands the script an environment it cannot
-    # run in. That does not fail loudly: the body builder raises, the pipeline keeps
-    # the exit status of its last command, and the request goes out empty.
-    # Only the secret this step is supposed to read is expanded. Standing in for any
-    # `secrets.*` would make the harness agree with a workflow that names the wrong
-    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
-    # Actions would hand the real step an empty value. Anything else is left for the
-    # assertion below to reject by name.
+    # Bind the step's env: too; expand only the expected secret so a wrong name fails.
     for name, value in (step.get("env") or {}).items():
         env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", secret, str(value))
         assert "${{" not in env[name], (
@@ -231,9 +200,6 @@ def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: P
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
-    # The body, wherever curl was handed it. Asserted as a non-empty payload first:
-    # an empty request logs no identifier either, so the bare `in log` check below
-    # cannot tell "authenticated as someone else" from "sent nothing at all".
     assert (
         f'"secret": "{DEFAULT_SECRET}"' in log
     ), "the token request carried no body, so this proves nothing about who it authenticates as"
@@ -269,17 +235,13 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
 
 def test_the_hub_readme_matches_what_each_image_ships():
     text = HUB_README.read_text(encoding = "utf-8")
-    # whisper.cpp comes from Studio's setup, so only that image has it
     assert "The `latest` image adds whisper.cpp" in text
-    # audio.cpp too, and the CUDA bundle only where Dockerfile.studio names it (no GPU at build time)
     assert "audio.cpp (CUDA build on `linux/amd64`)" in text
     studio_df = (HUB_README.parent / "Dockerfile.studio").read_text(encoding = "utf-8")
     assert 'amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda"' in studio_df
     assert 'UNSLOTH_AUDIO_CPP_ACCELERATOR="${AUDIO_CPP_ACCELERATOR}"' in studio_df
-    # SYNC disables the notebooks entirely; REFRESH only skips the GitHub fetch
     assert "`UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub" in text
     assert "`UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all" in text
-    # Studio's services run as root and exit 1 under --user
     assert "On `core`, `--user <uid>:<gid>` is supported" in text
     assert "AGPL-3.0" in text and "Apache-2.0" in text
 
@@ -293,7 +255,6 @@ def test_both_images_declare_both_licenses():
 def test_the_studio_image_does_not_ship_the_uv_download_cache():
     """install.sh's uv cache sits under the Studio home, which /root/.cache never reached: ~9 GB baked into :latest."""
     body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding = "utf-8")
-    # an image that points uv elsewhere (the code/data split does) must drop that cache
     assert "rm -rf" in body
     cleanup = body[body.index("rm -rf") :]
     assert '"${UV_CACHE_DIR:-${UNSLOTH_STUDIO_HOME}/cache/uv}"' in cleanup

@@ -113,7 +113,6 @@ def _launch_head_arms() -> tuple[ast.expr, ast.expr, ast.expr]:
 def test_windows_respawns_through_the_interpreter_not_the_console_script():
     """The blocked executable must not be argv[0] of the child on Windows."""
     windows_arm, posix_arm, platform_test = _launch_head_arms()
-    # Windows arm: _managed_cli_argv(studio_python), i.e. the interpreter form.
     assert isinstance(windows_arm, ast.Call), ast.dump(windows_arm)
     assert isinstance(windows_arm.func, ast.Name)
     assert windows_arm.func.id == "_managed_cli_argv", (
@@ -123,7 +122,7 @@ def test_windows_respawns_through_the_interpreter_not_the_console_script():
     assert [arg.id for arg in windows_arm.args if isinstance(arg, ast.Name)] == [
         "studio_python"
     ], "the interpreter argv must be built from studio_python"
-    # POSIX arm: [str(studio_bin)] -- unchanged, and what os.execvp needs.
+    # POSIX arm: [str(studio_bin)], what os.execvp needs.
     assert isinstance(posix_arm, ast.List) and len(posix_arm.elts) == 1
     posix_head = posix_arm.elts[0]
     assert isinstance(posix_head, ast.Call) and isinstance(posix_head.func, ast.Name)
@@ -142,14 +141,13 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
     Each side is read from its own file. An earlier version of this test only
     grepped studio.py, so drifting the Rust and PowerShell copies left it green.
     """
-    # Spelled out, not imported from any of the three, so editing any single copy fails here instead of quietly agreeing
-    # with itself.
+    # Spelled out, so editing any single copy fails here.
     canonical = (
         "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
         "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
     )
 
-    # Python: via AST, because the constant is written as adjacent literals.
+    # Via AST, because the constant is written as adjacent literals.
     python_value = None
     for node in ast.walk(ast.parse(_STUDIO.read_text(encoding = "utf-8"))):
         if isinstance(node, ast.Assign) and any(
@@ -197,11 +195,10 @@ def test_the_interpreter_argv_carries_no_isolation_flag_by_default():
     inherited = ast.literal_eval(ternaries[0].orelse)
 
     assert inherited == ["-X", "utf8"], "the default argv must stay `-X utf8 -c <trampoline>`"
-    # X utf8 before -I: -I implies -E, which discards PYTHONUTF8 but cannot touch a flag already on the command line.
+    # -X utf8 before -I: -I implies -E, which drops PYTHONUTF8 but not a command-line flag.
     assert isolated == ["-X", "utf8", "-I"]
     assert ternaries[0].test.id == "isolated", "the ternary must key off the isolated parameter"
 
-    # And the default really is inherit, so a caller that says nothing gets parity.
     default = argv_builder.args.defaults[-1] if argv_builder.args.defaults else None
     kw_default = argv_builder.args.kw_defaults[-1] if argv_builder.args.kw_defaults else default
     assert ast.literal_eval(kw_default) is False

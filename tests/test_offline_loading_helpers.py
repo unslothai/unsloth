@@ -11,10 +11,6 @@ import pytest
 from unsloth.models import loader_utils as L
 
 
-# ---------------------------------------------------------------------------
-# _env_says_offline / _get_effective_local_files_only
-# ---------------------------------------------------------------------------
-
 _OFFLINE_TRUE = ("1", "true", "yes", "on", "ON", " 1 ", "\tyes\n")
 _OFFLINE_FALSE = ("0", "no", "false", "off", "", "  ", "maybe")
 
@@ -67,11 +63,6 @@ def test_effective_lfo_is_read_only():
     kwargs = {"local_files_only": True}
     L._get_effective_local_files_only(kwargs)
     assert kwargs == {"local_files_only": True}
-
-
-# ---------------------------------------------------------------------------
-# _is_offline_related_error
-# ---------------------------------------------------------------------------
 
 
 def _http_error(status):
@@ -134,7 +125,6 @@ def test_gaierror_dns_failure_is_offline():
 
 
 def test_gaierror_without_wording_is_offline_by_type():
-    # Matched by type, so a locale-specific / empty message still classifies offline.
     assert L._is_offline_related_error(socket.gaierror(-2, "")) is True
 
 
@@ -162,7 +152,7 @@ def test_ssl_error_is_not_offline():
 
 
 def test_requests_ssl_error_is_not_offline():
-    # requests.SSLError subclasses ConnectionError, but is still a TLS failure -> not offline.
+    # requests.SSLError subclasses ConnectionError but is still a TLS failure.
     requests = pytest.importorskip("requests")
     assert L._is_offline_related_error(requests.exceptions.SSLError("bad cert")) is False
 
@@ -176,7 +166,6 @@ def test_urlerror_wrapping_ssl_is_not_offline():
 
 
 def test_ssl_node_does_not_hide_deeper_connection_cause():
-    # Skipping a TLS node must not abort the walk: a genuine outage deeper still counts.
     import ssl
 
     outer = RuntimeError("load failed")
@@ -196,7 +185,6 @@ def test_offline_mode_is_enabled_is_offline():
 
 
 def test_local_entry_not_found_is_offline():
-    # Both a FileNotFoundError and an HfHubHTTPError, but means "not cached + Hub down" -> offline.
     errors = pytest.importorskip("huggingface_hub.errors")
     assert L._is_offline_related_error(errors.LocalEntryNotFoundError("missing")) is True
 
@@ -229,13 +217,7 @@ def test_cause_context_cycle_terminates():
     b = RuntimeError("b")
     a.__context__ = b
     b.__context__ = a
-    # Must not hang; neither is network-related.
     assert L._is_offline_related_error(a) is False
-
-
-# ---------------------------------------------------------------------------
-# _force_hf_offline
-# ---------------------------------------------------------------------------
 
 
 def _inprocess_offline_flags():
@@ -262,7 +244,6 @@ def test_force_offline_sets_and_restores_absent_env(monkeypatch):
     with L._force_hf_offline():
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
         assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
-    # Absent before -> absent after (not left as "1").
     assert os.environ.get("HF_HUB_OFFLINE") is None
     assert os.environ.get("TRANSFORMERS_OFFLINE") is None
 
@@ -289,7 +270,6 @@ def test_force_offline_nesting_shares_one_flip(monkeypatch):
     with L._force_hf_offline():
         with L._force_hf_offline():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
-        # Inner exit must NOT restore while the outer window is still open.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
     assert os.environ.get("HF_HUB_OFFLINE") is None
 
@@ -313,13 +293,7 @@ def test_force_offline_depth_returns_to_zero():
 
 
 def test_reset_hf_sessions_is_safe():
-    # Best-effort no-op when the hub helper is missing; must never raise.
     L._reset_hf_sessions()
-
-
-# ---------------------------------------------------------------------------
-# _has_local_tokenizer_files / _resolve_checkpoint_tokenizer_name
-# ---------------------------------------------------------------------------
 
 
 def _touch(path, name):
@@ -337,8 +311,7 @@ def test_has_local_tokenizer_model(tmp_path):
 
 
 def test_has_local_tokenizer_bpe_needs_merges(tmp_path):
-    # vocab.json alone is not loadable BPE;
-    # it needs merges.txt.
+    # vocab.json alone is not loadable BPE; it needs merges.txt.
     _touch(tmp_path, "vocab.json")
     assert L._has_local_tokenizer_files(str(tmp_path)) is False
     _touch(tmp_path, "merges.txt")
@@ -352,7 +325,6 @@ def test_has_local_tokenizer_empty_dir(tmp_path):
 def test_resolve_tokenizer_explicit_override_wins(tmp_path):
     kwargs = {"tokenizer_name": "base/repo"}
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), kwargs) == "base/repo"
-    # tokenizer_name is always popped (it is passed explicitly downstream too).
     assert "tokenizer_name" not in kwargs
 
 
@@ -364,18 +336,12 @@ def test_resolve_tokenizer_self_sufficient_dir(tmp_path):
 
 
 def test_resolve_tokenizer_config_without_files_falls_back(tmp_path):
-    # Has tokenizer_config.json but no loadable tokenizer file -> base repo.
     _touch(tmp_path, "tokenizer_config.json")
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}) is None
 
 
 def test_resolve_tokenizer_nonexistent_dir_falls_back():
     assert L._resolve_checkpoint_tokenizer_name("/no/such/dir", {}) is None
-
-
-# ---------------------------------------------------------------------------
-# _offline_aware_load (the retry orchestrator)
-# ---------------------------------------------------------------------------
 
 
 def test_retry_once_on_offline_error_then_succeed(monkeypatch):
@@ -420,7 +386,6 @@ def test_no_retry_when_already_offline_via_kwarg(monkeypatch):
     @L._offline_aware_load
     def fake(*args, **kwargs):
         calls.append(dict(kwargs))
-        # Offline window is active for the single attempt.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
         return "ok"
 
@@ -430,7 +395,6 @@ def test_no_retry_when_already_offline_via_kwarg(monkeypatch):
 
 
 def test_offline_error_when_already_offline_propagates(monkeypatch):
-    # Already offline -> no online attempt to retry, so the error propagates once.
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     calls = []
 
@@ -446,8 +410,7 @@ def test_offline_error_when_already_offline_propagates(monkeypatch):
 
 
 def test_kwargs_preserved_across_retry(monkeypatch):
-    # Callee popping config/tokenizer_name must not change what the retry sees: fn(*args, **kwargs) re-packs a fresh
-    # **kwargs per call.
+    # fn(*args, **kwargs) re-packs kwargs per call, so callee pops must not affect the retry.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     seen = []
@@ -466,8 +429,7 @@ def test_kwargs_preserved_across_retry(monkeypatch):
 
 
 def test_retry_runs_gc_collect_between_attempts(monkeypatch):
-    # The retry lives OUTSIDE the except so the failed attempt's traceback (a partial model) is freed by gc.collect()
-    # before the second load reallocates.
+    # Retry sits outside the except so gc can free the failed attempt before reloading.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     gc_calls = []
@@ -479,7 +441,6 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
         calls.append(1)
         if len(calls) == 1:
             raise ConnectionError("down")
-        # By the retry attempt, gc.collect() must already have fired.
         assert gc_calls, "gc.collect must run before the offline retry"
         return "ok"
 
@@ -489,14 +450,8 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
     assert len(gc_calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# _force_hf_offline — constant restore (no stale offline pin)
-# ---------------------------------------------------------------------------
-
-
 def test_force_offline_restores_freshly_imported_constant(monkeypatch):
-    # If huggingface_hub.constants is first imported inside the window, the saved value must be the pre-window state,
-    # not the just-forced "1"; otherwise the process pins offline.
+    # If hub constants first import inside the window, the saved value must be pre-window.
     import sys
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -504,13 +459,13 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
     saved_mod = sys.modules.get("huggingface_hub.constants")
     saved_val = getattr(saved_mod, "HF_HUB_OFFLINE", None) if saved_mod else None
     try:
-        sys.modules.pop("huggingface_hub.constants", None)  # simulate "not imported yet"
+        sys.modules.pop("huggingface_hub.constants", None)
         with L._force_hf_offline():
             import huggingface_hub.constants as hfc_in
-            assert hfc_in.HF_HUB_OFFLINE is True  # forced offline inside the window
+            assert hfc_in.HF_HUB_OFFLINE is True
         import huggingface_hub.constants as hfc_after
 
-        assert hfc_after.HF_HUB_OFFLINE is False  # restored, not pinned True
+        assert hfc_after.HF_HUB_OFFLINE is False
         assert os.environ.get("HF_HUB_OFFLINE") is None
     finally:
         if saved_mod is not None:
@@ -519,14 +474,8 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
                 saved_mod.HF_HUB_OFFLINE = saved_val
 
 
-# ---------------------------------------------------------------------------
-# _resolve_checkpoint_tokenizer_name — VLM needs local processor files
-# ---------------------------------------------------------------------------
-
-
 def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
-    # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its cached processor still
-    # loads instead of AutoProcessor failing on the local dir.
+    # VLM without processor config resolves to the base repo so its cached processor loads.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) is None
@@ -539,11 +488,6 @@ def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) == str(
         tmp_path
     )
-
-
-# ---------------------------------------------------------------------------
-# what the retry reports when it fails too
-# ---------------------------------------------------------------------------
 
 
 def test_the_online_error_is_what_surfaces_when_the_cache_is_empty(monkeypatch):
@@ -565,7 +509,6 @@ def test_the_online_error_is_what_surfaces_when_the_cache_is_empty(monkeypatch):
         fake("model")
     assert len(calls) == 2
     assert "connection reset" in str(caught.value)
-    # The offline attempt is kept as the cause rather than thrown away.
     assert isinstance(caught.value.__cause__, AttributeError)
 
 
@@ -646,11 +589,6 @@ def test_a_successful_retry_is_unchanged(monkeypatch):
 
     assert fake("model") == "loaded from cache"
     assert L._force_offline_depth == 0
-
-
-# ---------------------------------------------------------------------------
-# what the retry must not hold, hide, or overwrite
-# ---------------------------------------------------------------------------
 
 
 def test_the_failed_attempt_is_not_pinned_by_the_error_it_raised(monkeypatch):
@@ -808,7 +746,7 @@ def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
             try:
                 raise ConnectionError("connection reset")
             except ConnectionError:
-                raise RuntimeError("could not load model")  # implicit chaining
+                raise RuntimeError("could not load model")
         raise AttributeError("'NoneType' object has no attribute 'endswith'")
 
     with pytest.raises(RuntimeError) as caught:
@@ -816,8 +754,6 @@ def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
     assert L._is_offline_related_error(
         caught.value
     ), "the retry replaced the implicitly chained connection error that made this classifiable"
-    # The connection error keeps the slot the traceback prints, and the retry is reported alongside it rather than in
-    # place of it.
     assert isinstance(caught.value.__context__, ConnectionError)
     assert isinstance(caught.value._unsloth_offline_retry_error, AttributeError)
 
@@ -880,8 +816,6 @@ def test_a_context_the_loader_suppressed_is_not_promoted_to_a_cause(monkeypatch)
 @pytest.mark.parametrize(
     "artifact",
     [
-        # A missing vocabulary resolves to None and is then dereferenced, opened or stat'd, so the family spans four
-        # exception types (#7845).
         AttributeError("'NoneType' object has no attribute 'readlines'"),
         TypeError(
             "argument should be a str or an os.PathLike object where __fspath__ "
@@ -951,7 +885,7 @@ def test_the_vlm_tokenizer_fallback_does_not_pin_the_built_model(monkeypatch):
     def fake(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            model = _BuiltModel()  # already allocated by the weight load
+            model = _BuiltModel()
             witness["ref"] = weakref.ref(model)
             try:
                 model, tokenizer = _patch_tokenizer(model, object())
@@ -1021,7 +955,7 @@ def test_the_retrys_own_frames_do_not_pin_the_cached_model(monkeypatch):
         calls.append(1)
         if len(calls) == 1:
             raise ConnectionError("connection reset while downloading tokenizer.json")
-        model = _CachedModel()  # the retry got the weights, then found no tokenizer
+        model = _CachedModel()
         witness["ref"] = weakref.ref(model)
         raise AttributeError("'NoneType' object has no attribute 'endswith'")
 

@@ -21,9 +21,8 @@ import importlib.util as _importlib_util
 
 
 def _hf_transfer_importable() -> bool:
-    # huggingface_hub < 1.0 raises on every download when the flag is on and the package is
-    # missing (it is optional, and absent on Windows on ARM). find_spec never imports it, and
-    # raises ValueError for a sys.modules stub whose __spec__ is None.
+    # huggingface_hub < 1.0 raises on every download if the flag is on and hf_transfer is missing.
+    # find_spec raises ValueError for a sys.modules stub whose __spec__ is None.
     try:
         return _importlib_util.find_spec("hf_transfer") is not None
     except (ImportError, ValueError):
@@ -31,7 +30,7 @@ def _hf_transfer_importable() -> bool:
 
 
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
-# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback).
 if (
     "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
     and not (
@@ -249,7 +248,6 @@ class SyntheticDataKit:
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
                 engine_args["dtype"] = dtype_val.split(".")[-1]
-            # Only allow valid vLLM choices
             valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
             if engine_args["dtype"] not in valid_dtypes:
                 engine_args["dtype"] = "auto"
@@ -270,7 +268,6 @@ class SyntheticDataKit:
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
-                # Ignore --enforce-eager True
                 subprocess_commands += [
                     "--" + flag,
                 ]
@@ -290,8 +287,7 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        # both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM server on"
-        # (0.19), with the optional server index some versions insert
+        # Matches both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM server on" (0.19).
         ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
@@ -311,7 +307,6 @@ class SyntheticDataKit:
             ready_regex = ready_re,
             text = False,
         )
-        # stderr is not printed to console, but self.stderr_capture.tail(200) prints the last 200 lines.
 
         self._await_vllm_server(timeout = timeout)
         print("vLLM Server Ready Detected")
@@ -352,17 +347,14 @@ class SyntheticDataKit:
         """
         deadline = _deadline(timeout)
         while True:
-            # Cap each lap at the time left: a flat poll_interval overshoots any shorter timeout, and
-            # readiness inside that overshoot would return success from an expired deadline. No deadline means
-            # full laps, which still notice a dead child where the bare Event.wait(None) this replaced hung.
+            # Cap each wait at the time left so readiness after the deadline is not reported as success.
             remaining = _remaining(deadline)
             if remaining is not None and remaining <= 0:
                 self._fail_vllm_server(f"was not ready within {timeout} seconds")
             wait = poll_interval if remaining is None else min(poll_interval, remaining)
             if self.stdout_capture.wait_for_ready(timeout = wait):
                 return
-            # checked BEFORE the exit/closed arms, so a server that is ready on
-            # stderr is never reported as never having started
+            # Checked before the exit/closed arms, so a ready server is never reported as not started.
             if self.stderr_capture.wait_for_ready(timeout = 0):
                 return
             returncode = self.vllm_process.poll()
@@ -370,8 +362,6 @@ class SyntheticDataKit:
                 self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
                 self._fail_vllm_server("closed its stdout before it was ready")
-            # Expiry is checked at the top, so a dead or closed child keeps its own message rather than being
-            # reported as a timeout.
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
@@ -421,11 +411,9 @@ class SyntheticDataKit:
     @staticmethod
     def check_vllm_status():
         try:
-            # requests has no default timeout, so a stalled server hung here.
             response = requests.get("http://localhost:8000/metrics", timeout = 5)
             return response.status_code == 200
         except requests.exceptions.RequestException:
-            # ConnectionError alone let a read timeout escape as a stray traceback out of the readiness loop.
             return False
 
     def cleanup(self):
@@ -470,7 +458,6 @@ class SyntheticDataKit:
         self.cleanup()
 
     def chunk_data(self, filename = None):
-        # Chunks data by max tokens and generation length
         assert filename is not None
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
@@ -488,8 +475,6 @@ class SyntheticDataKit:
         if max_tokens <= 5:
             raise RuntimeError("Generation length is way too long!")
         if max_tokens <= self.overlap:
-            # A non-positive stride (max_tokens - overlap) makes the n_chunks computation below divide by zero
-            # or go negative.
             raise RuntimeError(
                 f"The chunk size (max_seq_length - 2 * max_generation_tokens - 128 = "
                 f"{max_tokens}) must be larger than the overlap ({self.overlap}). "
@@ -497,19 +482,14 @@ class SyntheticDataKit:
             )
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
-        # Get left and right boundaries
         length = len(input_ids)
         if length <= max_tokens:
-            # The whole document fits one chunk window: the multi-chunk path below would drop it (the
-            # linspace/stack pairing emits one fewer range than boundary points) or, for a document shorter
-            # than the overlap, slice the wrong tokens via negative start indices.
+            # Fits one window: the multi-chunk path would drop it or slice wrong tokens when shorter than overlap.
             boundaries = [[0, length]] if length > 0 else []
         else:
-            # Minimal count: overlapping chunks cover `length` in ceil((length - overlap) / stride) chunks, not
-            # ceil(length / stride), which over-splits just past a stride multiple.
+            # Overlapping chunks need ceil((length - overlap) / stride), not ceil(length / stride).
             n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
-            # n_chunks + 1 points: the [:-1]/[1:] pairing yields n_chunks ranges; n_chunks points gave one
-            # fewer, oversized chunk (over max_tokens).
+            # n_chunks + 1 points yield n_chunks ranges after the [:-1]/[1:] pairing.
             boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()

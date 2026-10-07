@@ -129,7 +129,6 @@ def test_a_fastflowlm_only_pin_bump_repins_lemond(tmp_path, served):
     root = tmp_path / "root"
     lp.install(root, pins_path = pins())
     bumped = pins(flm_version = "v1.0.5")
-    # Same Lemonade asset, so only the recorded FastFlowLM pin can tell the install is stale.
     assert lp.installed_lemond(root, lp.load_pins(bumped)) is None
     binary = lp.install(root, pins_path = bumped)
     versions = json.loads((binary.parent / "resources" / "backend_versions.json").read_text())

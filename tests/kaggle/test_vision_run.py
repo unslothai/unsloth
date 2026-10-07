@@ -174,12 +174,8 @@ def test_the_pixel_evidence_is_read_before_training():
 def test_the_export_does_not_land_in_the_artifact_volume():
     """/kaggle/working is 21GB and a merged 2B is a meaningful fraction of it."""
     assert 'tempfile.mkdtemp(prefix = "vision_export_")' in SRC
-    # Scoped to the export BLOCK. A whole-file search matches args.outdir in
-    # main(), where it is correct, and the assertion would fail for a reason
-    # that has nothing to do with the export.
-    # Anchored on the mkdtemp rather than on `if args.export:`, because that
-    # string appears FIRST in vision_failures() and the naive split lands in
-    # the wrong function -- which is how this assertion failed the first time.
+    # Scoped to the export block, anchored on mkdtemp: `if args.export:` appears first in
+    # vision_failures(), and args.outdir is legitimately used in main().
     block = SRC.split("export_dir = tempfile.mkdtemp", 1)[1].split('result["export"] = record', 1)[
         0
     ]
@@ -268,7 +264,6 @@ def test_adapter_sum_finds_the_capital_b_peft_names():
 
     class _Stub:
         def named_parameters(self):
-            # The names PEFT actually emits, capitals and all.
             yield (
                 "base_model.model.visual.blocks.0.attn.qkv.lora_A.default.weight",
                 torch.ones(2, 2),
@@ -335,10 +330,7 @@ def test_the_vision_step_count_is_pinned_low_rather_than_inherited():
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     spawn = src[src.index('"run_vision_t4.py"') :]
     spawn = spawn[: spawn.index("subprocess.run(vision_cmd)")]
-    # Whitespace-insensitive: the repo's formatter reflows this list to one
-    # argument per line, and a guard matching the unformatted spelling goes red
-    # on a reformat rather than on a regression. That has now happened twice in
-    # this payload, so it is worth doing by default.
+    # Whitespace-insensitive: the formatter reflows this list.
     flat = "".join(spawn.split())
     assert '"--max-steps","3",' in flat
     assert "args.max_steps" not in flat, "the text step count must not reach the vision run"

@@ -224,8 +224,6 @@ def _run_create_release(
     }
     env.update(kwargs.pop("extra_env", None) or {})
 
-    # Execute the production publish sequence in one shell so the notes and metadata files cross the same step
-    # boundaries as Actions.
     names = (
         "Validate versioned release state",
         "Generate versioned updater metadata",
@@ -248,7 +246,6 @@ def _run_create_release(
 def _upload_commands(workflow):
     commands = []
     for step in _steps(workflow, "publish-release"):
-        # Join backslash continuations so a flag parked on the next line counts.
         for line in step.get("run", "").replace("\\\n", " ").splitlines():
             stripped = line.strip()
             if stripped.startswith("gh release upload"):
@@ -258,7 +255,6 @@ def _upload_commands(workflow):
 
 def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
     workflow = _workflow()
-    # Fail before the build matrix and notarization.
     assert _step_index(
         workflow, "prepare-version", "Guard against republishing an existing version"
     ) < _step_index(workflow, "prepare-version", "Verify PyPI package and Unsloth stamp")
@@ -443,11 +439,8 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     result, commands = _run_create_release(workflow, tmp_path)
     assert result.returncode == 0, result.stderr
 
-    # The release already exists, so nothing is created and no tag is reserved.
     assert not [line for line in commands if line.startswith("gh release create")]
     assert not [line for line in commands if "git/refs" in line]
-    # The body is the maintainer's changelog. Assets are uploaded beside it and
-    # the notes are never edited, so nothing this workflow does can clobber it.
     assert not [line for line in commands if line.startswith("gh release edit")]
     assert not (tmp_path / "desktop-release-body.md").exists()
 
@@ -466,7 +459,6 @@ def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
         assert decoded.startswith(b"untrusted comment:")
         assert b"\ntrusted comment:" in decoded
 
-    # The updater popup shows the maintainer notes, never build metadata.
     notes = (tmp_path / "desktop-release-notes.md").read_text(encoding = "utf-8")
     assert "Build provenance" not in notes
     assert "Desktop app for Unsloth." in notes
@@ -496,8 +488,7 @@ def _stage_windows_leg(workflow, tmp_path: Path, artifact: str) -> list[str]:
     """Run the real "Stage release assets" step for one Windows leg and return what it staged."""
     bundles = tmp_path / f"bundles-{artifact}"
     bundles.mkdir(parents = True, exist_ok = True)
-    # Tauri names the NSIS output per target; both end in -setup.exe, which is the
-    # whole point of this test.
+    # Tauri names the NSIS output per target; both end in -setup.exe.
     arch = "arm64" if artifact == "windows-arm64" else "x64"
     installer = bundles / f"Unsloth Studio_0.1.50_{arch}-setup.exe"
     installer.write_bytes(b"installer")
@@ -638,7 +629,6 @@ def test_the_guard_rejects_a_prerelease_target_before_anything_is_built():
     workflow = _workflow()
     guard = _step(workflow, "prepare-version", "Guard against republishing an existing version")
     assert "is a prerelease" in guard["run"]
-    # And again in publish-release, which is the one holding write scope.
     state = _step(workflow, "publish-release", "Validate versioned release state")
     assert "is a prerelease" in state["run"]
 
@@ -650,15 +640,13 @@ def test_the_build_uses_the_release_tag_not_the_dispatch_ref():
 
 
 def test_the_tag_is_validated_before_it_is_checked_out(tmp_path):
-    # actions/checkout resolves the free-text input, so a malformed tag would fail on a generic missing-ref error and
-    # none of the corrections would be printed.
+    # actions/checkout resolves the free-text input, so validation must run before it.
     steps = _workflow()["jobs"]["prepare-version"]["steps"]
     names = [step.get("name") or str(step.get("uses")) for step in steps]
     checkout = next(
         i for i, step in enumerate(steps) if "actions/checkout" in str(step.get("uses", ""))
     )
     assert names.index("Validate release versions") < checkout, names
-    # And the checkout uses the validated value, not the raw input.
     assert steps[checkout]["with"]["ref"] == "${{ steps.prepare.outputs.studio_version }}"
 
     for index, (bad, expected) in enumerate(
@@ -740,7 +728,6 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
     """
     scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
 
-    # The unavailable branch records the fact and keeps going.
     unavailable = scan.split("$cmdletsDown = [bool]$unavailable", 1)
     assert len(unavailable) == 2, "the cmdlet-unavailable branch no longer sets $cmdletsDown"
     before_control = unavailable[1].split("EICAR positive control", 1)[0]
@@ -748,9 +735,7 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "exit 0" not in before_control
     ), "unavailable cmdlets still short-circuit the scan before the positive control"
 
-    # The two cmdlets fail independently, so each probe must sit under its OWN guard, not merely some guard: pooling
-    # both bodies would accept $pref.MAPSReporting under `if ($status)`, where a dead status cmdlet again discards a
-    # readable MAPSReporting=0 and scans blind to the "!ml" cloud verdicts this gate exists to catch.
+    # Each cmdlet probe needs its OWN guard: a dead status cmdlet must not discard MAPSReporting.
     guards = {
         "$status": _guarded_bodies(scan, "if ($status) {"),
         "$pref": _guarded_bodies(scan, "if ($pref) {"),
@@ -787,14 +772,11 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "cmdlet would discard the other cmdlet's readable result"
     )
 
-    # The only remaining skip: a control that will not fire, the one signal that
-    # MpCmdRun cannot scan either.
     skip = scan.split("MpCmdRun could not fire the EICAR positive control", 1)
     assert len(skip) == 2, "the missing-scanner skip no longer keys off the positive control"
     assert "exit 0" in skip[1].split("\n", 3)[1] + skip[1].split("\n", 3)[2]
     assert "not a clean verdict" in skip[0].rsplit("::warning::", 1)[1] + skip[1]
 
-    # A detection still fails the job, cmdlets or not.
     assert "Refusing to publish a Windows bundle Defender flags" in scan
     assert "Refusing to publish bundles Defender could not scan" in scan
 
@@ -814,8 +796,7 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     body = _guarded_bodies(scan, "if (Test-Path $eicarPath) {")[0]
     _, scanned, after = body.partition("-DisableRemediation")
     assert scanned, "the positive control no longer scans the sample with MpCmdRun"
-    # The re-check has to land after the scan and before this step's own cleanup, or it proves nothing about who removed
-    # the file.
+    # The re-check must land after the scan and before this step's own cleanup.
     recheck, cleaned, _ = after.partition("Remove-Item $eicarPath")
     assert cleaned, "the positive control no longer removes the sample afterwards"
     assert "-not (Test-Path $eicarPath)" in recheck, (
@@ -826,7 +807,6 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     assert (
         "$controlPassed = $true" in recheck
     ), "the vanished sample is noticed but still does not pass the control"
-    # Only a vanished sample may pass this way.
     assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
         "$controlPassed = $true"
     ), "the control passes without first confirming the sample is gone"

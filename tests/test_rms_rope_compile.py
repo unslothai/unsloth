@@ -27,7 +27,7 @@ from unsloth.kernels.rope_embedding import (
 
 # Without triton_op the implementation may keep a graph break; results must still be right.
 TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
-# Pre-Ampere GPUs (T4) keep bf16 on the untraced path, so bf16 byte / graph-break checks need bf16 there.
+# Pre-Ampere GPUs (T4) keep bf16 on the untraced path.
 BF16 = pytest.param(
     torch.bfloat16,
     marks = pytest.mark.skipif(
@@ -150,7 +150,7 @@ def _rope_case(
     cos, sin = _cos_sin(max(seq, 64) + 16, head_dim, dtype)
     indices = None
     if with_indices:
-        # TRL-style packed position ids: every packed sequence restarts at 0, int32.
+        # TRL-style packed position ids: each packed sequence restarts at 0, int32.
         lens = [seq // 3, seq // 3, seq - 2 * (seq // 3)]
         row = torch.cat([torch.arange(n, dtype = torch.int32) for n in lens])
         indices = row.repeat(bsz, 1).cuda()
@@ -350,7 +350,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     model.train()
     vocab = model.config.vocab_size
     g = torch.Generator().manual_seed(0)
-    # With several GPUs visible Unsloth may place the model on the emptiest one, not cuda:0.
+    # With several GPUs Unsloth may place the model on the emptiest one, not cuda:0.
     ids = torch.randint(0, vocab, (2, 48), generator = g).to(
         model.get_input_embeddings().weight.device
     )
@@ -376,8 +376,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     assert grads and all(gr is not None and torch.isfinite(gr).all() for gr in grads)
     scale = max(g.abs().max().item() for g in eager_grads)
     worst = max((a.float() - b.float()).abs().max().item() for a, b in zip(grads, eager_grads))
-    # Two bf16 rounding steps of the largest gradient: compiled kernels sum in another order (one
-    # step over 1% on an RTX PRO 6000).
+    # Two bf16 rounding steps: compiled kernels sum in another order (one step >1% on RTX PRO 6000).
     assert worst <= 2 * torch.finfo(torch.bfloat16).eps * scale, (worst, scale)
 
 

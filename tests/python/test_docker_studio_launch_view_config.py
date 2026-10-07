@@ -87,15 +87,12 @@ def test_the_config_stays_valid_python_and_keeps_the_path(generator: str, name: 
     view = f"/workspace/{name}"
     rendered = _render(generator, name, view)
 
-    config = _load(rendered)  # a SyntaxError here is the bug
+    config = _load(rendered)
 
     assert (
         config.ServerApp.preferred_dir == view
     ), "the path Jupyter ends up with must be the one the user asked for"
-    # default_url is a URL, not a path: the default view directory has a space in
-    # it, and unencoded it reached the banner Jupyter prints as
-    # "http://host:8888/lab/tree/Unsloth Notebooks", which is not a legal request
-    # target. quote() leaves "/" alone, so subdirectories still resolve.
+    # default_url must be URL-quoted: the default view directory contains a space.
     assert config.ServerApp.default_url == "/lab/tree/" + urllib.parse.quote(name)
     assert " " not in config.ServerApp.default_url, "an unencoded space breaks the printed link"
     assert (
@@ -104,8 +101,6 @@ def test_the_config_stays_valid_python_and_keeps_the_path(generator: str, name: 
 
 
 def test_a_newline_in_the_path_cannot_inject_a_config_line(generator: str):
-    # A newline would end the statement outright and let the rest of the value
-    # be read as configuration.
     name = 'x"\nc.ServerApp.token = "pwned'
     config = _load(_render(generator, name, f"/workspace/{name}"))
 
@@ -114,9 +109,7 @@ def test_a_newline_in_the_path_cannot_inject_a_config_line(generator: str):
 
 
 def test_the_generator_does_not_interpolate_the_paths_in_the_shell(generator: str):
-    # The heredoc delimiter has to stay quoted and the values have to arrive
-    # through the environment; an unquoted heredoc puts the shell's expansion
-    # back in front of python's quoting and the fix is undone.
+    # Heredoc must stay quoted with values via env, or shell expansion undoes python quoting.
     source = LAUNCH.read_text(encoding = "utf-8")
     assert "python - >> \"${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py\" <<'PY'" in source
     assert "${_view_rel}" not in generator and "${_view_dir}" not in generator

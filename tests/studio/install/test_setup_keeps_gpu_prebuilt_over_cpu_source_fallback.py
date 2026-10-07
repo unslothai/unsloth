@@ -109,9 +109,6 @@ def _decide(tmp_path, install_dir, **env):
     return result.stdout
 
 
-# ── part one: the keep decision ──
-
-
 @requires_bash
 class TestTheKeepDecision:
     def test_a_cuda_prebuilt_on_an_nvidia_host_is_kept(self, tmp_path):
@@ -140,7 +137,6 @@ class TestTheKeepDecision:
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "KEEP cuda"
 
     def test_a_cuda_prebuilt_is_replaced_once_the_gpu_is_gone(self, tmp_path):
-        # The GPU the marker names left the machine: a CPU build is the honest install now.
         install_dir = _install(tmp_path, {"backend": "cuda"})
         assert _decide(tmp_path, install_dir) == "REPLACE"
         assert _decide(tmp_path, install_dir, _setup_amd_detected = "true") == "REPLACE"
@@ -178,7 +174,6 @@ class TestTheKeepDecision:
         assert (
             _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "fedcba987654", **nvidia) == "REPLACE"
         )
-        # The marker writer records a commit pin in source_commit beside the upstream build tag.
         install_dir = _install(
             tmp_path,
             {
@@ -242,7 +237,6 @@ class TestTheKeepDecision:
         ids = ["llama_backend", "hip-spelling", "asset-cuda", "asset-rocm", "auto-request"],
     )
     def test_a_legacy_marker_names_its_backend_elsewhere(self, tmp_path, marker, backend):
-        # Shapes from before #8520 (tests/studio/install/test_keep_install_backcompat_9979.py).
         install_dir = _install(tmp_path, marker)
         both = {"_setup_nvidia_physical": "true", "_setup_amd_detected": "true"}
         assert _decide(tmp_path, install_dir, **both) == f"KEEP {backend}"
@@ -256,7 +250,6 @@ class TestTheKeepDecision:
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
 
     def test_a_prebuilt_that_no_longer_runs_is_replaced(self, tmp_path):
-        # A quarantined library leaves the marker and the executable behind.
         install_dir = _install(tmp_path, {"backend": "cuda"})
         assert (
             _decide(
@@ -274,9 +267,6 @@ class TestTheKeepDecision:
         nvidia = {"_setup_nvidia_physical": "true"}
         assert _decide(tmp_path, install_dir, _LLAMA_FORCE_COMPILE = "1", **nvidia) == "REPLACE"
         assert _decide(tmp_path, install_dir, _LLAMA_PR = "12345", **nvidia) == "REPLACE"
-
-
-# ── part two: the wiring ──
 
 
 def _between(start_marker, end_marker):
@@ -333,12 +323,10 @@ def test_the_decision_runs_before_the_compile():
         in window
     )
     assert "BUILD_OK=false" in window
-    # The configure must honour that verdict: it sat in the same BUILD_OK block.
     assert '[ "$BUILD_OK" = true ] && ! run_quiet_no_exit "cmake llama.cpp"' in SETUP_TEXT
 
 
 def test_the_decision_runs_again_at_the_swap():
-    # A CUDA build that fell back to CPU on the way only shows at the swap.
     window = _between("caught here, after the fact", "# Swap only after build succeeds")
     assert '[ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]' in window
     assert '_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR"' in window
@@ -349,8 +337,7 @@ def test_the_kept_tree_is_checked_offline_the_way_the_updater_checks_it():
     keep = _between("_gpu_prebuilt_to_keep_over_cpu_build() {", "\n}\n")
     assert '_installed_prebuilt_runs "$install_dir" || return 1' in keep
     runs = _between("_installed_prebuilt_runs() {", "\n}\n")
-    # Not --validate-install: that downloads its probe model, and the update just failed
-    # for want of a download.
+    # Not --validate-install: it downloads a probe model.
     assert '--check-installed "$1"' in runs and "--validate-install" not in runs
 
 
@@ -394,7 +381,6 @@ class TestTheKeptBundleMustStillCoverTheCard:
         marker = {"backend": "cuda", "supported_sms": ["7.5", "8.6", "8.9"]}
         assert ilp._kept_install_covers_host(marker, _linux_host(ilp, compute_caps = ["8.9"]))
         assert not ilp._kept_install_covers_host(marker, _linux_host(ilp, compute_caps = ["12.0"]))
-        # Two cards: every one must be covered.
         assert not ilp._kept_install_covers_host(
             marker, _linux_host(ilp, compute_caps = ["8.9", "12.0"])
         )

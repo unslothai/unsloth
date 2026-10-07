@@ -20,7 +20,6 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _MODELS_DIR = _ROOT / "unsloth" / "models"
 
-# The names that used to be bound at module scope, and the modules that bound them.
 _DEFERRED_NAMES = (
     "patch_saving_functions",
     "unsloth_save_pretrained_torchao",
@@ -41,11 +40,10 @@ def _is_save_module(node, package_depth):
 
 
 def _module_scope_imports(tree):
-    # Only the `import`s the interpreter runs while the module object is built.
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             yield node
-        # `try: from x import y` / `if TYPE_CHECKING:` at module scope still runs.
+        # `try:` / `if TYPE_CHECKING:` imports at module scope still run.
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.Import, ast.ImportFrom)) and not isinstance(
                 node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -129,7 +127,6 @@ def test_the_deferred_names_are_still_exported_by_unsloth_save():
         and any(getattr(t, "id", None) == "__all__" for t in node.targets)
     )
     listed = {elt.value for elt in exported.elts if isinstance(elt, ast.Constant)}
-    # Only this one is in `__all__`; the save_pretrained helpers are reached by name.
     assert "patch_saving_functions" in listed
 
 
@@ -167,7 +164,7 @@ _needs_torch = pytest.mark.skipif(
 )
 
 
-# The MLX ordering without MLX: faking the branch needs mlx, mlx_lm and an Apple uname.
+# Faking the MLX branch needs mlx, mlx_lm and an Apple uname.
 _COLD_SAVE_FIRST = """
     import importlib
     import importlib.machinery

@@ -52,31 +52,18 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 
-# Jobs whose pip cache earns its place: they install a torch/transformers-class dependency
-# set, where the download genuinely dominates. Anything not listed here must not ask for it.
-#
-# These nine no longer use setup-python's built-in `cache: 'pip'`. That form is read-write
-# and saves from its post-step on whatever ref the job ran on, with no knob to gate it, so
-# every PR wrote a ~700MB entry only its own re-runs could ever restore while evicting the
-# copy on main that all PRs share. Measured at 19.45 GiB across 40 entries, 15.49 GiB of it
-# on PR refs. They use the pip-cache-restore / pip-cache-save action pair instead, which
-# splits the halves so the save can be gated on the default branch.
+# Jobs whose pip cache earns its place (torch/transformers-class installs). They use the
+# pip-cache-restore / pip-cache-save pair, not setup-python's `cache: 'pip'`, which saves
+# ungated on PR refs and evicts main's shared entry.
 PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated"),
-    # The unsloth_zoo half of Core, split out so its 418s suite runs beside the rest
-    # instead of after it. It runs the same install as `consolidated` (both call
-    # .github/actions/core-cpu-setup), which is exactly the torch/transformers-class
-    # download this allowlist exists for, and it needs its OWN name rather than sharing
-    # `consolidated`'s: the save is gated on `cache-hit != 'true'`, so a shared key means
-    # whichever job finishes first on main writes it and the other never saves.
+    # Same install as `consolidated` but needs its own key: saves are gated on
+    # `cache-hit != 'true'`, so a shared key lets only one job ever save.
     ("consolidated-tests-ci.yml", "consolidated-zoo"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
     ("notebooks-ci.yml", "api-introspect"),
-    # Installs a 709-line Colab pip-freeze, eight matrix legs at once, and each leg
-    # downloads the identical set. It is cron and dispatch only, so none of that is
-    # on a pull request's critical path -- but eight ubuntu runners holding a 25
-    # minute cap contend for the same pool every other job queues against.
+    # Eight matrix legs install the same 709-line Colab freeze; cron and dispatch only.
     ("notebooks-ci.yml", "smoke-install"),
     ("studio-backend-ci.yml", "pytest"),
     ("studio-backend-ci.yml", "repo-cpu-tests"),
@@ -159,11 +146,8 @@ def _balanced(expr: str) -> bool:
     return depth == 0
 
 
-# A POSITIVE equality against main, in either quote style. `!=` must not match: an
-# expression restricting a save to everything EXCEPT main is the exact inversion of the
-# rule, and a substring search for "refs/heads/main" accepts it.
+# A positive equality against main in either quote style; `!=` must not match.
 _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
-# A whole leaf that is nothing but the equality, in either operand order.
 _LEAF_MAIN = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
@@ -199,10 +183,7 @@ def _restricted_to_main(expr: str) -> bool:
             return any(restricted(p) for p in ands)
         if re.search(r"!(?!=)", part):
             return False
-        # The leaf must BE the equality, not contain it. Searching inside accepted
-        # every wrapper that quotes it and inverts it: `(...) == false`, `... != true`,
-        # and `startsWith(..., 'false')`, which is true off main because GitHub casts
-        # the inner boolean to a string. A whitelist ends the class.
+        # The leaf must BE the equality: wrappers like `== false` or `startsWith(..., 'false')` invert it.
         return bool(_LEAF_MAIN.fullmatch(part))
 
     return restricted(expr)
@@ -214,37 +195,30 @@ def _restricted_to_main(expr: str) -> bool:
         ("always() && github.ref == 'refs/heads/main'", True),
         ('always() && github.ref == "refs/heads/main"', True),
         ("github.ref == 'refs/heads/main' && steps.x.outcome == 'success'", True),
-        # The three shapes a substring test accepts and should not.
         ("github.ref != 'refs/heads/main'", False),
         ("github.ref == 'refs/heads/main' || github.event_name == 'pull_request'", False),
         ("(github.ref == 'refs/heads/main' && always()) || github.event_name == 'push'", False),
-        # Both alternatives restricted is still restricted.
         (
             "(github.ref == 'refs/heads/main' && always()) || "
             "(github.ref == 'refs/heads/main' && failure())",
             True,
         ),
-        # A `||` inside a string or parenthesised sub-expression is not a top-level split.
+        # A `||` inside a string is not a split.
         ("github.ref == 'refs/heads/main' && contains(x, 'a||b')", True),
         ("", False),
-        # A `||` inside parens is still a `||`; splitting only the top level read this
-        # as one alternative carrying the main equality and accepted it.
+        # A `||` inside parens is still a `||`.
         (
             "always() && (github.ref == 'refs/heads/main' "
             "|| github.event_name == 'pull_request')",
             False,
         ),
-        # Contains a positive main equality and means its exact opposite.
         ("!(github.ref == 'refs/heads/main')", False),
-        # Parenthesised but genuinely restricted, so the fix is not over-rejection.
         ("(github.ref == 'refs/heads/main') && always()", True),
-        # Comparing the equality to a boolean inverts it while still containing it.
         ("(github.ref == 'refs/heads/main') == false", False),
         ("github.ref == 'refs/heads/main' != true", False),
-        # String functions cast the inner boolean, so these are true only OFF main.
+        # String functions cast the inner boolean, so this is true only off main.
         ("startsWith(github.ref == 'refs/heads/main', 'false')", False),
         ("contains(github.ref == 'refs/heads/main', 'false')", False),
-        # The reversed operand order is the same guard and stays accepted.
         ("'refs/heads/main' == github.ref", True),
         ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
     ],
@@ -267,19 +241,11 @@ def _composite_actions():
             yield f.parent.name, ((doc.get("runs") or {}).get("steps") or [])
 
 
-#: Triggers that can put a workflow on a ref other than `main`. `pull_request` and
-#: `pull_request_target` are the obvious two; `workflow_call` is here because a reusable
-#: workflow runs on the CALLER's ref, so one called from a pull_request workflow saves on
-#: the PR's ref as surely as if it declared the trigger itself.
+#: `workflow_call` runs on the caller's ref, so a PR caller saves on the PR ref.
 _PR_REACHABLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "workflow_call"})
 
-#: The only triggers that cannot put a workflow anywhere near a pull request's ref.
-#: `schedule` and `repository_dispatch` are documented to run the default branch and nothing
-#: else; `workflow_dispatch` takes a ref, but only from a human who asked for that ref by
-#: name, which is not the "every PR writes its own copy" harm this rule is about. Everything
-#: NOT named here -- `merge_group`, which runs on its own `gh-readonly-queue/...` ref, and
-#: any event added to Actions after this was written -- stays indicted, which is what the
-#: docstring below promises and what a guard whose failure mode is silence has to do.
+#: The only triggers that never run on a PR's ref; anything not listed (incl. `merge_group` and
+#: future events) stays indicted.
 _REF_SAFE_TRIGGERS = frozenset({"schedule", "repository_dispatch", "workflow_dispatch"})
 
 
@@ -318,7 +284,7 @@ def _pull_request_reachable(doc: dict) -> bool:
     """
     triggers = _triggers(doc)
     if not triggers:
-        # No parseable `on:` at all. Says nothing, so it does not get to say "exempt".
+        # No parseable `on:` says nothing, so it is not exempt.
         return True
     for event, spec in triggers.items():
         if event in _PR_REACHABLE_TRIGGERS:
@@ -342,21 +308,16 @@ def _pull_request_reachable(doc: dict) -> bool:
         ({"workflow_dispatch": None, "push": {"branches": ["main"]}}, False),
         ({"pull_request": None}, True),
         ({"pull_request_target": {"types": ["opened"]}}, True),
-        # Reusable: it runs on the caller's ref, so a pull_request caller saves on the PR ref.
         ({"workflow_call": None}, True),
-        # No `branches` filter means every branch, which is where PRs here come from.
+        # No `branches` filter means every branch, where PRs here come from.
         ({"push": None}, True),
         ({"push": {"branches": ["main", "release/**"]}}, True),
         ({"push": {"tags": ["v*"]}}, True),
-        # A dispatch-only workflow that also builds every PR is not dispatch-only.
         ({"workflow_dispatch": None, "pull_request": {"paths": ["x"]}}, True),
-        # Default-branch-only, so exempt for the same reason schedule is.
         ({"repository_dispatch": {"types": ["x"]}}, False),
-        # The merge queue runs on refs/heads/gh-readonly-queue/..., which is not main.
+        # The merge queue runs on refs/heads/gh-readonly-queue/..., not main.
         ({"merge_group": None}, True),
-        # An event this predicate has never heard of says nothing about its ref.
         ({"release": {"types": ["published"]}}, True),
-        # Unparseable says nothing, so it does not get to be called unreachable.
         ({}, True),
     ],
 )
@@ -368,7 +329,7 @@ def test_the_pull_request_reachability_check_reads_the_trigger_block(on_block, r
     thing that most needs its own rows.
     """
     assert _pull_request_reachable({"on": on_block}) is reachable, on_block
-    # YAML 1.1 turns a bare `on:` key into True. Both spellings must read the same.
+    # YAML 1.1 turns a bare `on:` key into True.
     assert _pull_request_reachable({True: on_block}) is reachable, on_block
 
 
@@ -400,7 +361,6 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
             if "refs/heads/main" not in str(step.get("if", "")):
                 offenders.append(f"action {name}: {step.get('name') or step.get('uses')}")
     for name, doc in _workflows():
-        # Read once per workflow, then applied to every job in it.
         if not _pull_request_reachable(doc):
             continue
         for jid, job in doc["jobs"].items():
@@ -408,12 +368,7 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
                 continue
             for step in job.get("steps") or []:
                 uses = _uses(step)
-                # setup-python's `cache:` is a save too, and an invisible one: the action
-                # registers a post-step (`post: dist/cache-save/index.js` in its own
-                # action.yml) that runs after the job on whatever ref it ran on, with no
-                # condition to gate it. A scan that only looked for `actions/cache` steps
-                # read as green while nine jobs wrote PR-scoped entries every run. Nothing
-                # is exempt now that all nine are converted.
+                # setup-python's `cache:` saves via an ungated post-step on whatever ref the job ran on.
                 if "setup-python" in uses and (step.get("with") or {}).get("cache"):
                     offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
                     continue
@@ -693,7 +648,7 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
                 continue
             cond = str(step.get("if", ""))
             if "always()" not in cond:
-                continue  # not force-run, so a failed producer already skips it
+                continue
             if not any(f"steps.{pid}.outcome" in cond for pid in producers if pid):
                 offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
@@ -721,10 +676,8 @@ def test_every_cache_key_path_resolves_where_the_job_checked_out():
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
-        # Where THIS repo lands, which is not the same question as "is there a `path:`".
-        # notebooks-ci api-introspect checks out two repositories side by side, and a path
-        # under the OTHER one cannot be resolved against this tree at all, so it is skipped
-        # rather than reported. A checkout with no `repository:` is this repo by definition.
+        # A path under another checked-out repository cannot be resolved here, so it is skipped. A
+        # checkout with no `repository:` is this repo.
         own_prefixes, foreign_prefixes = [], []
         for s in steps:
             if "actions/checkout" not in _uses(s):
@@ -749,9 +702,7 @@ def test_every_cache_key_path_resolves_where_the_job_checked_out():
                     continue
                 if any(p and line.startswith(p + "/") for p in foreign_prefixes):
                     continue
-                # The prefix has to match a checkout of this repo, AND what remains has to
-                # resolve to a file that exists. Checking only the prefix accepted
-                # `unsloth/.github/workflows/typo.yml`, which fails the job just as hard.
+                # Prefix must match a checkout of this repo and the rest must resolve to an existing file.
                 relative = None
                 for prefix in sorted(own_prefixes, key = len, reverse = True):
                     if not prefix:
@@ -831,26 +782,9 @@ def test_local_action_references_use_the_nested_checkout_path():
     )
 
 
-# --- Playwright browser caches -------------------------------------------------------
-#
-# The engines are ~470 MB each and four workflows download them, keyed by
-# `ms-playwright-<os>-<version>-<engine token>-<generation>`. test_ui_shard_engines.py
-# enforces the token against the SHARDS, so a chromium-only job cannot restore a
-# three-engine entry. What it cannot see is the other direction, ACROSS jobs: two jobs
-# installing the same engines under two keys. Nothing breaks, which is why it survived.
-# Measured 2026-09-01, four live entries holding two distinct payloads:
-#
-#     467 MiB  ms-playwright-Linux-1.62.0-cfw-v1     ui-indicator
-#     467 MiB  ms-playwright-Linux-1.62.0-cfw-v2     ui-smoke chat/banner   <- same bytes
-#     269 MiB  ms-playwright-Linux-1.62.0-c-v2       studio-frontend-ci
-#     269 MiB  ms-playwright-Linux-1.62.0-sbench-v1  studiobench            <- same bytes
-#
-# Both came from one mistake: a key rewritten in one call site and not its twin. #9283
-# moved ui-smoke to `-<engine_key>-v2` and left ui-indicator on `-cfw-v1` four hundred
-# lines below its last hunk; #9296 minted `-sbench-v1` three days after `-c-v2` already
-# meant "chromium on Linux". Each bought a second copy of identical bytes.
-#
-# Derived from the workflows, so a fifth consumer with a novel token fails HERE.
+# Playwright browser caches (~470 MB per engine). test_ui_shard_engines.py checks key tokens
+# against shards; this catches two jobs storing identical engines under different keys.
+# Derived from the workflows, so a new consumer with a novel token fails here.
 
 _PW_EXPR = re.compile(r"\$\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 # `install-deps` cannot match: `install` must be followed by whitespace.
@@ -897,8 +831,7 @@ def _matrix_rows(job) -> list[dict]:
     for k in base_keys:
         combos = [{**c, k: v} for c in combos for v in matrix[k]]
 
-    # Exclude first, and it is processed before include, so include can add a
-    # combination back. A partial exclude drops every row agreeing on the keys it names.
+    # Exclude is processed before include, so include can add a combination back.
     def excluded(combo):
         return any(all(str(combo.get(k)) == str(v) for k, v in ex.items()) for ex in exclude)
 
@@ -908,9 +841,7 @@ def _matrix_rows(job) -> list[dict]:
     for combo in combos:
         row = dict(combo)
         for i, inc in enumerate(include):
-            # Mergeable when it overwrites nothing original. Keys outside the base
-            # matrix are additions and never block; requiring a shared key instead
-            # dropped a metadata-only include out of every row and into a phantom one.
+            # Mergeable when it overwrites nothing original; keys outside the base matrix are additions.
             if all(str(inc[k]) == str(combo[k]) for k in set(inc) & set(combo)):
                 row.update(inc)
                 matched.add(i)
@@ -978,9 +909,7 @@ def _playwright_jobs():
             for step in cache_steps:
                 key = _resolve(str((step.get("with") or {}).get("key", "")), row)
                 key = _forwarded_key(key, steps, row)
-                # actions/cache folds the path into the entry version, so two steps
-                # sharing a key but not a path address DIFFERENT caches; comparing keys
-                # alone would call such a pair aligned while every run re-downloaded.
+                # actions/cache folds the path into the entry version, so key and path both identify a cache.
                 ident = (key, _resolve(str((step.get("with") or {}).get("path", "")), row))
                 (restore if "/restore@" in str(step["uses"]) else save).append(ident)
             shard = row.get("matrix.shard") or row.get("matrix.engine_key")

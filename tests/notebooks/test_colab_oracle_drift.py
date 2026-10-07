@@ -35,15 +35,13 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import notebook_validator as nv  # noqa: E402
 
-# A real pin file, not a stub: _oracle_payload_is_usable refuses a rule-bearing oracle missing
-# the packages the R-INST rules seed on, so a stub would test the refusal rather than the drift.
+# A real pin file: a stub missing the R-INST seed packages tests the refusal, not the drift.
 PIP = (
     "torch==2.10.0\ntorchcodec==0.10.0\npeft==0.19.0\ntorchao==0.16.0\n"
     "transformers==5.1.0\ntokenizers==0.23.0\naccelerate==1.13.0\n"
 )
 APT = "curl/jammy,now 7.81.0-1ubuntu1.24 amd64 [installed]\n"
-# The real os-info carries a `Python 3.x.y` line that COLAB_STRICT_ORACLE_KEYS makes
-# rule-bearing, and a fixture without one is the drift `colab-diff --strict` has to catch.
+# The Python line is rule-bearing under COLAB_STRICT_ORACLE_KEYS.
 OS_INFO = "Python 3.13.15\nR version 4.5.3\n"
 
 UPSTREAM = {
@@ -100,8 +98,7 @@ def test_pip_drift_is_advisory_without_strict(oracle):
     "name, drifted",
     [
         ("apt-list-gpu.txt", "curl/jammy,now 7.81.0-1ubuntu1.25 amd64 [installed]\n"),
-        # The Python line stays: dropping it is rule-bearing drift, which the case below
-        # covers. What is under test here is an R release nothing consults.
+        # Only the R release changes, which no rule consults.
         ("os-info-gpu.txt", "Python 3.13.15\nR version 4.6.0\n"),
     ],
 )
@@ -111,7 +108,6 @@ def test_non_rule_oracles_never_fail_strict(oracle, capsys, name, drifted):
     upstream, snapshot_dir = oracle
     upstream[name] = drifted
     assert _diff(snapshot_dir, strict = True) == 0
-    # Reported, just not fatal -- the signal is the point, the failure was not.
     out = capsys.readouterr().out
     assert "CHANGED" in out
     assert "::notice::" in out
@@ -141,7 +137,6 @@ def test_full_lists_every_drifted_entry(oracle, capsys):
     full = capsys.readouterr().out
     assert "more new entries" not in full, full
     assert full.count("  NEW      ") == 200, full
-    # The entry the cap would have hidden, by name rather than by count.
     assert "NEW      pkg199==199.0" in full, full
 
 
@@ -185,11 +180,11 @@ def test_workflow_diffs_before_it_refreshes():
     wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
     for job in ("static", "static-with-pypi"):
         rest = wf.split(f"\n  {job}:", 1)[1]
-        # Up to the next job key, which is the next line indented exactly two.
+        # Up to the next job key, the next line indented exactly two.
         nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
         body = rest[: nxt.start()] if nxt else rest
 
-        # Match the invocations, not the prose: both steps are described in comments that name the other subcommand.
+        # Match invocations, not prose: comments name the other subcommand.
         def _at(sub):
             m = re.search(rf"notebook_validator\.py {sub}\b", body)
             return m.start() if m else -1
@@ -258,8 +253,7 @@ def test_cron_lint_survives_a_strict_drift_failure():
         blk = body[at:]
         end = blk.find("\n      - name:", 1)
         blk = blk[:end] if end != -1 else blk
-        # Match the directive on a line of its own: the step's own comment explains `if: always()` in prose, and a
-        # substring test would happily pass on that after the directive itself had been deleted.
+        # The directive on its own line: prose in the step's comment mentions `if: always()`.
         assert re.search(
             r"^\s*if: always\(\)\s*$", blk, re.M
         ), f"{step} would be skipped when strict drift fires"
@@ -453,8 +447,7 @@ def test_a_write_failure_removes_a_file_that_was_not_there_before(oracle, tmp_pa
     assert list(out_dir.iterdir()) == []
 
 
-# Spelled out rather than read off the module: a decorator that reaches into the code under
-# test fails COLLECTION when the symbol moves, which hides every other test in the file.
+# Spelled out: reading the module in a decorator fails collection when the symbol moves.
 SEED_PACKAGES = ("torch", "torchcodec", "peft", "torchao", "transformers", "tokenizers")
 
 
@@ -508,7 +501,6 @@ def test_a_rollback_survives_a_filesystem_that_is_still_full(oracle, tmp_path, m
     monkeypatch.setattr(nv, "_atomic_write_bytes", real_write)
     for name, data in committed.items():
         assert (snapshot_dir / name).read_bytes() == data, name
-    # No rollback scratch left behind.
     assert not [p for p in snapshot_dir.iterdir() if p.name.endswith(".rollback")]
 
 
@@ -520,7 +512,6 @@ def test_a_dry_run_install_does_not_undo_a_removal():
     assert nv._removed_by_cell(
         "!pip uninstall -y tokenizers; pip install --dry-run tokenizers", "tokenizers"
     )
-    # A real reinstall still puts it back.
     assert not nv._removed_by_cell(
         "!pip uninstall -y tokenizers; pip install tokenizers", "tokenizers"
     )

@@ -33,8 +33,7 @@ from .frames import compute_frame_stats
 from .schema import Measure
 
 
-# (action name, timing key). Anything not listed here comes from the window frame recorder.
-# ── where each scored metric actually lives in the payload ──────────────────────────────────
+# (action name, timing key); anything not listed comes from the window frame recorder.
 
 ACTION_SOURCES: Mapping[str, tuple[str, str]] = {
     "keystroke_p95_ms": ("keystroke", "p95_ms"),
@@ -42,11 +41,7 @@ ACTION_SOURCES: Mapping[str, tuple[str, str]] = {
     "scroll_settle_ms": ("scroll_after", "gesture_ms"),
 }
 
-# The one mapping that is NOT an identity of meaning. The anchor was written for settle time (how
-# long after the gesture the thread stops moving); the scene records the gesture and the
-# per-step cost and never measures settle. `gesture_ms` is the closest recorded quantity on the
-# same scale, but a reader comparing this column against the anchor's 100 ms / 3000 ms rationale
-# is comparing a slightly different thing.
+# Scene never measures settle time, so `gesture_ms` stands in for the anchor's settle metric.
 SCROLL_SETTLE_NOTE = (
     "recorded as scroll_after.gesture_ms; the scene does not measure settle separately, so this "
     "is gesture duration, not post-gesture settle"
@@ -54,18 +49,8 @@ SCROLL_SETTLE_NOTE = (
 
 FRAME_METRICS: tuple[str, ...] = ("time_in_jank_pct", "jank_index", "max_frame_ms")
 
-# The streaming phase, separated out and normalised per character.
-# The three metrics above are not blind to the stream (`_frame_measures` pools every non-`idle`
-# window) but they cannot separate it: one 57.3 s film collapses eighteen action windows and the
-# streaming stretch into one number the action windows dominate. On a measured 100K null control
-# `reasoning_toggle` alone contributed 2,865 ms blocked at 99.3% busy with a 1,866 ms worst frame
-# while the streaming stretch beside it ran at 3.6% busy with a 100 ms worst frame.
-# THE WINDOW KIND CANNOT BE USED TO SEPARATE THEM, and the name is what misleads:
-# `SceneRunner._gap_window` opens every inter-slot gap as `kind = "stream"`, so eighteen windows
-# are named `stream:gapN` and only the first four contain streaming, while `stream:drain` is
-# opened after the film (7 ms on that cell). The phase is taken from the `stream_cost`
-# instrument, which detects it from SSE traffic, never from the label.
-# ── the streaming phase, separated out and normalised per character ─────────────────────────
+# Streaming phase, normalised per character. Taken from `stream_cost` (SSE traffic), never
+# from the window kind: `_gap_window` labels every inter-slot gap `stream:gapN`.
 STREAM_METRICS: tuple[str, ...] = (
     "stream_delta_cost_ms_per_kchar",
     "stream_cost_ms_per_kchar",
@@ -75,37 +60,19 @@ STREAM_METRICS: tuple[str, ...] = (
     "stream_max_frame_ms",
 )
 
-# A window must carry at least this much streamed text before its cost is divided by it. Below it
-# the ratio is dominated by whatever else shared the window: a measured `action:send_turn` window
-# grew the reply by 13 characters while accumulating 475 ms blocked, which as a rate is 36,500 ms
-# per thousand characters and is a statement about opening a menu.
+# Below this the per-char ratio is dominated by whatever else shared the window.
 MIN_STREAM_CHARS_PER_WINDOW = 100
 
-# More timer ticks than the clamp says are possible means the clamp is wrong, and every blocked
-# figure derived from it is a subtraction against the wrong floor. `clocks_agree` would be the
-# gate but is null by design on a headless engine (see instruments/pagejs.py), so
-# `timer_clock_ratio` is the sound availability signal and this is the bound it must respect.
+# `clocks_agree` is null on headless engines, so `timer_clock_ratio` gates the clamp instead.
 MAX_TIMER_CLOCK_RATIO = 1.2
 
-# Windows that are not part of the film, whose frames say nothing about the build.
-# `idle` is deliberately quiet: pooling it would dilute every jank share with idle time and make
-# a bad build look average.
-# `setup` is excluded for the opposite reason. The only one is the composer click that starts the
-# film, mostly Playwright's injected actionability script running on the page's own main thread,
-# where it blocks frames indistinguishably from app work. At 500K that window alone runs about
-# 11 s against a `max_frame_ms` anchor whose worst case is 2,000 ms, so pooling it would peg all
-# three frame metrics on every run.
+# `idle` would dilute jank shares; `setup` is Playwright's actionability script (~11 s at 500K).
 UNSCORED_WINDOW_KINDS: frozenset[str] = frozenset({"idle", "setup"})
 
-# The window kinds in which NO SCRIPTED ACTION IS RUNNING: `gap` is the scheduler's inter-slot
-# wait and `stream` is `stream:drain`, opened after the film to wait the reply out. Both are
-# quiet by construction, which is what `_unaided` needs. `action` is excluded, and `idle` never
-# reaches here.
-# `UNSCORED_WINDOW_KINDS` strips `idle` first.
+# Kinds where no scripted action runs: `gap` (inter-slot wait) and `stream` (`stream:drain`).
 UNAIDED_WINDOW_KINDS: frozenset[str] = frozenset({"gap", "stream"})
 
 
-# The row types keyed by `cell_id`, and so the ones a superseded attempt can leak through.
 ATTEMPT_ROW_TYPES: frozenset[str] = frozenset({"cell", "action", "window"})
 
 
@@ -188,13 +155,9 @@ def _action_measure(metric_key: str, actions: Mapping[str, Mapping[str, Any]]) -
         return Measure.not_attempted(unit, f"{action_name} is not in this scene")
     if not row.get("ran"):
         reason = row.get("reason") or "no reason recorded"
-        # Attempted-and-did-not-run, which is a fact about the run, not an absent instrument.
         return Measure.failed(unit, f"{action_name} did not run: {reason}")
     if row.get("expect_ok") is False:
-        # RAN IS NOT DID WHAT IT CLAIMED. An action carries its own assertion, and when it fails the
-        # timing describes something other than the action. `report/payload.py` already lists these cells
-        # under EXCLUDED CELLS with 'its timings exist and must not be quoted'; scoring them anyway let
-        # the same number be excluded in the report and load-bearing in the headline.
+        # A failed own-assertion means the timing describes something else; the report excludes these.
         reason = row.get("reason") or "no reason recorded"
         return Measure.failed(unit, f"{action_name} ran but its own assertion failed: {reason}")
 
@@ -245,13 +208,7 @@ def _frame_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]:
         return {k: Measure.not_attempted(unit_by_key[k], reason) for k in FRAME_METRICS}
 
     if frameless:
-        # ONE WINDOW THAT SAW NOTHING POISONS THE POOL, IT DOES NOT DROP OUT OF IT.
-        # A window whose recorder was installed and exported no deltas is the rAF-unscheduled trap, and
-        # `compute_frame_stats` already refuses to score it. Pooled, such a window was skipped by the
-        # `continue` above (no deltas, no wall time, no worst frame) so the REMAINING windows answered
-        # for the whole cell and a complete freeze came back clean: a 4 s frozen window beside a smooth
-        # one scored 0.0% time in jank and a 40 ms worst frame, byte-identical to the cell without the
-        # freeze. An unmeasured window is not an absent one.
+        # An unscheduled-rAF window poisons the pool instead of being skipped, or a freeze scores clean.
         reason = (
             f"{frameless} window(s) recorded no frames at all (rAF may be unscheduled), so the "
             "pooled frame metrics would describe only the windows that were measured"
@@ -312,13 +269,8 @@ def _stream_windows(windows: Sequence[Mapping[str, Any]]) -> tuple[list[Mapping[
                 str(sc.get("reply_chars_delta_reason") or "the reply's growth was not measurable")
             )
             continue
-        # THE INSTRUMENT'S OWN VERDICT ON ITS DENOMINATOR, consulted here because this is the only place
-        # that can act on it. `instruments/streamcost.py` marks a window unscoreable when an SSE frame
-        # failed to parse or an unterminated frame was still buffered at its close, and per the HTML
-        # standard an event is dispatched only at the blank line that terminates it, so those characters
-        # cannot be recovered. Every cost-per-character divided by that short delta comes out inflated.
-        # `is False` and not falsiness: a payload recorded before the flag existed carries no key at all,
-        # and those windows are admitted as they were rather than voided wholesale.
+        # Unparsed or unterminated SSE frames lose characters, inflating per-char cost.
+        # `is False` so payloads recorded before the flag existed are still admitted.
         if sc.get("reply_chars_scoreable") is False:
             reject(
                 str(
@@ -429,18 +381,8 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
             for k, u in unit_by_key.items()
         }
 
-    # A CELL WHOSE RECORDER DIED IS A TRUNCATED CELL, not a short one. `rejected` above is read only
-    # when NOTHING qualified, so once one window has qualified every later rejection is discarded,
-    # including the one saying the page went away. The streaming metrics are integrals divided by
-    # streamed characters, and both halves miss the same unmeasured stretch, so the result is not a
-    # wide error bar but a number computed over whatever ran before the crash.
-    # Measured on the payload corpus: 138 unaided windows record `unavailable` while a qualifying
-    # window precedes them, carrying `TargetClosedError` / `Page.evaluate: Target crashed`. They are
-    # all AFTER the last qualifying window, which is not evidence they are ordinary end-of-stream
-    # windows (a crash is trailing by construction) and they are long, median 11.0 s.
-    # `unavailable` was consumed nowhere in this module before, so the crash signal was dropped in
-    # full. Poisoning here costs 12 cells of 1,461 that currently publish, and every one is a
-    # genuine page crash.
+    # A recorder crash after a qualifying window truncates the cell; poison it rather than score
+    # the partial integral.
     crashed = sorted(
         {
             str(sc.get("unavailable"))
@@ -458,8 +400,6 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
         )
         return {k: Measure.failed(u, reason) for k, u in unit_by_key.items()}
 
-    # Every streaming quantity comes from the UNAIDED windows. See _unaided for why the targeted
-    # numerator is not exempt, which is the one thing here that measurement overturned.
     unaided = _unaided(picked)
     chars = 0
     delta_task_ms = 0.0
@@ -541,14 +481,7 @@ def _stream_measures(windows: Sequence[Mapping[str, Any]]) -> dict[str, Measure]
         )
     )
     if frameless:
-        # THE SAME RULE AS `_frame_measures`, ON THE SAME SHAPE OF WINDOW, AND FOR THE SAME REASON.
-        # `instruments/frames.js` emits `frames_attempted: true` with an empty `frame_gaps_ms` and a null
-        # `max_frame_ms` whenever the rAF loop was never scheduled, and that is a rendering fact: on a
-        # headless engine the loop runs off the rendering pipeline, so a stalled renderer stops
-        # delivering callbacks while SSE keeps arriving. Skipped rather than refused, one frozen window
-        # beside one smooth one reported a 16.7 ms worst frame and 0.0% time in jank. Only the three
-        # FRAME metrics are poisoned; cost, busy and characters come from `stream_cost`, which measured
-        # the window fine.
+        # Same rule as `_frame_measures`: an unscheduled rAF loop poisons the three frame metrics only.
         reason = (
             f"{frameless} unaided streaming window(s) recorded no frames at all (rAF may be "
             "unscheduled), so the pooled streaming frame metrics would describe only the windows "
@@ -604,11 +537,8 @@ def measures_from_records(
             and str(w.get("kind") or "") not in UNSCORED_WINDOW_KINDS
         ]
         frames = _frame_measures(windows)
-        # The streaming phase is NOT in METRIC_BY_KEY, deliberately. The anchor table is hashed into
-        # `weights_id` and a report comparing two runs with different values is refused, so a seventh
-        # weighted metric would make every existing run incomparable. These are scored through the
-        # per-metric floor table instead and the composite score is left alone; giving them anchors and
-        # a weight is a separate decision for anchors.py.
+        # Not in METRIC_BY_KEY on purpose: anchors are hashed into `weights_id`, so adding one would
+        # make every existing run incomparable.
         stream = _stream_measures(windows)
 
         readings: dict[str, Measure] = {}
@@ -624,8 +554,7 @@ def measures_from_records(
                     METRIC_BY_KEY[key].unit, f"no source is wired for {key}"
                 )
 
-        # Repetitions of the same rung: keep the first and let the caller ask for reps explicitly.
-        # Silently averaging reps here would hide a bimodal rung.
+        # Keep the first rep; averaging here would hide a bimodal rung.
         by_rung.setdefault(rung, readings)
 
     return by_rung
@@ -662,9 +591,6 @@ def measures_by_cell(
         for readings in single.values():
             out[(int(tokens), rep)] = readings
     return out
-
-
-# ── was there an instrument in the shot ──────────────────────────────
 
 
 def probe_scripts(records: Sequence[Mapping[str, Any]]) -> list[str]:

@@ -90,7 +90,7 @@ def _deepseek_v3():
         max_position_embeddings = 64,
         use_cache = False,
         attn_implementation = "eager",
-        # A suite that imported Unsloth under a CUDA spoof would route experts to a GPU kernel.
+        # Under a CUDA spoof Unsloth would route experts to a GPU kernel.
         experts_implementation = "eager",
     )
     return transformers.DeepseekV3ForCausalLM(config).eval()
@@ -111,7 +111,6 @@ def _qwen2_moe():
         num_experts_per_tok = 2,
         max_position_embeddings = 64,
         attn_implementation = "eager",
-        # A suite that imported Unsloth under a CUDA spoof would route experts to a GPU kernel.
         experts_implementation = "eager",
     )
     return transformers.Qwen2MoeForCausalLM(config).eval()
@@ -145,11 +144,11 @@ def test_dense_and_shared_expert_linears_keep_lora(target_modules):
 
     lora_linears = _lora_linears(peft_model)
     assert dense <= lora_linears
-    assert "model.layers.1.mlp.gate" not in lora_linears  # the router is not an nn.Linear
+    assert "model.layers.1.mlp.gate" not in lora_linears
     if isinstance(target_modules, str) and not hasattr(twc, "_resolve_string_target_modules"):
-        return  # peft 0.19 cannot resolve a string against the model: the experts stay unconverted
+        return  # peft 0.19 cannot resolve a string against the model
     experts = peft_model.base_model.model.model.layers[1].mlp.experts
-    assert isinstance(experts, ParamWrapper)  # the fused experts are still converted
+    assert isinstance(experts, ParamWrapper)
 
 
 def test_regex_keeps_its_scope():
@@ -187,7 +186,7 @@ def test_non_linear_namesake_does_not_veto_the_linears():
 
 
 def test_quantized_linear_that_is_not_nn_linear_is_restored():
-    class QuantLinear(nn.Module):  # GPTQ / AWQ style: PEFT reads in/out features, no nn.Linear base
+    class QuantLinear(nn.Module):
         def __init__(self, inner):
             super().__init__()
             self.in_features, self.out_features = inner.in_features, inner.out_features
@@ -200,11 +199,11 @@ def test_quantized_linear_that_is_not_nn_linear_is_restored():
     config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj", "up_proj", "down_proj"])
     twc.convert_peft_config_for_transformers(config, model, None)
     assert {"gate_proj", "up_proj", "down_proj"} <= set(config.target_modules)
-    assert "gate" not in set(config.target_modules)  # the router stays a parameter target
+    assert "gate" not in set(config.target_modules)
 
 
 def test_eetq_style_linear_without_feature_attributes_is_restored():
-    class EetqLinear(nn.Module):  # transformers' EetqLinear keeps only weight / weight_scales
+    class EetqLinear(nn.Module):
         def __init__(self, inner):
             super().__init__()
             self.weight = nn.Parameter(inner.weight.detach().t().clone(), requires_grad = False)
@@ -218,7 +217,7 @@ def test_eetq_style_linear_without_feature_attributes_is_restored():
 
 
 def test_qwen2_moe_converts_like_transformers_5_5():
-    # transformers <= 5.5 mapped qwen2_moe onto itself, so PEFT's fused-pair check applies on every release.
+    # transformers <= 5.5 mapped qwen2_moe onto itself, so PEFT's fused-pair check applies.
     with pytest.raises(ValueError, match = "without also targeting up_proj"):
         get_peft_model(_qwen2_moe(), LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj"]))
 
@@ -258,7 +257,6 @@ def test_model_without_dense_namesakes_converts_as_before():
         r = 4, lora_alpha = 8, target_modules = ["q_proj", "gate_proj", "up_proj", "down_proj"]
     )
     twc.convert_peft_config_for_transformers(lora, model, None)
-    # PEFT's own legacy conversion, untouched: gate + up fuse into one rank-2r LoRA.
     assert set(lora.target_modules) == {"q_proj"}
     assert set(lora.target_parameters) == {"gate_up_proj", "down_proj"}
     assert lora.rank_pattern == {r".*\.gate_up_proj": 8}
@@ -320,9 +318,9 @@ def test_v4_adapter_reloads_dense_and_expert_weights(tmp_path, make_model):
     with torch.no_grad():
         base_logits = model(input_ids = x).logits
         expected = reference(input_ids = x).logits
-        # torch_device: suites that spoof CUDA on a CPU runner would send the load to a missing GPU.
+        # Suites that spoof CUDA on a CPU runner would send the load to a missing GPU.
         loaded = PeftModel.from_pretrained(model, str(tmp_path), torch_device = "cpu").eval()
         got = loaded(input_ids = x).logits
 
-    assert (expected - base_logits).abs().max() > 1e-2  # the adapter matters
+    assert (expected - base_logits).abs().max() > 1e-2
     assert torch.allclose(got, expected, atol = 1e-5, rtol = 1e-4), (got - expected).abs().max()

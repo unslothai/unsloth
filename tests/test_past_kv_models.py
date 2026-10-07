@@ -69,7 +69,7 @@ def test_generate_from_history_cache_matches_full_prompt(model_and_tokenizer):
         _generate(model, full, past_key_values = past) for past in (cache, _as_tuple(cache), cache)
     ]
     tokens, logits = runs[0]
-    # Chunked vs full prefill differs only by bf16 rounding; tiny random models have 1-ulp logit ties.
+    # Chunked vs full prefill differs by bf16 rounding; tiny models have 1-ulp logit ties.
     assert (logits - expected_logits).abs().max() <= tolerance
     assert tokens[0] == expected_tokens[0]
     for other_tokens, other_logits in runs[1:]:

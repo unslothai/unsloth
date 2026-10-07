@@ -35,11 +35,8 @@ DEPS_PATH = REPO_ROOT / "unsloth_cli" / "_studio_deps.py"
 MANIFEST_PATH = REPO_ROOT / "studio" / "install_manifest.py"
 REQUIREMENTS = REPO_ROOT / "studio" / "backend" / "requirements"
 
-# `install_python_stack._filter_requirements` writes `.{stem}-filtered-XXXX.txt` BESIDE its
-# source, which is this very directory, so the tests that exercise it create and delete files
-# here while these copy it. Under xdist that is two workers on one directory, and copytree
-# raised "No such file or directory" for a name that existed when it listed the tree and was
-# gone by the time it read it. Never a real requirement, so skip them rather than racing.
+# _filter_requirements writes .*-filtered-*.txt beside its source (this dir); under xdist
+# copytree races another worker deleting it.
 _GENERATED_FILTERS = shutil.ignore_patterns(".*-filtered-*.txt")
 
 
@@ -350,9 +347,6 @@ def test_editable_foreign_install_follows_its_requirements_checkout(cross_venv):
     assert state["reason"] is None
 
 
-# ── import name vs distribution name ─────────────────────────────────
-
-
 @pytest.fixture
 def deps():
     return _load(DEPS_PATH, "studio_deps_under_test")
@@ -437,9 +431,6 @@ def test_a_torn_tree_without_the_manifest_helper_is_incomplete(tmp_path, monkeyp
 
     assert state["ok"] is False, state
     assert state["reason"] == "studio_install_manifest_missing"
-
-
-# ── which prefix owns the manifest module ────────────────────────────
 
 
 def test_a_manifest_inside_a_venv_site_packages_is_owned_by_that_venv(tmp_path, deps):
@@ -701,10 +692,7 @@ def test_the_real_requirements_copy_survives_a_file_vanishing_mid_copy(tmp_path)
     vanishing.write_text("torch\n", encoding = "utf-8")
 
     def _delete_then_copy(src, dst, *args, **kwargs):
-        # Stand in for the other worker: the name was listed, now it is gone. Passed as
-        # `copy_function` rather than patched onto `shutil`, because copytree binds copy2 as a
-        # default argument at definition, so patching the module attribute does nothing and
-        # this test would pass without exercising anything.
+        # copytree binds copy2 as a default arg, so patching shutil does nothing.
         vanishing.unlink(missing_ok = True)
         return shutil.copy2(src, dst, *args, **kwargs)
 

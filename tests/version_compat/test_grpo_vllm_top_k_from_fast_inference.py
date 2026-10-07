@@ -73,6 +73,6 @@ def test_a_user_top_k_is_kept(top_k):
 
 
 def test_a_model_without_vllm_keeps_none():
-    # HF generate reads None as "use the model's generation_config", so it must survive.
+    # HF generate reads None as 'use generation_config', so it must survive.
     args = _run(_vllm_setter_block(), types.SimpleNamespace(), use_vllm = False, top_k = None)
     assert args.top_k is None and args.use_vllm is False

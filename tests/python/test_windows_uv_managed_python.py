@@ -131,7 +131,6 @@ def test_nothing_found_falls_back(shell, tmp_path):
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_skipped_patch_is_excluded_from_the_request(shell, tmp_path):
     result, calls = _resolve(shell, tmp_path, find = sys.executable, skip = [HOST_FULL])
-    # The fake uv still answers with the skipped interpreter, so the post-check refuses it.
     assert result is None
     assert calls[0] == f"python install --no-bin --no-registry {RANGE}"
     assert calls[1] == f"python find --system --managed-python {RANGE}"

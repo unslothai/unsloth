@@ -70,8 +70,7 @@ class _Locator:
 def test_a_control_that_arrives_late_is_returned(fake_playwright):
     locator = _Locator()
     assert wait_for_first(locator) is locator
-    # "attached", not "visible": the callers go on to `click(force = True)`, and a
-    # control inside a just-opened menu can be attached before it has settled.
+    # "attached", not "visible": callers then `click(force = True)` on unsettled menus.
     assert locator.waited_state == "attached"
 
 

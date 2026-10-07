@@ -12,7 +12,6 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def, is_bound
 
 
-# ST is unpinned in pyproject.toml; track the last few minors plus main.
 ST_TAGS = [
     "v5.0.0",
     "v5.1.2",
@@ -24,11 +23,9 @@ ST_TAGS = [
     "master",
 ]
 
-# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
 pytestmark = pytest.mark.parametrize("tag", ST_TAGS)
 
 
-# Top-level: SentenceTransformer + SentenceTransformerTrainer must be importable.
 def test_st_top_level_exports(tag: str):
     src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert src is not None, f"{tag}: sentence_transformers/__init__.py missing"
@@ -40,11 +37,9 @@ def test_st_top_level_exports(tag: str):
     )
 
 
-# Sub-modules: unsloth walks `sentence_transformers.models` for these classes.
 def test_st_models_re_exports(tag: str):
     """Transformer / Pooling / Normalize must stay reachable via
     `sentence_transformers.models` despite the ST 5.4 package reorg."""
-    # Layout 1 (legacy < 5.4): sentence_transformers/models[.py|/__init__.py].
     legacy_candidates = [
         "sentence_transformers/models/__init__.py",
         "sentence_transformers/models.py",
@@ -61,8 +56,7 @@ def test_st_models_re_exports(tag: str):
         )
         return
 
-    # ST 5.4+ modular layout: classes moved under base/modules and sentence_transformer/modules;
-    # backward compat wired via setup_deprecated_module_imports in __init__.py.
+    # ST 5.4+ moved classes under base/modules and sentence_transformer/modules.
     expected_paths = {
         "Transformer": [
             "sentence_transformers/base/modules/transformer.py",
@@ -74,10 +68,7 @@ def test_st_models_re_exports(tag: str):
             "sentence_transformers/sentence_transformer/Pooling.py",
         ],
         "Normalize": [
-            # ST master moved Normalize down beside Transformer under base/modules, which is where the reorg has been
-            # heading: Transformer above already lists its base/modules path first.
-            # Released 5.4 through 5.6 still keep it under sentence_transformer/modules, so both spellings stay listed
-            # and every tag in ST_TAGS resolves.
+            # ST master moved Normalize under base/modules; 5.4 to 5.6 keep it elsewhere, so list both.
             "sentence_transformers/base/modules/normalize.py",
             "sentence_transformers/sentence_transformer/modules/normalize.py",
             "sentence_transformers/sentence_transformer/Normalize.py",
@@ -91,7 +82,6 @@ def test_st_models_re_exports(tag: str):
         else:
             pytest.fail(f"{tag}: ST 5.4+ layout: class {cls} not found in any of {paths}")
 
-    # The backward-compat shim must be wired so `from ...models import Pooling` keeps working.
     top = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert top is not None, f"{tag}: sentence_transformers/__init__.py missing"
     has_shim = bool(
@@ -105,7 +95,6 @@ def test_st_models_re_exports(tag: str):
     )
 
 
-# Transformer base class: unsloth probes alternate paths; at least ONE must resolve.
 def test_st_transformer_base_class_either_path(tag: str):
     candidates = [
         "sentence_transformers/models/Transformer.py",
@@ -124,7 +113,6 @@ def test_st_transformer_base_class_either_path(tag: str):
     )
 
 
-# Transformer.load classmethod: unsloth builds saved-ST modules through it (#6881).
 def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
     """unsloth builds saved ST models via Transformer.load(...) so the saved
     modality_config is honored (#6881). If .load stops accepting the hub kwargs it
@@ -159,7 +147,6 @@ def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
     pytest.skip(f"{tag}: Transformer.load not locatable in {candidates} (may be inherited)")
 
 
-# sentence_transformers.util: import_from_string + load_dir_path helpers unsloth calls.
 def test_st_util_helpers(tag: str):
     """util.{import_from_string, load_dir_path} must resolve; accept either the
     flat or the ST 5.4+ package layout, or a re-export from a util submodule."""

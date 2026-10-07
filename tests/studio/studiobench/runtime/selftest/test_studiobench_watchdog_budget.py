@@ -27,7 +27,6 @@ from studiobench import __main__ as cli  # noqa: E402
 from studiobench.runtime import browser as browser_mod  # noqa: E402
 from studiobench.runtime import lifecycle  # noqa: E402
 
-#: What the README documents for one `install.sh`, and what `install_studio` allows it.
 INSTALL_BUDGET_S = 45 * 60
 
 

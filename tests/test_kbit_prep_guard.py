@@ -83,10 +83,8 @@ def trl_modules(monkeypatch):
     utils.PeftModel = FakePeftModel
     utils.prepare_model_for_kbit_training = lambda m, **kw: m
     utils.CALLS = calls
-    # inspect.getsource reads through linecache, and an installed TRL has a real
-    # file behind it. Seed the cache so the fixture is readable the same way,
-    # otherwise the guard bails for a reason that never occurs in the field and
-    # every assertion below passes vacuously.
+    # inspect.getsource reads through linecache; seed it or the guard bails and every
+    # assertion below passes vacuously.
     _seed_linecache(utils.__file__, TRL_0_22_2_SOURCE)
     exec(compile(TRL_0_22_2_SOURCE, utils.__file__, "exec"), vars(utils))
 
@@ -97,7 +95,6 @@ def trl_modules(monkeypatch):
     models.prepare_peft_model = utils.prepare_peft_model
     trl.models = models
 
-    # Every trainer module that does `from ..models import prepare_peft_model`.
     trainers = {}
     for name in (
         "sft_trainer",

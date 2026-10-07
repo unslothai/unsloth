@@ -77,12 +77,10 @@ LAN_STATUS = {
     "keyless_scope": "off",
     "keyless_tools": False,
 }
-# The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
-# How long the Data module is held, and how far into that hold the deep-open is abandoned.
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
-# The Data panel's own module, however the server spells it (vite appends ?t=, ?v=).
+# vite appends ?t= or ?v= to module URLs.
 DATA_MODULE = re.compile(r"/data-tab(\.tsx)?(\?|$)")
 
 report: dict = {
@@ -209,14 +207,12 @@ def open_dialog(page, tab: str | None = None) -> None:
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
 
 
-# Only subpages put a back button in the panel header, so this is locale-independent.
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
     elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
-# Deep-open the archived chats, then walk away partway through the hold.
 ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
@@ -241,11 +237,7 @@ def run_abandoned_deep_open(page) -> None:
     dialog, so the Data module is still cold and the hold is what decides when it arrives.
     """
 
-    # Matched on the Data module alone rather than on everything. The sleep below runs on
-    # the driver thread, so a handler that sees every request makes the whole page's module
-    # load queue behind it, and the panel that arrives next has to be rendered by a main
-    # thread that got the lot at once. On a busy two-core runner that pushed the reopen
-    # below past its timeout even though nothing was wrong with the dialog.
+    # Match only the Data module: the handler sleeps on the driver thread, queueing every request it sees.
     def hold_data(route):
         time.sleep(DEEP_OPEN_HOLD_MS / 1000)
         return route.continue_()
@@ -278,7 +270,6 @@ def run_abandoned_deep_open(page) -> None:
     page.evaluate("() => window.__settingsSmoke.close()")
     page.wait_for_timeout(200)
 
-    # Dropping the abandoned ones must not drop the honoured ones.
     page.evaluate("() => window.__settingsSmoke.openArchived('chats')")
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
     settle_panel(page)
@@ -299,12 +290,7 @@ def run_chunk_fail(page) -> None:
     settle_panel(page)
     click_forced(page.locator('[data-testid="settings-tab-general"]'), timeout = 15000)
     settle_panel(page)
-    # Read the nav size instead of hardcoding it. The invariant is that blocking a
-    # panel does not collapse the dialog, not that the dialog has any particular
-    # number of tabs. The hardcoded 12 outlived its truth once a page was added,
-    # and this smoke started failing with "took the dialog down" while reporting
-    # dialog: True, which reads like an error-handling regression and was a stale
-    # constant.
+    # Read the nav size: the invariant is that a blocked panel does not collapse the dialog.
     nav_before = page.evaluate(
         "() => document.querySelectorAll('[data-testid^=\"settings-tab-\"]').length"
     )
@@ -325,7 +311,6 @@ def run_chunk_fail(page) -> None:
     )
     report["chunk_fail_state"] = state
     log(f"after blocking {CHUNK_FAIL}: {state}")
-    # The idle prefetch pulls every panel, so a blocked one must not surface as a rejection.
     errors = page.evaluate("() => window.__settingsSmoke.errors()")
     report["chunk_fail_window_errors"] = errors
     unhandled = [
@@ -347,7 +332,6 @@ def run_chunk_fail(page) -> None:
         )
     else:
         log("the dialog and its twelve nav entries survived")
-    # Another tab must still work.
     click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     after = settle_panel(page)
     report["chunk_fail_recovery"] = after
@@ -476,29 +460,23 @@ def run_keystroke_search(page) -> None:
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
     page.wait_for_timeout(SETTLE_MS)
-    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
-    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
-    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    # bindingFromEvent drops Meta chords off macOS, so pick the modifier as isMacPlatform() does.
     mac = page.evaluate(
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )
     mod = "Meta" if mac else "Control"
     state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
 
-    # A chord narrows to what answers to it: ⇧⌘O is New chat's, and New standalone
-    # chat sits on ⌥⌘O, which does not carry the Shift.
     page.keyboard.press(f"{mod}+Shift+KeyO")
     page.wait_for_timeout(SETTLE_MS)
     state["chord"] = box.input_value()
     state["chord_rows"] = page.evaluate(rows_js)
 
-    # The bare key widens to every chord built on it, ⌥⌘O included.
     page.keyboard.press("KeyO")
     page.wait_for_timeout(SETTLE_MS)
     state["bare_rows"] = page.evaluate(rows_js)
 
-    # Escape backs out a step at a time, and the dialog stays open for both. A dialog
-    # gone here is the bug this covers: the press reaching Radix before the box.
+    # A dialog gone here means the press reached Radix before the box.
     page.keyboard.press("Escape")
     page.wait_for_timeout(SETTLE_MS)
     open_after_first = page.locator('div[role="dialog"]').count()
@@ -549,12 +527,10 @@ def run(page) -> None:
         run_chunk_fail(page)
         return
 
-    # --- 1. a deep-open walked away from mid-load is not replayed later --------------
     run_abandoned_deep_open(page)
 
     assert_persisted_monitor_restores(page)
 
-    # --- 2. every tab renders when selected -----------------------------------------
     open_dialog(page)
     settle_panel(page)
     click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
@@ -577,7 +553,6 @@ def run(page) -> None:
             )
     report["steps"].append("all-tabs-render")
 
-    # --- 3. every lan address has actions bound to that address ----------------------
     run_lan_address_actions(page)
 
     page.evaluate("() => window.__settingsSmoke.close()")
@@ -602,8 +577,6 @@ def run(page) -> None:
         page.wait_for_timeout(200)
     report["steps"].append("deep-open")
 
-    # --- 5. search, then jump to a result and confirm the scroll target flashed ------
-    # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
     query = target_label.split()[0]
@@ -712,8 +685,7 @@ def main() -> int:
                         raise
                     time.sleep(2)
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
-            # Vite dev re-optimizes deps on first sight and full-reloads; settle, then reload once for a stable dep
-            # graph.
+            # Vite re-optimizes deps on first sight and full-reloads; settle, then reload once.
             page.wait_for_timeout(4000)
             page.reload(wait_until = "domcontentloaded")
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
@@ -734,7 +706,6 @@ def main() -> int:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
     except Exception as exc:
-        # A cold-start dev server can fail to serve a module before anything is under test.
         report["aborted"] = f"{type(exc).__name__}: {exc}"
         fail(f"harness aborted: {report['aborted'].splitlines()[0]}")
         write_report()

@@ -1,7 +1,6 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Shortcut icon refresh via a child interpreter where WDAC refuses the runtime type; must never fail an install.
 # Run: pwsh -NoProfile -File tests/studio/test_early_python_icon_refresh.ps1
 
 $ErrorActionPreference = "Stop"
@@ -20,8 +19,7 @@ if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 ha
 foreach ($name in @(
     "Invoke-StudioEarlyPythonScript", "Invoke-StudioEarlyPython", "Get-StudioEarlyPython",
     "Invoke-StudioPythonShellIconRefresh",
-    # What Get-StudioEarlyPython reaches on Windows: the elevation gate and its helpers. Off
-    # Windows it never calls them, which is how a missing one once passed here and failed CI.
+    # Off Windows these are never called, so a missing one would only fail on Windows CI.
     "Test-StudioChildScriptDirectoryElevated", "Invoke-StudioSystem32ToolBounded", "Get-StudioSystem32Tool", "Test-StudioPathUnderAdminRoot",
     "Test-StudioSddlRightsAreWrite", "Test-StudioSddlPrincipalIsAdminOnly",
     "Test-StudioSddlWritableByNonAdmin", "Test-StudioDirectoryIsAdminOnly", "Test-StudioInterpreterFileIsAdminOnly",
@@ -38,17 +36,12 @@ function Get-ElevationState { return "false" }
 
 if ($env:OS -eq "Windows_NT") { function Test-StudioChildScriptDirectoryElevated { return $false } }
 
-# The kill switch would make discovery decline; its own cases below set it explicitly.
 Remove-Item Env:UNSLOTH_EARLY_PYTHON_PROBE -ErrorAction SilentlyContinue
 $script:StudioEarlyPythonProbed = $false
 $script:StudioEarlyPython = $null
 if (-not (Get-StudioEarlyPython)) {
-    # "No interpreter" is a real and supported state, so it is a skip. But it is also what a
-    # BROKEN EXTRACTION looks like from here: a helper this file forgot to pull out of
-    # install.ps1 makes Get-StudioEarlyPython fail, the probe finds nothing, and the suite exits 0
-    # having tested nothing. That happened once and CI recorded it as a pass. Tell the two apart.
-    # The documented opt-out first. UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter
-    # on this host", so discovery returning nothing is the switch working, not a broken extraction.
+    # "No interpreter" also looks like a broken extraction, so tell the two apart; the
+    # UNSLOTH_EARLY_PYTHON_PROBE=0 opt-out is checked first.
     if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") {
         Write-Host "  SKIP  UNSLOTH_EARLY_PYTHON_PROBE=0, so this rung is switched off by request" -ForegroundColor Yellow
         exit 0
@@ -62,12 +55,10 @@ if (-not (Get-StudioEarlyPython)) {
             if ($usable) { break }
             if ([string]::IsNullOrWhiteSpace($src)) { continue }
             if ("$src" -match '(?i)[\\/]Microsoft[\\/]WindowsApps[\\/]') { continue }
-            # The installer's own elevated rule: an elevated run refuses an interpreter a standard user
-            # can replace, so such a candidate is not one discovery should have found.
             if ($elevatedHost -and -not (Test-StudioPathUnderAdminRoot -Path $src)) { continue }
             $here = Split-Path -Parent $src
             if ([string]::IsNullOrWhiteSpace($here)) { continue }
-            # In a job with a deadline: a shim that starts and never exits must be a skip, not a hang.
+            # A shim that never exits must be a skip, not a hang.
             $job = Start-Job -ArgumentList $src, $here -ScriptBlock {
                 param($exe, $dir)
                 "$(& $exe -I -S -c "import pathlib,sys`nsys.exit(2) if sys.version_info < (3,8) else None`nsys.stdout.write(str(pathlib.Path(sys.argv[1]).resolve(strict=True)))" $dir 2>$null)"
@@ -111,7 +102,6 @@ try {
     Check "every shortcut written is named to the child, not just the last" (
         $script:RunnerCalls -eq 1 -and ($script:RunnerArgs -join "|") -eq ($links -join "|"))
 
-    # Only the child's answer counts as success.
     $script:RunnerOutput = ""
     Check "control: a silent child is not success" (
         (Invoke-StudioPythonShellIconRefresh -Paths $links) -eq $false)
@@ -129,7 +119,6 @@ try {
     Check "an empty shortcut list is handled" (
         $null -ne (Invoke-StudioPythonShellIconRefresh -Paths @()))
 
-    # A passed interpreter wins over a cached discovery miss from before the install.
     $savedFinder = ${function:Get-StudioEarlyPython}
     function Get-StudioEarlyPython {
         if ($script:StudioEarlyPythonProbed) { return $script:StudioEarlyPython }
@@ -164,13 +153,7 @@ try {
         $shortcutFn -notmatch 'Test-StudioPathUnderAdminRoot' -and
         $shortcutFn -notmatch 'iconRefreshSafe')
 
-    # The kill switch must still win, even with an interpreter handed straight in.
-    #
-    # UNSLOTH_EARLY_PYTHON_PROBE=0 means "do not spawn an interpreter on this host". That is a
-    # statement about the host, not about how the path was obtained, and Get-StudioEarlyPython
-    # honours it. Passing $ManagedPythonPath to fix the fresh-install case routed around
-    # discovery and therefore around the switch, so a host that had opted out got a child process
-    # anyway. Driven both ways, because the fix is one line and easy to lose.
+    # The kill switch must win even with an interpreter passed straight in.
     $savedProbe = $env:UNSLOTH_EARLY_PYTHON_PROBE
     try {
         $env:UNSLOTH_EARLY_PYTHON_PROBE = "0"
@@ -191,7 +174,6 @@ try {
         else { $env:UNSLOTH_EARLY_PYTHON_PROBE = $savedProbe }
     }
 
-    # Elevated, the venv interpreter runs only once the destination guard has passed: --shortcuts-only never gets there.
     function Get-ElevationState { return "true" }
     $script:RunnerCalls = 0
     Check "an elevated run before the destination guard refuses the interpreter" (
@@ -222,7 +204,7 @@ $fnAst = $ast.FindAll({ param($n)
 }, $true)[0]
 $probeText = $fnAst.Extent.Text
 
-# Per-item SHCNE_UPDATEITEM is required (the global broadcast misses in-place .lnk rewrites); SHCNF_FLUSH since the child exits at once.
+# Per-item SHCNE_UPDATEITEM: the global broadcast misses in-place .lnk rewrites.
 Check "the probe sends SHCNE_UPDATEITEM with SHCNF_PATHW per shortcut, flushed" (
     $probeText -match "SHChangeNotify\(0x00002000,0x1005,p,None\)")
 Check "the probe still sends the global SHCNE_ASSOCCHANGED broadcast, flushed" (
@@ -234,8 +216,7 @@ $source = Get-Content -LiteralPath $installPs1 -Raw
 Check "no emitted shell-icon type is left to try first" ($source -notmatch "UnslothShellIconRefresh")
 Check "the refresh goes straight through the child interpreter" (
     $source -match "Invoke-StudioPythonShellIconRefresh")
-# Cosmetic, and it must stay that way: a failure here cannot be allowed to fail an install.
-# Single-quoted, so PowerShell does not eat the `$ as an escape and quietly change the pattern.
+# Single-quoted, so PowerShell does not eat the `$ as an escape.
 Check "the call is still wrapped so a failure cannot fail the install" (
     $source -match '(?s)try \{[^{}]*Invoke-StudioPythonShellIconRefresh[^{}]*\} catch \{\}')
 

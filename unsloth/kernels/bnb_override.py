@@ -60,7 +60,6 @@ class _NF4Linear(torch.autograd.Function):
     def backward(ctx, dY):
         weight, quant_state = ctx.unsloth_nf4
         W = _U.fast_dequantize(weight, quant_state)
-        # bitsandbytes MatMul4Bit.backward: matmul(dY, dequantize_4bit(B).to(dY.dtype)).
         return torch.matmul(dY, W.to(dY.dtype)), None, None, None
 
 
@@ -86,7 +85,7 @@ def _bnb_ops_traceable():
 
 
 _BNB_OPS = False
-# bitsandbytes >= 0.50 fused 4-bit GEMM row cap (backends/cuda/ops.py _gemm_4bit_custom_max_m).
+# bitsandbytes >= 0.50 fused 4-bit GEMM row cap (_gemm_4bit_custom_max_m).
 _BNB_FUSED = False
 _BNB_FUSED_MAX_ROWS = 1536
 _BNB_PICK = None
@@ -100,7 +99,7 @@ def _bnb_has_fused_gemm():
 
 
 def _bnb_fused_heuristic():
-    # bitsandbytes' own fused-vs-dequantize choice for gemm_4bit (backends/cuda/ops.py, 0.50).
+    # Mirrors bitsandbytes' own fused-vs-dequantize choice for gemm_4bit (0.50).
     try:
         from bitsandbytes.backends.cuda import ops
 

@@ -46,11 +46,7 @@ def _load_pid_alive(platform: str, fake_run = None):
     return ns["_pid_alive"]
 
 
-# ── AST: stop() must not use the broken bare liveness probe ──────────────────
-
-
-# `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would let os.kill(pid, 0) come back one
-# function along and still pass.
+# `stop` delegates to `_signal_stop`, so both must be guarded against os.kill(pid, 0).
 @pytest.mark.parametrize("func", ["stop", "_signal_stop"])
 def test_stop_does_not_use_bare_oskill_liveness_probe(func):
     """The signalling path must not call os.kill(pid, 0) -- WinError 87 on Windows."""
@@ -78,16 +74,12 @@ def test_stop_does_not_use_bare_oskill_liveness_probe(func):
 def test_pid_alive_helper_is_defined_and_used_by_stop():
     assert "def _pid_alive(" in _SOURCE, "_pid_alive helper missing"
     assert "_pid_alive(pid)" in _func_source("stop"), "stop() must use _pid_alive"
-    # The kill itself moved into _signal_stop; keep both ends of the path pinned.
     assert "def _signal_stop(" in _SOURCE, "_signal_stop helper missing"
     assert "taskkill" in _func_source("_signal_stop")
-    # The helper must special-case Windows via tasklist (os.kill(pid,0) is invalid there).
+    # os.kill(pid, 0) is invalid on Windows, so the helper uses tasklist there.
     helper = _func_source("_pid_alive")
     assert 'sys.platform == "win32"' in helper
     assert "tasklist" in helper
-
-
-# ── Behavioral: the win32 tasklist branch ────────────────────────────────────
 
 
 def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
@@ -99,7 +91,7 @@ def _fake_tasklist(returns_pid: int | None, *, raises: bool = False):
         **decode_kwargs,
     ):
         assert cmd[0] == "tasklist"
-        assert "/FI" in cmd  # filtered by PID
+        assert "/FI" in cmd
         if raises:
             raise OSError("boom")
         if returns_pid is None:
@@ -122,12 +114,9 @@ def test_pid_alive_windows_false_when_tasklist_empty():
 
 
 def test_pid_alive_windows_assumes_alive_when_tasklist_errors():
-    # Can't determine -> assume alive; taskkill is the source of truth.
+    # Undeterminable means alive; taskkill is the source of truth.
     pid_alive = _load_pid_alive("win32", fake_run = _fake_tasklist(None, raises = True))
     assert pid_alive(4242) is True
-
-
-# ── Behavioral: the POSIX signal-0 branch (skip on Windows runners) ───────────
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX os.kill(pid,0) branch")
@@ -137,7 +126,7 @@ def test_pid_alive_posix_true_for_self_false_for_dead():
     assert pid_alive(2_000_000_000) is False
 
 
-# What a localized tasklist writes, which -X utf8 decodes as UTF-8 (#10173).
+# What a localized tasklist writes, which -X utf8 decodes as UTF-8.
 _LOCALIZED_TASKLIST = (
     "import sys\n"
     "sys.stdout.buffer.write('\\u4fe1\\u606f: \\u6ca1\\u6709\\u8fd0\\u884c\\u7684\\u4efb\\u52a1\\u5339\\u914d\\u6307\\u5b9a\\u6807\\u51c6\\u3002\\n'.encode('gbk'))\n"
@@ -150,7 +139,7 @@ def test_pid_alive_reads_a_localized_tasklist_notice(tmp_path):
 
     def run_fake_tasklist(command, *args, **kwargs):
         assert command[0] == "tasklist"
-        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        kwargs.setdefault("encoding", "utf-8")
         return subprocess.run([sys.executable, str(fake), *command[1:]], *args, **kwargs)
 
     pid_alive = _load_pid_alive("win32", fake_run = run_fake_tasklist)
@@ -168,7 +157,7 @@ def test_a_profile_that_does_not_decode_fails_loudly(monkeypatch, tmp_path, caps
     def run_fake_cmd(command, *args, **kwargs):
         if command[0] != "cmd.exe":
             return real_check_output(command, *args, **kwargs)
-        kwargs.setdefault("encoding", "utf-8")  # what the launcher's -X utf8 does
+        kwargs.setdefault("encoding", "utf-8")
         return real_check_output([sys.executable, str(fake)], *args, **kwargs)
 
     monkeypatch.delenv("USERPROFILE", raising = False)

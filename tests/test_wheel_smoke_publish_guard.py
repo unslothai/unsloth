@@ -61,13 +61,11 @@ PROLOGUE = "#!/bin/bash\nset -euo pipefail\npython -m build\n"
     [
         "python -m twine upload dist/*.whl",
         "twine upload dist/*.whl",
-        # Flags that consume a value must not be mistaken for artifacts.
         "python -m twine upload -r pypi dist/*.whl",
         "python -m twine upload --repository-url https://upload.pypi.org/legacy/ dist/*.whl",
         "python -m twine upload --non-interactive dist/*.whl",
         "python -m twine upload dist/a-1-py3-none-any.whl dist/b-1-py3-none-any.whl",
         "python -m twine upload -s dist/*.whl",
-        # twine's credential env vars put an assignment in front of the command.
         "TWINE_USERNAME=__token__ python -m twine upload dist/*.whl",
         "TWINE_USERNAME=__token__ TWINE_PASSWORD=x twine upload dist/*.whl",
         "python -m twine upload --sign-with gpg2 dist/*.whl",
@@ -83,7 +81,6 @@ def test_wheel_only_uploads_pass(tmp_path, upload_line):
     "upload_line",
     [
         "python -m twine upload dist/*",
-        # Wheel first, sdist second: a first-argument-only check passes this.
         "python -m twine upload dist/*.whl dist/*.tar.gz",
         "python -m twine upload dist/*.tar.gz dist/*.whl",
         "python -m twine upload -r pypi dist/*.whl dist/unsloth-1.0.tar.gz",
@@ -111,7 +108,6 @@ def test_missing_upload_line_fails(tmp_path):
         ": twine upload dist/*.whl",
         "true twine upload dist/*.whl",
         "echo twine upload dist/*.whl",
-        # Stripping the assignment prefix must stop at the real command.
         "X=1 : twine upload dist/*.whl",
     ],
 )
@@ -128,7 +124,6 @@ def test_a_shell_no_op_is_not_an_upload(tmp_path, no_op):
         "cat <<'USAGE'\ntwine upload dist/*.whl\nUSAGE\n",
         "cat <<USAGE\ntwine upload dist/*.whl\nUSAGE\n",
         "cat <<-USAGE\n\ttwine upload dist/*.whl\n\tUSAGE\n",
-        # The delimiter is a shell word, not an identifier.
         "cat <<'PUBLISH-USAGE'\ntwine upload dist/*.whl\nPUBLISH-USAGE\n",
         "cat <<PUBLISH-USAGE\ntwine upload dist/*.whl\nPUBLISH-USAGE\n",
         "cat <<'EOF.TXT'\ntwine upload dist/*.whl\nEOF.TXT\n",
@@ -194,9 +189,7 @@ def test_build_sh_is_in_the_path_filters(event):
     assert "build.sh" in paths, f"{event} paths filter omits build.sh: {paths}"
 
 
-# testpaths = ["tests/security"] means a bare `pytest` never collects this module,
-# and a parser regression edits only wheel-smoke.yml. workflow-trigger-lint.yml is
-# the only job with no paths filter, so it is the only one that can catch that PR.
+# Bare pytest never collects this; workflow-trigger-lint.yml is the only unfiltered job.
 
 
 def _lint_doc():
@@ -221,14 +214,11 @@ def test_the_job_that_runs_this_module_has_no_paths_filter():
     doc = _lint_doc()
     on = _on_block(doc)
     for trigger in ("pull_request", "push"):
-        # Presence first: `continue` on a missing key let the trigger be deleted
-        # outright and still pass.
         assert trigger in on, (
             f"workflow-trigger-lint no longer runs on {trigger}, so this module stops "
             f"being collected for that event."
         )
         config = on.get(trigger)
-        # A bare `pull_request:` parses as None and filters nothing, which is fine.
         if not isinstance(config, dict):
             continue
         assert not config.get("paths") and not config.get("paths-ignore"), (

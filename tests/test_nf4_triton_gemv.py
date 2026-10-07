@@ -66,8 +66,7 @@ TOL = {torch.float16: 2e-3, torch.bfloat16: 1.2e-2}
 
 @pytest.fixture(params = [None, "narrow", "bytes", "words"], ids = ["auto", "narrow", "bytes", "words"])
 def kernel(request, monkeypatch):
-    # Both kernel forms, whichever this Triton version and GPU would pick on its own, and the
-    # T4 / L4 large-weight config on this GPU.
+    # Auto pick, each forced kernel form, and "narrow": the T4 / L4 large-weight config on this GPU.
     if request.param == "narrow":
         capability = torch.cuda.get_device_capability()
         monkeypatch.setattr(nf4_gemv, "_NARROW_CAPS", (capability,))
@@ -94,7 +93,7 @@ def test_matches_fp32_reference_and_bitsandbytes(shape, dtype, nested, kernel):
 
 
 def test_unaligned_weight_view_uses_the_byte_kernel(monkeypatch):
-    # The words kernel reads int32; a weight view starting off a 4 byte boundary must not reach it.
+    # The words kernel reads int32; a view off a 4 byte boundary must not reach it.
     monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", "words")
     q, s = _quant(1024, 4096, torch.float16)
     buf = torch.empty(q.numel() + 2, dtype = torch.uint8, device = "cuda")

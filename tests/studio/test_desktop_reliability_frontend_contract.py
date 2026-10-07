@@ -63,8 +63,6 @@ PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialo
 GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
-# The DataTransfer reading half moved here when long pastes became attachments
-# (#8472). Both halves are still one contract, so read them as one.
 CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
@@ -84,12 +82,7 @@ def _scale_constants() -> dict[str, str]:
     and provider.tsx uses the same constant as the CSS fallback, which is what keeps a
     single 34 in the codebase, so read it from there rather than repeating it here.
     """
-    # Raw. These are native chrome: the mac titlebar is 34px because the OS window
-    # decoration is, and the runtime divides it by the webview zoom rather than scaling it
-    # with the interface font. Read through `_ui_source`, a constant respelled as
-    # `calc(34px * var(--ui-space-scale, 1))` would collapse back to 34px here and every
-    # chrome contract downstream would agree with itself while the CSS moved off the
-    # native chrome it is supposed to sit against.
+    # Raw: native chrome is not UI-scaled, so a respelled 34px must not collapse back here.
     source = _window_chrome_source(INTERFACE_SCALE_RUNTIME)
     numbers = dict(re.findall(r"export const (\w+_PX) = (\d+);", source))
     return {
@@ -167,7 +160,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
+    # Scoped: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -204,7 +197,6 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
         1,
     )[1]
     give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
-    # Only a resolved policy may end the check without the in-app updater.
     assert "if (resolved) {" in give_up
     assert 'updateStatus("idle");' in give_up
     assert "await checkDesktopUpdate();" in manual_branch
@@ -231,7 +223,6 @@ def test_desktop_update_check_failures_are_retryable():
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user without guessing that every failure is a network problem.
     assert "description = update.checkError ?? label;" in settings
     assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
@@ -266,9 +257,8 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 
     assert "pickNativeChatImport" in projects
     assert "if (!isTauri)" in projects
-    # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in data_tab
-    # Open WebUI exports are .json arrays, so the picker takes that too.
+    # Open WebUI exports are .json arrays.
     assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
@@ -367,10 +357,9 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "if (!isDownloadCancelled(error)) toast.error(" in project_menu
     assert "const handleExport = useCallback(async () =>" in prompt_storage
     assert prompt_storage.count("await export") >= 12
-    # One native save at a time: the Library exports selected chats in a sequential loop.
+    # One native save at a time: concurrent exports would open the dialogs together.
     assert "for (const id of threadIds) await exportConversationByFormat(" in chats_library
     assert "await exportThreads(" in chats_library
-    # Promise.all / allSettled / any over exports would open the dialogs together.
     assert not re.search(r"Promise\.\w+\((?:(?!;).)*?\bexport\w*\(", chats_library, re.S)
     assert "await exportThreads(" in project_menu
     assert prompt_storage.count("await downloadBlob(") >= 5
@@ -418,22 +407,17 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     video_page = _ui_source(VIDEO_PAGE)
     rag_api = _ui_source(RAG_API)
 
-    # The backend mints this link relative so a proxy can serve it. Its consumers are
-    # <video src> and the download, none of which go through authFetch, so a relative
-    # path under Tauri resolves against the webview and yields the SPA shell.
+    # The link is minted relative; under Tauri a relative src resolves to the SPA shell.
     assert "return apiUrl(body.url);" in video_api
     assert 'from "@/lib/api-base"' in video_api
-    # The same fix the RAG document preview already carries.
     assert "return apiUrl(data.url);" in rag_api
 
-    # An absolute link is cross-origin, where the download attribute stops saving, so the
-    # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
-    # frames, too big to buffer for IPC, and the chooser must not wait on the body.
+    # Cross-origin links disable the download attribute. Streaming, not downloadUrl: clips
+    # are too big to buffer for IPC.
     helper = _ui_source(NATIVE_FILES)
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    # Converted exports cross the same native boundary after the backend returns their blob.
     assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
     assert "URL.createObjectURL(blob)" not in video_page
 
@@ -443,8 +427,6 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
         "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
     )
 
-    # The save dialog now offers these to video, not just to the audio player, and the
-    # streaming command is registered and pinned to the local backend.
     dialogs = _ui_source(NATIVE_DIALOGS)
     assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
     assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
@@ -453,12 +435,11 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "reqwest::Url::parse(url)" in dialogs
     assert "parsed.username().is_empty()" in dialogs
     assert "parsed.password().is_some()" in dialogs
-    # The chooser has to come first, or the user waits on the body before being asked where.
+    # The chooser comes first, or the user waits on the body before being asked where.
     streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
     assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
-    # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
-    # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
-    # quiet cannot hang the save while a legitimately large clip still finishes.
+    # No proxy and no redirects (would leave loopback). read_timeout bounds each chunk, so a
+    # quiet backend cannot hang the save but a large clip finishes.
     loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
     assert "fn streaming_client" in loopback
     assert "redirect(reqwest::redirect::Policy::none())" in loopback
@@ -503,10 +484,7 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     assert "aui.composer().addAttachment(file)" in thread
     assert "onPaste={handleFilePaste}" in shared_composer
     assert "pasteClipboardFiles" in shared_composer
-    # The paste handler has to hand the pasted files to the same add path a drop or the file picker
-    # uses. #9788 moved it from addFiles(files) to trackAttaching(... addFilesUntracked(files)) so
-    # the in-flight counter is bumped once rather than twice; either spelling is the contract, but
-    # an untracked add must sit inside trackAttaching or a send can race the paste.
+    # An untracked add must sit inside trackAttaching or a send can race the paste.
     paste = shared_composer[shared_composer.index("const handleFilePaste") :]
     paste = paste[: paste.index("\n  );\n")]
     assert "pasteClipboardFiles(" in paste
@@ -561,8 +539,7 @@ def test_mac_dock_reopens_hidden_main_window():
 
 
 def test_windows_browser_guard_runs_only_in_release_builds():
-    # WebView2 is not reachable from Python, so pin the release-only call that
-    # keeps refresh controls available during development.
+    # WebView2 is not reachable from Python, so pin the release-only call.
     source = _ui_source(TAURI_MAIN)
 
     assert "fn setup_windows_browser_guards" in source
@@ -581,11 +558,9 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
     assert "{isTauri && isOwner ? null : (" in _ui_source(GENERAL_TAB)
-    # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
     assert "setPollRevision(" in refresh
-    # Initial mode sends no current password; the web flow it serves keeps it.
     body = dialog.split("function changePasswordBody", 1)[1].split("function dialogCopy", 1)[0]
     assert '? [["new_password", nextPassword]]' in body
     assert '["current_password", currentPassword],' in body
@@ -604,9 +579,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = _ui_source(APP_PROVIDER)
 
-    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
-    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
-    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    # Pin the condition (desktopAuthReady), not the gate's name, which has been renamed.
     gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
     assert gate, "no binding requires both a running status and desktopAuthReady"
     assert gates_the_markup(
@@ -655,7 +628,6 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
     assert "enforceWindowSizeBounds(" in app_layout
     finalize_call = app_layout.split("finalizeAppWindowLayout({", 1)[1].split("});", 1)[0]
     assert "measured," in finalize_call
-    # Limit the check to this call's arguments.
     bounds_call = app_layout.split("enforceWindowSizeBounds(", 1)[1].split(");", 1)[0]
     assert "bounds," in bounds_call
     assert "requestedSize," in bounds_call
@@ -664,12 +636,8 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = _ui_source(TITLEBAR)
 
-    # Read raw, and matched across whitespace because prettier wrapped the ternary over three
-    # lines. #11458 made the slot `max(7rem, calc(7rem * var(--ui-space-scale, 1)))` so it
-    # grows with the UI font and never drops under the three 30px buttons. A bare `7rem` is
-    # not the same guarantee: the buttons' own padding and gaps still scale, so at a larger
-    # setting a fixed slot is overrun and the drag region starts inside the navigation. Both
-    # terms are pinned, since either one drifting is a slot that no longer says 7rem.
+    # Read raw: the slot must stay `max(7rem, calc(7rem * scale))`; a bare 7rem is overrun
+    # by the scaling buttons at larger settings.
     assert re.search(
         r"showSidebarSurface && !pinned\s*\?\s*"
         r'"max\(\s*7rem\s*,\s*calc\(\s*7rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)\s*\)"'
@@ -679,25 +647,21 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
-    # The card's corner starts on the sidebar's last column, so its left edge meets the sidebar's.
     assert "const cornerLeft = `calc(${sidebarWidth} - 1px)`;" in source
 
-    # Keep the decoration below z-50 modals and outside the z-[70] header.
     assert 'data-slot="window-titlebar-decoration"' in source
     decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
         'className="pointer-events-none absolute inset-x-0 '
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
-    # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
     assert (
         '"absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",'
         in decoration
     )
-    # Dark draws no seam: a border lighter than both surfaces reads as a white line on Windows.
+    # A border lighter than both surfaces reads as a white line on Windows.
     assert "dark:border-white" not in decoration
     assert "dark:border-t-white" not in decoration
-    # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
     assert re.search(
         r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
         r'rounded-tl-\[12px\] border-l"',
@@ -705,7 +669,6 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     )
     assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
     assert "style={{ left: cornerLeft }}" in decoration
-    # The sidebar-coloured mask outside the corner only appears when pinned.
     assert decoration.count("{pinned && (") == 1
     assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
@@ -715,8 +678,6 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = _ui_source(APP_SIDEBAR)
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    # The names, not the whole import list: #8025 added Minus/Square/X to the
-    # same line for the window controls and this went red on every open PR.
     lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
     assert lucide is not None, "titlebar no longer imports from lucide-react"
     icons = {name.strip() for name in lucide.group(1).split(",")}
@@ -772,21 +733,11 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    # The navigation box's left inset is deliberately not asserted here. Whether that
-    # element ends up with one is a computed style: it depends on the tailwind-merge
-    # cascade, the important modifier, whether an arbitrary value is valid CSS, whether
-    # the class is hoisted into a const or interpolated into a template hole, and
-    # whether DesktopTitlebarNavigation applies it from its own className prop. None of
-    # that is decidable from this file, and the exact-value form this replaces failed
-    # #10321 for retuning 12px to 16px, which is what an alignment pass is for. A
-    # computed-style check belongs in a driver that renders the titlebar.
+    # The navigation inset is a computed style not decidable from source; not asserted here.
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
-    # 188 is the number, not the spelling. It ships as `calc(110px + var(...78px))` so the
-    # traffic-light half can be divided by the interface zoom while the content half is
-    # not, and asserting the literal string is what broke when that landed. The custom
-    # titlebar sets the same var to its own much smaller inset, hence the mac-only filter.
+    # 188 is the number, not the spelling: it ships as calc(110px + ...78px).
     insets = {
         name: _px(values["--studio-collapsed-chat-controls-inset"])
         for name, values in _chrome_style_blocks(_ui_source(APP_PROVIDER)).items()
@@ -795,7 +746,6 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
     assert set(insets.values()) == {188}, insets
     assert 'aria-label="New chat"' in chat_page
-    # Token by token, not the exact string: #12355 added `shrink-0` beside the same look.
     new_chat_tokens = _new_chat_button_class_tokens(chat_page)
     assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
     assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
@@ -824,9 +774,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    # The nudge has to move the navigation without pushing it out of the titlebar it sits
-    # in, so the button box travels with it. The mac-only margin is deliberately not in the
-    # sum: translate-y is visual, and the margin already seats the box in the native row.
+    # translate-y is visual, so the mac-only margin is deliberately not in the sum.
     navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
         "export function WindowTitlebar", 1
     )[0]
@@ -847,21 +795,13 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
-    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
-    # named const and giving it a peek exception: a refactor that changed nothing this
-    # contract protects, and it left main and every open PR red for a day. What must hold is
-    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
-    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    # Read the condition, not its spelling: the panel must leave the a11y tree and go inert
+    # on the same condition.
     hidden = attribute_expressions(primitive, "aria-hidden")
     inert = attribute_expressions(primitive, "inert")
     assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
     assert hidden == inert, (hidden, inert)
-    # Asking only that the held-out condition still appears would accept dropping the peek
-    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
-    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
-    # the accessibility tree, over every combination of the four inputs, and let any
-    # spelling that admits exactly those states pass.
+    # A peeked sidebar is on screen, so check aria-hidden over every input combination.
     inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
     table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
     for combination, removed in table.items():
@@ -878,21 +818,17 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
     # Portalled sheets read the height off <html>, so the mirror has to stay.
     assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
 
-    # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
-    # sheet sits in its own container and keeps a plain top edge.
     assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
     for side in ("left", "right", "top"):
         assert f"data-[side={side}]:top-[var(--studio-custom-titlebar-height,0px)]" in sheet
         assert f"data-[side={side}]:top-0" in sheet
 
-    # Anchor both edges so the inset shrinks the sheet; h-full would instead
-    # push its bottom past the viewport.
+    # Anchor both edges so the inset shrinks the sheet; h-full would push it past the viewport.
     for side in ("left", "right"):
         assert f"data-[side={side}]:bottom-0" in sheet
         assert f"data-[side={side}]:h-full" not in sheet
 
     # The shared class is the only sheet offset; a local one would double up.
-    # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
     for portalled in (
         RESEARCH_ACTIVITY_PANEL,
         RESPONSE_DETAILS_SHEET,
@@ -917,8 +853,6 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    # Sharing the row is the contract: the padding must leave the control room inside the
-    # header, so a retune to a large value fails here rather than shipping a clipped row.
     blocks = _chrome_style_blocks(provider)
     padded = {
         name: values
@@ -933,7 +867,6 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
         assert padding is not None and padding > 0, (name, values)
         assert header is not None and control is not None, (name, values)
         assert padding + control <= header, (name, padding, control, header)
-    # #11660 moved the chat split from md to lg, so tablets stack.
     assert "pt-[var(--studio-content-top-inset,0px)] lg:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
@@ -1044,12 +977,7 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
     """The classes a `<button>` tag ends up with for `variant`, or None if unreadable."""
     if _spread_may_supply(tag):
         return None
-    # A suffixed lookalike is refused, not read as absent. `data-className={cn(...)}` is not a
-    # className, so the boundary above correctly declines to read it, but returning "" then
-    # said "this button carries no classes" and `_labelled_actions` skipped it as not a row
-    # action. The pin can vanish from the reach calculation that way while still rendering,
-    # now with none of the classes that position or reveal it, and the shared options button
-    # keeps every later assertion satisfied.
+    # A suffixed lookalike like `data-className=` is refused, not read as having no classes.
     lookalike = re.search(r"[\w-]className=", tag)
     assert not lookalike, (
         f"a button in renderChatSidebarItem carries {lookalike.group(0)!r} rather than a "
@@ -1065,30 +993,14 @@ def _button_classes(source: str, tag: str, variant: str) -> str | None:
     return _resolve_classes(source, value[1:-1], variant)
 
 
-# #11458 made spacing follow the UI font size: every fixed length in the stylesheet and in
-# the page markup became `calc(<length> * var(--ui-space-scale, 1))`, and #11459 did the same
-# for the dark wash with `--contrast-wash-gain`. Both scales default to 1, so the rendered
-# value is unchanged; only the spelling moved. These contracts are written against the
-# lengths, so resolve the wrapper back to the length it scales. A real change to the length
-# still fails, which is the whole point of reading the value rather than the spelling.
-#
-# Only `--ui-space-scale` reads back as the length it wraps, and only it. `index.css:316`
-# declares `--ui-font-scale: 0.9375` and derives `--ui-space-scale` as the ratio of the two,
-# so the spacing scale is 1 by default while the font scale is not: a length respelled onto
-# `calc(48px * var(--ui-font-scale, 1))` renders at 45px. Reading the font scale, or
-# `var(--anything, 1)` at large, would hand a contract back the literal it asks about while
-# the pane had quietly stopped following the interface font size, or moved to a typo such as
-# `--ui-spcae-scale` that resolves to nothing and takes the fallback.
+# Spacing lengths are spelled `calc(<len> * var(--ui-space-scale, 1))`; resolve them back.
+# Only --ui-space-scale: --ui-font-scale defaults to 0.9375, not 1.
 _SCALED_LENGTH = re.compile(
     r"calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)"
 )
 
-# The gains are not declared at all: `appearance-custom-store.ts` sets them only away from
-# the default, so both take the `1` fallback here and a colour reads back as its own amount.
-# Which gain, though, is load-bearing. The store gives the edge and the wash different spans,
-# so a border scaled by the wash renders a colour its contract does not name as soon as the
-# contrast setting moves off default. Surfaces take the wash; borders, rings and outlines
-# take the edge; each is resolved only under the gain its own role is entitled to.
+# Gains default to 1 here. Surfaces take the wash gain; borders, rings and outlines the
+# edge gain; each resolves only under its own.
 _SCALED_AMOUNT = re.compile(
     r"calc\(\s*([\d.]+%?)\s*\*\s*var\(\s*--contrast-(edge|wash)-gain\s*,\s*1\s*\)\s*\)"
 )
@@ -1113,15 +1025,8 @@ def _resolve_amount(source: str, match: "re.Match[str]") -> str:
     return match.group(1)
 
 
-# The same move in colour. #11459 respelled the opacity shorthands as a colour function
-# whose amount scales with a gain, again defaulting to 1: `foreground/10` became a
-# `color-mix` of `--foreground` at 10% with transparent, and `white/[0.06]` an `rgb()` at
-# 0.06. Those are the shorthands, written out. Reading them back keeps a contract about the
-# colour asking about the colour.
-#
-# The gain has to be there. A colour that keeps the amount but drops the gain renders the
-# same thing at the default setting and nothing like it anywhere else, so the two are not
-# interchangeable and only the gain-bearing spelling is read back as the shorthand.
+# Gain-scaled color-mix/rgb spellings read back as the opacity shorthand; without the
+# gain they are not equivalent.
 _MIXED_TOKEN = re.compile(
     r"\[color-mix\(in_oklab,\s*var\(--([\w-]+)\)_"
     r"calc\(([\d.]+)%\*var\(--contrast-(edge|wash)-gain,\s*1\)\)\s*,\s*transparent\)\]"
@@ -1154,14 +1059,11 @@ def _at_default_scale(source: str) -> str:
     return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
 
 
-# The Create rail on Images and Audio at the default UI scale, as `_ui_source` reads it. Since
-# #11760 the width is the page's resizable --media-rail-width, falling back to the former 408px.
 RAIL_WIDTH = "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem))]"
-# The same class as written: `_ui_source` reads a bare 408px identically, so the scale is pinned raw.
+# `_ui_source` reads a bare 408px identically, so the scale is pinned raw.
 RAIL_WIDTH_SCALED = (
     "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
 )
-# The header's first column tracks the same variable, so the header divider stays on the rail's.
 HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
 
 
@@ -1257,22 +1159,12 @@ def _modifier_rules(live_css: str) -> dict[str, str]:
         body = _declarations_at(live_css, match.end() - 1)
         if body is None:
             continue
-        # Joined in source order, not replaced. A selector may appear more than once, and CSS
-        # keeps an earlier declaration for any property the later rule does not restate: one
-        # rule setting `right: 5rem` followed by another setting only `color` still renders at
-        # 5rem. Overwriting recorded the second rule alone, so the offset fell back to the
-        # base and the action overlapped the title with this green. Joining also means a
-        # property genuinely restated appears twice, which `_sole_measure` then refuses rather
-        # than resolving, as it does within a single rule.
+        # Joined, not replaced: CSS keeps earlier declarations a later rule does not restate.
         rules[match.group(1)] = f"{rules.get(match.group(1), '')}\n{body}"
     return rules
 
 
-# What else in the same rule can set the edge this guard measures. A shorthand overrides the
-# longhand it contains, so `padding: 0 5rem` beats a parsed `pr-1.5` and `inset: 0 5rem` beats
-# a parsed `right`. Reading the longhand and ignoring these reported a reach that does not
-# render. Tailwind's own shorthands are listed beside the CSS ones because `@apply p-20` is the
-# same statement written another way.
+# Shorthands override the longhand they contain (`padding: 0 5rem` beats `pr-1.5`).
 _SHORTHANDS = {
     "pr": (("padding",), ("p", "px", "pe")),
     "pl": (("padding",), ("p", "px", "ps")),
@@ -1293,8 +1185,7 @@ def _sole_measure(body: str, utility: str, prop: str, spacing: float) -> float |
         name for name in properties if re.search(rf"(?<![\w-]){re.escape(name)}:", body)
     ] + [name for name in utilities if re.search(rf"(?<![\w-])@?{re.escape(name)}-\S", body)]
     if shorthand:
-        # Unreadable rather than absent: the shorthand renders, and falling back to the base
-        # rule or reporting the longhand would both describe something that does not.
+        # Unreadable rather than absent: the shorthand renders.
         return None
     values = _stated_units(body, utility, prop, spacing)
     if not values:
@@ -1444,68 +1335,35 @@ def _labelled_actions(
             f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
             f"cannot tell whether it is a row action or how far it reaches: {tag!r}"
         )
-        # Whole tokens, both here and below. CSS matches a class name exactly, so a substring
-        # test answers a different question than the stylesheet does: `sidebar-row-action-glyph`
-        # contains `sidebar-row-action` and would enrol a button that no rule positions.
+        # Whole tokens: `sidebar-row-action-glyph` contains `sidebar-row-action`.
         worn = classes.split()
         if "sidebar-row-action" not in worn:
             continue
         owners = [name for name, start, stop in gates if start <= at <= stop]
         if owners and variant not in owners:
             continue
-        # Keyed by where the element sits, not by its label. Keying on aria-label dropped any
-        # action that names itself another way, `aria-labelledby` being the ordinary one, and
-        # dropping the offset pin took the row's reach down to a single glyph while the pin
-        # went on rendering. The label is identity for the message only.
+        # Keyed by position, not aria-label: actions may label themselves via aria-labelledby.
         labels = re.findall(r"aria-label=\{?([^\n]{0,60})", tag)
         name = labels[0] if labels else f"<unlabelled at {at}>"
-        # Visible on touch, which is the whole affordance. An action that keeps its row-action
-        # class but loses `sidebar-touch-reveal` stays counted, so the gutter still looks
-        # right while the button is transparent and inert on a coarse pointer.
-        # A whole token for the same reason, and it matters more in this direction. A typo or
-        # a rename to something longer, `sidebar-touch-reveal-disabled` being the obvious one,
-        # satisfies a substring test while matching no rule: the CSS that reveals the action
-        # still exists, so every other check here stays green, and the button goes on being
-        # transparent and inert on a coarse pointer.
+        # Whole token: a renamed `sidebar-touch-reveal-*` would leave the action inert on touch.
         assert "sidebar-touch-reveal" in worn, (
             f"the {name} action on the {variant} row no longer carries sidebar-touch-reveal, "
             f"so it is invisible and inert on a coarse pointer however much room the row "
             f"reserves for it (#7276). It carries {worn}"
         )
-        # Nothing inline. Every number below comes from the class list and index.css, and an
-        # inline style outranks both: `style={{ right: "5rem" }}` or
-        # `style={{ paddingRight: "5rem" }}` on the action moves it into the title while the
-        # reach here is still computed from the rules it no longer obeys. The row carrier is
-        # already refused this for the same reason; the actions needed it too.
+        # An inline style outranks the class list and index.css the reach is computed from.
         escape = _escapes_the_model(tag)
         assert escape is None, (
             f"the {name} action {escape}, which outranks the classes and the CSS rules this "
             f"guard measures it by, so the reach it computes is not the reach that renders: "
             f"{tag!r}"
         )
-        # Where it sits, read from the stylesheet. A `right-*` utility or a modifier the CSS
-        # does not define is positioning this guard has not modelled, and recording it as
-        # flush right would understate the reach of an action that renders further in.
-        # Under any variant, not bare. `[@media(pointer:coarse)]:right-40` positions the action
-        # on exactly the path this test is about, and matching only the unqualified spelling
-        # let it through: the reach would then be taken from the CSS modifier, or from zero,
-        # while the action rendered far into the title on every touch device.
-        # `right-*` was the only positioning refused, and it is not the only one that moves
-        # the action. A transform is the clearest case: `-translate-x-20` slides the pin five
-        # rem toward the title with its `right` untouched, so the computed reach did not
-        # change and the contract passed. Anything else that shifts the box horizontally, or
-        # sets the same edge by another route, belongs here for the same reason: the reach is
-        # derived from `right` and `padding-right` alone, and a utility outside that model
-        # renders something this arithmetic does not describe.
-        # Padding utilities too. The reach below substitutes the padding read from index.css
-        # for every action, so `!pr-20` on the element replaces the number being used while
-        # the calculation goes on with the stylesheet's, and the glyph clears the gutter.
+        # The reach model reads only `right` and `padding-right`; any other horizontal positioning
+        # (any variant, transforms, padding utilities) is refused.
         utility = [
             token
             for token in worn
-            # The importance marker around `right-*` too. `!right-40` and `md:!right-40`
-            # render further in than the stylesheet offset this guard substitutes, and the
-            # bare form was the only one matched, so they went through untouched.
+            # `!right-*` and `md:!right-*` too.
             if re.fullmatch(rf"(?:\S*:)?!?right-\S+?!?|{_MOVES_HORIZONTALLY}", token)
             or re.fullmatch(r"(?:\S*:)?!?(?:p|px|pe|pr)-\S+", token)
         ]
@@ -1513,10 +1371,7 @@ def _labelled_actions(
             f"the {name} action is positioned with {utility}, which this guard does not model: "
             f"it reads the row's action offsets from index.css, so state the offset there"
         )
-        # Plain classes on the action, looked up the same way the row's are. Only `is-*` is
-        # resolved through the stylesheet below, and `_escapes_the_model` reads inline styles
-        # and utility tokens, so an ordinary class with `.pushed-action { right: 5rem }`
-        # behind it moved the pin with nothing here the wiser.
+        # Plain classes can carry a `right` rule too, so they are looked up in the stylesheet.
         named = {
             token.rpartition(":")[2].strip("!")
             for token in worn
@@ -1536,9 +1391,7 @@ def _labelled_actions(
             f"the {name} action carries {unknown}, which index.css does not define for "
             f".sidebar-row-action, so this guard cannot tell how far that action reaches"
         )
-        # A modifier whose rule sets `right` in a spelling this cannot read is not the same
-        # as one that leaves it alone, and recording it as zero would lower the floor while
-        # the action rendered further in.
+        # An unreadable `right` is not zero; refuse it.
         unreadable = [token for token in modifiers if offsets[token] is None]
         assert not unreadable, (
             f"the {name} action carries {unreadable}, whose right edge index.css states in a "
@@ -1547,9 +1400,7 @@ def _labelled_actions(
         )
         if not owners:
             shared.append(name)
-        # The padding this action actually gets, not the base rule's. A modifier may override
-        # it, and `is-unpin-action` does, so crediting every action with `pr-1.5` overstated
-        # the pin's reach by a whole spacing unit.
+        # A modifier may override the padding (`is-unpin-action` does).
         stated = [token for token in modifiers if token in paddings]
         unreadable_padding = [token for token in stated if paddings[token] is None]
         assert not unreadable_padding, (
@@ -1557,19 +1408,14 @@ def _labelled_actions(
             f"states in a spelling this guard cannot read. It reads a bare rem value or an "
             f"@apply pr-N, so state it that way or teach this guard the other one"
         )
-        # Last modifier wins is not assumed: more than one stating a padding is an order
-        # question this does not adjudicate, so it is refused rather than guessed.
+        # More than one modifier stating a padding is an order question; refused.
         assert len(stated) <= 1, (
             f"the {name} action carries {stated}, more than one of which sets a right "
             f"padding. Which one applies is a question of source order in index.css, and "
             f"this guard does not adjudicate it: state the padding on one modifier"
         )
-        # No modifier at all means the base rule is the whole answer.
         padding = paddings[stated[0]] if stated else base_padding
-        # The left padding too, because the button's whole box is what a tap hits and
-        # `sidebar-touch-reveal` makes it clickable on a coarse pointer. Measuring only as far
-        # as the glyph left 8px of the project row's title under the pin, where a tap pinned
-        # the chat instead of opening it.
+        # Left padding counts: the whole button box takes taps on a coarse pointer.
         stated_left = [token for token in modifiers if token in left_paddings]
         unreadable_left = [token for token in stated_left if left_paddings[token] is None]
         assert not unreadable_left, (
@@ -1581,17 +1427,10 @@ def _labelled_actions(
             f"padding, and which applies is a source-order question this does not adjudicate"
         )
         left = left_paddings[stated_left[0]] if stated_left else base_left
-        # A modifier that states no edge leaves the base rule's in force, so that is the
-        # fallback, not zero.
+        # A modifier that states no edge leaves the base rule's in force.
         shift = max((offsets[token] for token in modifiers), default = base_offset)
         found[at] = (name, shift + padding + left)
-    # Both rows carry an action that no `variant === "..."` gate guards, and every assertion
-    # below is written about a row that has one. Without this the per-variant pins alone keep
-    # both maps non-empty, so deleting the shared options button, or letting it lose
-    # `sidebar-row-action`, leaves the floor and the reserve agreeing with each other while
-    # the action the gutter was widened for is no longer rendered at all. Structural on
-    # purpose: an earlier form of this file keyed actions on `aria-label`, and matching the
-    # English "Chat options" would fail the moment the row is translated.
+    # Structural on purpose: matching the English "Chat options" breaks under translation.
     assert shared, (
         f"the {variant} row renders no ungated .sidebar-row-action: every action it has sits "
         f'inside a `variant === "..."` gate. The shared action is what the gutter on both '
@@ -1690,12 +1529,7 @@ def _branches(argument: str) -> list[tuple[tuple[tuple[str, bool], ...], str]]:
                 for constraints, value in _branches(part)
             ]
         return taken
-    # `||` binds looser than `&&`, so it splits first: `a || b && "x"` is `a || (b && "x")`,
-    # and taking the last operator textually would read it as `(a || b) && "x"` and hand the
-    # classes to a row that renders none of them. Within one operator they are
-    # left-associative, so the last of those is the outermost: `a && b && "x"` is one
-    # condition `a && b` carrying one value. Keeping the head whole rather than splitting it
-    # is what lets an identical head elsewhere correlate with this one.
+    # `||` binds looser than `&&`, so it splits first; within one operator the last is outermost.
     short = [mark for mark in marks if mark[1] == "||"] or [
         mark for mark in marks if mark[1] == "&&"
     ]
@@ -1727,23 +1561,18 @@ def _tokens(value: str) -> list[str]:
     return value.strip('"').split() if re.fullmatch(r'"[^"]*"', value) else []
 
 
-# Utilities that move an element horizontally by a route this file does not model. The reach
-# arithmetic is `right` plus `padding-right` and nothing else, so any of these renders
-# something it does not describe. `translate-y` is deliberately absent: it moves the element
-# vertically and the production spinner uses it, so refusing it would fail a correct row.
+# Horizontal movers the reach model ignores. translate-y is vertical and used by the spinner.
 _MOVES_HORIZONTALLY = (
     r"(?:\S*:)?(?:-?translate-x|-?translate-(?!y)|inset-x|inset|left|-?mr|-?me)-\S+"
     r"|(?:\S*:)?transform"
 )
 
 
-# The two the reach model already reads in full, so they are not "unmodelled".
 _MODELLED_ACTION_CLASSES = {"sidebar-row-action", "sidebar-row-action-glyph"}
 
 _DECLARES_RIGHT_PADDING = (
     r"(?<![\w-])padding(?:-right|-inline-end)?:|@apply[^;]*(?<![\w-])!?(?:p|px|pe|pr)-"
 )
-# What moves an action's right edge, as a stylesheet declaration rather than a utility token.
 _DECLARES_RIGHT_EDGE = (
     _DECLARES_RIGHT_PADDING
     + r"|(?<![\w-])(?:right|inset(?:-inline)?|left|transform|translate|margin(?:-right)?):"
@@ -1781,11 +1610,7 @@ def _classes_setting(live_css: str, classes: set[str], declares: str) -> list[st
         for selectors, body in _css_rules(live_css):
             if not mentions.search(selectors):
                 continue
-            # On the element that carries the class, not on a descendant of it.
-            # `.sidebar-nav-btn .decorative-child { padding-right: 0 }` styles the child and
-            # leaves the row's gutter alone; reading it as the row's own padding would refuse
-            # harmless descendant styling. The class has to appear in the LAST compound of
-            # some selector in the list, which is the element the rule targets.
+            # The class must be in a selector's LAST compound: the element the rule targets.
             if not any(
                 mentions.search(re.split(r"[\s>+~]+", one.strip())[-1])
                 for one in selectors.split(",")
@@ -1828,8 +1653,6 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
     Read the way everything else here is: the offset off the element that carries it, the
     width off the glyph inside it, and None for anything this cannot resolve.
     """
-    # The ternary that mounts a <span>, whatever its condition is called. Matching the name
-    # here and correlating on the same literal elsewhere would let the two drift apart.
     gate = next(
         (
             found
@@ -1852,14 +1675,8 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
     if end is None:
         return None
     rendered = block[gate.end() : end]
-    # Nothing inline or unmodelled on the element that positions it, for the same reason the
-    # actions and the carrier refuse both: `style={{ right: "8rem" }}` outranks the coarse
-    # `right-16` this reads, and a transform moves the spinner without touching `right` at
-    # all, so the reach reported here would not be the reach that renders.
+    # An inline style or transform on the positioning span changes the reach without `right`.
     positioning = [tag for tag in _opening_jsx_tags(rendered, "<span") if "absolute" in tag]
-    # The glyph as well as the wrapper. A transform on the <Spinner> moves what the reader
-    # sees while the wrapper's `right-16` and the glyph's `size-3.5`, which is all this
-    # measures, stay exactly as they were.
     for tag in positioning + _opening_jsx_tags(rendered, "<Spinner"):
         if _escapes_the_model(tag):
             return None
@@ -1869,9 +1686,7 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
             r"\[@media\(pointer:coarse\)\]:right-(\d+(?:\.\d+)?)(?![\w.-])", rendered
         )
     ]
-    # The spinner's own width, by the one route this reads. Another width utility on the same
-    # element renders wider than `size-3.5` while the regex below goes on reporting 3.5, so
-    # any of them makes the measurement unreadable rather than merely different.
+    # Another width utility renders wider than `size-3.5`, so it makes the width unreadable.
     for tag in _opening_jsx_tags(rendered, "<Spinner"):
         if re.search(r"(?<![\w-])!?(?:w|min-w|max-w|basis)-\S", tag):
             return None
@@ -1885,10 +1700,7 @@ def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None
     ]
     if len(offsets) != 1 or len(widths) != 1:
         return None
-    # The gate's own condition is returned with the measurement, because the caller has to
-    # correlate it with the builder's branches. Naming `showWorkSpinner` there and reading it
-    # here would let the two drift: spell the gate `Boolean(showWorkSpinner)` in both places
-    # and a caller keyed on the literal name finds no spinner rendering and skips them all.
+    # The gate's condition is returned so the caller correlates on it, not on a literal name.
     return gate.group(1), offsets[0] + widths[0]
 
 
@@ -1954,47 +1766,14 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[
         0
     ]
-    # The split above bounds the block at the next top-level function, and a nested one inside
-    # renderChatSidebarItem ends it early. When #11373 added one, the block shrank to the
-    # signature and a comment, and every assertion below started reading an empty room. A
-    # truncated block must fail as a stale guard, not as a missing affordance.
+    # A nested function ends the split early; a truncated block must fail as a stale guard.
     assert len(block) > 2000, (
         f"renderChatSidebarItem now yields only {len(block)} characters, so this guard is "
         f"reading a fragment rather than the row. Widen the bound before trusting anything "
         f"it says about the row's classes"
     )
-    # Reserved room for the action on touch, where there is no hover to make it appear. The
-    # width is not a constant to pin: it was pr-10, and became pr-14 for project rows and
-    # pr-16 for recents when the row gained an action. What does not move is that the row
-    # already states how much room that action needs, in the padding it applies on HOVER. So
-    # the claim is that a coarse pointer gets at least the same gutter, whatever it is.
-    #
-    # Per VARIANT, not once for the block. The two rows carry their own paddings, so a single
-    # search over the whole function is satisfied by the project row on its own and would stay
-    # green while recents lost theirs, which is the half of #7276 that was actually reported.
-    #
-    # An earlier version of this worked out which padding WINS: last in cn order, across
-    # arguments, with conditional arguments applying only to their own branch and an
-    # important utility beating an ordinary one written after it. Every rule it gained was
-    # right and the next one was still missing, because that question is tailwind-merge plus
-    # the cascade and a test file should not hold a second copy of either.
-    #
-    # So it does not decide. Each variant's row states one hover gutter and one coarse
-    # padding, both written plainly, and the coarse one must be at least the hover one.
-    # Anything else, a second coarse padding anywhere in the row's own cn(), a variant
-    # qualifier, an importance marker, is refused as something this guard will not
-    # adjudicate. That is stricter than the framework and it is stricter LOUDLY, which is
-    # the half that matters: it cannot quietly approve a gutter nobody checked.
-    # The row's own builder, by name, and the classes are read only from inside it. Searching
-    # the whole function let the same verified pairs be moved to any other cn() call and
-    # still satisfy this, while the buttons that render carried no gutter at all.
-    # Comments out of the way BEFORE anything is located, not after. An old builder left
-    # inside `/* ... */` sits earlier in the function than the live one, so a search over the
-    # raw text selected the dead declaration and the gutter analysis then described classes
-    # nothing renders, while the carrier check below saw the live `buttonClass` and agreed.
-    # `{/* ... */}` is how a prop is commented out in JSX, and it is the spelling that would
-    # be used here, so a stripper that only knew `//` left a disabled className reading as a
-    # live one. Block form first, then line form.
+    # Per variant, the coarse-pointer gutter must be at least the hover gutter. Anything this
+    # cannot read plainly is refused. Comments (incl. JSX `{/* */}`) are stripped first.
     applied = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", block, flags = re.S)
     applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in applied.splitlines())
     builder = re.search(r"const buttonClass = cn\(", applied)
@@ -2012,23 +1791,13 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 builder_end = index
                 break
     assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
-    # On the row button itself, not merely somewhere in the function. The row also renders an
-    # inline rename input and a pin, and handing buttonClass to one of those while the button
-    # went without would leave every padding check below describing classes that reach nothing
-    # the gutters are measured against.
+    # On the row button itself, not the rename input or pin.
     carriers = [
         tag
         for tag in _opening_jsx_tags(applied, "<SidebarMenuButton")
         if re.search(r"(?:^|[\s{])className=\{buttonClass\}", tag)
     ]
-    # An inline style outranks every Tailwind utility, and none of them is read here.
-    # `style={{ paddingRight: 0 }}` on the carrier puts the always-visible touch actions
-    # straight back over the title while every gutter assertion below stays green, because
-    # only buttonClass is analysed.
-    # A spread counts wherever it sits. Ordering only settles `className`, where the explicit
-    # attribute beats a spread written before it; it settles nothing about `style`, which no
-    # attribute here declares, so `{...rowProps}` with a `style.paddingRight` of 0 overrides
-    # every pr-N gutter below from either side of the className.
+    # Inline styles and spreads (anywhere) could override every pr-N gutter via `style`.
     escaped = [(tag, _escapes_the_model(tag)) for tag in carriers]
     offending = [(tag, why) for tag, why in escaped if why]
     assert not offending, (
@@ -2041,10 +1810,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "the classes checked below do not reach the row button and say nothing about the row "
         "that renders"
     )
-    # Only a spread written AFTER the class, because JSX applies attributes in order and the
-    # last write wins: `<SidebarMenuButton {...rowProps} className={buttonClass}>` ends with
-    # the explicit one whatever the spread holds. Refusing that shape would fail a refactor
-    # that forwards unrelated props, which stops correct work rather than catching anything.
+    # Only a spread AFTER className can override it; JSX applies attributes in order.
     spreading = [
         tag
         for tag in carriers
@@ -2058,16 +1824,12 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"classes survive depends on what the spread holds, which this guard cannot resolve: "
         f"{spreading!r}"
     )
-    # Comments first: they hold commas and prose, and splitting arguments around them turns
-    # a sentence into an unreadable "value".
+    # Comments first: they hold commas that would split arguments.
     row_classes = "\n".join(
         re.sub(r"(?<!:)//.*$", "", line)
         for line in applied[builder.end() : builder_end].splitlines()
     )
-    # Every value the builder contributes has to be readable. An identifier holding a class
-    # string is invisible to a scan over quoted literals, so `cn(..., coarseOverride)` would
-    # make pr-0 effective while this guard went on reporting the gutter above it. Conditions
-    # may be anything; it is the VALUES that have to be literals or undefined.
+    # Values must be literals or undefined: an identifier holding classes is invisible here.
     unresolved = [
         argument for argument in _cn_arguments(row_classes) if not _values_are_readable(argument)
     ]
@@ -2077,11 +1839,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"here, so keep the row's classes as literals"
     )
 
-    # Every class the builder can contribute, whichever way its conditions fall. Padding is
-    # read off these branches rather than off the literals, because a literal found anywhere
-    # in the builder says nothing about the rows that do not take it: moving the verified
-    # pair into `showWorkSpinner ? "...pair..." : undefined` leaves every ordinary row with
-    # no gutter at all while a scan over literals still finds it.
+    # Padding is read per branch: a literal under a condition does not reach every row.
     live_css = _at_default_scale(re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S))
     spacing = _spacing_rem(live_css)
     assert spacing is not None, (
@@ -2095,11 +1853,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     ]
     renderings = [classes for _, classes in rendered]
     every_class = [cls for rendering in renderings for cls in rendering]
-    # Refused across the WHOLE builder, not just the row's own literal. What follows compares
-    # pr-N numbers and takes the last one to win, which is tailwind-merge's answer only while
-    # nothing here changes the same edge by another route or jumps the queue with `!`. A
-    # single `"!pr-0"` argument beats every coarse gutter below it and carries no marker that
-    # a search for coarse-pointer strings would find.
+    # `!` utilities anywhere in the builder are refused: `!pr-0` beats every gutter.
     marked = [
         cls for cls in every_class if re.fullmatch(r"(?:\S*:)?!p\w*-\S+|(?:\S*:)?p\w*-\S+!", cls)
     ]
@@ -2125,10 +1879,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"state the touch padding as a pr-N utility"
     )
 
-    # Everything below compares pr-N numbers, and tailwind-merge drops an earlier `pr-` for a
-    # later one whatever the later one's value is. `pr-px` is a real utility worth one pixel:
-    # it replaces the checked gutter and, being unnumbered, was read by nothing here. So any
-    # right padding the builder can contribute has to be a number this guard can compare.
+    # `pr-px` replaces the checked gutter but is unnumbered, so every pr- must be numeric.
     unnumbered = [
         cls
         for cls in every_class
@@ -2141,12 +1892,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"would go on reporting a value that no longer renders"
     )
 
-    # And under a qualifier it reads. Being numeric is not enough: the three shapes below are
-    # the ones the comparison looks at, and a padding under any other variant was matched by
-    # none of them and so left out of the answer entirely while still rendering.
-    # `focus:[@media(pointer:coarse)]:pr-0` is the case, effective on a focused touch row and
-    # invisible here. Refusing it is the same rule already applied to importance markers and
-    # arbitrary values: this guard does not adjudicate what it cannot read.
+    # Paddings under an unread qualifier would render while being invisible here.
     readable_padding = re.compile(
         r"pr-\d+(?:\.\d+)?"
         r"|\[@media\(pointer:coarse\)\]:pr-\d+(?:\.\d+)?"
@@ -2167,9 +1913,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     )
 
     coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
-    # And no plain class on the row quietly sets the same edge. Everything below compares
-    # `pr-N` utilities; a project class whose rule states a right padding replaces what
-    # renders without appearing in that comparison at all.
+    # A plain class whose rule sets a right padding would bypass the pr-N comparison.
     named = {
         token.rpartition(":")[2].strip("!")
         for token in every_class
@@ -2182,11 +1926,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"utilities instead, so it would credit the row with room it does not have"
     )
 
-    # The spinner too, on the renderings that show it. Everything above measures the row's
-    # actions, and a working row also renders a spinner that the title has to clear: it sits
-    # further in than the pin on touch, which is why the row reserves 78px there and not the
-    # 64 the actions alone would need. Without this the touch gutter could drop to the
-    # actions' floor with the spinner left over the title, and every check above would pass.
+    # The spinner sits further in than the pin on touch, hence 78px rather than 64.
     spinner = _touch_spinner_reach(applied, spacing)
     assert spinner is not None, (
         "renderChatSidebarItem no longer states the working-row spinner's coarse offset and "
@@ -2194,9 +1934,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "has to reserve beyond its actions"
     )
     spinner_gate, spinner_reach = spinner
-    # Correlated, or refused. Skipping renderings whose constraints do not mention the gate
-    # treats "this is not a working row" and "this guard could not tell" as the same answer,
-    # and the second one is how the whole check quietly stops running.
+    # Correlated or refused: "not a working row" and "could not tell" must not merge.
     showing = [
         (constraints, rendering)
         for constraints, rendering in rendered
@@ -2228,11 +1966,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         )
 
     variants = ("project-chat-item", "recent-item")
-    # Every rendering is some row, and a rendering that claims no gutter at all was being
-    # skipped as "not this variant" by each variant's loop in turn, so wrapping both variants'
-    # gutters in the same condition left ordinary rows with no touch padding and nothing
-    # checking them. A row is identified by the gutter it claims, so a row that claims none
-    # cannot be identified, and that is the thing to refuse rather than to skip.
+    # A rendering that claims no gutter cannot be identified, so it is refused, not skipped.
     for rendering in renderings:
         if not any(
             re.fullmatch(rf"\S*/{re.escape(name)}:pr-\d+(?:\.\d+)?", cls)
@@ -2247,22 +1981,14 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 f"it unidentifiable"
             )
 
-    # A floor under both sides, because the comparison below is relative and reducing the two
-    # together satisfies it while reserving nothing usable: pr-0.5 against pr-0.5 passes. The
-    # floor is what the row's actions occupy, so it has to count them rather than assume one.
-    # A row carries a pin and an options button, and reserving a single glyph for the two of
-    # them puts the pin back over the title, which is the regression this exists to stop.
-    # Over CSS with its comments removed, for the same reason the TSX reads are: an old rule
-    # left inside `/* ... */` sits before the live one and is the one a search finds, so the
-    # floor would be measured from a glyph nothing renders.
+    # Floor: both sides shrinking together would pass a relative check. Comments are stripped
+    # so an old commented-out rule is not the one found.
     glyph_rule = _own_declarations(live_css, ".sidebar-row-action-glyph")
     assert glyph_rule is not None, (
         "index.css no longer has a .sidebar-row-action-glyph rule, so this guard cannot tell "
         "how much room one action needs"
     )
-    # Any other route to the glyph's width is refused. `size-*` and `width` are the two this
-    # reads; a `min-width`, `max-width`, `inline-size` or an `@apply w-*` in the same rule
-    # widens the box while this goes on reporting the original size.
+    # Only `size-*` and `width` are read, so any other width route is refused.
     other_width = re.search(
         r"(?<![\w-])(?:min-width|max-width|inline-size|block-size):"
         r"|@apply[^;]*(?<![\w-])(?:w|min-w|max-w|basis)-",
@@ -2272,9 +1998,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"the glyph's rule sets its width through {other_width.group(0)!r} as well as the "
         f"size this guard reads, so the box that renders is wider than the one it measures"
     )
-    # And at each glyph that renders, not only in the shared rule. The floor is one number
-    # taken from `.sidebar-row-action-glyph`, so an instance carrying `min-w-20`, or an inline
-    # width, is wider than every action is credited with while this goes on reporting size-6.
+    # Per rendered glyph too: an instance-level `min-w-20` would be wider than credited.
     for tag in _opening_jsx_tags(applied, "<span"):
         if not re.search(r"(?<![\w-])sidebar-row-action-glyph(?![\w-])", tag):
             continue
@@ -2295,26 +2019,14 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"in the rule is what renders, and every floor below would go on being measured from "
         f"the first, so state it once in a spelling this reads"
     )
-    # Read per variant, because each variant's own actions decide its floor: an action added to
-    # one row only would otherwise require the other to reserve room for something it does not
-    # render, and this guard would fail a correct change.
     glyph_size = sizes[0]
-    # The actions do not sit side by side and counting them assumed they did. They are
-    # absolutely positioned and one is pushed clear of the other, so what the row has to
-    # reserve is how far the furthest one reaches, not how many there are. Each action's
-    # offset comes from `_row_action_offsets`, read out of the stylesheet.
-    # To the far edge of the GLYPH, which is where the ink stops, but through the padding
-    # that positions it. The container is justify-end with its own pr, so the glyph's right
-    # edge sits that far inside the container's, and its left edge is offset + pr + size.
-    # Leaving the pr out under-measured every row by 1.5, which is how the project row's
-    # pr-14 passed while its pin reached 15.
+    # Actions are absolutely positioned, so reserve the furthest reach: offset + pr + size.
     base_rule = _own_declarations(live_css, ".sidebar-row-action")
     assert base_rule is not None, (
         "index.css no longer has a .sidebar-row-action rule, so this guard cannot tell where "
         "inside its container the glyph sits"
     )
-    # Through _sole_measure, so the shorthand refusal reaches this rule too. Reading the
-    # longhand directly here was how `padding: 0 5rem` in the base rule went unnoticed.
+    # Through _sole_measure so the shorthand refusal applies here too.
     base_padding = _sole_measure(base_rule, "pr", "padding-right", spacing)
     assert isinstance(base_padding, float), (
         f"the base action's right padding is not one value this guard can read "
@@ -2323,13 +2035,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         f"stayed put"
     )
     inner_padding = base_padding
-    # The container's `pl` IS part of the reach, and for a while this said otherwise. The
-    # argument then was that `pr` decides where the glyph sits while `pl` only extends a
-    # transparent box, so only the ink counted. That is right about what is SEEN and wrong
-    # about what is HIT: `.sidebar-row-action.sidebar-touch-reveal` is `pointer-events-auto`,
-    # so the whole button takes taps, padding included, and #7276 is about the action
-    # intercepting the title. The pin's own `padding-left: 0` is what keeps the two answers
-    # the same size now, so measuring the full box costs the rows nothing.
+    # `pl` is part of the reach: the touch-revealed button takes taps on its padding too.
     base_left_measure = _sole_measure(base_rule, "pl", "padding-left", spacing)
     assert isinstance(base_left_measure, float), (
         f"the base action's left padding is not one value this guard can read "
@@ -2371,9 +2077,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}
 
     for variant in variants:
-        # Any qualified gutter for this variant, not the hover one alone: hover, an open menu
-        # and keyboard focus each state how much room the row's action needs, and each is a
-        # state a coarse pointer is permanently in, because there the action is always shown.
+        # Hover, open menu and focus gutters all count: touch is permanently in those states.
         qualified = re.compile(rf"\S*/{re.escape(variant)}:pr-(\d+(?:\.\d+)?)$")
         assert any(qualified.fullmatch(cls) for cls in every_class), (
             f"no {variant} row left that widens its padding to make room for the action, so "
@@ -2385,7 +2089,6 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 for match in (qualified.fullmatch(cls) for cls in rendering)
                 if match
             ]
-            # A rendering that states no gutter for this variant is not this variant's row.
             if not claimed:
                 continue
             touch = [
@@ -2400,21 +2103,10 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 for match in (re.fullmatch(r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering)
                 if match
             ]
-            # Last one wins: same variant, so tailwind-merge keeps the later utility, and a
-            # coarse-pointer utility outranks an unqualified one whatever the order, since
-            # Tailwind emits variants after base and a media query adds no specificity.
+            # Coarse-pointer utilities outrank unqualified ones regardless of order.
             reserved = touch[-1] if touch else (plain[-1] if plain else None)
             needed = max(claimed)
-            # Both sides reduced together satisfies the comparison below and reserves nothing
-            # usable, which is the state this test was written against: the action keeps its
-            # width whatever the row says, so a row that claims less than one action's worth
-            # has not been fixed, it has stopped claiming. The gutter's exact size is still
-            # not pinned here, only that it holds at least one action.
-            # EVERY state that claims a gutter, not the largest of them. Each qualified class
-            # names a state in which the action is visible, and in that state the row reserves
-            # exactly that gutter, so one of them dropping to pr-0 removes the reservation
-            # there while `max` goes on reporting a sibling's 16. An open menu on a coarse
-            # pointer is such a state.
+            # EVERY claimed state must hold at least the floor, not just the largest.
             assert min(claimed) >= floors[variant], (
                 f"a {variant} row states an action gutter of {min(claimed)} among {claimed}, "
                 f"under the {floors[variant]} its furthest action reaches. The state that "
@@ -2470,17 +2162,12 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    # 408px at the default scale, clamped since #11648 so the canvas keeps the 13rem its header column
-    # reserves (`minmax(13rem,1fr)`) when the scaled rail would otherwise eat it.
+    # Clamped so the canvas keeps the 13rem its header column reserves.
     assert RAIL_WIDTH in section
     assert RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "md:flex-row" not in section
-    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
-    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
-    # -action mask, which is why the two are asserted together -- the small padding is
-    # only correct while the fade is there to dissolve the last control into the footer.
+    # pb-6 is only correct while the -action fade dissolves the last control into the footer.
     assert "panel-scroll-fade-action" in section
-    # max-sm:px-5 since #11660: a phone gives the controls the 40px the gutter took.
     assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
     assert "border-t border-foreground/10 px-10 max-sm:px-5 py-3" in section
@@ -2525,8 +2212,6 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
 
 
-# The Train scroller's classes other than its two right-padding steps. See
-# test_image_train_rail_matches_create_and_header for why they are pinned.
 TRAIN_SCROLLER_LAYOUT = (
     "flex",
     "min-h-0",
@@ -2546,12 +2231,8 @@ def test_image_train_rail_matches_create_and_header():
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    # The Create rail's width and clamp, so switching Create and Train keeps the divider still. The
-    # Train rail sits inside a scroller with right padding, so its 100% is that padding narrower
-    # than Create's and the clamp adds exactly that padding back (#11765). Read both numbers rather
-    # than pin either: the divider only lines up while they are the same spacing step.
-    # A spacing step as Tailwind v4 spells it: a multiple of 0.25 written canonically. `8.0` or
-    # `08` still render inside --spacing() but emit no pr- rule, so the two would stop agreeing.
+    # The Train clamp adds back the scroller's right padding; both must be the same spacing step.
+    # Canonical Tailwind v4 steps only: `8.0` or `08` emit no pr- rule.
     step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
     rail = re.search(
         r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
@@ -2561,18 +2242,13 @@ def test_image_train_rail_matches_create_and_header():
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
     classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
     assert classes, "the Train scroller moved; the rail clamp depends on its padding"
-    # The class list is all that sets the scroller's padding: an inline style, a spread or any
-    # other attribute on the tag could set padding the list below never sees, so none is allowed.
+    # No other attribute may set padding the class list does not show.
     opening = layout[layout.rfind("<", 0, classes.start()) : classes.start()]
     assert re.fullmatch(r"<div\s+", opening) and re.match(r"\s*>", layout[classes.end() :]), (
         "the Train scroller's opening tag carries more than its className, which could override "
         "the right padding the rail clamp adds back"
     )
-    # Every other class on the scroller is pinned. Anything that narrows or re-boxes it (padding
-    # under any variant or spelling, a border, box-content, an arbitrary property, !important)
-    # changes what the rail's 100% measures, and no pattern list has kept up with Tailwind's
-    # spellings. A change here is a prompt to re-check the clamp, then update this set. Only the
-    # two right-padding steps move freely, and the sm: one is held to the clamp below.
+    # Every other scroller class is pinned: anything re-boxing it changes what 100% measures.
     tokens = classes.group(1).split()
     below = [t for t in tokens if re.fullmatch(rf"pr-{step}", t)]
     at_rail = [t for t in tokens if re.fullmatch(rf"sm:pr-{step}", t)]
@@ -2620,15 +2296,13 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
     assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
     assert "data-tauri-drag-region" in navbar
 
-    # (page, end of the header band, clickable control groups expected inside it)
     for page, band_end, min_groups in (
         (IMAGES_PAGE, "MediaPageLink", 3),
         (VIDEO_PAGE, "MediaPageLink", 2),
         (AUDIO_PAGE, "PillTabs", 2),
     ):
         source = _ui_source(page)
-        # matched on the band's size alone: Images lays its header out as a grid and Video as a
-        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        # Matched on size alone: Images uses a grid and Video a flex row.
         before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
@@ -2636,9 +2310,6 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
             assert token in opening, (page.name, token)
 
         band = band.split(band_end, 1)[0]
-        # every control group in the band has to opt back in, whatever utilities lay it out:
-        # Audio and Images seat their mode pills in a grid cell, Video in a flex row, so
-        # matching on the opt-in alone is what keeps this honest across all three.
         groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
         assert len(groups) >= min_groups, (page.name, groups)
 
@@ -2679,22 +2350,14 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     stopped_arm = source.split("if msg == update::UPDATE_STOPPED", 1)[1].split(
         "return Err(msg);", 1
     )[0]
-    # The status argument of the call, so the surrounding comment cannot satisfy this.
+    # The call's argument, so the surrounding comment cannot satisfy this.
     call = stopped_arm.split("finish_repair_group(", 1)[1].split(");", 1)[0]
     assert '"canceled"' in call
     assert '"failed"' not in call
 
 
-# Every geometry contract above reads its lengths through `_ui_source`, which answers with
-# the length at the default scale. That is the same 48px whether the source still scales the
-# band or has gone back to a bare `h-[48px]`, so no contract that measures the band can tell
-# those apart, and none of them should have to: the scaling is a separate claim and it is
-# stated here. Each row is a length one of those contracts measures, with how many times the
-# file states it. Unwrap one and this fails, rather than every contract downstream of it
-# passing while the layout has stopped following the interface font size.
-#
-# The variant is part of the claim, so each row carries its own. `h-[...]` and
-# `hover:h-[...]` are different guarantees, and the second one is not a fixed band at all.
+# `_ui_source` hides whether a length still scales, so the scaling is asserted here, per
+# variant (`h-[...]` and `hover:h-[...]` differ).
 _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (NAVBAR, "", "h", "48px", 2),
     (IMAGES_PAGE, "", "h", "48px", 1),
@@ -2713,9 +2376,6 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (APP_SIDEBAR, "", "h", "30px", 8),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
-    # The 34px pill controls in the media headers, in all three spellings the pages use. The
-    # band around them scales and so does their own text, so a control left fixed is the one
-    # thing in that row that does not move, and it crowds out its label.
     (IMAGES_PAGE, "!", "h", "34px", 2),
     (IMAGES_PAGE, "", "h", "34px", 1),
     (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),
@@ -2723,44 +2383,24 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
-    # The chat header's 30px round controls, including the collapsed New Chat button, the chat
-    # menu and temporary-chat buttons, and the browser's new-tab button. The header they sit in
-    # grows with the setting, so one left fixed shrinks against its own row.
     (CHAT_PAGE, "!", "size", "30px", 1),
     (CHAT_PAGE, "", "size", "30px", 2),
     (CHAT_HEADER_MENU, "", "size", "30px", 2),
     (BROWSER_TOGGLE, "", "size", "30px", 1),
 )
 
-# Where a class may begin: the start of the string it is written in, or the space after the
-# one before it. Anchoring on "not a word character" is not enough, because `:` is not one:
-# it lets `hover:h-[...]` answer for `h-[...]`, and a height that only applies under the
-# pointer is not the fixed band any of these contracts measure.
+# `:` is not a word character, so `\b` would let `hover:h-[...]` answer for `h-[...]`.
 _CLASS_STARTS = r"(?:(?<=[\s\"'`])|^)"
-# And where it may end. A trailing `:broken` is not a suffix on the utility, it is a
-# different candidate entirely: Tailwind emits nothing for it, while the normalised source
-# still shows the length this file asks about.
+# A trailing `:broken` makes a different candidate Tailwind emits nothing for.
 _CLASS_ENDS = r"(?=[\s\"'`]|$)"
 
 
-# The same blind spot in colour, and it needs the same answer. `_MIXED_TOKEN` reads a
-# gain-scaled `color-mix` back as its shorthand, so a contract asking for
-# `border-foreground/10` is satisfied by either the scaled spelling or a literal
-# `border-foreground/10` that has lost the gain and stopped responding to the contrast
-# setting. The reader cannot tell them apart by design, so the gain is stated here.
+# `_MIXED_TOKEN` cannot tell a gain-scaled colour from a bare one, so the gain is stated here.
 _COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "10", "edge", 1),)
 
 
-# The stylesheet needs the same statement. `_spacing_rem` and the pin arithmetic read
-# `index.css` through `_ui_source`, which answers with the length at the default scale, so a
-# scale wrapper and a bare rem are the same number to every one of those contracts. These two
-# declarations are the pin's own geometry: the Tailwind gutter they are compared against
-# follows `--spacing`, so a fixed `right` or `padding-right` drifts away from it at any
-# setting other than the default, and the reach arithmetic that decides whether the pin can
-# overlap the title is done against a number the UI no longer renders.
-# They are read from the pin's rule by property, not pinned to a length: a design nudge that
-# moves the pin (#12563 took `right` from 1.875rem to 1.6875rem) keeps the scale and must not
-# turn this red, while one that drops the scale wrapper still must.
+# The pin's `right` and `padding-right` must keep the scale wrapper; read by property, not
+# pinned to a length.
 _PIN_SELECTOR = ".sidebar-row-action.is-unpin-action"
 _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = ("right", "padding-right")
 
@@ -2787,13 +2427,7 @@ def _declared_values(body: str, prop: str) -> list[str]:
     return re.findall(rf"(?<![\w-]){re.escape(prop)}:\s*([^;]+);", body)
 
 
-# The chat header geometry is stated once per platform chrome, and the contracts that do
-# arithmetic on it read the provider through `_ui_source`. So a header height that has gone
-# back to a bare `44px` reads as 44px, exactly what the arithmetic wants, while the padding
-# and the control height beside it still scale. Above the default they grow and it does not,
-# their sum passes the header, and the shared titlebar row is clipped. Every declaration of
-# these three is checked, not the first one found: they are written out once per chrome, and
-# a guard that stops at the first reads one platform and answers for all of them.
+# Every per-chrome declaration is checked: `_ui_source` hides a bare 44px header.
 _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE = (
     "--studio-chat-header-height",
     "--studio-chat-header-padding-top",
@@ -2805,10 +2439,7 @@ def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
     blocks = dict(re.findall(r"const (\w+_CHROME_STYLE) = \{(.*?)\n\}", source, re.S))
     assert len(blocks) >= 2, f"the provider states {sorted(blocks)}, so a chrome has gone missing"
-    # Per block, not across the file: the chromes are alternatives, and one of them holding a
-    # declaration says nothing about the other. Dropping all three from the custom chrome
-    # leaves its users on the root geometry rather than the padding and control height this
-    # row is laid out against, while the mac block's copies answer for it in a global search.
+    # Per block: the chromes are alternatives, so a global search lets one answer for another.
     for chrome, body in blocks.items():
         for name in _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE:
             stated = re.findall(rf'"{re.escape(name)}":\s*"([^"]+)"', body)
@@ -2880,7 +2511,6 @@ def test_the_media_rail_fallback_is_the_width_hook_fallback():
         assert re.search(r"fallback: 408,", block), (kind, block)
         source = page.read_text(encoding = "utf-8")
         assert f'useMediaRailWidth("{kind}")' in source, page
-        # The attribute and the style that sets the variable sit on the same element.
         root = source.split('{...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}', 1)
         assert len(root) == 2, page
         assert "style={railRootStyle}" in root[1].split(">", 1)[0], page

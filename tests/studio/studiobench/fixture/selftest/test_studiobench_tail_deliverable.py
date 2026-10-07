@@ -40,10 +40,7 @@ def corpus() -> Corpus:
     return Corpus.load()
 
 
-#: Every pair the axis is plausibly asked for, and what the corpus can actually do with it. `True`
-#: means deliverable, `False` means the request has to be refused. Derived by running the
-#: reply-axis test's own two assertions across the ladder, not chosen: every `False` is a pair that
-#: silently under-delivered before the guard.
+# Derived by running the reply-axis assertions across the ladder; False must be refused.
 MATRIX: list[tuple[str, int, bool]] = [
     ("1K", 24_000, False),
     ("1K", 96_000, False),
@@ -121,9 +118,7 @@ def test_the_refusal_does_not_name_a_maximum_it_has_not_computed(corpus: Corpus)
         plan_rung(corpus, "100K", stream_tail_chars = 400_000)
     message = str(excinfo.value)
     assert "at most 15,405" not in message.replace("NOT 'at most 15,405'", ""), message
-    # And the claim the reader needs instead has to actually be there.
     assert "RISES as the request falls" in message, message
-    # The thing the wrong advice would have forbidden must in fact work.
     assert plan_rung(corpus, "100K", stream_tail_chars = 96_000).streamed_chars > 90_000
 
 

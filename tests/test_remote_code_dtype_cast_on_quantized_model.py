@@ -34,7 +34,7 @@ class _Model(PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.norm = nn.LayerNorm(4)  # plain float parameters
+        self.norm = nn.LayerNorm(4)
         self.packed = _Params4bit(torch.zeros(8, dtype = torch.uint8))
         self.register_buffer("scale", torch.ones(4, dtype = torch.float32))
 
@@ -80,11 +80,11 @@ def test_disabled_context_changes_nothing():
 def test_unquantized_model_and_device_moves_pass_through():
     m = _Model(_Cfg())
     with _tolerate_dtype_cast_on_quantized_model(True):
-        m.to(torch.bfloat16)  # plain model: transformers' own path
+        m.to(torch.bfloat16)
         assert m.norm.weight.dtype == torch.bfloat16
         q = _quantized_model()
-        q.to("cpu")  # device only: untouched, no error
-        q.to(device = "cpu", dtype = torch.bfloat16)  # both: cast floats, then move
+        q.to("cpu")
+        q.to(device = "cpu", dtype = torch.bfloat16)
         assert q.norm.weight.dtype == torch.bfloat16
         assert q.packed.dtype == torch.uint8
 

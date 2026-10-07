@@ -28,7 +28,7 @@ __all__ = [
     "UNSLOTH_COMPRESSED_TENSORS_ATTR",
 ]
 
-# Popped by the quantizer after loading so it never reaches a saved config.
+# Popped after loading so it never reaches a saved config.
 UNSLOTH_COMPRESSED_TENSORS_ATTR = "_unsloth_compressed_tensors_bnb"
 
 _SUPPORTED_FORMATS = ("pack-quantized", "mxfp4-pack-quantized")
@@ -66,7 +66,6 @@ def _quant_dict(config) -> Optional[dict]:
             return None
     if not isinstance(quant, dict):
         return None
-    # Legacy llm-compressor checkpoints nest the real config one level down.
     inner = quant.get("quantization_config")
     if isinstance(inner, dict) and "config_groups" in inner:
         merged = dict(inner)
@@ -163,7 +162,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 "is not installed; loading it as published. `pip install compressed-tensors` to train it in 4-bit."
             )
         return None
-    # Parse now: compressed-tensors retires fields (`actorder = "group"`, 0.19.0) and a late failure is costly.
+    # Parse now: compressed-tensors retires fields, and a late failure is costly.
     try:
         _build_quantization_config(plan)
     except Exception as error:
@@ -175,7 +174,6 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
             )
         return None
     if not install_compressed_tensors_bnb_quantizer():
-        # No converter hook (transformers < 5.8) or foreign bnb quantizer: keep the checkpoint config.
         if verbose:
             if not _transformers_supports_weight_converters():
                 reason = "this transformers has no quantizer weight-conversion hook (5.8 or later has it)"
@@ -186,7 +184,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
                 f"{reason}; loading it as published."
             )
         return None
-    # Composite configs (Kimi-K2.7) copy the quant config onto sub-configs transformers also reads.
+    # Composite configs (Kimi-K2.7) copy the quant config onto sub-configs.
     for sub in _config_and_subconfigs(config):
         try:
             delattr(sub, "quantization_config")
@@ -216,7 +214,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
     return plan
 
 
-# dtype_plan None keeps int32 words uncast; keyed by renamed name (``<module>.weight`` or merged stack), so both spellings.
+# dtype_plan None keeps int32 words uncast; keyed by renamed name, so both spellings.
 
 
 def _checkpoint_keys(checkpoint_files) -> list:
@@ -305,12 +303,10 @@ def adopt_int4_packed_linears(
         if isinstance(module, Int4PackedLinear):
             swaps.append((name, None, None, None))
             continue
-        # The caller's bnb skip list keeps a module dense: its converter decompresses it instead.
         if any(f".{key}." in f".{name}." for key in skip_modules or ()):
             leftover.append(name)
             continue
         if module is None and ".experts." in name:
-            # Stacked by their own converter, so no longer in the checkpoint's per-expert layout.
             model.__dict__[_STACKED_PACKED_EXPERTS] = True
             continue
         if type(module) is not nn.Linear:
@@ -474,7 +470,7 @@ def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
     groups = list(ct_config.config_groups.values())
     if len(groups) == 1:
         return groups[0]
-    # compressed-tensors precedence: an exact module path, then a regex, then a class name.
+    # compressed-tensors precedence: exact module path, then regex, then class name.
     for group in groups:
         if name in group.targets:
             return group
@@ -507,7 +503,6 @@ def _decompress_one_triton(scheme, packed, scale, shape, zero_point, g_idx, dtyp
     strategy = str(getattr(weights.strategy, "value", weights.strategy)).lower()
     if bits not in (2, 4, 8) or strategy not in ("group", "channel") or scale.dim() != 2:
         return None
-    # MXFP4 is 4-bit group too, but e2m1 values with e8m0 scales, not integers.
     if str(getattr(weights.type, "value", weights.type)).lower() != "int":
         return None
     if getattr(torch.version, "hip", None):
@@ -687,7 +682,6 @@ class _WithOriginalSources:
         self.op = op
         self.original_sources = list(original_sources)
         self.weight_sources = list(weight_sources)
-        # Later ops in a chain (Concatenate after MergeModulelist) get the previous op's output.
         self.receives_buckets = receives_buckets
 
     def convert(
@@ -735,15 +729,13 @@ class _WithOriginalSources:
         return getattr(self.op, "reverse_op", None)
 
     def __getattr__(self, name):
-        # copy.deepcopy (the loader copies each converter) probes attributes before `op` exists.
+        # copy.deepcopy probes attributes before `op` exists.
         try:
             op = self.__dict__["op"]
         except KeyError:
             raise AttributeError(name) from None
         return getattr(op, name)
 
-
-# MXFP4 stays packed: MoE experts -> Mxfp4StackedExperts, other Linears -> Mxfp4PackedLinear (UNSLOTH_MXFP4_KEEP_PACKED=0 opts out).
 
 _PACKED_EXPERT_KEY = re.compile(r"^(.*)\.experts\.(\d+)\.(w[123])\.weight_(packed|scale)$")
 _STACKED_EXPERT_TARGETS = (
@@ -867,7 +859,6 @@ def _swappable_expert_blocks(model, prefixes) -> Optional[list]:
         prefix = _prefix_for(name, prefixes)
         if prefix is None:
             continue
-        # A stack runs only through the remote MoE shim's dispatch.
         if (
             prefixes[prefix] != len(experts)
             or getattr(module, "ep_size", 1) > 1
@@ -887,7 +878,7 @@ def _new_stacked_experts(experts, dims, dtype, device):
     from unsloth_zoo.mxfp4_stacked_experts import Mxfp4StackedExperts
 
     first = experts[0]
-    # Kimi's SiTU takes the concatenated [gate, up]; any other act_fn is act(gate) * up.
+    # Kimi's SiTU takes the concatenated [gate, up].
     fused = getattr(getattr(first, "config", None), "hidden_act", None) == "situ"
     return Mxfp4StackedExperts(
         len(experts),
@@ -953,7 +944,7 @@ def plan_mxfp4_keep_packed(model, keys) -> Optional[Mxfp4KeepPackedPlan]:
     packed = [k[: -len(".weight_packed")] for k in keys if k.endswith(".weight_packed")]
     if not packed:
         return None
-    # Kept packed, a scale missing from the checkpoint would stay uninitialised bytes.
+    # Kept packed, a missing scale would stay uninitialised bytes.
     present = set(keys)
     if any(prefix + ".weight_scale" not in present for prefix in packed):
         return None
@@ -1106,7 +1097,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 else None
             )
             if plan is not None:
-                # Read, not popped: device-map planning runs first on meta; popping left random experts (Kimi, 4 GPUs).
+                # Read, not popped: device-map planning runs first on meta.
                 self._unsloth_ct_config = _build_quantization_config(plan)
                 dtype = kwargs.get("dtype", None)
                 if not isinstance(dtype, torch.dtype):
@@ -1144,7 +1135,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     self._unsloth_int4_packed = swapped
                     self._unsloth_int4_leftover = leftover if swapped else []
                     if self._unsloth_int4_packed:
-                        # Load as stored: a cast would change int32 words and round a fp32 scale.
+                        # Load as stored: a cast would change int32 words and round fp32 scales.
                         self._unsloth_dtype_plan[
                             r"\.weight_(packed|scale|zero_point|g_idx|shape)$"
                         ] = None
@@ -1168,7 +1159,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
                 except AttributeError:
                     config.__dict__.pop(UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
-            # Load-only: save_pretrained would reverse them into packed names without metadata.
+            # Load-only: save_pretrained would reverse them into packed names.
             drop_load_only_conversions(model)
             if getattr(self, "_unsloth_int4_packed", None):
                 from .compressed_tensors_int4 import (
@@ -1177,7 +1168,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     save_packed_with_checkpoint_config,
                 )
                 finalize_int4_packed_linears(model, self._unsloth_ct_dtype)
-                # Leftover layers and stacked experts were converted, which the checkpoint config cannot describe.
                 if (
                     plan is not None
                     and not self._unsloth_int4_leftover
@@ -1242,7 +1232,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     if weight_sources:
                         scheme = _scheme_for_sources(ct_config, weight_sources)
                         other = [p for p in conv.source_patterns if not p.endswith(".weight")]
-                        # Plain `.weight` kept so `ignore`d unpacked experts still merge; anchored.
                         new_sources = (
                             [p + "_packed$" for p in weight_sources]
                             + [p + "_scale$" for p in weight_sources]
@@ -1274,7 +1263,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             if not getattr(self, "_unsloth_int4_packed", None):
                 sources = [s + "$" for s in _PACKED_SUFFIXES]
             else:
-                # Only modules left out of the packed route; the lookbehind keeps the rename to `weight`.
                 sources = [
                     f"(?<={re.escape(name)}\\.){s}$"
                     for name in getattr(self, "_unsloth_int4_leftover", None) or ()

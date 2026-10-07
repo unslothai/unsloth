@@ -16,7 +16,6 @@ import re
 
 import pytest
 
-# Guarded import, as in the sibling floor test.
 try:
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
 except ImportError as exc:

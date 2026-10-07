@@ -88,17 +88,8 @@ def _entry(repo_id: str) -> dict[str, object]:
     }
 
 
-# The settings fields select their contents a frame after they take focus. select() FOCUSES a
-# blurred input in Chrome, taking focus off whatever holds it, so an unguarded select steals
-# focus back from the field the user moved to -- and since each steal fires focus on the other
-# field, whose handler queues the next steal, two of them lock into a loop that runs for as
-# long as the page is open. Everything downstream of it is unusable: the model picker opened
-# during the loop is dismissed in the frame after it opens, which is how this was found.
-#
-# Deterministic, unlike the loop's arrival in a normal run: both focuses happen in one task, so
-# the first field's queued select is still pending when focus moves on, which is the race a user
-# hits tabbing between the two. Measured against the build before the fix: 60 focus events in
-# the 500ms window, against 0 with it.
+# Unguarded select() in Chrome refocuses a blurred input, so two fields can steal focus from each
+# other in a loop. Both focuses in one task reproduce the race deterministically.
 _FOCUS_STEAL_PROBE = """() => new Promise(resolve => {
     const box = name => document.querySelector(`input[aria-label="${name}"]`);
     const first = box('Steps'), second = box('Guidance');
@@ -122,8 +113,7 @@ _FOCUS_STEAL_PROBE = """() => new Promise(resolve => {
 def _assert_a_queued_select_does_not_steal_focus(page) -> None:
     result = page.evaluate(_FOCUS_STEAL_PROBE)
     assert not result.get("error"), result["error"]
-    # The end-of-frame answer looks right even while the loop runs, because the second field's
-    # steal is the last one in each frame. The churn is what tells them apart, so assert both.
+    # The end-of-frame answer looks right even during the loop, so assert the churn too.
     assert (
         result["active"] == "Guidance"
     ), f"focus left the field it was moved to: {result['active']}"
@@ -140,7 +130,6 @@ def _open_quant(page, *, navigate: bool) -> None:
     trigger = page.locator(".unsloth-model-selector-trigger:visible")
     trigger.wait_for(state = "visible", timeout = 30_000)
     trigger.scroll_into_view_if_needed()
-    # Finish input scrolling before opening the dismiss-on-scroll picker.
     page.evaluate("""async () => {
         const scrollers = [...document.querySelectorAll('*')]
             .filter(el => el.scrollHeight > el.clientHeight);
@@ -157,17 +146,13 @@ def _open_quant(page, *, navigate: bool) -> None:
     }""")
     menu = page.locator(".unsloth-model-selector-menu")
 
-    # The picker dismisses on scroll, and in the download-only pass it is opened with the Advanced
-    # panel expanded and two fields just filled, so a late re-render can close it in the frame
-    # after it opened. Waiting on the row alone then burns the whole timeout against a menu that
-    # is no longer there and reports only "Locator.click: Timeout 30000ms exceeded". Reopen while
-    # that is what happened, and say which of the two it was if neither settles.
+    # A late re-render can close the dismiss-on-scroll picker right after it opens; reopen in that case.
     def _open() -> bool:
         return bool(menu.count()) and menu.first.is_visible()
 
     last = ""
     for attempt in range(5):
-        # Clicking the trigger toggles, so an already-open picker must not be clicked shut.
+        # The trigger toggles, so do not click an already-open picker.
         if not _open():
             trigger.click()
         try:
@@ -177,7 +162,6 @@ def _open_quant(page, *, navigate: bool) -> None:
         except PWTimeoutError as error:
             last = str(error).splitlines()[0]
             if _open():
-                # Open, but without the row: reopening cannot help, so stop and report it.
                 raise AssertionError(
                     f"the picker is open and {KLEIN_ROW.pattern} is not in it after {attempt + 1} "
                     f"attempts: {last}"
@@ -317,8 +301,7 @@ def main() -> None:
             payload = json.loads(request.post_data or "{}")
             if path in {"/api/hub/gguf-variants", "/api/models/gguf-variants"}:
                 variants = _api_payload(path, query, full_footprint = True)
-                # This is the critical reported precondition: the picker knows the 2.6 GB
-                # checkpoint is cached, but its separate 8.2 GB requirements are absent.
+                # The reported precondition: checkpoint cached, separate requirements absent.
                 variants["variants"][0]["downloaded"] = CHECKPOINT_CACHED
                 _json(route, variants)
                 return
@@ -440,8 +423,7 @@ def main() -> None:
                 page.locator("[data-eject-hit]:visible").click()
             expect(page.get_by_role("button", name = "Select image model")).to_be_visible()
             page.get_by_test_id("nav-row-hub").click()
-            # The path, not the whole URL: the Hub appends its own ?tab= once it has mounted, and an
-            # exact-URL assertion loses that race on every CI runner.
+            # Path only: the Hub appends its own ?tab= on mount.
             expect(page).to_have_url(re.compile(r"/hub(\?|$)"))
             assert held_plans, "No pending plan to exercise"
             hold_plan = False
@@ -499,7 +481,6 @@ def main() -> None:
         if not CHECKPOINT_CACHED:
             assert "Model file" in panel_text
         assert page.get_by_text("Downloading model requirements", exact = False).count() == 0
-        # A load pick's own toast tracks the staged plan; a download-only pick shows none.
         pick_toast = page.locator("[data-sonner-toast]").filter(has_text = "Downloading model…")
         if DOWNLOAD_ONLY:
             assert pick_toast.count() == 0

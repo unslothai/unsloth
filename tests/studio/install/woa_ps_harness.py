@@ -29,8 +29,6 @@ STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 STACK_LLAMA = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 
-# Read once. Well over a hundred tests want one of these whole files, and none of them
-# mutate what they read.
 INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
 SETUP_SRC = SETUP_PS1.read_text(encoding = "utf-8")
 STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
@@ -42,8 +40,6 @@ CONSTRAINTS_SRC = (
 PWSH = shutil.which("pwsh")
 requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 
-# The channels, mirrors and indexes these tests name over and over. Spelled once so a
-# parametrize row stays one readable line instead of six.
 NV_GA = "https://pypi.nvidia.com/nvtorch_oot"
 NV_NIGHTLY = "https://pypi.nvidia.com/nvtorch_oot_nightly"
 PYPI = "https://pypi.org/simple"
@@ -172,8 +168,6 @@ def slice_between(
     return src[start : end + len(end_marker)] if include_end else src[start:end]
 
 
-# ── Stub bundles ──────────────────────────────────────────────────────────────────────────
-
 SUBSTEP_NOOP = "function substep { param($m, $c) }"
 
 
@@ -185,8 +179,6 @@ def substep_collector(var: str = "Messages") -> str:
     )
 
 
-# The real one shortens a path to its 8.3 form; a passthrough is what every test that is
-# not about 8.3 wants, and it keeps the assertions readable.
 UV_SAFE_PATH = "function Get-UvSafePath { param([string]$Path) return $Path }"
 
 JOIN_URL_PATH = _script(
@@ -211,7 +203,6 @@ INVOKE_RESTMETHOD_OFFLINE = (
 )
 INVOKE_RESTMETHOD_NO_NETWORK = "function Invoke-RestMethod { throw 'no network in this test' }"
 
-# The resolver settings a lifted block must not inherit from the session running the tests.
 UV_INDEX_ENV = (
     "UV_NO_INDEX",
     "PIP_NO_INDEX",
@@ -240,8 +231,7 @@ def clear_env(names) -> str:
     return f'foreach ($n in {listed}) {{ Remove-Item "Env:$n" -ErrorAction SilentlyContinue }}'
 
 
-# The four marker helpers travel together: the path builder, the write guard, the writer and
-# the reader. Injecting one without the others is a command-not-found inside the body.
+# The four marker helpers must be injected together or the body hits command-not-found.
 MARKER_FUNCS = functions(
     SETUP_SRC,
     "Get-WoaTorchIndexMarkerPath",
@@ -250,7 +240,6 @@ MARKER_FUNCS = functions(
     "Get-WoaTorchIndexMarker",
 )
 
-# Tag matching, the version order it needs, the floor and the pyarrow gate built on both.
 PYARROW_FLOOR = '$script:WoaPyarrowFloor = "21.0.0"'
 WHEEL_TAG_FUNCS = functions(INSTALL_SRC, "Test-WoaWheelTags", "Test-WoaWheelTagsUsable")
 PYARROW_USABLE_FUNCS = _script(

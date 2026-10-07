@@ -30,8 +30,6 @@ def test_the_gate_is_waited_for_not_counted():
 
 
 def test_the_gate_still_waits_on_the_hardware_answer():
-    # If the page stopped gating on the hardware load, the wait above would be unnecessary, and
-    # this test is where that shows.
     page = EXPORT_PAGE.read_text(encoding = "utf-8")
     assert "hardware.loaded && hardware.exportSupported === false" in page
     assert "<AlertTitle>Export unavailable</AlertTitle>" in page

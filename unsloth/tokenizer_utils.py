@@ -65,15 +65,14 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# gemma-4 base mirrors do not prepend <bos> (post_processor.single = [A], google's is [<bos>, A]).
-# Not keyed on add_bos_token (google omits it on E4B/31B/26B-A4B and still prepends) nor on repo
-# name. -it is skipped: its chat_template emits BOS. unslothai/unsloth#7903
+# gemma-4 base mirrors do not prepend <bos>. Not keyed on add_bos_token or repo name; -it is
+# skipped since its chat_template emits BOS. unslothai/unsloth#7903
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
 
-# Anchored: a future gemma-4.5 / gemma_45 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
+# Anchored: a future gemma-4.5 has its own BOS policy, and DiffusionGemma4... is not gemma 4.
 _GEMMA4_NAME_RE = re.compile(r"^gemma[\s_-]*4(?![\d.])", re.IGNORECASE)
 
-# A bos_token inside a Jinja comment renders to nothing, so it is not an emission.
+# A bos_token inside a Jinja comment renders to nothing.
 _JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 
 
@@ -135,7 +134,6 @@ def _tokenizer_auto_adds_bos(tokenizer):
         input_ids = tokenizer("A")["input_ids"]
     except Exception:
         return bool(getattr(tokenizer, "add_bos_token", False))
-    # Processors return a batched nested list.
     while (
         isinstance(input_ids, (list, tuple))
         and input_ids
@@ -149,7 +147,7 @@ def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template
     stripped = re.sub(r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}", "", chat_template, count = 1)
-    # Keep the opening `{{` for Llama 2 expressions so removing bos_token does not leave a dangling `}}`.
+    # Keep the opening `{{` so removing bos_token does not leave a dangling `}}`.
     return re.sub(r"(\{[\s\-]*\{[\s\-]*)bos\_token[\s\-]*\+[\s\-]*", r"\1", stripped, count = 1)
 
 
@@ -188,13 +186,12 @@ def _needs_gemma4_base_bos(tokenizer, config = None):
 def _enable_add_bos_token(tokenizer):
     """Make the tokenizer prepend <bos>, and warn if that could not be done. Nothing is recorded for save_pretrained: transformers 5.x drops add_bos_token from tokenizer_config.json, so the setter's post_processor rewrite is what persists."""
     for obj in _tokenizer_objects(tokenizer):
-        # Already correct: keep its post_processor rather than rebuilding one.
         if _tokenizer_auto_adds_bos(obj):
             continue
         try:
             obj.add_bos_token = True
         except AttributeError:
-            continue  # Read-only property, or rejects the attribute. Not our tokenizer.
+            continue
         except ValueError as error:
             # Raised when bos_token is None; swallowing it would fake success.
             logger.warning(f"Unsloth: Could not enable add_bos_token for Gemma 4: {error}")
@@ -214,12 +211,12 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
     return tokenizer
 
 
-# v5 loads byte-level BPE repos declaring LlamaTokenizerFast with Metaspace, dropping spaces (transformers#45488, #48206).
+# v5 loads byte-level BPE repos declaring LlamaTokenizerFast with Metaspace (transformers#45488).
 _BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
 _BACKEND_IDS_PROBE = (
     "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678 नमस्ते दुनिया open(path):\n"
 )
-# v5 __init__ overwrites tokenizer.json's pre-tokenizer: text round-trips but ids differ (tiny-aya).
+# v5 __init__ overwrites tokenizer.json's pre-tokenizer: ids differ (tiny-aya).
 _V5_REBUILT_PRETOKENIZER_CLASSES = frozenset(("CohereTokenizer",))
 
 
@@ -293,7 +290,6 @@ def _repair_one_tokenizer_backend(
         return False
     saved = (backend.model, backend.normalizer, backend.pre_tokenizer, backend.decoder)
     try:
-        # Keep the loaded post_processor, padding, truncation and added tokens.
         backend.model = reference.model
         backend.normalizer = reference.normalizer
         backend.pre_tokenizer = reference.pre_tokenizer
@@ -370,7 +366,7 @@ def _fix_post_load_chat_template(tokenizer):
     return tokenizer
 
 
-# A KAGGLE_* variable is not a Kaggle kernel: the Kaggle CLI reads KAGGLE_USERNAME / KAGGLE_KEY on ordinary machines, and redirecting their tokenizer cache to /tmp because of it was wrong.
+# A KAGGLE_* variable is not a Kaggle kernel: the Kaggle CLI reads them on ordinary machines.
 from .disk_utils import (
     KAGGLE_TMP,
     is_colab_environment,
@@ -389,7 +385,6 @@ def try_fix_tokenizer(tokenizer, prepend = True):
 
     tokenizer_string = converted_tokenizer.to_str()
 
-    # Llama does _apple; sometimes this is wrong.
     prepend_text = '{"type":"Prepend","prepend":"▁"},'
     if not prepend and prepend_text in tokenizer_string:
         tokenizer_string = tokenizer_string.replace(prepend_text, "", 1)
@@ -490,7 +485,7 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
             return slow_tokenizer
 
     name = slow_tokenizer.name_or_path.replace("/", "_")
-    # exist_ok: a check-then-create races when two processes share a working directory.
+    # exist_ok: two processes may share a working directory.
     os.makedirs(temporary_location, exist_ok = True)
     new_location = f"{temporary_location}/{name}"
     slow_tokenizer.save_pretrained(new_location)
@@ -502,7 +497,6 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     return slow_tokenizer
 
 
-# Check Mistral chat template without BOS / EOS
 mistral_template = (
     "{% if messages[0]['role'] == 'system' %}"
     "{% if messages[1]['role'] == 'user' %}"
@@ -526,7 +520,6 @@ mistral_template = (
     "{% endfor %}"
 )
 
-# Check Llama chat template without BOS / EOS
 llama_template = (
     "{% if messages[0]['role'] == 'system' %}"
     "{% if messages[1]['role'] == 'user' %}"
@@ -623,7 +616,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
 
         return check_chat_template and check_special_tokens
     except:
-        # Sometimes a tokenizer has weird tokens, causing a combined tokenization to fail; temporarily disabled for CodeLlama tokenizers (#292).
+        # Weird tokens break combined tokenization; disabled for CodeLlama tokenizers (#292).
         if slow_tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
             return check_chat_template
         else:
@@ -636,7 +629,7 @@ def fix_sentencepiece_tokenizer(
     token_mapping,
     temporary_location = "_unsloth_sentencepiece_temp",
 ):
-    # The sentencepiece tokenizer must be edited manually; see google/sentencepiece#121. Only works for SentencePiece <= 3.20.3.
+    # See google/sentencepiece#121. Only works for SentencePiece <= 3.20.3.
     try:
         from transformers.convert_slow_tokenizer import import_protobuf
         sentencepiece_model_pb2 = import_protobuf()
@@ -652,13 +645,12 @@ def fix_sentencepiece_tokenizer(
                     f"Please downgrade via `pip install --force-reinstall protobuf==3.20.3`"
                 )
         except:
-            # This will only work for older SentencePiece versions <= 3.20.3
             from transformers.utils import sentencepiece_model_pb2
 
-    # exist_ok: a check-then-create races when two processes share a working directory.
+    # exist_ok: two processes may share a working directory.
     os.makedirs(temporary_location, exist_ok = True)
 
-    # Fresh per-call subdir so concurrent or repeated calls cannot clobber each other's tokenizer.model or leak stale files, without deleting anything the caller owns.
+    # Fresh per-call subdir so concurrent calls cannot clobber each other's tokenizer.model.
     temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)
 
     old_tokenizer.save_pretrained(temporary_location)
@@ -681,7 +673,6 @@ def fix_sentencepiece_tokenizer(
             )
             continue
         ids = ids[0]
-        # Hack for Starling: try/except.
         try:
             tokenizer_piece = tokenizer_file.pieces[ids]
         except:
@@ -699,7 +690,7 @@ def fix_sentencepiece_tokenizer(
         eos_token = new_tokenizer.eos_token,
         pad_token = new_tokenizer.pad_token,
     )
-    # vocab_file points here, so the dir must outlive the tokenizer (a later save_pretrained copies the patched tokenizer.model from it); reclaim it on GC.
+    # vocab_file points here, so the dir must outlive the tokenizer; reclaim it on GC.
     weakref.finalize(tokenizer, shutil.rmtree, temporary_location, ignore_errors = True)
     return tokenizer
 
@@ -735,7 +726,7 @@ def fix_sentencepiece_gguf(saved_location):
     tokenizer_file.ParseFromString(open(f"{saved_location}/tokenizer.model", "rb").read())
     sentence_piece_size = len(tokenizer_file.pieces)
 
-    # Build a set of token IDs marked special in tokenizer.json: these must use CONTROL type in the sentencepiece model so llama.cpp writes them as CONTROL (type=3) in the GGUF token_type array.
+    # Special tokens must be CONTROL in the sentencepiece model so llama.cpp writes them as CONTROL.
     special_token_ids = set()
     if os.path.isfile(f"{saved_location}/tokenizer.json"):
         with open(f"{saved_location}/tokenizer.json", "r", encoding = "utf-8") as f:
@@ -745,7 +736,6 @@ def fix_sentencepiece_gguf(saved_location):
             if entry.get("special", False) and isinstance(token_id, int):
                 special_token_ids.add(token_id)
 
-    # Fix existing sentencepiece tokens marked special in tokenizer.json but typed NORMAL instead of CONTROL in the sentencepiece model.
     patched = 0
     for token_id in special_token_ids:
         if 0 <= token_id < sentence_piece_size:
@@ -802,7 +792,6 @@ def fix_sentencepiece_gguf(saved_location):
         added_token_id = added_tokens_json[added_token_str]
         new_token.piece = added_token_str.encode("utf-8")
         new_token.score = -1000.0
-        # Use CONTROL type for tokens marked special in tokenizer.json, otherwise fall back to USER_DEFINED.
         if added_token_id in special_token_ids:
             new_token.type = SentencePieceTokenTypes.CONTROL
         else:
@@ -835,9 +824,8 @@ def _load_correct_tokenizer(
     elif cache_dir == "huggingface_tokenizers_cache":
         # This default name is Colab/Kaggle-only; elsewhere use the HF default cache.
         cache_dir = None
-    # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead of risking an in-process Hub/Xet transfer.
 
-    # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no tokenizer.model file.
+    # Slow first, fast as fallback: Deepseek models have no tokenizer.model.
     slow_tokenizer = None
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
@@ -846,7 +834,7 @@ def _load_correct_tokenizer(
             padding_side = padding_side,
             token = token,
             trust_remote_code = trust_remote_code,
-            # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
+            # use_fast = False alone is not enough.
             use_fast = False,
             legacy = False,
             from_slow = True,
@@ -867,7 +855,7 @@ def _load_correct_tokenizer(
         cache_dir = cache_dir,
         revision = revision,
     )
-    # Repair both before comparing them, or a v5 byte-level mismatch detours into the legacy path.
+    # Repair both before comparing, or a v5 byte-level mismatch detours into the legacy path.
     _repair_kwargs = dict(cache_dir = cache_dir, revision = revision)
     if slow_tokenizer is not None:
         _repair_tokenizer_backend_from_json(slow_tokenizer, **_repair_kwargs)
@@ -877,12 +865,10 @@ def _load_correct_tokenizer(
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
         )
-    # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
         )
-    # Ignore Phi-4 ones as well
     elif "phi-4" in tokenizer_name.lower():
         return _apply_post_load_tokenizer_fixes(
             fast_tokenizer, fix_tokenizer, config, **_repair_kwargs
@@ -952,7 +938,7 @@ def load_correct_tokenizer(
 
     old_chat_template = getattr(tokenizer, "chat_template", None)
 
-    # Ignore mistral type models, which have no add_generation_prompt, and check Llama-2 old style models too.
+    # Mistral templates have no add_generation_prompt; also check old Llama-2 style.
     if any(
         s in str(getattr(tokenizer, "name_or_path", "")).lower() for s in ["mistral", "qwen3guard"]
     ):
@@ -976,14 +962,14 @@ def load_correct_tokenizer(
         pass
 
     tokenizer.chat_template = chat_template
-    # Saving restores sentencepiece assets from the repo name alone, which carries no branch, so stamp it for the save path. Imported late to break a circular import.
+    # Saving restores sentencepiece assets from the repo name alone, so stamp the revision.
+    # Imported late to break a circular import.
     from .models.loader_utils import _mark_loaded_revision
 
     _mark_loaded_revision(tokenizer, revision)
     return tokenizer
 
 
-# All four Jinja whitespace-control variants of endfor/endif.
 _RE_ENDFOR = re.compile(r"\{%(-?)\s*endfor\s*(-?)%\}")
 _RE_ENDIF = re.compile(r"\{%(-?)\s*endif\s*(-?)%\}")
 _RE_JINJA_COMMENT = re.compile(r"\{#.*?#\}", flags = re.DOTALL)
@@ -1069,7 +1055,7 @@ def _has_add_generation_prompt_block(chat_template):
         return "if add_generation_prompt" in chat_template and "%}" in chat_template
     for if_node in ast.find_all(jinja2.nodes.If):
         test = if_node.test
-        # Reject negated gates: `{% if not add_generation_prompt %}` fires when agp=False, so it is not a generation block even if it emits.
+        # Reject negated gates: `{% if not add_generation_prompt %}` is not a generation block.
         if isinstance(test, jinja2.nodes.Not):
             continue
         # find_all skips the test root, so check bare Name tests explicitly.
@@ -1086,7 +1072,7 @@ def _has_add_generation_prompt_block(chat_template):
     return False
 
 
-# Sentinels for _derive_assistant_prefix_by_render: they diverge at char 0 so commonprefix cannot absorb them, and the long random tail makes collision with real template literals negligible.
+# Diverge at char 0 so commonprefix cannot absorb them.
 _RENDER_DIFF_SENTINEL_A = "AAAA_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_B = "BBBB_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
 _RENDER_DIFF_SENTINEL_C = "CCCC_0123456789_UNSLOTH_RENDER_DIFF_SENTINEL"
@@ -1110,7 +1096,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         sent_b_msgs = base_msgs + [{"role": "assistant", "content": _RENDER_DIFF_SENTINEL_B}]
         sent_c_msgs = base_msgs + [{"role": "user", "content": _RENDER_DIFF_SENTINEL_C}]
 
-    # Strip trailing whitespace/comments after the last endfor/endif: they appear after the message loop and would break Guard A, and the splice in _fix_chat_template drops them too.
+    # Trailing whitespace/comments after the last endfor/endif would break Guard A.
     probe_template = chat_template
     end = _find_end_position(chat_template)
     if end is not None:
@@ -1118,7 +1104,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
         if _RE_JINJA_COMMENT.sub("", after).strip() == "":
             probe_template = chat_template[: end["end"]]
 
-    # Sandboxed: probe renders run at load time, before the user calls apply_chat_template, and SandboxedEnvironment blocks attribute-chain exploits.
+    # Sandboxed: probe renders run at load time; the sandbox blocks attribute-chain exploits.
     try:
         env = SandboxedEnvironment(
             autoescape = False,
@@ -1131,7 +1117,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     except Exception:
         return None
 
-    # Best-effort: alternation-enforcing templates (Gemma's raise_exception) fail on [user, user], which is a positive signal for Guard C rather than a probe failure.
+    # Alternation-enforcing templates fail on [user, user], a positive signal for Guard C.
     out_user_c = None
     try:
         out_user_c = tmpl.render(messages = sent_c_msgs, add_generation_prompt = False)
@@ -1156,7 +1142,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
     ):
         return None
 
-    # Guard C: reject if a [user, user] render also emits the same prefix, i.e. a role-insensitive template.
+    # Guard C: a role-insensitive template also emits the prefix for [user, user].
     if out_user_c is not None and out_user_c.startswith(out_base):
         tail_c = out_user_c[len(out_base) :]
         if tail_c.startswith(prefix) and prefix != "":
@@ -1169,7 +1155,7 @@ def _derive_assistant_prefix_by_render(chat_template, is_sharegpt = False):
 
 
 def _fix_chat_template(chat_template, is_sharegpt = False):
-    # Fast path: an {% if add_generation_prompt %} block already exists. This catches cases the old string-based check would miss, such as both-side dashes or a block nested inside an If/For.
+    # Fast path: an {% if add_generation_prompt %} block already exists (also nested or dashed).
     if _has_add_generation_prompt_block(chat_template):
         return chat_template
 
@@ -1182,8 +1168,8 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     dash_r = "-" if end["dash_right"] else ""
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
-    # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
-    # Surrounding whitespace allowed (ERNIE-4.5: `{%- endfor %}\n {{- "..." }}`); it moves inside the block.
+    # Case 1: a single trailing {{ expr }} is the generation prefix; wrap it in an agp block.
+    # Surrounding whitespace allowed (ERNIE-4.5).
     trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor
@@ -1198,11 +1184,11 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
         wrapped = open_tag("if add_generation_prompt") + after_endfor + open_tag("endif")
         return chat_template[: end["end"]] + wrapped
 
-    # Case 2 (#4150): the template ends at {% endfor %} with only whitespace or comments left, so inject an {% if add_generation_prompt %} block with the assistant prefix derived by render-diff.
+    # Case 2 (#4150): ends at {% endfor %}; inject an agp block with the prefix derived by render-diff.
     if _RE_JINJA_COMMENT.sub("", after_endfor).strip() == "" and _template_ends_with_toplevel_for(
         chat_template
     ):
-        # No redundant "agp not in scrubbed" check: the fast path already confirmed no POSITIVE block, and a mere reference (header guard) should still get repaired.
+        # A mere agp reference (header guard) should still get repaired.
         assistant_prefix = _derive_assistant_prefix_by_render(chat_template, is_sharegpt)
         if assistant_prefix is None and not is_sharegpt:
             assistant_prefix = _derive_assistant_prefix_by_render(chat_template, is_sharegpt = True)
@@ -1323,8 +1309,8 @@ def _validate_patched_template(tokenizer, patched_template, is_sharegpt):
         try:
             tokenizer.chat_template = original
         except Exception:
-            pass  # best-effort restore
-    # Contract after a successful repair: the two renders differ, and the "yes" render is a strict extension of the "no" render, since content was only appended in the new block.
+            pass
+    # After a repair the "yes" render strictly extends the "no" render.
     return yes != no and yes.startswith(no)
 
 
@@ -1333,7 +1319,7 @@ def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     candidate = _fix_chat_template(chat_template, is_sharegpt = is_sharegpt)
     if not _has_add_generation_prompt_block(candidate):
         return None
-    # Validate with the caller's is_sharegpt first; if that fails, the dual-probe in _fix_chat_template may have fallen back to the other schema, so try the opposite one.
+    # The dual-probe may have used the other schema, so try the opposite is_sharegpt too.
     if _validate_patched_template(tokenizer, candidate, is_sharegpt):
         return candidate
     if _validate_patched_template(tokenizer, candidate, not is_sharegpt):
@@ -1390,9 +1376,8 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     if no != yes:
         return chat_template
 
-    # no == yes: the template ignores add_generation_prompt, so try to repair. It may have the block while the output does not change, the "wasn't provided correctly" case.
+    # no == yes: the template ignores add_generation_prompt.
     if _has_add_generation_prompt_block(chat_template):
-        # Template has the block but it does not change output. This is the "wasn't provided correctly" case from the pre-warn code path.
         strict = _is_strict_chat_template_mode()
         msg = _format_chat_template_message(
             name,
@@ -1464,7 +1449,6 @@ class _VariantTokenizerProxy:
                 swapped = False
             if swapped:
                 return self._base.apply_chat_template(*args, **kwargs)
-            # Read-only base: fall back to sandboxed Jinja.
             from jinja2.sandbox import SandboxedEnvironment
 
             env = SandboxedEnvironment(
@@ -1482,7 +1466,7 @@ class _VariantTokenizerProxy:
                 try:
                     self._base.chat_template = base_original
                 except Exception:
-                    pass  # best-effort restore
+                    pass
 
 
 def fix_chat_template(tokenizer):
@@ -1490,7 +1474,7 @@ def fix_chat_template(tokenizer):
     if chat_template is None:
         return None
 
-    # Multi-variant dict (Hermes-3 {default, tool_use}): route each variant through the full repair contract via _VariantTokenizerProxy.
+    # Multi-variant dict (Hermes-3 {default, tool_use}): repair each variant.
     if isinstance(chat_template, dict):
         fixed = {}
         for key, tmpl in chat_template.items():
@@ -1533,7 +1517,7 @@ def check_tokenizer(
     _reload = True,
     cache_dir = None,
 ):
-    # Check the tokenizer for out of bounds ids, mainly for berkeley-nest/Starling-LM-7B-alpha where <sep> had token id=32002 (its discussion 25); the Rust fast tokenizer seems to break things.
+    # Out-of-bounds ids, e.g. Starling-LM-7B-alpha's <sep> = 32002.
 
     if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
         return tokenizer
@@ -1609,19 +1593,18 @@ def check_tokenizer(
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
 
-            # Reuse a caller-supplied cache_dir (the warmed cache) for the repair reload; else the Colab/Kaggle sentinel, as load_correct_tokenizer does.
+            # Reuse a caller-supplied (warmed) cache_dir, else the Colab/Kaggle sentinel.
             reload_cache_dir = cache_dir
             if reload_cache_dir is None and (IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT):
                 reload_cache_dir = "huggingface_tokenizers_cache"
 
-            # Sometimes the slow tokenizer does not work, e.g. Deepseek, but it can also fix things.
             try:
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_name,
                     model_max_length = model_max_length,
                     padding_side = padding_side,
                     token = token,
-                    # use_fast = False alone is not enough; see twitter.com/danielhanchen/status/1789659394302718373
+                    # use_fast = False alone is not enough.
                     use_fast = False,
                     legacy = False,
                     from_slow = True,
@@ -1694,7 +1677,7 @@ def patch_sft_trainer_tokenizer():
     except:
         return
     all_imports = dir(trl.trainer.sft_trainer)
-    # Make typing names available to the exec'd source bodies: TRL >= 1.x type-hints _prepare_dataset with Union[...] and friends, which become NameErrors at exec time without these imports.
+    # TRL >= 1.x type-hints _prepare_dataset with typing names, NameErrors in exec without these.
     from typing import Union, Optional, List, Any, Callable, Tuple, Dict, Iterator  # noqa: F401
 
     for (

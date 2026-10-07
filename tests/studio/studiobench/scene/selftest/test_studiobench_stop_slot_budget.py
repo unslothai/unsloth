@@ -72,19 +72,13 @@ from studiobench.scene.actions import (  # noqa: E402
 )
 from studiobench.scene.schedule import FAST, QUICK, STANDARD  # noqa: E402
 
-#: One driver call over CDP. Measured at 43 - 130 ms across nine to thirteen `page.evaluate` calls in
-#: one run of the shipped action against real chromium, and the two big ones are page-side waits
-#: charged separately below, so about 4 ms is the round trip itself.
+#: One CDP round trip; the large page-side waits are charged separately below.
 ROUND_TRIP_MS = 4.0
 
-#: Enter pressed to `isRunning()` answering true: a POST to the relay and the first SSE frame back.
 START_MS = 120.0
 
-#: Stop clicked to `isRunning()` answering false: the abort round trip.
 STOP_MS = 90.0
 
-#: The delete inside `STOP_CLEANUP_JS`: the click, the removal, and the two `__sbNextPaint` frames
-#: the loop waits on.
 CLEANUP_MS = 90.0
 
 
@@ -112,12 +106,8 @@ class _Keyboard:
         if key != "Enter" or not self._page.composer.strip():
             return
         if not self._page.accepts_send:
-            # `queueDisabled` in thread.tsx: the press queued nothing and the box keeps its text.
             return
-        # SENT, NOT STARTED, and the difference is the whole of the P1 above: the app takes the text out of
-        # the composer and puts the user turn and its reply into the thread NOW, while the reply begins
-        # generating `start_ms` later and the action has to poll for it - the cost the first version of
-        # this shim handed out free.
+        # Sent, not started: the turn appears now but the reply starts `start_ms` later.
         self._page.composer = ""
         self._page.messages += 2
         self._page.sent_at_ms = self._page.elapsed_ms
@@ -155,13 +145,11 @@ class _Page:
         self._stop_ms = stop_ms
         self._cleanup_ms = cleanup_ms
         self.accepts_send = accepts_send
-        # The cleanup reaches Delete through the More menu (#12735); a menu that never mounts costs
-        # the whole wait the action allowed it.
+        # Cleanup reaches Delete via the More menu; a menu that never mounts burns the whole wait.
         self.menu_never_opens = menu_never_opens
         self.running = True
         self.filled: list[str] = []
         self.composer = ""
-        # The seeded user turn and the reply it prompted.
         self.messages = 2
         self.deleted = 0
         self.clicked = 0
@@ -196,7 +184,7 @@ class _Page:
         arg = None,
     ):
         self.charge()
-        if arg is not None:  # STOP_CLEANUP_JS, which is the only call that takes one
+        if arg is not None:
             if self.menu_never_opens:
                 self.charge(arg["menuWaitMs"])
                 return {
@@ -222,9 +210,7 @@ class _Page:
             return self.composer
         if "messageCount" in script:
             return self.messages
-        # The thread's length as well as the mounted count: `stop_generation` proves its own turn was added
-        # by `threadTotal()`, so a windowed arm whose window refills is not read as a send that added
-        # nothing. This page models a fully mounted arm, where the two are the same number.
+        # `stop_generation` counts its own turn via `threadTotal()`; equals mounted count on a full arm.
         if "threadTotal" in script:
             return self.messages
         if "assistantChars" in script:
@@ -305,8 +291,6 @@ def test_a_reply_that_drains_at_the_end_of_the_slot_does_not_spend_the_next_one(
         f"{scene.name}: stop_generation spent {page.elapsed_ms:.0f}ms of a {stop.budget_ms}ms "
         f"slot with only {slack_ms}ms before {nxt.action} opens"
     )
-    # And it stopped by declining, not by stopping the cell's own reply, which is the whole point of
-    # the wait it just gave up on.
     assert result.ran is False
     assert page.clicked == 0
     assert "one more" not in page.filled
@@ -433,8 +417,6 @@ def test_a_turn_that_starts_after_the_slot_bound_is_not_left_generating(
 
     stop, _nxt, _slack = _stop_slot(scene)
     settled = _thread_a_measured_turn_leaves(monkeypatch, stop.budget_ms)
-    # Past the slot bound, which is the budget less what the rest of the turn costs, and still inside
-    # the time the turn is worth waiting for so it can be taken back.
     start_ms = stop.budget_ms - 1_000 + late_by_ms
 
     result, page = _run(
@@ -452,7 +434,6 @@ def test_a_turn_that_starts_after_the_slot_bound_is_not_left_generating(
         f"{scene.name}: a turn starting {start_ms}ms in was given up on and left the thread at "
         f"{page.messages} messages, where a measured turn leaves it at {settled}"
     )
-    # And it is not about to start streaming again the moment the next action opens its window.
     page.settle(2_000)
     assert page._is_running() is False
 
@@ -616,17 +597,12 @@ def test_the_reserve_is_still_the_whole_of_what_its_two_halves_reserve():
 
     assert OWN_TURN_RESERVE_MS == OWN_TURN_FIXED_MS + OWN_TURN_POLL_MS
     assert OWN_TURN_POLL_MS == OWN_TURN_START_POLL_MS + OWN_TURN_STOP_POLL_MS
-    # The 80 ms that settles the fill is the only fixed sleep before the send.
     assert OWN_TURN_FIXED_MS - OWN_TURN_FIXED_AFTER_SEND_MS == 80
-    # And what the turn-start wait holds back has to leave the start poll something to spend, or the
-    # wait is an immediate refusal and the throwaway turn is unreachable on the tightest drain.
+    # The turn-start wait must leave the start poll some budget, or the throwaway turn is unreachable.
     assert (
         OWN_TURN_RESERVE_MS - 80 - OWN_TURN_FIXED_AFTER_SEND_MS - OWN_TURN_STOP_POLL_MS
         == OWN_TURN_START_POLL_MS
     )
-
-
-# ── the same give-up path, on an arm that mounts a window ────────────────────────────────────
 
 
 class _WindowedPage(_Page):

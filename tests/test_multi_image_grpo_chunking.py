@@ -96,9 +96,6 @@ def test_pixel_attention_mask_axis_is_chosen_per_shape():
     assert per_row[1]["pixel_attention_mask"].shape[0] == 4
 
 
-# Behavioral simulation of chunk math
-
-
 def _simulate_chunk_indices(num_images, B):
     total_samples = len(num_images)
     batch_size = max(1, math.ceil(total_samples / B))
@@ -140,9 +137,6 @@ def test_simulate_pixel_attention_mask_axis_decision():
     assert select_axis(9, 9, 3, 2, True) == "pixel"
     assert select_axis(4, 4, 4, 4, False) == "sample"
     assert select_axis(2, 2, 2, 2, False) == "sample"
-
-
-# Zoo compatibility guard
 
 
 def test_zoo_guard_branch_present():

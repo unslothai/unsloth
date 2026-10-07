@@ -36,16 +36,15 @@ class Target:
     """One side of the comparison: an Unsloth to drive and everything needed to drive it."""
 
     label: str  # "base" or "treatment"
-    ref: str  # the git ref, for the report
+    ref: str
     base_url: str
     seeder: Any
     runner: Any  # a CellRunner bound to this target's base_url and seeder
-    install: Any = None  # StudioInstall, when we own it
+    install: Any = None
     owns_studio: bool = False
 
 
-#: The port a scheme does not spell out. `window.location.origin` omits it, so an attach URL that
-#: writes it is the same origin under a different name.
+# Default ports are omitted by window.location.origin, so an explicit one is the same origin.
 DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
@@ -173,8 +172,6 @@ def skippable_cells(work: list[tuple[Any, Cell, RungPlan]], done: set) -> set:
     for cell_ids in by_pair.values():
         if all(cell_id in done for cell_id in cell_ids):
             out.update(cell_ids)
-    # A pair carrying more than one arm is a comparison, and a comparison is scoped to one session.
-    # Partial skipping is right for a single-target ladder and wrong for a ratio.
     if any(len(cell_ids) > 1 for cell_ids in by_pair.values()):
         planned = sum(len(cell_ids) for cell_ids in by_pair.values())
         if len(out) != planned:
@@ -197,23 +194,11 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
             continue
         seen.add(key)
         first_counts[target.label] += 1
-    # Every label is seeded at zero first. Counting only the labels that DID run reports a single-rep
-    # plan, where one side always goes first and nothing cancels, as balanced, which is the one
-    # answer this function exists to prevent.
+    # Labels are seeded at zero first, so a single-rep plan is not reported as balanced.
     return len(labels) > 1 and len(set(first_counts.values())) == 1
 
 
-#: The per-cell gates whose failure means the cell's TIMINGS ARE NOT A READING OF THE BUILD, and
-#: therefore the only ones that may take the whole cell out of the ratios.
-#: NAMED RATHER THAN 'ANY FAILED GATE', because a per-cell gate is not automatically fatal.
-#: `timer_clamp` fails whenever idle calibration cannot establish a floor, and `session.py` is
-#: explicit that this is 'NOT fatal, and NOT silently zero': `busy_pct` is null with the reason
-#: attached AND EVERY OTHER COLUMN STANDS. Excluding the cell would delete keystroke latency,
-#: frame and census readings that were measured correctly, most often on the machines least able
-#: to spare a repetition.
-#: The two below are different in kind: both say the FILM ITSELF was wrong. A thread that lost
-#: messages and a reply that stopped being rendered produce a cheaper cell, not a suspect column,
-#: and no metric in it can be trusted afterwards.
+# Gates whose failure invalidates the whole cell; other gates (e.g. timer_clamp) only null a column.
 INVALIDATING_CELL_GATES: frozenset[str] = frozenset({"thread_complete", "follows_the_stream"})
 
 
@@ -300,9 +285,7 @@ def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str,
         if keep is not None and row.get("session_id") not in (None, keep):
             continue
         detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
-        # NOT MEASURED IS NOT FAILED. See `gate_detail_is_unmeasured`, shared with `sweep/ui_parity.py` so
-        # the two admission lists cannot drift. Readiness now refuses a cell with no thread viewport
-        # outright, so that narrowing is the second of two doors on the same hole.
+        # Not measured is not failed; gate_detail_is_unmeasured is shared with sweep/ui_parity.py.
         if gate_detail_is_unmeasured(detail):
             continue
         why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
@@ -334,13 +317,7 @@ def unmeasured_planned_cells(
     """
     from ..scoring.from_payload import latest_attempt_rows
 
-    # THE SAME TWO FILTERS `readings_by_arm` APPLIES, because this function exists to notice the holes
-    # that one punches: it drops a cell for `completed is not True` AND for a failed invalidating
-    # gate, and reading only the first left the second kind invisible. A cell that completed but lost
-    # its thread's middle is removed from the ratios and takes its healthy partner with it through
-    # the arm intersection, while this said the plan was whole, so `ab.md` published a verdict over
-    # the surviving rungs instead of the VOID that is the point of the guard.
-    # The intersection is `compare_arms`.
+    # Apply the same two filters as readings_by_arm, so gate-failed cells also void the plan.
     failed = failed_invalidating_gates(records)
     complete: set = set()
     for row in latest_attempt_rows(records):
@@ -394,9 +371,7 @@ def readings_by_arm(
     """
     from ..scoring.from_payload import latest_attempt_rows, measures_by_cell
 
-    # The session filter below scopes the CELL rows, but `action` and `window` rows are collected by
-    # `cell_id` alone and a resumed retry reuses the cell id of the attempt that died, so without
-    # this the completed-cell filter admitted the dead attempt's windows into the retry's reading.
+    # Resumed retries reuse the dead attempt's cell_id, so filter to the latest attempt first.
     records = list(latest_attempt_rows(records))
     failed_gates = failed_invalidating_gates(records)
 
@@ -454,9 +429,7 @@ def compare_arms(
         weights_id = weights_id() if callable(weights_id) else str(weights_id),
         session_id = session_id,
     )
-    # Paired PER REPETITION, matching (rung, rep) on both sides: repetition r of each arm ran adjacent
-    # in time, which is what makes the comparison paired at all. Pooling reps into one reading per
-    # rung throws away every observation but the first and leaves the bootstrap nothing to resample.
+    # Pair per (rung, rep): reps of both arms ran adjacent in time, and the bootstrap needs them all.
     pairs = []
     for key in sorted(set(base) & set(treatment)):
         rung, _rep = key

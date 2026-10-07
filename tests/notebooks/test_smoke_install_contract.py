@@ -70,9 +70,6 @@ def _freeze_names() -> set[str]:
     }
 
 
-# --- the interpreter the snapshot was taken on ---------------------------------------
-
-
 def test_the_snapshot_records_the_interpreter_it_was_captured_on():
     assert re.fullmatch(r"3\.\d+", _mapping().get("python_version", "")), (
         "colab_to_cpu_pin.json must record python_version, the interpreter the freeze "
@@ -113,9 +110,6 @@ def test_the_freeze_resolves_against_the_interpreter_the_snapshot_names():
             f"the freeze pins audioop-lts, which requires Python >= 3.13, but "
             f"python_version says {want}"
         )
-
-
-# --- the converted script's name ------------------------------------------------------
 
 
 @pytest.mark.parametrize("notebook", _notebooks())
@@ -178,9 +172,6 @@ def test_the_workflow_asks_the_converter_instead_of_rebuilding_the_name():
     )
 
 
-# --- the install itself ---------------------------------------------------------------
-
-
 def test_the_seed_install_refuses_source_builds():
     """Sdist-only pins need system libraries the runner lacks; without --only-binary
     pip spends 20-90s per package on a doomed build."""
@@ -196,7 +187,7 @@ def test_the_known_unbuildable_pins_are_skipped():
     """Each failed a source build in the 2026-08-31 run, and one is enough to fail
     the bulk resolve for the whole set."""
     skip = set(_mapping()["skip"])
-    # name -> the system dependency whose absence killed its build in that run.
+    # name -> the system dependency whose absence killed its build.
     system_bound = {
         "cyipopt": "ipopt",
         "dbus-python": "dbus-1",
@@ -252,8 +243,7 @@ def _run_seed(tmp_path, freeze_text = None) -> list[str]:
         freeze_text if freeze_text is not None else FREEZE.read_text(encoding = "utf-8"),
         encoding = "utf-8",
     )
-    # The script writes its output to fixed paths; give it a private TMPDIR-shaped home by
-    # rewriting those two literals, which is the only edit made to the production text.
+    # Rewrite the script's two fixed output paths to a private directory.
     script = _seed_script()
     script = script.replace("/tmp/seed_torch.txt", str(tmp_path / "seed_torch.txt"))
     script = script.replace("/tmp/seed_pins.txt", str(tmp_path / "seed_pins.txt"))
@@ -364,9 +354,6 @@ def test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at(tmp_path):
     ), "an undeclared .devN pin was rewritten; only the mapping may decide that"
 
 
-# --- the cache key has to represent what the job installs ----------------------------
-
-
 def _restore_step() -> dict:
     steps = [s for s in _job()["steps"] if "pip-cache-restore" in str(s.get("uses", ""))]
     assert len(steps) == 1, f"{JOB} should restore the pip cache exactly once, got {len(steps)}"
@@ -386,9 +373,7 @@ def test_every_file_the_seed_step_reads_is_a_cache_key_input():
     The rule is mechanical: whatever the shell opens, the key must hash.
     """
     files = set(_restore_step()["key-files"].split())
-    # Only checked-in files under the job's checkout prefix. The seed step also
-    # opens /tmp scratch and the converted _smoke.py, which are its OUTPUTS: they
-    # are derived from the inputs below and cannot be edited into the repo.
+    # Only checked-in files; /tmp scratch and the converted _smoke.py are outputs.
     opened = set(re.findall(r"""open\(\s*["'](unsloth/[^"']+)["']""", _shell(_job())))
     assert opened, "found no repo files being read by the seed step; the pattern has drifted"
     missing = sorted(opened - files)
@@ -408,15 +393,11 @@ def test_the_cache_key_inputs_exist():
     """A glob that matches nothing makes hashFiles return empty, which pip-cache-restore
     fails on by design -- but it fails in CI, not here, and only on the next run."""
     for rel in _restore_step()["key-files"].split():
-        # key-files resolve from GITHUB_WORKSPACE and this job checks out under
-        # `unsloth/`, which is the repo root from this test's point of view.
+        # key-files resolve from GITHUB_WORKSPACE and this job checks out under `unsloth/`.
         assert rel.startswith("unsloth/"), f"{rel} is not prefixed for this job's checkout layout"
         assert (
             REPO / rel[len("unsloth/") :]
         ).exists(), f"key-files names {rel}, which does not exist"
-
-
-# --- what the skip list costs and what it must not spend -----------------------------
 
 
 def test_the_cuda_only_wheels_are_skipped():
@@ -523,9 +504,6 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
     )
 
 
-# --- the torchcodec placeholder --------------------------------------------------------
-
-
 def _probe_in_a_venv_without_torchcodec(mode: str) -> str:
     """Run the two things transformers does at import time, in a subprocess whose sys.path has
     no real torchcodec, and return what it printed.
@@ -568,9 +546,7 @@ def _probe_in_a_venv_without_torchcodec(mode: str) -> str:
                 print("VERSION_RAISED", type(e).__name__)
         """
     )
-    # -S skips site-packages, so a real torchcodec on THIS interpreter cannot answer the
-    # probes for the wrong reason. That is what the runner looks like, and it lets the test
-    # run everywhere instead of skipping wherever the wheel happens to be installed.
+    # -S skips site-packages so an installed torchcodec cannot answer the probes, like the runner.
     out = subprocess.run(
         [sys.executable, "-S", "-c", script, mode, str(REPO / "tests")],
         capture_output = True,
@@ -584,13 +560,10 @@ def _probe_in_a_venv_without_torchcodec(mode: str) -> str:
 @pytest.mark.parametrize(
     "mode, expected",
     [
-        # The shape on main: __spec__ is None and find_spec raises rather than returning None.
+        # The shape on main: __spec__ is None and find_spec raises.
         ("bare", "AVAILABLE_RAISED ValueError"),
-        # A hand-made ModuleSpec gets past find_spec and straight into the metadata lookup
-        # that audio_utils does at import time, which is the second failure and the reason
-        # the placeholder is a distribution rather than a sys.modules entry.
+        # A hand-made ModuleSpec still fails audio_utils' metadata lookup, hence a real distribution.
         ("spec", "VERSION_RAISED PackageNotFoundError"),
-        # The placeholder: both probes answer.
         ("dist", "VERSION 0.0.0"),
     ],
     ids = ["bare ModuleType", "ModuleType with a spec", "the placeholder distribution"],
@@ -688,7 +661,7 @@ def test_every_helper_the_smoke_steps_import_is_a_path_trigger():
     assert imported, "no helper imports found in the smoke steps; this guard checks nothing"
 
     doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    # `on` is the YAML 1.1 boolean True once parsed, which is why this is not doc["on"].
+    # PyYAML parses `on` as the boolean True.
     triggers = doc[True] if True in doc else doc["on"]
     paths = set(triggers["pull_request"]["paths"])
 
@@ -722,7 +695,7 @@ def test_loading_the_stub_helper_leaves_sys_path_alone():
         f"added {[p for p in sys.path if p not in before]!r}"
     )
 
-    # Assembled rather than written out, so the needle does not match this line itself.
+    # Assembled so the needle does not match this line itself.
     needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
     source = Path(__file__).read_text(encoding = "utf-8")
     assert needle not in source, "a sys.path insert of the tests dir is back in this file"

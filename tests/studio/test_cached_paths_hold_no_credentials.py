@@ -74,15 +74,12 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 ACTIONS = REPO / ".github" / "actions"
 
-# Environment variables that designate a directory a tool will write credentials into.
-# The value is the credential-bearing file or subdirectory, for the message only; the
-# test cares that the variable's directory is inside something persisted.
+# Variables naming a directory a tool writes credentials into; values are for the message only.
 CREDENTIAL_HOMES = {
     # huggingface_hub writes $HF_HOME/token and, since 0.25, $HF_HOME/stored_tokens.
     "HF_HOME": "token, stored_tokens",
-    # And HF_TOKEN_PATH names the token file directly, overriding the location above.
+    # HF_TOKEN_PATH names the token file directly, overriding the location above.
     "HF_TOKEN_PATH": "the token file itself",
-    # npm and cargo both keep registry credentials in their config roots.
     "NPM_CONFIG_USERCONFIG": ".npmrc auth tokens",
     "CARGO_HOME": "credentials.toml",
     "DOCKER_CONFIG": "config.json auth entries",
@@ -90,28 +87,10 @@ CREDENTIAL_HOMES = {
     "GOOGLE_APPLICATION_CREDENTIALS": "service account json",
 }
 
-# HUGGINGFACE_HUB_CACHE and TRANSFORMERS_CACHE are deliberately NOT here. Both select a
-# MODEL cache, not a credential home: verified against huggingface_hub 1.32.0, where
-# HUGGINGFACE_HUB_CACHE defaults to `$HF_HOME/hub` and the token is read from
-# HF_TOKEN_PATH, default `$HF_HOME/token`, computed independently of it. So pointing
-# HUGGINGFACE_HUB_CACHE at a directory and caching that directory persists blobs and no
-# token. Listing them rejected the arrangement this module recommends everywhere else,
-# which is the kind of false failure that gets a security guard switched off.
+# HUGGINGFACE_HUB_CACHE and TRANSFORMERS_CACHE are deliberately absent: model caches, not credential homes.
 
-# Where those same tools keep credentials when nothing overrides them. Caching one of
-# these is the identical hazard reached WITHOUT setting any variable, which is the version
-# that reads as harmless: there is no HF_HOME in the file to notice.
-# unsloth-zoo's gemma4-audio-probe.yml cached ~/.cache/huggingface until 2026-09-22 for
-# exactly that reason, and the explicit-variable check below would have passed it.
-# What each home actually holds, for deciding whether a restrictive glob could capture
-# it. An empty tuple means the variable names the credential FILE itself rather than a
-# directory, so the configured path is what a pattern has to match.
-#
-# Derived per variable rather than from one global list of filenames. The global list
-# was a guess that omitted `credentials.toml`, which `CREDENTIAL_HOMES` three lines up
-# already documents, so `cargo-home/*.toml` was accepted while it persisted exactly the
-# file cargo writes. A canned list cannot cover a file-valued home at all, since those
-# take whatever basename the job chooses.
+# Default credential locations: caching one leaks credentials without any variable set.
+# Filenames are per variable; an empty tuple means the variable names the file itself.
 CREDENTIAL_FILES = {
     "HF_HOME": ("token", "stored_tokens"),
     "HF_TOKEN_PATH": (),
@@ -123,11 +102,7 @@ CREDENTIAL_FILES = {
 }
 
 
-# The files each DEFAULT home holds, so a workflow persisting one exactly is caught.
-# The configured-home branch already tested `<home>/<file>`; defaults had no variable to
-# take filenames from, so uploading `~/.cargo/credentials.toml` outright passed both
-# guards -- the default directory is not inside the persisted file, which is the only
-# question that was being asked.
+# Files each default home holds, so persisting the file itself is caught.
 DEFAULT_HOME_FILES = {
     "~/.cache/huggingface": ("token", "stored_tokens"),
     "~/.huggingface": ("token",),
@@ -148,19 +123,8 @@ DEFAULT_CREDENTIAL_HOMES = {
     "~/.config/gh": "gh CLI oauth token",
 }
 
-# Anything that makes a tool persist a credential into one of the directories above.
-# Matched against the shell body of every step, so a login added anywhere in a job that
-# caches its own credential home fails the guard.
-# Which variable overrides each default. A default is only where a tool looks when
-# nothing points it elsewhere, so a job that sets the variable writes its credentials
-# there instead and persisting the default location holds none. Flagging it anyway was a
-# false failure on a correct configuration.
-# Any ONE of these variables being set moves the credential out of the default
-# location. Two variables reach the Hugging Face default: HF_HOME relocates the whole
-# directory, and HF_TOKEN_PATH relocates the token and `stored_tokens` on their own, so
-# a job setting only HF_TOKEN_PATH writes nothing of interest to `~/.cache/huggingface`
-# and persisting it was reported anyway. A single owner per default could not express
-# that.
+# Which variables override each default. Any one moves the credential away; HF_HOME and
+# HF_TOKEN_PATH both reach the Hugging Face default.
 DEFAULT_OWNERS = {
     "~/.cache/huggingface": ("HF_HOME", "HF_TOKEN_PATH"),
     "~/.huggingface": ("HF_HOME", "HF_TOKEN_PATH"),
@@ -171,24 +135,12 @@ DEFAULT_OWNERS = {
     "~/.config/gh": (),
 }
 
-# Which credential homes each shell login actually writes into. Matching every pattern
-# against every variable reported a job that caches `HF_HOME` and runs `docker login` as
-# leaking the Hugging Face token, which it plainly does not: docker writes
-# $DOCKER_CONFIG/config.json. The same false failure applied to npm, cargo, aws and gcloud.
-#
-# `None` means "any credential home", used for the Hugging Face patterns because those
-# write to whichever of HF_HOME or HF_TOKEN_PATH is in force.
-# Both, because `huggingface_hub` computes the token path from HF_TOKEN_PATH when it is
-# set and from HF_HOME when it is not, independently of each other.
+# Which homes each shell login writes into; `None` means any home. Both HF variables apply,
+# since huggingface_hub uses HF_TOKEN_PATH if set, else HF_HOME.
 _HF_HOMES = ("HF_HOME", "HF_TOKEN_PATH")
 
 LOGIN_PATTERN_HOMES = {
-    # `hf auth login` writes whichever of these is in force, and nothing else. Leaving
-    # them out of this map meant the "any home" fallback below matched them against every
-    # variable in the job, so a job caching CARGO_HOME while running an unrelated Hugging
-    # Face login failed, naming a Cargo directory the token never goes near. That is the
-    # same false pairing the map was added to remove, left in place for the patterns the
-    # map exists for.
+    # Mapped explicitly so an HF login is not paired with unrelated homes like CARGO_HOME.
     r"\bhf\s+auth\s+login\b": _HF_HOMES,
     r"\bhuggingface-cli\s+login\b": _HF_HOMES,
     r"\bhf\s+login\b": _HF_HOMES,
@@ -221,18 +173,9 @@ LOGIN_PATTERNS = (
 )
 
 _CACHE_SAVE = ("actions/cache/save", "actions/cache@")
-# Actions that write a credential into a tool's credential home. Same hazard as a `run:`
-# login, with no shell body for a pattern to match.
-#
-# Each maps to the credential-home variables it ACTUALLY writes, and the pairing is the
-# whole point. Keying only on the action fired on eight live workflows where
-# `actions/setup-node` sat in a job whose cached directory was named by HF_HOME, a
-# variable setup-node has nothing to do with. A guard that reports a Hugging Face leak
-# because a job installs Node teaches people to switch it off.
-#
-# `condition` names a `with:` input that must be present before the action writes
-# anything: setup-node only creates an .npmrc token when `registry-url` is set, and
-# otherwise just installs a runtime.
+# Actions that write credentials, mapped to the home variables they actually write so
+# unrelated pairings are not reported. `condition` names a required `with:` input
+# (setup-node only writes .npmrc when `registry-url` is set).
 LOGIN_ACTIONS = {
     "docker/login-action": {
         "vars": ("DOCKER_CONFIG",),
@@ -339,16 +282,8 @@ def _expand(
     without the caller's `with:` block the path resolved to empty and the composite
     appeared to persist nothing at all.
     """
-    # To a fixed point, because a variable's value may name another variable. With
-    # `CACHE_ROOT: hf-cache` at workflow level, `HF_HOME: ${{ env.CACHE_ROOT }}` on the
-    # job and `path: ${{ env.HF_HOME }}` on the cache step, one pass left
-    # `${{ env.CACHE_ROOT }}` standing, `_normalise` erased it, and the job cached its
-    # own credential home with no offender reported. Actions resolves the whole chain.
-    #
-    # The iteration is bounded rather than trusting the chain to terminate: two variables
-    # that name each other would otherwise substitute forever. A value still holding an
-    # expression after the last pass is left as it is and handled downstream, which is
-    # the same outcome as an unknown variable.
+    # Expand to a fixed point, since a variable may name another; bounded so mutual references
+    # cannot loop forever.
     for _ in range(8):
         before = value
         value = re.sub(
@@ -423,11 +358,7 @@ def _reusable_jobs(
                 passed[str(name)] = str(spec["default"])
     with_ = job.get("with")
     if isinstance(with_, dict):
-        # Resolved against the CALLER's env and inputs, exactly as a composite's
-        # forwarded `with:` is. Copying verbatim meant reusable workflow A handing
-        # `path: ${{ inputs.path }}` to B gave B a self-referential value: the path and
-        # the credential home both normalised away and the login plus cache was accepted
-        # even though the outer caller supplied a concrete directory.
+        # Resolved against the caller's env and inputs, as Actions does for forwarded `with:` values.
         passed.update({str(k): _expand(str(v), env or {}, inputs or {}) for k, v in with_.items()})
     out = []
     for _jid, inner in _jobs(doc):
@@ -467,12 +398,7 @@ def _units(
         return [(job, env, inputs)]
     out = []
     for inner_job, inner_env, passed in inner:
-        # The called workflow's OWN env, not the caller's. GitHub does not propagate a
-        # calling workflow's `env:` into a reusable workflow -- only `with:` and
-        # `secrets:` cross that boundary -- so merging them reported a caller-level
-        # `HF_HOME: hf-cache` against a called job that saves an unrelated `hf-cache`
-        # and writes its token to the default home instead. The inputs still travel,
-        # because those are what the caller really passes.
+        # The called workflow's own env: GitHub passes only `with:` and `secrets:` to reusable workflows.
         out.extend(_units(inner_job, doc, inner_env, passed, depth + 1))
     return out
 
@@ -529,7 +455,6 @@ def _flat_steps(
     inputs = {} if inputs is None else inputs
     stack = () if stack is None else stack
     out = []
-    # A job may delegate wholesale to a local reusable workflow instead of listing steps.
 
     for step in _steps(job):
         own = step.get("env")
@@ -556,8 +481,7 @@ def _flat_steps(
             if isinstance(runs, dict) and isinstance(runs.get("steps"), list):
                 with_ = step.get("with")
                 passed = {}
-                # A declared default is what Actions applies when the caller omits the
-                # input, so a composite invoked bare still names its real path.
+                # Declared input defaults apply when the caller omits the input.
                 declared = doc.get("inputs")
                 if isinstance(declared, dict):
                     for field, spec in declared.items():
@@ -565,9 +489,7 @@ def _flat_steps(
                             passed[str(field)] = str(spec["default"])
                 if isinstance(with_, dict):
                     for field, value in with_.items():
-                        # Resolved against the CALLER's env and inputs, so a forwarded
-                        # `${{ inputs.path }}` arrives as the value it stands for rather
-                        # than as the same expression one level down.
+                        # Resolved against the caller's env and inputs.
                         passed[str(field)] = _expand(str(value), env, inputs)
                 out.extend(
                     _flat_steps(
@@ -606,9 +528,7 @@ def _persisted_with_env(job, doc):
 def _persisted_in_unit(job, job_env, unit_inputs):
     """The paths one runner persists. See `_units` for why that boundary matters."""
     out = []
-    # The job's own env seeds the walk. Without it a root-level call passing
-    # `path: ${{ env.CACHE_DIR }}` resolved against inherited and step-level values only,
-    # `_expand` produced an empty string, and the composite appeared to persist nothing.
+    # The job's own env seeds the walk, or `${{ env.X }}` paths expand to empty.
     for step, inherited, inputs in _flat_steps(job, job_env, unit_inputs):
         uses = str(step.get("uses") or "").casefold()
         if not any(marker.casefold() in uses for marker in _PERSIST):
@@ -645,7 +565,7 @@ def _login_offenders(doc, job):
     An action only counts against the variables it really writes, per LOGIN_ACTIONS.
     """
     offenders = []
-    # Per runner, and a login is only ever paired with what its OWN runner persists.
+    # A login is only paired with what its own runner persists.
     for unit, unit_env, unit_inputs in _units(job, doc):
         offenders.extend(_login_offenders_in_unit(unit, unit_env, unit_inputs))
     return offenders
@@ -660,9 +580,7 @@ def _login_offenders_in_unit(job, job_env, unit_inputs):
         body = str(step.get("run") or "")
         uses = str(step.get("uses") or "").strip().strip("'\"")
         action = uses.split("@")[0]
-        # GitHub treats owner/repo case-insensitively, so `Docker/login-action` runs the
-        # same credential-writing action as `docker/login-action`. A case-sensitive
-        # lookup let a capital letter skip the step entirely, since it has no `run:` body.
+        # GitHub treats owner/repo case-insensitively.
         spec = LOGIN_ACTIONS.get(action.casefold())
         if spec is not None:
             with_ = step.get("with")
@@ -678,12 +596,7 @@ def _login_offenders_in_unit(job, job_env, unit_inputs):
             **({str(k): str(v) for k, v in own.items()} if isinstance(own, dict) else {}),
         }
         homes = {v: _expand(str(env[v]), env, inputs) for v in CREDENTIAL_HOMES if v in env}
-        # The two Hugging Face variables are alternatives with a precedence, not two
-        # places a login writes. `huggingface_hub` takes HF_TOKEN_PATH when it is set and
-        # falls back to `$HF_HOME/token` only when it is not, so a job with a cached
-        # HF_HOME and HF_TOKEN_PATH pointing outside it writes the token outside it. The
-        # report named HF_HOME anyway, which is a false failure that also misdescribes
-        # where the credential lives.
+        # HF_TOKEN_PATH takes precedence over HF_HOME, so report where the token really goes.
         if "HF_TOKEN_PATH" in homes:
             homes.pop("HF_HOME", None)
         if not homes:
@@ -743,10 +656,7 @@ def _glob_regex(pattern: str):
     while i < len(pattern):
         ch = pattern[i]
         if pattern.startswith("**/", i):
-            # Zero directories included. `hf-cache/**/token` matches
-            # `hf-cache/token`, and translating `**` to `.*` before escaping the
-            # following slash demanded a separator that need not be there, so a
-            # pattern that does persist the token read as though it did not.
+            # Zero directories included: `hf-cache/**/token` matches `hf-cache/token`.
             out.append("(?:[^/]+/)*")
             i += 3
             continue
@@ -755,11 +665,7 @@ def _glob_regex(pattern: str):
             i += 2
             continue
         if ch == "[":
-            # A bracket expression, compiled rather than escaped. `_inside` already
-            # counted `[` as making the path a glob, so escaping it here meant
-            # `hf-cache/[t]oken` was treated as a glob that matches the literal text
-            # `[t]oken` -- it matched nothing, and an upload that does include the token
-            # was permitted.
+            # Bracket expressions are compiled, not escaped, since `_inside` treats them as globs.
             close = pattern.find("]", i + 1)
             if close == -1:
                 out.append(re.escape(ch))
@@ -801,15 +707,10 @@ def _glob_captures(
     """
     home = _normalise(home).rstrip("/")
     if files is None:
-        # The caller did not say which variable this is, so the filename is unknown and
-        # any pattern reaching into the home could match it. Falling back to the old
-        # containment keeps an unannotated call site conservative: forgetting the
-        # argument must not turn a finding off, which an empty tuple would have done.
+        # Unknown variable: fall back to conservative containment, never turn a finding off.
         outer = _normalise(_deglob(pattern)).strip("/")
         return bool(outer) and (home == outer or home.startswith(outer + "/"))
     rx = _glob_regex(_normalise(pattern))
-    # The home itself, for a variable that names the credential FILE, and each known
-    # filename beneath it for one that names a directory.
     candidates = [home] + [home + "/" + f for f in files]
     return any(rx.match(c) for c in candidates)
 
@@ -841,16 +742,10 @@ def _inside(
     `_inside("hf-cache", "hf-cache/**")` is false and the whole upload looked unrelated to
     the credential home it contains.
     """
-    # Identical expressions first, before anything is stripped. With
-    # `HF_HOME: ${{ matrix.path }}` and `path: ${{ matrix.path }}`, the two are the same
-    # directory at run time whatever the matrix chooses -- and `_normalise` erased both
-    # to the empty string, which `_inside` refuses, so a login beside that cache was
-    # accepted. Two spellings of one unknown are still one unknown.
+    # Identical expressions are the same directory at run time; compare before normalising.
     if "${{" in inner and inner.strip() == outer.strip():
         return True
     if any(ch in outer for ch in "*?["):
-        # Decided by matching the credential's own path against the pattern, which is
-        # both stricter and more honest than widening the pattern to its fixed prefix.
         return _glob_captures(outer, inner, files)
     inner, outer = _normalise(inner), _normalise(_deglob(outer))
     inner, outer = inner.strip("/"), outer.strip("/")
@@ -858,10 +753,7 @@ def _inside(
         return False
     if inner == outer or inner.startswith(outer + "/"):
         return True
-    # The persisted path may name the credential FILE outright rather than a directory
-    # holding it. `path: hf-cache/token` is not the home and does not contain it, so a
-    # containment test answered no while the upload carried the token itself. The
-    # filenames are the same ones a glob is tested against.
+    # The persisted path may name the credential file itself.
     return any(outer == inner.rstrip("/") + "/" + f for f in (files or ()))
 
 
@@ -874,13 +766,9 @@ def _default_home_hits(persisted: str, overridden: set) -> list:
     """
     hits = []
     for default, creds in DEFAULT_CREDENTIAL_HOMES.items():
-        # A default is only where the tool looks when nothing overrides it. A job
-        # setting `CARGO_HOME: /tmp/cargo` writes credentials there, so persisting
-        # `~/.cargo` holds none, and flagging it was a false failure.
+        # An override moves the credential away from the default.
         if any(v in overridden for v in DEFAULT_OWNERS.get(default, ())):
             continue
-        # With the filenames that home holds, so persisting the credential FILE outright
-        # counts as well as persisting the directory.
         if _inside(default, persisted, DEFAULT_HOME_FILES.get(default, ())):
             hits.append((default, creds))
     return hits
@@ -900,12 +788,7 @@ def _offending_jobs():
     for path, doc in _docs():
         for jid, job in _jobs(doc):
             for unit, unit_env, unit_inputs in _units(job, doc):
-                # Through `_flat_steps`, so an env declared INSIDE a composite counts.
-                # `_step_envs` sees the calling job's own steps only, and a composite
-                # whose inner login step declares its own `HF_HOME` therefore produced
-                # no label at all -- so the parametrized guard was never handed the job,
-                # though `_login_offenders` detects it. Same shape as the reusable
-                # workflow gap, one level further in.
+                # Via `_flat_steps`, so an env declared inside a composite counts.
                 scopes = [unit_env]
                 for step, inherited, _si in _flat_steps(unit, unit_env, unit_inputs):
                     own = step.get("env")
@@ -956,14 +839,14 @@ def test_the_inside_predicate_reads_the_path():
         # (home, persisted, inside)
         ("hf-cache", "hf-cache", True),
         ("${{ github.workspace }}/hf-cache", "hf-cache", True),
-        ("hf-cache/hub", "hf-cache", True),  # credential home below the cached dir
+        ("hf-cache/hub", "hf-cache", True),
         ("./hf-cache", "hf-cache", True),
         ("hf-cache-vision", "hf-cache", False),  # prefix, not a child
         ("other", "hf-cache", False),
-        ("hf-cache", "hf-cache/hub", False),  # cached dir below the home, not covered
+        ("hf-cache", "hf-cache/hub", False),
         ("", "hf-cache", False),
         ("hf-cache", "", False),
-        (r"${{ github.workspace }}\hf-cache", "hf-cache", True),  # Windows separators
+        (r"${{ github.workspace }}\hf-cache", "hf-cache", True),
     ]
     for home, persisted, expected in cases:
         assert _inside(home, persisted) is expected, f"_inside({home!r}, {persisted!r})"
@@ -983,10 +866,7 @@ def test_a_job_that_caches_its_credential_home_performs_no_login(label, var, per
     doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
     job = dict(_jobs(doc)).get(jid) or {}
 
-    # Per step, with that step's own environment, and including the steps of any local
-    # composite this job uses. See _login_offenders for why the job-wide version was both
-    # too broad (a later step with an uncached home) and too narrow (a login inside an
-    # action).
+    # Per step with that step's own env, including local composite steps; see _login_offenders.
     offenders = _login_offenders(doc, job)
 
     assert not offenders, (
@@ -1015,9 +895,8 @@ def test_expanding_an_env_reference_finds_the_path_the_expression_names():
     env = {"HF_HOME": "${{ github.workspace }}/hf-cache"}
     assert _expand("${{ env.HF_HOME }}", env) == "${{ github.workspace }}/hf-cache"
     assert _inside(_expand("${{ env.HF_HOME }}", env), "hf-cache") is True
-    # An undefined name expands to empty, which is what Actions itself does.
+    # An undefined name expands to empty, as in Actions.
     assert _expand("${{ env.NOT_SET }}", env) == ""
-    # Nothing else is touched, so `github.workspace` is still normalised away later.
     assert _expand("hf-cache", env) == "hf-cache"
 
 
@@ -1083,12 +962,8 @@ def test_no_job_persists_a_default_credential_home():
     offenders = []
     for path, doc in _docs():
         for jid, job in _jobs(doc):
-            # Per resolved unit, because the override and the persistence must come from
-            # the SAME runner. `_persisted_with_env` traverses into a called reusable
-            # workflow while `overridden` was read from the caller, and caller env does
-            # not cross that boundary -- so a caller-level `CARGO_HOME=/tmp/cargo`
-            # exempted a callee that caches the real `~/.cargo`, which the caller's
-            # variable does nothing to move.
+            # Override and persistence must come from the same runner: caller env does not reach a
+            # reusable callee.
             for unit, unit_env, unit_inputs in _units(job, doc):
                 env = unit_env
                 overridden = {v for v in CREDENTIAL_HOMES if v in env}
@@ -1165,7 +1040,6 @@ def test_a_login_is_judged_against_that_step_s_own_environment():
         "enter the cache and it must not be a finding"
     )
 
-    # And the same shape with the login step's own home inside the cache must fire.
     unsafe = {
         "steps": [
             {"uses": "actions/cache/save@v4", "with": {"path": "hf-cache", "key": "k"}},
@@ -1176,8 +1050,7 @@ def test_a_login_is_judged_against_that_step_s_own_environment():
     assert offenders, "a login whose own HF_HOME is inside the cached path must be a finding"
     assert "hf-cache" in offenders[0] and "log in" in offenders[0], offenders
 
-    # A job-level home with a login anywhere in the job is still caught, which is the
-    # original rule and must not have been lost in making the above per-step.
+    # The original job-level rule must still hold.
     job_level = {
         "env": {"HF_HOME": "hf-cache"},
         "steps": [
@@ -1369,7 +1242,6 @@ def test_every_invocation_of_a_composite_is_flattened(tmp_path, monkeypatch):
         "the SECOND invocation points HF_HOME inside the cached path, and suppressing it "
         "as already-visited is what hid the dangerous one behind the safe one"
     )
-    # Two invocations of the one-step composite, so both inner steps are present.
     assert len(_local_action_steps(job)) == 2, _local_action_steps(job)
 
 
@@ -1607,14 +1479,11 @@ def test_a_glob_path_still_contains_its_directory():
     hf = CREDENTIAL_FILES["HF_HOME"]
     assert _inside("hf-cache", "hf-cache/*.bin", hf) is False
     assert _inside("other", "hf-cache/**", hf) is False
-    # A bare `*` matches any NAME, `token` among them, so it still counts.
+    # A bare `*` matches any name, `token` included.
     assert _inside("hf-cache", "hf-cache/*", hf) is True
-    # And a narrow pattern that matches the file THAT home really holds counts too:
-    # docker writes `config.json`, cargo writes `credentials.toml`.
     assert _inside("docker-cache", "docker-cache/*.json", CREDENTIAL_FILES["DOCKER_CONFIG"]) is True
     assert _inside("cargo-home", "cargo-home/*.toml", CREDENTIAL_FILES["CARGO_HOME"]) is True
-    # A caller that does not say which variable it means gets the conservative answer,
-    # because an unknown filename could be anything.
+    # No variable given: the conservative answer, since the filename is unknown.
     assert _inside("hf-cache", "hf-cache/*.bin") is True
 
 
@@ -1659,9 +1528,6 @@ def test_an_overridden_default_home_is_not_a_finding():
                 owner in CREDENTIAL_HOMES
             ), f"{owner} overrides {default} but is not tracked as a credential home"
     assert DEFAULT_OWNERS["~/.cargo"] == ("CARGO_HOME",)
-    # Two variables reach the Hugging Face default. HF_TOKEN_PATH moves the token and
-    # `stored_tokens` on its own, so a job setting only that one leaves nothing of
-    # interest in `~/.cache/huggingface`, and a single owner could not say so.
     assert DEFAULT_OWNERS["~/.cache/huggingface"] == ("HF_HOME", "HF_TOKEN_PATH")
 
 
@@ -1844,11 +1710,9 @@ def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatc
         "name: split\n"
         "on:\n  workflow_call:\n"
         "jobs:\n"
-        # logs in, persists nothing
         "  login:\n    runs-on: ubuntu-latest\n"
         "    env:\n      HF_HOME: hf-cache\n"
         "    steps:\n      - run: hf auth login --token x\n"
-        # persists the same NAME, on a different runner, and never logs in
         "  save:\n    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - uses: actions/cache/save@v4\n"
@@ -1861,7 +1725,6 @@ def test_two_jobs_of_a_reusable_workflow_are_not_one_runner(tmp_path, monkeypatc
         f"the login and the save are on different runners: " f"{_login_offenders({}, caller)}"
     )
 
-    # Both in ONE job is a real finding, so the split did not cost the check its teeth.
     (wf / "split.yml").write_text(
         "name: split\n"
         "on:\n  workflow_call:\n"
@@ -1927,18 +1790,14 @@ def test_a_restrictive_glob_does_not_capture_a_token():
     assert _glob_captures("hf-cache/**", "hf-cache", hf) is True
     assert _glob_captures("hf-cache/*", "hf-cache", hf) is True
     assert _glob_captures("hf-cache/*.bin", "hf-cache", hf) is False
-    # docker writes config.json, so a `*.json` pattern does capture a credential.
     assert (
         _glob_captures("docker-cache/*.json", "docker-cache", CREDENTIAL_FILES["DOCKER_CONFIG"])
         is True
     )
-    # cargo writes credentials.toml, which a canned filename list had omitted.
     assert _glob_captures("cargo-home/*.toml", "cargo-home", CREDENTIAL_FILES["CARGO_HOME"]) is True
-    # A file-valued home is matched as the path it names, whatever the basename. No
-    # list of likely filenames can cover these, which is why the real value is tested.
+    # A file-valued home is matched as the path it names.
     assert _glob_captures("creds/*.ini", "creds/my-profile.ini", ()) is True
     assert _glob_captures("creds/*.ini", "elsewhere/my-profile.ini", ()) is False
-    # A pattern reaching only into a SUBDIRECTORY cannot hold a token at the root.
     assert _glob_captures("hf-cache/models/**", "hf-cache", hf) is False
 
     safe = {
@@ -2015,7 +1874,6 @@ def test_a_reusable_workflow_does_not_inherit_the_callers_env(tmp_path, monkeypa
         f"{_login_offenders({}, caller)}"
     )
 
-    # Passed as an INPUT, it does reach it, and that is still a finding.
     (wf / "inner.yml").write_text(
         "name: inner\n"
         "on:\n  workflow_call:\n    inputs:\n      home:\n        type: string\n"
@@ -2123,7 +1981,6 @@ def test_hf_token_path_alone_moves_the_token_out_of_the_default_home():
     """
     assert DEFAULT_OWNERS["~/.cache/huggingface"] == ("HF_HOME", "HF_TOKEN_PATH")
     assert DEFAULT_OWNERS["~/.huggingface"] == ("HF_HOME", "HF_TOKEN_PATH")
-    # Every named owner is a variable this module actually tracks.
     for default, owners in DEFAULT_OWNERS.items():
         for owner in owners:
             assert owner in CREDENTIAL_HOMES, f"{owner} for {default}"
@@ -2140,9 +1997,7 @@ def test_a_globstar_matches_zero_directories():
     assert _inside("hf-cache", "hf-cache/**/token", hf) is True
     assert _inside("hf-cache", "hf-cache/**/*", hf) is True
     assert _inside("hf-cache", "hf-cache/**", hf) is True
-    # Depth beyond zero still matches.
     assert _glob_captures("hf-cache/**/token", "hf-cache", hf) is True
-    # And the narrowing is not lost: a restrictive tail still excludes the token.
     assert _inside("hf-cache", "hf-cache/**/*.bin", hf) is False
 
     cargo = CREDENTIAL_FILES["CARGO_HOME"]
@@ -2214,7 +2069,6 @@ def test_a_character_class_is_compiled_not_escaped():
     hf = CREDENTIAL_FILES["HF_HOME"]
     assert _inside("hf-cache", "hf-cache/[t]oken", hf) is True
     assert _inside("hf-cache", "hf-cache/[a-z]oken", hf) is True
-    # A negated class that excludes the token really does exclude it.
     assert _inside("hf-cache", "hf-cache/[!t]oken", hf) is False
 
     leaking = {
@@ -2355,23 +2209,17 @@ def test_a_default_credential_file_persisted_exactly_is_caught():
         )
         is True
     )
-    # Something else under the same home is still not a credential.
     assert _inside("~/.cargo", "~/.cargo/registry", DEFAULT_HOME_FILES["~/.cargo"]) is False
-    # The filenames are load-bearing: without them the same question answers no, which
-    # is exactly what the default-home rule was asking before they were supplied.
+    # Without the filenames the default-home rule answers no.
     assert _inside("~/.cargo", "~/.cargo/credentials.toml") is False
-    # Every default this module reports has its filenames recorded.
     for default in DEFAULT_CREDENTIAL_HOMES:
         assert default in DEFAULT_HOME_FILES, default
-    # And the rule really consults them. Asserted by calling it, not by reading this
-    # file's own source -- the previous version counted its own assertion text and
-    # passed however the rule behaved.
+    # Asserted by calling the rule, not by reading this file's source.
     assert _default_home_hits(
         "~/.cargo/credentials.toml", set()
     ), "persisting the exact default credential file has to be a finding"
     assert _default_home_hits("~/.docker/config.json", set())
     assert not _default_home_hits("~/.cargo/registry", set())
-    # An override still exempts it, so the narrowing from earlier rounds is intact.
     assert not _default_home_hits("~/.cargo/credentials.toml", {"CARGO_HOME"})
 
 
@@ -2384,7 +2232,6 @@ def test_two_identical_unresolved_expressions_are_the_same_directory():
     unknown are still one unknown.
     """
     assert _inside("${{ matrix.path }}", "${{ matrix.path }}") is True
-    # Two DIFFERENT unknowns stay unknown rather than being assumed equal.
     assert _inside("${{ matrix.path }}", "${{ matrix.other }}") is False
 
     job = {

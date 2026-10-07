@@ -71,8 +71,7 @@ async def check(url):
             assert await page.locator("time").count() == 0
 
             print("Streaming passed; checking keyboard", flush = True)
-            # Keyboard focus mounts the bar and exposes the full date. Leaving
-            # the message with the mouse must not unmount a focused control.
+            # Leaving the message with the mouse must not unmount a focused control.
             await page.goto(url + "?branches")
             await page.locator("#before").focus()
             await page.keyboard.press("Tab")
@@ -93,8 +92,7 @@ async def check(url):
             await paint(page)
             assert await page.locator("time").count() == 0
 
-            # Reverse traversal first reveals the message, then enters the
-            # controls instead of skipping them for the preceding page button.
+            # Reverse traversal must enter the controls, not skip to the preceding page button.
             await page.goto(url)
             await page.locator(".aui-user-message-root").wait_for()
             await page.locator("#after").focus()
@@ -121,7 +119,6 @@ async def check(url):
             await page.keyboard.press("Shift+Tab")
             assert await delete.evaluate("(e) => e === document.activeElement")
 
-            # Keep open menus idle; release hover on close without restoring focus.
             await page.goto(url + "?popup")
             await page.locator(".aui-assistant-message-root").focus()
             await page.get_by_role("button", name = "More", exact = True).click()
@@ -144,27 +141,21 @@ async def check(url):
             assert await page.get_by_role("button", name = "More", exact = True).count() == 0
 
             print("Keyboard passed; checking layout", flush = True)
-            # Long dates, translations and font scaling must fit the viewport;
-            # Copy/Edit/Fork/Delete and branch targets must retain their size.
             layouts = []
             # (viewport width, locale, UI font scale, browser Interface Scale, narrow count)
             for width, locale, scale, interface, *narrow in [
                 (375, "en", ".9375", 1),
-                # UI font size 12px, the minimum (UI_FONT_SIZE_RANGE): --ui-space-scale is 0.8 here, so a
-                # target sized as a multiple of it drops under 24px.
+                # At the 12px minimum --ui-space-scale is 0.8, so a target sized as a multiple of it drops under 24px.
                 (375, "en", ".75", 1),
                 (320, "en", ".9375", 1),
                 (375, "ru", "1.25", 1),
                 (320, "ar", "1.25", 1),
-                # The browser's 50% Interface Scale, its floor, at the smallest font: every token shrinks,
-                # so a target clamped at 24px reaches past the gap and over its neighbour.
+                # 50% Interface Scale: a target clamped at 24px reaches past the gap and over its neighbour.
                 (375, "en", ".75", 0.5),
-                # 200% Interface Scale at the smallest font: the target grows past the box above and below,
-                # and once the picker wraps onto its own row that reaches across the row gap.
+                # 200% Interface Scale: once the picker wraps the target reaches across the row gap.
                 (375, "en", ".75", 2),
                 (320, "en", ".75", 2),
-                # A narrow custom chat font at the smallest UI font, where each chevron's target reaches
-                # furthest toward the count: the two must still not meet over it.
+                # A narrow chat font is where each chevron's target reaches furthest toward the count.
                 (375, "en", ".75", 1, "narrow count"),
             ]:
                 await page.set_viewport_size({"width": width, "height": 650})
@@ -223,18 +214,14 @@ async def check(url):
                         geometry,
                     )
                     if not rect["timestamp"]:
-                        # 24 CSS px at the user's chosen Interface Scale, like browser zoom.
                         assert rect["width"] >= 24 * interface - 0.01, geometry
                         assert rect["height"] >= 24 * interface - 0.01, geometry
                     if rect["chevron"]:
-                        # The visible box is what draws the focus ring: square and unpadded keeps the ring
-                        # a circle centred on the glyph, however far the target reaches past it.
+                        # The visible box draws the focus ring; square and unpadded keeps it a centred circle.
                         box = rect["box"]
                         assert abs(box["width"] - box["height"]) <= 0.01, rect
                         assert set(box["padding"]) == {"0px"}, rect
-                # No two targets share pixels: in an overlap the later one in the DOM wins the
-                # click, so a press on the edge of one control would trigger its neighbour.
-                # A narrow or large layout wraps the picker onto its own row, so compare boxes, not x alone.
+                # In an overlap the later target wins the click; wrapped layouts mean compare boxes, not x alone.
                 rects = geometry["rects"]
                 for i, a in enumerate(rects):
                     for b in rects[i + 1 :]:
@@ -251,7 +238,6 @@ async def check(url):
                     }
                 )
 
-            # Invalid or synthetic timestamps leave the controls usable.
             for query in ["invalid", "estimated"]:
                 await page.goto(url + "?" + query)
                 await page.locator(".aui-user-message-root").hover(position = {"x": 4, "y": 4})

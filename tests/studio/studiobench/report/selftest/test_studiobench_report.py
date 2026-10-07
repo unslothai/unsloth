@@ -54,12 +54,6 @@ def _metrics(keystroke_ms: float = 25.0) -> dict[str, Measure]:
     }
 
 
-# incremental payload
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_crash_at_rung_four_still_ships_rungs_one_to_three(tmp_path: Path):
     path = tmp_path / "payload.jsonl"
     writer = PayloadWriter(path)
@@ -152,19 +146,13 @@ def test_an_empty_excluded_block_is_still_printed_as_a_claim():
         render_excluded({"excluded_cells": None})
 
 
-# editorial policy
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_a_single_frame_summary_may_not_be_a_headline():
     with pytest.raises(HeadlinePolicyError):
         assert_headline_pair(["time_in_jank_pct"])
     with pytest.raises(HeadlinePolicyError):
         assert_headline_pair(["jank_index", "max_frame_ms"])
     assert_headline_pair(["time_in_jank_pct", "jank_index", "max_frame_ms"])
-    assert_headline_pair(["onset_rung"])  # nothing frame-related, nothing to police
+    assert_headline_pair(["onset_rung"])
 
 
 def test_frame_health_always_prints_all_three():
@@ -226,9 +214,6 @@ def test_harness_bias_is_printed_and_never_subtracted():
     )
     assert "HARNESS BIAS" in summary
     assert "NOT subtracted" in summary
-
-
-# ── a cell that failed an invalidating gate is INCOMPLETE, not absent ──────────
 
 
 def _gated_cell_rows(

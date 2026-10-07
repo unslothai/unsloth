@@ -45,8 +45,7 @@ def _ask(probe) -> bool:
     try:
         return bool(probe())
     except Exception:
-        # A probe that raises is not an accelerator. torch.xpu on a build without
-        # XPU support, and torch.accelerator on torch < 2.6, both do this.
+        # torch.xpu without XPU support and torch.accelerator on torch < 2.6 raise here.
         return False
 
 

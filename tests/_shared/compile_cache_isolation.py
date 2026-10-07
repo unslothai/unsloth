@@ -52,9 +52,7 @@ def isolate_compile_caches() -> str | None:
 
     base = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
     if base:
-        # Respect an explicit choice of location, and split underneath it. Replacing it
-        # would move the cache somewhere the caller did not ask for, which matters when
-        # CI points it at a cached path on purpose.
+        # Respect an explicit location and split underneath it; CI may point it at a cached path.
         root = pathlib.Path(base)
     else:
         root = pathlib.Path(tempfile.gettempdir()) / f"torchinductor_{os.environ.get('USER', 'ci')}"

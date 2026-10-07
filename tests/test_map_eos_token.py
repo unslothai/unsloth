@@ -102,17 +102,14 @@ def test_explicit_map_eos_token_false_is_honored():
 
 
 def test_other_map_eos_token_combinations_are_unchanged():
-    # The default is map_eos_token = True, so these three paths must not move.
     assert _resolve(map_eos_token = True, yes_map_eos_token = True)[0] is True
-    # A template that does not use eos mapping still vetoes it.
     assert _resolve(map_eos_token = True, yes_map_eos_token = False)[0] is False
     assert _resolve(map_eos_token = False, yes_map_eos_token = False)[0] is False
 
 
 def test_opt_out_is_refused_when_the_template_rewrites_the_vocab():
-    # gemma_chatml / gemma2_chatml: <|im_end|> only exists because <eos> is renamed to it, so the opt-out cannot be
-    # honored without leaving eos_token dangling. This pins the common shape, where eos_token is the renamed piece;
-    # the next test pins the checkpoints where it is not, which is the case keying on tokenizer.eos_token used to miss.
+    # gemma_chatml / gemma2_chatml: <|im_end|> exists only because <eos> is renamed to it,
+    # so the opt-out cannot be honored.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -124,9 +121,8 @@ def test_opt_out_is_refused_when_the_template_rewrites_the_vocab():
 
 
 def test_opt_out_is_refused_when_eos_token_is_not_the_renamed_piece():
-    # gemma-3-270m-it and gemma-3-1b-it ship eos_token = "<end_of_turn>", not "<eos>", yet gemma_chatml still renames
-    # <eos> away to build <|im_end|>. Keying the guard on tokenizer.eos_token misses these and rebuilds the tokenizer
-    # with no eos_token, so the class default re-adds the just-removed <eos> as a fresh id past the embeddings.
+    # gemma-3-270m/1b-it ship eos_token "<end_of_turn>" yet gemma_chatml still renames <eos>;
+    # keying on tokenizer.eos_token would re-add <eos> past the embeddings.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -138,8 +134,7 @@ def test_opt_out_is_refused_when_eos_token_is_not_the_renamed_piece():
 
 
 def test_a_template_veto_still_wins_over_the_refusal():
-    # The refusal only overrides the caller. A template that does not want eos mapping at all keeps
-    # map_eos_token = False even if it carries a token_mapping.
+    # A template that does not want eos mapping keeps map_eos_token = False even with a mapping.
     resolved, messages = _resolve(
         map_eos_token = True,
         yes_map_eos_token = False,
@@ -151,8 +146,6 @@ def test_a_template_veto_still_wins_over_the_refusal():
 
 
 def test_opt_out_still_honored_when_the_template_leaves_the_vocab_alone():
-    # chatml / gemma / gemma2 carry no token_mapping, so nothing is half-applied when the mapping is skipped and the
-    # caller's choice stands.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -180,9 +173,7 @@ def test_shipped_templates_still_have_the_shape_the_guard_keys_on():
     assert mapping["<eos>"] == stop_word == "<|im_end|>"
 
 
-# The resolved flag only matters for what the vocab surgery below it then does, so run that surgery against a real fast
-# tokenizer and look at the vocabulary and the eos metadata directly. Built in memory from a word-level model: no
-# download, no GPU, and no sentencepiece, but a genuine tokenizers backend rather than a stand-in.
+# Runs the real vocab surgery on an in-memory word-level fast tokenizer (no download/GPU).
 GEMMA_CHATML_MAPPING = {"<start_of_turn>": "<|im_start|>", "<eos>": "<|im_end|>"}
 STOP_WORD = "<|im_end|>"
 VOCAB = {
@@ -234,10 +225,8 @@ def _tiny_fast_tokenizer():
 
 def _map_tokens(monkeypatch, map_eos_token, token_mapping):
     """Run the shipped surgery over a fresh tiny tokenizer and hand back the result."""
-    # The block ends in `from .tokenizer_utils import fix_sentencepiece_tokenizer`, and that import would drag in the
-    # GPU-bound unsloth package. The function mirrors the rename into a tokenizer.model file and returns new_tokenizer
-    # untouched when there is none, which is this tokenizer's case, so stand in for it with that identity and leave it
-    # to its own tests under tests/saving/.
+    # Stub fix_sentencepiece_tokenizer as identity: importing it drags in GPU-bound unsloth,
+    # and it returns the tokenizer unchanged without a tokenizer.model.
     package = types.ModuleType("_unsloth_map_eos_stub")
     package.__path__ = []
     tokenizer_utils = types.ModuleType("_unsloth_map_eos_stub.tokenizer_utils")
@@ -263,7 +252,6 @@ def _map_tokens(monkeypatch, map_eos_token, token_mapping):
 
 
 def test_forced_mapping_renames_eos_in_the_vocab_and_takes_eos_token_with_it(monkeypatch):
-    # gemma_chatml shape, with the flag the guard forces back on.
     tokenizer = _map_tokens(monkeypatch, map_eos_token = True, token_mapping = GEMMA_CHATML_MAPPING)
     vocab = tokenizer.get_vocab()
 
@@ -292,7 +280,6 @@ def test_honoring_the_opt_out_here_would_leave_the_tokenizer_without_an_eos(monk
 
 
 def test_opt_out_on_the_plain_stop_word_path_leaves_the_tokenizer_untouched(monkeypatch):
-    # chatml / gemma / gemma2: no token_mapping, so the opt-out skips the surgery outright.
     tokenizer = _map_tokens(monkeypatch, map_eos_token = False, token_mapping = None)
     vocab = tokenizer.get_vocab()
 
@@ -303,7 +290,6 @@ def test_opt_out_on_the_plain_stop_word_path_leaves_the_tokenizer_untouched(monk
 
 
 def test_mapping_on_the_plain_stop_word_path_still_swaps_eos_for_the_stop_word(monkeypatch):
-    # The default, map_eos_token = True, must keep doing the swap on that same path.
     tokenizer = _map_tokens(monkeypatch, map_eos_token = True, token_mapping = None)
     vocab = tokenizer.get_vocab()
 
@@ -311,7 +297,7 @@ def test_mapping_on_the_plain_stop_word_path_still_swaps_eos_for_the_stop_word(m
     assert vocab[STOP_WORD] == VOCAB["<eos>"]
     assert tokenizer.eos_token == STOP_WORD
     assert tokenizer.eos_token_id == vocab[STOP_WORD]
-    # The other three specials are re-passed by hand on this path, so pin that they survive.
+    # The other three specials are re-passed by hand on this path.
     assert (tokenizer.bos_token, tokenizer.pad_token, tokenizer.unk_token) == (
         "<bos>",
         "<pad>",

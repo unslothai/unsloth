@@ -33,8 +33,7 @@ HOLD_FIRST_PLAN = os.environ.get("PW_HOLD_FIRST_PLAN", "0") == "1"
 RESOLVE_FIRST = os.environ.get("PW_RESOLVE_FIRST", "0") == "1"
 DIFFERENT_QUANT = os.environ.get("PW_DIFFERENT_QUANT", "0") == "1"
 SECOND_FILENAME = FILENAME.replace("Q4_K_M", "Q8_0")
-# The picker's Z-Image-Turbo BF16 row resolves to the unsloth mirror since #11657, so that is the
-# repo whose plan and download this sees (model-catalog.check.ts pins the canonical id).
+# The Z-Image-Turbo BF16 row resolves to the unsloth mirror (model-catalog.check.ts).
 SECOND = REPO_ID if LOAD_SECOND else "unsloth/Z-Image-Turbo"
 COMPANION = "black-forest-labs/FLUX.2-klein-4B"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_download_queue"))

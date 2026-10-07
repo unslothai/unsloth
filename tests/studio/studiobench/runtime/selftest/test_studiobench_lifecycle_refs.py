@@ -47,9 +47,7 @@ def _git(
             "GIT_AUTHOR_EMAIL": "studiobench@example.invalid",
             "GIT_COMMITTER_NAME": "studiobench",
             "GIT_COMMITTER_EMAIL": "studiobench@example.invalid",
-            # No user or system git config: an `init.defaultBranch`, a `commit.gpgsign` or a
-            # `clone.defaultRemoteName` on the machine running the tests would otherwise decide what this
-            # repository looks like.
+            # Isolate from user/system git config such as init.defaultBranch or commit.gpgsign.
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
             "HOME": str(cwd),
@@ -70,8 +68,7 @@ def _origin(tmp_path: Path) -> tuple[Path, str, str]:
     (origin / "install.sh").write_text("second\n")
     _git("commit", "-am", "second", cwd = origin)
     second = _git("rev-parse", "HEAD", cwd = origin).stdout.strip()
-    # A bare mirror, because a fetch from a non-bare checkout of the same branch is a special case and
-    # the real remote is a server.
+    # Bare mirror: fetching from a non-bare checkout of the same branch is a special case.
     bare = tmp_path / "origin.git"
     _git("clone", "--bare", str(origin), str(bare), cwd = tmp_path)
     return bare, first, second
@@ -98,12 +95,10 @@ def test_checkout_ref_takes_a_branch_a_tag_and_a_commit(tmp_path):
     assert checkout_ref(repo, "main") == second
     assert (repo / "install.sh").read_text() == "second\n"
 
-    # THE CASE THAT WAS BROKEN: a bare commit sha, which is what `merge commit^1` resolves to.
     assert checkout_ref(repo, first) == first
     assert (repo / "install.sh").read_text() == "first\n"
 
     assert checkout_ref(repo, "v1") == first
-    # And a local expression the remote will not serve by name.
     assert checkout_ref(repo, f"{second}^1") == first
 
 

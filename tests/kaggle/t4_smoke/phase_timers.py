@@ -37,14 +37,8 @@ import os
 import threading
 import time
 
-# The download entry points transformers and unsloth actually reach. Every one
-# is patched where present, and the transformers aliases are NOT redundant:
-# `transformers.utils.hub` does `from huggingface_hub import ...` at import
-# time, so it holds its own reference and rebinding the public name leaves it
-# untouched. `cached_files` calls its module-level `snapshot_download` for a
-# multi-file (sharded) checkpoint, which is the dominant download in every leg
-# here, so omitting that alias moves the largest fetch into weight_load_seconds
-# while `patched` stays non-empty and the record still looks valid.
+# transformers.utils.hub binds its own huggingface_hub names at import, so its aliases must be
+# patched too; missing cached_files' snapshot_download hides the largest (sharded) fetch.
 _TARGETS = (
     ("huggingface_hub", "hf_hub_download"),
     ("huggingface_hub", "snapshot_download"),
@@ -71,8 +65,6 @@ class FetchTimer:
         self.patched: list = []
         self._originals: list = []
 
-    # -------------------------------------------------------------- patching
-
     def _wrap(self, fn):
         def wrapped(*args, **kwargs):
             with self._lock:
@@ -87,12 +79,7 @@ class FetchTimer:
                     self._depth -= 1
                     if outermost:
                         self._seconds += time.time() - started
-            # The returned path is the file or directory that now exists, so
-            # its size is what this call put on disk. A warm cache returns the
-            # same path having transferred nothing, which reads as its own size
-            # rather than as zero -- accepted, and stated, because the leg runs
-            # against a cache the prefetch may already have warmed and the
-            # interesting number there is `seconds`, not `bytes`.
+            # A warm cache reports the existing path's size, not zero; `seconds` is the meaningful number.
             try:
                 self.bytes += _path_bytes(result)
             except Exception:  # noqa: BLE001
@@ -127,8 +114,6 @@ class FetchTimer:
                 pass
         self._originals = []
 
-    # --------------------------------------------------------------- reading
-
     @property
     def seconds(self):
         """None when nothing was patched, so a dead timer cannot read as 0.0."""
@@ -153,10 +138,7 @@ class FetchTimer:
                 "the split; do not read the absence as 'no download happened'"
             )
             return out
-        # Clamped at zero: the two clocks are the same clock, but rounding and
-        # a download finishing inside the final microseconds of the phase can
-        # still produce a negative by a tenth, and a negative duration in a
-        # report is read as a bug in the report rather than as rounding.
+        # Clamped at zero: rounding can produce a tiny negative.
         out["weight_load_seconds"] = round(max(total_seconds - self._seconds, 0.0), 1)
         if self.bytes and self._seconds > 0:
             out["fetch_mb_s"] = round(self.bytes / 1024**2 / self._seconds, 1)

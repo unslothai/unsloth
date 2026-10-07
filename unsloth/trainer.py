@@ -86,7 +86,7 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # The base __call__ would reapply formatting_func, which was applied above.
+        # The base __call__ would reapply formatting_func.
         view = copy.copy(self)
         view.formatting_func = None
         return super(UnslothVisionDataCollator, view).__call__(examples)
@@ -97,12 +97,11 @@ _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 PADDING_FREE_BLOCKLIST = {
-    "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
-    "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
+    "gemma2",  # slow_attention_softcapping has torch.compile issues
+    "gpt_oss",  # Flex Attention does not handle padding_free correctly
 }
-# Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next) carry a recurrent gated-delta
-# state plus a causal conv1d that leak across sequence boundaries once packing flattens the batch.
-# Detected structurally by _is_hybrid_linear_attention_model, not by model name.
+# Hybrid linear-attention / SSM models leak recurrent and conv1d state across packed sequences;
+# detected structurally by _is_hybrid_linear_attention_model.
 
 
 def _should_pack(config) -> bool:
@@ -190,7 +189,7 @@ def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
     try:
         from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
     except Exception:
-        return True  # nothing to check against; do not invent a failure
+        return True
     packing = bool(getattr(config, "packing", False))
     # TRL's own default: eval_packing = None means "whatever packing is".
     eval_packing = getattr(config, "eval_packing", None)
@@ -265,7 +264,7 @@ def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
     column_names = getattr(dataset, "column_names", None)
     if column_names is not None:
         return not _VISION_DATASET_KEYS.isdisjoint(column_names)
-    # Unknown-schema streams cannot be safely probed without potentially dropping a sample.
+    # Unknown-schema streams cannot be probed without dropping a sample.
     return unknown_is_vision
 
 
@@ -345,13 +344,10 @@ def _forward_accepts_packing_kwargs(model) -> bool:
     """
     if model is None or isinstance(model, str):
         return True
-    # Adapter wrappers only: they forward **kwargs through, so the wrapper always
-    # answers yes while the checkpoint underneath is the one that raises. Stop there,
-    # since the inner decoder may take **kwargs and answer for a model that does not.
+    # Adapter wrappers forward **kwargs, so stop at the checkpoint underneath, not the inner decoder.
     target = model
     for _ in range(4):
-        # Delegating wrappers (DataParallel, DDP, FSDP, torch.compile) first. Exact
-        # isinstance, so nothing else carrying the same attribute name is followed.
+        # Exact isinstance, so nothing else with the same attribute name is followed.
         inner = next(
             (
                 held
@@ -365,8 +361,7 @@ def _forward_accepts_packing_kwargs(model) -> bool:
         if inner is not None:
             target = inner
             continue
-        # `PeftMixedModel` next: no `get_base_model`, so the unwrap below would stop on
-        # a variadic forward that merely delegates.
+        # `PeftMixedModel` has no `get_base_model`.
         mixed = next(
             (
                 held
@@ -380,9 +375,7 @@ def _forward_accepts_packing_kwargs(model) -> bool:
         if mixed is not None:
             target = mixed
             continue
-        # PEFT's own unwrap only: `PreTrainedModel.base_model` is a property returning
-        # the inner decoder, which usually does take **kwargs, so it answers for the
-        # wrong module.
+        # PEFT's own unwrap only: `PreTrainedModel.base_model` returns the inner decoder.
         unwrap = getattr(target, "get_base_model", None)
         if not callable(unwrap):
             break
@@ -425,8 +418,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     if not isinstance(model_name, str) or model_config is None:
         return None
 
-    # In-tree first, which is also TRL's order: `create_model_from_path` does
-    # `getattr(transformers, config.architectures[0])` and never consults `auto_map`.
+    # In-tree first, TRL's order: create_model_from_path never consults `auto_map`.
     for architecture in getattr(model_config, "architectures", None) or ():
         try:
             import transformers
@@ -436,7 +428,6 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
         if isinstance(resolved, type):
             return resolved
 
-    # Then the auto mappings keyed by config class: lazy, and in-tree only.
     try:
         from transformers.models.auto import modeling_auto
     except Exception:
@@ -457,14 +448,8 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
         if isinstance(resolved, type):
             return resolved
 
-    # Remote code LAST: resolving `auto_map` imports and executes a module from the
-    # repo, and a checkpoint can carry a native `architectures` alongside it, so trying
-    # it first would run code nothing else in the stack would have run.
-    #
-    # The grant is read by membership, as `_resolve_string_model_config` reads it, so an
-    # explicit `model_init_kwargs["trust_remote_code"] = None` keeps its falsy meaning.
-    # Disagreeing with that function would execute a module under a grant the config
-    # load itself did not accept.
+    # Remote code LAST: resolving `auto_map` executes repo code. The grant is read by membership, like
+    # `_resolve_string_model_config`, so an explicit None stays falsy.
     init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
     if "trust_remote_code" in init_kwargs:
         trust_remote_code = init_kwargs["trust_remote_code"]
@@ -474,10 +459,7 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
         return None
-    # The same auth keys the config fetch forwards, `use_auth_token` included:
-    # transformers honours it as a deprecated alias for `token` across the supported
-    # range (dynamic_module_utils.py:584 in 4.57.6), so dropping it would authenticate
-    # one fetch and not the other.
+    # Same auth keys as the config fetch, including the deprecated `use_auth_token` alias.
     forward = {
         key: init_kwargs[key]
         for key in (
@@ -517,7 +499,6 @@ def _is_hybrid_linear_attention_model(model) -> bool:
     if model is None:
         return False
 
-    # Config-level: explicit hybrid layer schedule or linear-attn markers.
     for config in (
         getattr(model, "config", None),
         getattr(getattr(model, "config", None), "text_config", None),
@@ -532,7 +513,6 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
             return True
 
-    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
     named_modules = getattr(model, "named_modules", None)
     if named_modules is None:
         return False
@@ -563,9 +543,7 @@ def _resolve_string_model_config(model_name, config_arg):
         from transformers import AutoConfig
 
         init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-        # Forward auth and cache args too: dropping token/use_auth_token made a private hybrid fail to
-        # load (resolving as None), so it was treated as non-hybrid and packing was enabled without the
-        # shim.
+        # Forward auth and cache args, or a private hybrid resolves as None and skips the shim.
         forward = {
             key: init_kwargs[key]
             for key in (
@@ -579,9 +557,7 @@ def _resolve_string_model_config(model_name, config_arg):
             )
             if key in init_kwargs
         }
-        # TRL merges top-level args.trust_remote_code into the load via setdefault before
-        # create_model_from_path, so honor it here (model_init_kwargs wins), else a remote-code hybrid
-        # resolves as None and skips the guard.
+        # TRL merges top-level trust_remote_code via setdefault; model_init_kwargs wins.
         top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
         if top_level_trust_remote_code is not None:
             forward.setdefault("trust_remote_code", top_level_trust_remote_code)
@@ -599,13 +575,12 @@ def _chunked_loss_bypasses_forward(config) -> bool:
     except Exception:
         return False
     if not hasattr(_sft_trainer, "_patch_chunked_ce_lm_head"):
-        return False  # TRL has no chunked-CE path -> forward is not bypassed
+        return False
     if getattr(config, "use_liger_kernel", False):
-        return False  # liger forces loss_type="nll" -> normal forward
+        return False
     return getattr(config, "loss_type", None) in (None, "chunked_nll")
 
 
-# Unsloth gradient accumulation fix.
 from transformers import __version__ as transformers_version, ProcessorMixin
 
 if Version(transformers_version) > Version("4.45.2"):
@@ -690,8 +665,7 @@ def _create_unsloth_optimizer(
     decay_parameter_names = None,
 ):
     lr = optimizer_kwargs["lr"]
-    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw,
-    # so reading it from there alone meant the 0.0 default always won (Trainer.create_optimizer).
+    # transformers puts weight_decay in optimizer_kwargs only for schedule-free and stable_adamw.
     weight_decay = optimizer_kwargs.get("weight_decay", weight_decay)
     # Trainer.get_decay_parameter_names excludes biases and norms; the default here decays all.
     if decay_parameter_names is None:
@@ -717,11 +691,8 @@ def _create_unsloth_optimizer(
             param_groups["non_embeddings"][name] = param
 
     if require_embedding_match and not param_groups["embeddings"]:
-        # Only checked on the delayed path, where the model has been through
-        # accelerator.prepare. FSDP1 renames parameters to _fsdp_wrapped_module._flat_param,
-        # so the modules_to_save match above finds nothing and embedding_learning_rate would
-        # be dropped without a word. Off the delayed path an empty group is ordinary: plenty
-        # of models simply do not train their embeddings.
+        # FSDP1 renames parameters, so modules_to_save matches nothing and the embedding lr would be dropped.
+        # Only on the delayed path: elsewhere an empty group is ordinary.
         raise ValueError(
             "Unsloth: embedding_learning_rate was requested but no embedding parameter "
             "matched after the model was wrapped, so the embeddings would train at the "
@@ -729,9 +700,8 @@ def _create_unsloth_optimizer(
             "without FSDP, or drop embedding_learning_rate."
         )
 
-    # Empty groups are dropped (a LoRA run trains no bias and no norm, so both no-decay ones are
-    # empty): AdafactorSchedule.get_lr reads group["params"][0] unguarded, and load_state_dict
-    # rejects a checkpoint whose group count differs, which would break resume.
+    # Drop empty groups: AdafactorSchedule.get_lr reads params[0] unguarded, and a group count change
+    # breaks resume.
     optimizer_grouped_parameters = []
     group_roles = []
     for group, group_lr in (("non_embeddings", lr), ("embeddings", embedding_lr)):
@@ -813,8 +783,7 @@ def _migrate_legacy_optimizer_state(
     cursor, migrated_groups = 0, []
     for group, role in zip(optimizer.param_groups, group_roles):
         size = len(group["params"])
-        # Saved group as the base so per-group optimizer state survives (schedule-free
-        # keeps k, weight_sum, lr_max there); only params and weight_decay are overridden.
+        # Saved group as the base so per-group optimizer state survives.
         migrated = {key: value for key, value in group.items() if key != "params"}
         migrated.update(
             {key: value for key, value in saved_of_role[role].items() if key != "params"}
@@ -855,14 +824,11 @@ def _install_legacy_scheduler_resume(scheduler, optimizer):
     if getattr(base, "_unsloth_legacy_resume", False):
         return scheduler
 
-    # On a per-instance subclass, NOT the instance: a scheduler's state_dict is its __dict__
-    # minus the optimizer, so an instance attribute puts this closure in every checkpoint and
-    # torch.save cannot pickle it, failing the first save even with no resume.
+    # On a per-instance subclass, not the instance: an instance attribute lands in state_dict and
+    # torch.save cannot pickle it.
     def load_state_dict(self, state_dict):
         state_dict = dict(state_dict)
-        # Gated on the optimizer having just migrated: length alone cannot tell a legacy
-        # [ordinary, embedding] pair from two current non-embedding groups, and remapping
-        # the latter collapses distinct per-group min_lr floors onto the first.
+        # Gated on a just-migrated optimizer: length alone cannot tell legacy groups from current ones.
         if not getattr(built, "_unsloth_loaded_legacy", False):
             return base.load_state_dict(self, state_dict)
         for key in ("base_lrs", "_last_lr", "min_lrs"):
@@ -888,9 +854,7 @@ def _install_legacy_resume(optimizer, legacy_params, legacy_sizes, group_roles):
     @wraps(original)
     def load_state_dict(state_dict):
         saved = state_dict.get("param_groups") or []
-        # Every recognisably legacy checkpoint, not only reshaped ones: torch takes group
-        # hyperparameters from the saved dict, so a LoRA resume, where the layouts coincide,
-        # would otherwise reload the 0.0 this change exists to correct.
+        # Every legacy checkpoint: torch takes group hyperparameters from the saved dict.
         migrated = _migrate_legacy_optimizer_state(
             state_dict, optimizer, legacy_params, legacy_sizes, group_roles
         )
@@ -928,7 +892,7 @@ def _super_create_optimizer_takes_model():
 
 class UnslothTrainer(SFTTrainer):
     def create_optimizer(self, model = None):
-        # The prepared model's parameters, not self.model's, are the ones to own under FSDP.
+        # The prepared model's parameters are the ones to own under FSDP.
         target_model = model if model is not None else self.model
 
         q_galore_config = getattr(self.args, "q_galore_config", None)
@@ -1005,10 +969,7 @@ class UnslothTrainer(SFTTrainer):
         )
 
         if not any("rank" in group for group in param_groups):
-            # make_q_galore_param_groups selects on param.dim() >= 2, and FSDP1 hands us 1-D
-            # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
-            # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
-            # quietly become ordinary 8-bit AdamW. Say so instead.
+            # FSDP1 hands 1-D views, so dim() >= 2 selects nothing and Q-GaLore would silently be 8-bit AdamW.
             raise ValueError(
                 "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
                 "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "
@@ -1017,16 +978,13 @@ class UnslothTrainer(SFTTrainer):
             )
 
         if embedding_lr is not None:
-            # Fast param -> name lookup, O(N) instead of O(N*M).
             param_to_name = {id(p): name for name, p in model.named_parameters()}
 
             new_groups = []
             for group in param_groups:
                 if "rank" in group:
-                    # GaLore group: keep as-is, since no embeddings are here.
                     new_groups.append(group)
                     continue
-                # Non-GaLore group: split out embedding params.
                 embed_params = []
                 other_params = []
                 for p in group["params"]:
@@ -1066,8 +1024,7 @@ class UnslothTrainer(SFTTrainer):
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
-            # Pre-hooks dequantize INT8 weights to float before each forward, letting the optimizer free float
-            # weight memory between steps.
+            # Pre-hooks dequantize INT8 weights before each forward.
             install_weight_quant_hooks(model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
@@ -1081,7 +1038,7 @@ class UnslothTrainer(SFTTrainer):
         return self.optimizer
 
 
-# From trl >= 0.13.0 several params are passed to the trainer differently; patch to make the transition smooth.
+# trl >= 0.13.0 passes several params differently.
 def _resolve_trainer_params(trainer_class, init_fn):
     """Resolve the real named parameters for a trainer __init__.
 
@@ -1098,7 +1055,6 @@ def _resolve_trainer_params(trainer_class, init_fn):
     if named:
         return set(params.keys())
 
-    # Thin wrapper detected: walk the MRO for the real signature.
     for cls in trainer_class.__mro__[1:]:
         if cls is object:
             continue
@@ -1156,13 +1112,13 @@ def _ensure_warnings_issued(model):
         if existing is None:
             model.warnings_issued = {}
         else:
-            # Preserve a non-dict value rather than discard it; trl only ever writes one boolean key.
+            # trl only ever writes one boolean key; keep a non-dict value.
             try:
                 model.warnings_issued = dict(existing)
             except Exception:
                 model.warnings_issued = {}
     except Exception:
-        # A model refusing the assignment is trl's to report, not ours to turn into a different traceback.
+        # A model refusing the assignment is trl's to report.
         pass
 
 
@@ -1190,8 +1146,7 @@ def _route_unknown_trainer_kwargs(
             rename_value_is_unset,
         )
     except Exception:
-        # tests/ AST-load this function into a bare namespace with no package to
-        # import from, and supply the classifier through globals() instead.
+        # tests/ AST-load this function into a bare namespace and supply the classifier through globals().
         classify_config_kwarg = globals().get("classify_config_kwarg")
         rename_source = globals().get("rename_source", lambda key: "TRL")
         removal_source = globals().get("removal_source", lambda key: "TRL")
@@ -1216,8 +1171,7 @@ def _route_unknown_trainer_kwargs(
         if verdict == "accepted":
             to_config[key] = value
         elif verdict == "rename":
-            # A legacy Optional forwarded at its `None` default says nothing, so
-            # it must not replace a real value. Same rule as the config path.
+            # A legacy Optional at its `None` default says nothing, so it must not replace a real value.
             if rename_value_is_unset(config_class, detail, value):
                 continue
             if already_supplied and detail in already_supplied:
@@ -1248,7 +1202,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
-        # tokenizer is now processing_class.
         trainer_params = _resolve_trainer_params(trainer_class, original_init)
 
         if "processing_class" in trainer_params and "tokenizer" in kwargs:
@@ -1257,12 +1210,10 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            # `discard`, not `remove`: a trainer naming its config something other
-            # than `args` would otherwise die with a bare KeyError here.
+            # `discard`, not `remove`: a trainer may name its config something other than `args`.
             trainer_params.discard("self")
             trainer_params.discard("args")
 
-            # Fields that should be passed to Config init.
             config_fields = {
                 field.name: field for field in dataclasses.fields(config_class) if field.init
             }
@@ -1273,14 +1224,12 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 if hasattr(training_args, name)
             }
 
-            # Params in Config but not in TrainingArguments.
             from transformers import TrainingArguments
 
             moved_params = set(inspect.signature(config_class).parameters.keys()) - set(
                 inspect.signature(TrainingArguments).parameters.keys()
             )
 
-            # Separate kwargs into trainer kwargs and config kwargs.
             trainer_kwargs = {}
             additional_config_kwargs = {}
             unknown_kwargs = {}
@@ -1304,20 +1253,16 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 
             config_dict.update(additional_config_kwargs)
 
-            # Only build the config if the previous init was not TrainingArguments: reinitialising it would re-
-            # trigger the mutually-exclusive param checks (trl grpo_config.py#L499-L502).
+            # Reinitialising TrainingArguments would re-trigger the mutually-exclusive param checks.
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
-                # Every trl config subclasses TrainingArguments, so this is the branch real calls take and
-                # config_dict was going nowhere: set the moved values on the caller's config rather than rebuild it.
+                # Every trl config subclasses TrainingArguments: set moved values on the caller's config.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
-                    # `migrated` keys are already known to be accepted here.
                     if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 
-            # Reconstruct kwargs for Trainer.
             kwargs = trainer_kwargs
             kwargs["args"] = config
         _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
@@ -1366,8 +1311,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta conv and scan reset at sequence
-            # boundaries, so enable the experimental varlen shim (flag plus kernels) or keep them blocked.
+            # Hybrid models corrupt packed batches unless conv and scan reset at sequence boundaries.
             if (
                 is_hybrid
                 and not isinstance(model, str)
@@ -1395,12 +1339,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
         )
 
-        # Disable padding-free for VLMs / custom collators / blocklisted models
         forward_rejects_packing = not _forward_accepts_packing_kwargs(model)
         _packing_gate_deferred = model is None or isinstance(model, str)
-        # Resolve the class a string names, so that case is an ordinary silent block like
-        # every other reason: after __init__ the only move left is to refuse, the collator
-        # and transformed datasets having been built from the flags by then.
+        # After __init__ the only move left is to refuse: the collator is already built from the flags.
         _resolved_class = None
         if _packing_gate_deferred and isinstance(model, str):
             try:
@@ -1411,10 +1352,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 forward_rejects_packing = not _forward_signature_accepts_packing(
                     getattr(_resolved_class, "forward", None)
                 )
-                # `_packing_gate_deferred` deliberately stays True: `auto_map` can name
-                # several classes, so a "yes" from the resolved one is not proof about the
-                # instance. A correct "no" has already turned both flags off, which is the
-                # condition the post-init check skips on, so leaving it armed is free.
+                # Stays True: `auto_map` can name several classes, so the resolved one proves nothing about the
+                # instance; a correct "no" already cleared both flags, so leaving it armed is free.
         blocked = (
             (data_collator is not None)
             or is_processor
@@ -1448,9 +1387,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif forward_rejects_packing:
-                # Name the real blocker, else this falls through to the
-                # UNSLOTH_RETURN_LOGITS branch and points at an unset flag. For a string
-                # `model=` that is the resolved class, not `str`.
+                # Name the real blocker (for a string `model=`, the resolved class).
                 blocker = (
                     _resolved_class.__name__
                     if _resolved_class is not None
@@ -1458,8 +1395,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 )
                 reason = f"{blocker}.forward() does not accept packed_seq_lengths"
             elif data_collator is None:
-                # compute_metrics, preprocess_logits_for_metrics, for_inference() and the user can all set it, so
-                # name the flag and not a setter.
+                # Several places can set it, so name the flag, not a setter.
                 reason = "UNSLOTH_RETURN_LOGITS=1"
             logger.warning(f"Unsloth: packing=True ignored ({reason}).")
 
@@ -1469,7 +1405,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             packing_active = True
             logger.info("Unsloth: Sample packing enabled for SFTTrainer instance.")
 
-        # Resolve padding_free: None (default) means auto-enable unless env-disabled or packing.
+        # None (default) means auto-enable unless env-disabled or packing.
         auto_padding_free_active = False
         padding_free_requested = getattr(config_arg, "padding_free", None) is True
         if not blocked:
@@ -1505,13 +1441,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             else:
                 raise
 
-        # Backstop for the deferred cases: a `model_init=`, or a string whose class could
-        # not be resolved. It refuses rather than undoing the flags, because TRL has built
-        # its collator from them and (under packing) transformed the datasets, so clearing
-        # them would leave batches flattened with nothing naming the sequence boundaries --
-        # attention and loss crossing examples silently, worse than the TypeError. Re-running
-        # `__init__` would rebuild them but materialize the checkpoint twice, an OOM in
-        # exactly the large-model case this is for.
+        # Backstop for deferred cases: refuse rather than clear the flags, since TRL already built its
+        # collator and datasets from them; clearing would silently cross example boundaries.
         if _packing_gate_deferred and not _forward_accepts_packing_kwargs(
             getattr(self, "model", None)
         ):
@@ -1531,7 +1462,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
         trainer_padding_free = bool(trainer_args and getattr(trainer_args, "padding_free", False))
 
         if blocked and trainer_args is not None:
-            # Mirror the block on the trainer args to avoid re-enabling later
             setattr(trainer_args, "packing", False)
             setattr(trainer_args, "padding_free", False)
 
@@ -1547,9 +1477,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             print(message)
 
-        # get_peft_model installs a pre-train forward detector for plain LoRA/vision models, but only RL
-        # trainers run the reset via prepare_for_training_mode, so wire it into the SFT train() path too,
-        # else a grad-enabled probe before train() leaves the poisoned Dynamo cache in place.
+        # Only RL trainers run the pre-train detector reset, so wire it into the SFT train() path too.
         if not getattr(self, "_unsloth_train_reset_wrapped", False):
             try:
                 from unsloth.models._utils import _unsloth_reset_stray_compile_cache
@@ -1588,8 +1516,8 @@ def _patch_trl_trainer():
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 
-    # Auto-packing wraps first so it lands INSIDE the backwards-compatible wrapper: a moved `packing`
-    # kwarg must reach the config before packing is decided, else the block is undone right after.
+    # Auto-packing wraps first, inside the backwards-compatible wrapper, so a moved `packing` kwarg
+    # reaches the config before packing is decided.
     try:
         _patch_sft_trainer_auto_packing(trl)
     except Exception as exc:

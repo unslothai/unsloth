@@ -84,9 +84,7 @@ def loader():
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
     )
-    # Mistral-format checkpoints (#12144) are redirected before the precision check. None of
-    # these fixtures is one, so every helper that decides that answers False and the redirect
-    # is an exception nothing raises. Read off loader.py so a new helper is covered too.
+    # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
     exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)

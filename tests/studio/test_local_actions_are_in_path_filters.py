@@ -25,15 +25,12 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-# Local actions a path-filtered workflow may use without listing. Empty: the pip cache pair,
-# the last entry here, is now listed by every workflow that uses it. Growing this again needs
-# a reason written next to the entry, and the test below removes an entry that is no longer
-# needed.
+# Growing this needs a reason next to the entry; the test below prunes stale ones.
 _PRE_EXISTING: set = set()
 
 
 def _triggers(doc: dict) -> dict:
-    # `on:` is the YAML 1.1 boolean True once parsed, unless it was quoted.
+    # `on:` is the YAML 1.1 boolean True once parsed, unless quoted.
     return doc.get(True) or doc.get("on") or {}
 
 
@@ -135,7 +132,7 @@ def test_a_path_filtered_workflow_lists_the_actions_it_uses(workflow):
     for event, spec in _triggers(doc).items():
         paths = (spec or {}).get("paths") if isinstance(spec, dict) else None
         if not paths:
-            continue  # unfiltered: it already runs on any change
+            continue
         missing = sorted(
             a
             for a in actions - _PRE_EXISTING
@@ -159,7 +156,6 @@ def test_an_ordered_negation_is_not_read_as_a_literal_bang():
     assert _selects([".github/actions/**"], action)
     assert not _selects([".github/actions/**", "!.github/actions/foo/**"], action)
     assert _selects(["!.github/actions/foo/**", ".github/actions/**"], action)
-    # The negation this repo actually carries, and a sibling it must not touch.
     assert not _selects(
         ["studio/backend/**", "!studio/backend/tests/**"], "studio/backend/tests/x.py"
     )

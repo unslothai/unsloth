@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-# Both for_training sites must survive a delegating PEFT wrapper. See issue #2490.
+# Both for_training sites must survive a delegating PEFT wrapper.
 SITES = [("llama.py", "FastLlamaModel"), ("vision.py", "FastBaseModel")]
 
 

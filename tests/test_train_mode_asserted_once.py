@@ -9,7 +9,6 @@ import copy
 
 import pytest
 
-# These runners do not all ship torch; skip the module rather than erroring at collection.
 pytest.importorskip("torch")
 nn = pytest.importorskip("torch.nn")
 U = pytest.importorskip("unsloth.models._utils")
