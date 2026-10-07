@@ -62,26 +62,139 @@ function alphaOf(ctx: CanvasRenderingContext2D, color: string): number {
   return ctx.getImageData(0, 0, 1, 1).data[3] / 255;
 }
 
-/**
- * Composited surface colour at (x, y) outside `dropdown`. Boxes smaller than
- * the menu are skipped so rows and chips do not tint the glow.
- */
-function surfaceColorAt(
-  doc: Document,
-  ctx: CanvasRenderingContext2D,
-  dropdown: Element,
-  minArea: number,
+/** Whether (x, y) falls in a cut-off rounded corner, which hit-testing skips. */
+function inRoundedCorner(
+  style: CSSStyleDeclaration,
+  box: DOMRect,
   x: number,
   y: number,
+): boolean {
+  const length = (value: string, size: number) =>
+    (value.endsWith("%")
+      ? (Number.parseFloat(value) / 100) * size
+      : Number.parseFloat(value)) || 0;
+  const [tl, tr, br, bl] = [
+    style.borderTopLeftRadius,
+    style.borderTopRightRadius,
+    style.borderBottomRightRadius,
+    style.borderBottomLeftRadius,
+  ].map((radius) => {
+    const [h, v = h] = radius.split(" ");
+    return [length(h, box.width), length(v, box.height)];
+  });
+  // Overlapping radii shrink together, as in CSS (rounded-full is ~infinite).
+  const fit = (size: number, a: number, b: number) =>
+    a + b > size ? size / (a + b) : 1;
+  const scale = Math.min(
+    fit(box.width, tl[0], tr[0]),
+    fit(box.width, bl[0], br[0]),
+    fit(box.height, tl[1], bl[1]),
+    fit(box.height, tr[1], br[1]),
+  );
+  const corners: [number[], number, number][] = [
+    [tl, box.left, box.top],
+    [tr, box.right, box.top],
+    [br, box.right, box.bottom],
+    [bl, box.left, box.bottom],
+  ];
+  for (const [[h, v], cornerX, cornerY] of corners) {
+    const rx = h * scale;
+    const ry = v * scale;
+    if (!(rx > 0 && ry > 0)) continue;
+    // Distance from the corner's centre of curvature, in radii.
+    const dx = Math.abs(x - cornerX) - rx;
+    const dy = Math.abs(y - cornerY) - ry;
+    if (dx < 0 && dy < 0 && (dx / rx) ** 2 + (dy / ry) ** 2 > 1) return true;
+  }
+  return false;
+}
+
+interface Hit {
+  el: Element;
+  /** z-index of the outermost z-indexed box around `el`. */
+  layer: number;
+  order: number;
+}
+
+/**
+ * Boxes under each point outside `dropdown`, topmost first. Walks the DOM
+ * instead of hit-testing: a modal layer's inline `pointer-events: none` on
+ * <body> hides everything from elementsFromPoint, and lifting it restyles the
+ * whole document twice per open. Paint order is approximated by the outermost
+ * z-index (portaled dialogs, toasts), then document order.
+ */
+function boxesAt(
+  view: Window,
+  dropdown: Element,
+  points: [number, number][],
+): Element[][] {
+  const doc = view.document;
+  // The page background paints under every layer, negative z-index included.
+  const hits = points.map((): Hit[] => [
+    { el: doc.documentElement, layer: -Infinity, order: 0 },
+    { el: doc.body, layer: -Infinity, order: 1 },
+  ]);
+  let order = 2;
+  const visit = (parent: Element, inside: number[], layer: number | null) => {
+    for (const el of parent.children) {
+      if (el === dropdown) continue;
+      const box = el.getBoundingClientRect();
+      // A box with no size (display: contents, a wrapper of fixed children)
+      // still has children that paint.
+      const empty = box.width === 0 && box.height === 0;
+      const under = empty
+        ? inside
+        : inside.filter((i) => {
+            const [x, y] = points[i];
+            return (
+              x >= box.left && x < box.right && y >= box.top && y < box.bottom
+            );
+          });
+      if (under.length === 0 || (empty && el.childElementCount === 0)) continue;
+      const style = view.getComputedStyle(el);
+      if (style.display === "none") continue;
+      const own =
+        layer ??
+        (style.position !== "static" && style.zIndex !== "auto"
+          ? Number(style.zIndex) || 0
+          : null);
+      if (!empty) {
+        const hit = { el, layer: own ?? 0, order: order++ };
+        for (const i of under) {
+          if (!inRoundedCorner(style, box, ...points[i])) hits[i].push(hit);
+        }
+      }
+      visit(el, under, own);
+    }
+  };
+  const all = points.map((_, i) => i);
+  visit(doc.body, all, null);
+  return hits.map((stack) =>
+    stack
+      .sort((a, b) => b.layer - a.layer || b.order - a.order)
+      .map((hit) => hit.el),
+  );
+}
+
+/**
+ * Composited surface colour of `stack`, a topmost-first box list. Boxes
+ * smaller than the menu are skipped so rows and chips do not tint the glow.
+ */
+function surfaceColorOf(
+  view: Window,
+  ctx: CanvasRenderingContext2D,
+  stack: Element[],
+  minArea: number,
 ): Rgb | null {
-  const view = doc.defaultView;
-  if (!view || x < 0 || y < 0 || x >= view.innerWidth || y >= view.innerHeight)
-    return null;
   const layers: string[] = [];
-  for (const el of doc.elementsFromPoint(x, y)) {
-    if (dropdown.contains(el)) continue;
+  for (const el of stack) {
     const style = view.getComputedStyle(el);
-    if (isTransparent(style.backgroundColor) || style.opacity === "0") continue;
+    if (
+      isTransparent(style.backgroundColor) ||
+      style.opacity === "0" ||
+      style.visibility !== "visible"
+    )
+      continue;
     const box = el.getBoundingClientRect();
     if (box.width * box.height < minArea) continue;
     layers.push(style.backgroundColor);
@@ -130,7 +243,7 @@ interface Surround {
 }
 
 function measureSurround(
-  doc: Document,
+  view: Window,
   ctx: CanvasRenderingContext2D,
   dropdown: HTMLElement,
 ): Surround | null {
@@ -142,41 +255,35 @@ function measureSurround(
   const right = rect.right + EDGE_PROBE_PX;
   const bottom = rect.bottom + EDGE_PROBE_PX;
   const left = rect.left - EDGE_PROBE_PX;
-  // Ring just outside the menu.
-  const points: [number, number][] = [
-    [cx, top],
-    [right, cy],
-    [cx, bottom],
-    [left, cy],
-    [left, top],
-    [right, top],
-    [right, bottom],
-    [left, bottom],
-  ];
+  // Ring just outside the menu, inside the viewport.
+  const points = (
+    [
+      [cx, top],
+      [right, cy],
+      [cx, bottom],
+      [left, cy],
+      [left, top],
+      [right, top],
+      [right, bottom],
+      [left, bottom],
+    ] as [number, number][]
+  ).filter(
+    ([x, y]) => x >= 0 && y >= 0 && x < view.innerWidth && y < view.innerHeight,
+  );
 
-  // Modal layers set inline pointer-events: none, hiding them from
-  // hit-testing. Lift it for this synchronous probe only.
-  const disabled = [
-    ...doc.querySelectorAll<HTMLElement>('[style*="pointer-events: none"]'),
-  ];
-  for (const el of disabled) el.style.pointerEvents = "auto";
   const votes = new Map<string, number>();
   const colors = new Map<string, Rgb>();
   let best: string | null = null;
   let darkest: Rgb | null = null;
-  try {
-    for (const [x, y] of points) {
-      const color = surfaceColorAt(doc, ctx, dropdown, minArea, x, y);
-      if (!color) continue;
-      const key = color.join(" ");
-      colors.set(key, color);
-      const count = (votes.get(key) ?? 0) + 1;
-      votes.set(key, count);
-      if (best === null || count > (votes.get(best) ?? 0)) best = key;
-      if (!darkest || luminance(color) < luminance(darkest)) darkest = color;
-    }
-  } finally {
-    for (const el of disabled) el.style.pointerEvents = "none";
+  for (const stack of boxesAt(view, dropdown, points)) {
+    const color = surfaceColorOf(view, ctx, stack, minArea);
+    if (!color) continue;
+    const key = color.join(" ");
+    colors.set(key, color);
+    const count = (votes.get(key) ?? 0) + 1;
+    votes.set(key, count);
+    if (best === null || count > (votes.get(best) ?? 0)) best = key;
+    if (!darkest || luminance(color) < luminance(darkest)) darkest = color;
   }
   const majority = best === null ? undefined : colors.get(best);
   return majority && darkest ? { majority, darkest } : null;
@@ -227,7 +334,7 @@ function applySurround(
       return;
     }
     const ctx = getCanvasContext(win.document);
-    const surround = ctx ? measureSurround(win.document, ctx, dropdown) : null;
+    const surround = ctx ? measureSurround(win, ctx, dropdown) : null;
     const host = triggerOf(win.document, dropdown)?.closest(GLOW_HOST_SELECTOR);
     if (host) {
       dropdown.style.setProperty(

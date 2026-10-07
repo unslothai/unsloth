@@ -427,6 +427,47 @@ def check_lifetime(page, checks: Checks) -> None:
     close_all(page)
 
 
+def check_dark_glow_probe(page, checks: Checks) -> None:
+    # The dark dropdown glow samples the surface around each menu as it opens. Lifting a
+    # modal layer's `pointer-events: none` on <body> for that probe restyled the whole
+    # document twice per open. Radix's own lock is the one write allowed.
+    page.evaluate(
+        """async () => {
+          const { watchDropdownSurround } = await import('/src/lib/dropdown-surround.ts');
+          watchDropdownSurround(window);
+          document.documentElement.classList.add('dark');
+          window.bodyStyleWrites = [];
+          window.bodyStyleObserver = new MutationObserver((records) => {
+            for (const r of records) window.bodyStyleWrites.push(r.oldValue ?? '');
+          });
+          window.bodyStyleObserver.observe(document.body, {
+            attributes: true, attributeFilter: ['style'], attributeOldValue: true,
+          });
+        }"""
+    )
+    open_control(page)
+    glow_js = (
+        "() => document.querySelector('[role=menu]')"
+        "?.style.getPropertyValue('--dropdown-surround-bg') ?? ''"
+    )
+    try:
+        page.wait_for_function(glow_js, timeout = 3000)
+    except Exception:
+        pass
+    glow = page.evaluate(glow_js)
+    writes = page.evaluate(
+        "() => { window.bodyStyleObserver.disconnect(); return window.bodyStyleWrites; }"
+    )
+    checks.record(
+        "the dark glow probe leaves <body> alone once a modal menu locks it",
+        not any("pointer-events: none" in w for w in writes),
+        writes,
+    )
+    checks.record("the dark glow probe still measures the modal menu", bool(glow), glow)
+    close_all(page)
+    page.evaluate("() => document.documentElement.classList.remove('dark')")
+
+
 def main() -> int:
     vite = start_vite(PORT)
     checks = Checks()
@@ -453,6 +494,7 @@ def main() -> int:
             check_focus_return(page, checks)
             check_keyboard(page, checks)
             check_lifetime(page, checks)
+            check_dark_glow_probe(page, checks)
             browser.close()
     finally:
         stop_process(vite)
