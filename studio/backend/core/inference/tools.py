@@ -16881,6 +16881,56 @@ def _resolve_engine_tiers(text_engines) -> list:
     return resolved
 
 
+def _class_token(name: str) -> str:
+    return f"contains(concat(' ', normalize-space(@class), ' '), ' {name} ')"
+
+
+# Yahoo's newer result markup. Each result leaves a div unclosed, so lxml drops its </section> and
+# every later result nests inside it: a title counts only when its nearest section is a result, and
+# its snippet is the next s-desc before the next title, since a descendant search would take them all.
+_YAHOO_SECTION_TITLES = (
+    f"//a[{_class_token('s-title')}][ancestor::section[1][{_class_token('algo')}]]"
+)
+_YAHOO_SECTION_SNIPPET = f"following::*[self::p[{_class_token('s-desc')}] or self::a[{_class_token('s-title')}]][1][self::p]"
+
+
+def _install_yahoo_layout_parser(text_engines) -> None:
+    """Teach ddgs's Yahoo engine the result layout it cannot parse.
+
+    Yahoo often answers with ``section.algo`` results instead of the ``div.relsrch`` ones ddgs 9.8.0
+    through 9.16.0 select, so a full page parses to nothing and the sweep ends in "No results
+    found." or the Wikipedia fallback wherever every other engine is bot-blocked. ddgs builds
+    engines from its registry by name, so the subclass replaces Yahoo there for the whole process;
+    a page in the older layout still goes through ddgs's own parser.
+    """
+    yahoo = (text_engines or {}).get("yahoo")
+    if not isinstance(yahoo, type) or getattr(yahoo, "_parses_section_layout", False):
+        return
+
+    class _Yahoo(yahoo):
+        _parses_section_layout = True
+
+        def extract_results(self, html_text):
+            results = super().extract_results(html_text)
+            if results:
+                return results
+            tree = self.extract_tree(self.pre_process_html(html_text))
+            for link in tree.xpath(_YAHOO_SECTION_TITLES):
+                # TextResult strips tags and collapses whitespace on assignment.
+                result = self.result_type()
+                result.title = link.get("aria-label") or "".join(
+                    link.xpath(f".//text()[not(ancestor::span[{_class_token('title-url')}])]")
+                )
+                result.href = link.get("href") or ""
+                snippet = link.xpath(_YAHOO_SECTION_SNIPPET)
+                if snippet:
+                    result.body = snippet[0].xpath("string()")
+                results.append(result)
+            return results
+
+    text_engines["yahoo"] = _Yahoo
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -17024,7 +17074,9 @@ def _web_search(
             from ddgs import DDGS
             from ddgs.engines import ENGINES
 
-            engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+            text_engines = ENGINES.get("text") or {}
+            _install_yahoo_layout_parser(text_engines)
+            engine_tiers = _resolve_engine_tiers(text_engines)
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
             # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
