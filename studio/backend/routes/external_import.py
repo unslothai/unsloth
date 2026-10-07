@@ -49,7 +49,13 @@ def external_import_status(source: SourceKey, current_subject: str = Depends(get
     return ExternalImportStatus(available = bool(chats), chats = chats)
 
 
-@router.post("/{source}", response_model = ExternalImportResult, dependencies = [OwnerOnly])
+# Authenticate before the owner check: decorator dependencies run before parameter ones, and until the
+# bearer is resolved the request still carries the default (owner) account.
+@router.post(
+    "/{source}",
+    response_model = ExternalImportResult,
+    dependencies = [Depends(get_current_subject), OwnerOnly],
+)
 def external_import(source: SourceKey, current_subject: str = Depends(get_current_subject)):
     try:
         summary = run_import(sources()[source])

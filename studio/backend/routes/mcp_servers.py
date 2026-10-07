@@ -503,7 +503,11 @@ async def update_mcp_server(
 
 @router.delete("/{server_id}", status_code = 204)
 @serialize_mcp_server_mutation
-async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
+async def delete_mcp_server(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -511,6 +515,9 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         raise HTTPException(
             status_code = 400, detail = "Managed integrations cannot be deleted; disable them instead."
         )
+    # Same rule as an update: an API key cannot touch a stdio row, so it cannot remove one either.
+    if is_stdio(old["url"]):
+        require_ui_session_for_local_commands(via_api_key)
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
