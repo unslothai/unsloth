@@ -5542,12 +5542,12 @@ class DiffusionBackend:
                 # A renamed or hand-picked FLUX.2 GGUF can still land on a different-size base, and no name-based rule
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
+                if kind == "single_file" and not _is_trusted_diffusion_repo(repo_id):
+                    # Admitted per file: prove it is a safetensors container before any probe or loader opens it.
+                    assert_safetensors_file(single_file_path)
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
-                if kind == "single_file" and not _is_trusted_diffusion_repo(repo_id):
-                    # Admitted per file: prove it is a safetensors container before any loader opens it.
-                    assert_safetensors_file(single_file_path)
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
                 # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
                 comfy_compile = False

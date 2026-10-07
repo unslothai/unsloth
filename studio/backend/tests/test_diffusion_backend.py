@@ -14793,3 +14793,19 @@ def test_untrusted_hub_single_file_with_a_malformed_header_is_refused_before_any
         )
     assert _FakeTransformer.last == {}
     assert _FakePipeline.last == {}
+
+
+def test_untrusted_hub_single_file_header_is_checked_before_the_flux2_gguf_probe(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The FLUX.2 probe parses the file as GGUF, so an untrusted file must clear the safetensors check first."""
+    probed = []
+    monkeypatch.setattr(
+        "core.inference.diffusion.assert_flux2_gguf_matches_base",
+        lambda fam, base, path: probed.append(path),
+    )
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        _hub_single_file_load(
+            monkeypatch, tmp_path, lambda p: p.write_bytes(b"GGUF" + b"\x00" * 64), card_tag = None
+        )
+    assert probed == []
