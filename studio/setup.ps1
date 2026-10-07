@@ -2749,6 +2749,30 @@ function Find-VsBuildTools {
     return $null
 }
 
+function Test-LlamaBuildToolsMissing {
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
+    if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) { return $true }
+    return (-not $script:VsInstallPath) -and (-not (Find-VsBuildTools))
+}
+
+# A failed prebuilt download is not consent to a machine-wide, multi-GB toolchain. Explicit
+# source-build requests (FORCE_COMPILE, a PR, a custom source) never reach this.
+function Test-LlamaBuildToolsInstallAllowed {
+    $opt = "$env:UNSLOTH_INSTALL_BUILD_TOOLS".Trim().ToLowerInvariant()
+    if ($opt -in @("1", "true", "yes")) { return $true }
+    if ($opt -in @("0", "false", "no")) { return $false }
+    # Unsloth Desktop and CI have no one to answer a prompt.
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { return $false }
+    Write-StudioLine ""
+    Write-StudioLine "The prebuilt llama.cpp could not be installed. Building it from source needs Git," -ForegroundColor Yellow
+    Write-StudioLine "CMake and Visual Studio Build Tools (plus the CUDA Toolkit on NVIDIA): several GB," -ForegroundColor Yellow
+    Write-StudioLine "installed machine-wide via winget. Without them Unsloth Studio still runs, but GGUF" -ForegroundColor Yellow
+    Write-StudioLine "chat and export are disabled." -ForegroundColor Yellow
+    $reply = Read-Host "  Install the build tools now? [y/N]"
+    return ($reply -match '^\s*y(es)?\s*$')
+}
+
 # Deferred from Phase 1 so the prebuilt path never pays for the multi-GB install.
 function Ensure-BuildToolsForLlamaSourceBuild {
     # CMake
@@ -4976,6 +5000,7 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
+    Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
         $proc = Start-Process -FilePath "reg.exe" `
@@ -5039,10 +5064,8 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    # Optional here; the first pass already tried and the installer prompts for UAC.
-    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -and -not $gitNeeded) {
-        step "git" "not found; already tried earlier in this update" "Yellow"
-    } elseif ($gitNeeded -or -not $StageRoot) {
+    # Only when something here clones: a machine-wide Git install is not ours to add otherwise.
+    if ($gitNeeded) {
         Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
@@ -9662,6 +9685,7 @@ $ErrorActionPreference = $script:PrevEAP_T5
 # Reuse the managed path resolved and preflighted before phase 1.
 if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $NeedLlamaSourceBuild = $false
+$script:LlamaSourceBuildIsFallback = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
 # Every host installs the fork's app-* prebuilts; ggml-org artifacts are no longer the default.
@@ -10100,6 +10124,7 @@ if ($LocalLlamaCppLinked) {
             # which this script cannot see -- exits 5 above instead.
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
+            $script:LlamaSourceBuildIsFallback = $true
             }
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
@@ -10365,6 +10390,12 @@ if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinke
     $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
 }
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
+$script:LlamaBuildToolsDeclined = $false
+if ($WillBuildLlamaFromSource -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
+    -not (Test-LlamaBuildToolsInstallAllowed)) {
+    $WillBuildLlamaFromSource = $false
+    $script:LlamaBuildToolsDeclined = $true
+}
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
@@ -10405,6 +10436,13 @@ if ($LocalLlamaCppLinked) {
     # $CanReuseLlamaBuild above, so refusing here also planned the toolchain.
     Write-StudioLine ""
     step "llama.cpp" "already built"
+} elseif ($script:LlamaBuildToolsDeclined) {
+    Write-StudioLine ""
+    step "llama.cpp" "build skipped (build tools not installed)" "Yellow"
+    substep "The prebuilt download failed, and a source build needs Git, CMake and Visual Studio Build Tools." "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "To install them and build from source, set UNSLOTH_INSTALL_BUILD_TOOLS=1 and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
 } elseif (-not $HasGitForBuild) {
     # Before cmake: the toolchain install is skipped without git, so cmake may be missing
     # purely as a consequence. Degrade rather than abort; the opt-in source triggers already

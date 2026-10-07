@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0' }
+# A failed llama.cpp prebuilt must not install a machine-wide toolchain without consent.
+
+BeforeAll {
+    . (Join-Path $PSScriptRoot 'Get-FunctionSource.ps1')
+    $script:SetupPs1 = Join-Path $PSScriptRoot '..\..\studio\setup.ps1'
+    . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsInstallAllowed')))
+    . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsMissing')))
+    function Write-StudioLine { param([string]$Text, [string]$ForegroundColor) }
+    $script:SetupText = Get-Content -LiteralPath $script:SetupPs1 -Raw
+}
+
+Describe 'Test-LlamaBuildToolsInstallAllowed' {
+    BeforeEach {
+        foreach ($k in 'UNSLOTH_INSTALL_BUILD_TOOLS', 'UNSLOTH_TAURI_MODE', 'UNSLOTH_TAURI_UPDATE') {
+            Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+        }
+    }
+    AfterAll {
+        foreach ($k in 'UNSLOTH_INSTALL_BUILD_TOOLS', 'UNSLOTH_TAURI_MODE', 'UNSLOTH_TAURI_UPDATE') {
+            Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'UNSLOTH_INSTALL_BUILD_TOOLS=<Value> answers without a prompt' -ForEach @(
+        @{ Value = '1'; Expected = $true }, @{ Value = 'yes'; Expected = $true },
+        @{ Value = '0'; Expected = $false }, @{ Value = 'no'; Expected = $false }
+    ) {
+        Mock Read-Host { throw 'prompted' }
+        $env:UNSLOTH_INSTALL_BUILD_TOOLS = $Value
+        Test-LlamaBuildToolsInstallAllowed | Should -Be $Expected
+        Should -Invoke Read-Host -Times 0 -Exactly
+    }
+
+    It 'declines in Unsloth Desktop (<Var>) instead of prompting' -ForEach @(
+        @{ Var = 'UNSLOTH_TAURI_MODE' }, @{ Var = 'UNSLOTH_TAURI_UPDATE' }
+    ) {
+        Mock Read-Host { throw 'prompted' }
+        Set-Item "Env:$Var" '1'
+        Test-LlamaBuildToolsInstallAllowed | Should -BeFalse
+        Should -Invoke Read-Host -Times 0 -Exactly
+    }
+
+    It 'the opt-in still wins inside Unsloth Desktop' {
+        $env:UNSLOTH_TAURI_MODE = '1'
+        $env:UNSLOTH_INSTALL_BUILD_TOOLS = '1'
+        Test-LlamaBuildToolsInstallAllowed | Should -BeTrue
+    }
+}
+
+Describe 'Test-LlamaBuildToolsMissing' {
+    It 'reports missing when <Case>' -ForEach @(
+        @{ Case = 'git is absent'; Git = $false; Cmake = $true; Vs = 'C:\VS'; Expected = $true },
+        @{ Case = 'cmake is absent'; Git = $true; Cmake = $false; Vs = 'C:\VS'; Expected = $true },
+        @{ Case = 'Build Tools are absent'; Git = $true; Cmake = $true; Vs = $null; Expected = $true },
+        @{ Case = 'nothing is absent'; Git = $true; Cmake = $true; Vs = 'C:\VS'; Expected = $false }
+    ) {
+        Mock Get-Command { if ($Git) { [pscustomobject]@{ Name = 'git' } } } -ParameterFilter { $Name -eq 'git' }
+        Mock Get-Command { if ($Cmake) { [pscustomobject]@{ Name = 'cmake' } } } -ParameterFilter { $Name -eq 'cmake' }
+        function Find-VsBuildTools { $null }
+        $script:VsInstallPath = $Vs
+        Test-LlamaBuildToolsMissing | Should -Be $Expected
+    }
+}
+
+Describe 'only the automatic fallback is gated' {
+    It 'marks the fallback right where the failed prebuilt hands over to a source build' {
+        $at = $script:SetupText.IndexOf('failed validation -- falling back to source build')
+        $at | Should -BeGreaterThan 0
+        $next = $script:SetupText.IndexOf('$script:LlamaSourceBuildIsFallback = $true')
+        $next | Should -BeGreaterThan $at
+        $script:SetupText.Substring($at, $next - $at).Split("`n").Count | Should -BeLessOrEqual 3
+    }
+
+    It 'the gate checks the fallback flag before asking' {
+        $script:SetupText | Should -Match ([regex]::Escape('$script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and'))
+    }
+}
