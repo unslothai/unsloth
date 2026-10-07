@@ -15,6 +15,7 @@ __all__ = [
 ]
 
 import json
+import math
 import random
 import re
 import string
@@ -684,8 +685,8 @@ def build_decision_mixture(
     if isinstance(sources, (list, tuple)):
         sources = {name: 1.0 for name in sources}
     numeric = [float(v) for v in sources.values() if isinstance(v, (int, float))]
-    if any(v < 0 for v in numeric):
-        raise ValueError("Unsloth: decision mixture weights must be non-negative.")
+    if any(not math.isfinite(v) or v < 0 for v in numeric):
+        raise ValueError("Unsloth: decision mixture weights must be finite and non-negative.")
     sources = {k: v for k, v in sources.items() if not isinstance(v, (int, float)) or v > 0}
     if not sources:
         raise ValueError("Unsloth: every decision mixture weight is zero.")

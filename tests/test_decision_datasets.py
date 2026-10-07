@@ -291,7 +291,8 @@ def test_zero_weight_sources_are_never_loaded(monkeypatch):
     monkeypatch.setattr(dd, "load_source", refuse)
     rows = dd.build_decision_mixture({"boolq": pool, "xlam": 0.0}, n_rows = 4, seed = 0)
     assert len(rows) == 4 and {row["source"] for row in rows} == {"boolq"}
-    with pytest.raises(ValueError, match = "non-negative"):
-        dd.build_decision_mixture({"boolq": pool, "sst5": -1.0}, n_rows = 4)
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match = "non-negative"):
+            dd.build_decision_mixture({"boolq": pool, "sst5": bad}, n_rows = 4)
     with pytest.raises(ValueError, match = "zero"):
         dd.build_decision_mixture({"sst5": 0.0, "ag_news": 0}, n_rows = 4)

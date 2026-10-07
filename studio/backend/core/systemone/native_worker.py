@@ -266,7 +266,8 @@ def _pick_device(binary: str, env: dict[str, str]) -> str:
             order = [int(x) for x in env.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
         except ValueError:
             order = []
-        if len(order) != len(devices):
+        # Vulkan ordinals ignore CUDA_VISIBLE_DEVICES (GGML_VK_VISIBLE_DEVICES masks them).
+        if len(order) != len(devices) or not all(d.startswith("CUDA") for d in devices):
             order = sorted(by_index)
         if len(order) == len(devices) and all(i in by_index for i in order):
             return devices[max(range(len(order)), key = lambda i: by_index[order[i]])]

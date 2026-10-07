@@ -476,10 +476,15 @@ def test_gpu_flags_offload_to_the_freest_device(home, stub, tmp_path):
 
 
 @pytest.mark.parametrize("mask, expected", [("1,0", "CUDA0"), ("0,1", "CUDA1"), ("5", "CUDA1")])
-def test_freest_gpu_follows_the_visibility_order(stub, mask, expected):
+def test_freest_gpu_follows_the_visibility_order(stub, monkeypatch, mask, expected):
     # Physical GPU 1 is the freest; llama.cpp numbers devices in CUDA_VISIBLE_DEVICES order.
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = mask)
     assert native_worker._pick_device("llama-server", env) == expected
+    # Vulkan ordinals ignore the CUDA mask.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: ["Vulkan0", "Vulkan1"])
+    )
+    assert native_worker._pick_device("llama-server", env) == "Vulkan1"
 
 
 @pytest.mark.parametrize("mode", ["nodecisions", "wrongalias"])
