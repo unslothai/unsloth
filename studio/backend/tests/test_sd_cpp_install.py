@@ -3112,6 +3112,45 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     assert installs == []
 
 
+def test_an_old_pin_legacy_server_is_not_reinstalled_over_a_serverless_current_pin(
+    tmp_path, monkeypatch
+):
+    """A legacy server for the RIGHT accelerator but an older pin is superseded once the current root holds the
+    current pin's serverless bundle: not handed back after the upgrade, and not reinstalled on every later load."""
+    bk, home, legacy = _shared_setup_3(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_TAG", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_AUTO_UPGRADE", raising = False)
+    old_server = legacy / "sd-bin" / _SERVER
+    old_server.write_bytes(b"old-pin-build")
+    (legacy / sdmod.INSTALL_RECORD).write_text(
+        json.dumps({"accelerator": "cuda", "repo": "r", "tag": "master-1-0000000-u0000000"}),
+        encoding = "utf-8",
+    )
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    installs: list[dict] = []
+
+    def _install(**kw):
+        installs.append(kw)
+        sdmod._write_install_record(
+            current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
+        )
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_failed_pin_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert len(installs) == 1
+
+
 def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_path, monkeypatch):
     """The serverless guard must fire only on a MISMATCHED legacy server. One built for the
     accelerator being asked for is a working resident server, and dropping to the one-shot CLI

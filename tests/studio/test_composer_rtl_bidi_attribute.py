@@ -190,10 +190,22 @@ def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str)
 def test_main_composer_stuck_enter_does_not_clear_before_submit():
     src = THREAD_TSX.read_text(encoding = "utf-8")
     block = _extract_block(src, "const onKeyDown = useCallback")
-    _assert_enter_guard_before_immediate_recovery(block, "refreshStuckTimer")
+    stuck = _extract_block(
+        block[block.find("if (composingRef.current)") :],
+        "if (composingRef.current)",
+        opener = "{",
+        closer = "}",
+    )
+    _assert_enter_guard_before_immediate_recovery(stuck, "refreshStuckTimer")
 
 
 def test_compare_composer_stuck_enter_does_not_clear_before_submit():
     src = SHARED_TSX.read_text(encoding = "utf-8")
     block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
-    _assert_enter_guard_before_immediate_recovery(block, "refreshStuckImeTimer")
+    stuck = _extract_block(
+        block[block.find("if (composingRef.current)") :],
+        "if (composingRef.current)",
+        opener = "{",
+        closer = "}",
+    )
+    _assert_enter_guard_before_immediate_recovery(stuck, "refreshStuckImeTimer")

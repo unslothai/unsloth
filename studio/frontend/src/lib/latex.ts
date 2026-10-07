@@ -9,7 +9,7 @@
 //   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
 //      math delimiters when singleDollarTextMath is enabled.
 
-import { parseMarkdownIntoBlocks } from "streamdown";
+import { parseMarkdownIntoBlocks } from "./parse-markdown-blocks.ts";
 import {
   codeSpans,
   crossesCodeSpanBlockBoundary,

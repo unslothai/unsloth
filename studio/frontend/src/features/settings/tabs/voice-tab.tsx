@@ -12,12 +12,18 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import {
+  audioCppSizeLabel,
+  isAudioCppFolderId,
+} from "@/features/audio/audio-cpp-catalog";
+import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
@@ -27,16 +33,19 @@ import {
   fetchSttStatus,
   generateCustomTtsAudio,
   generateStudioTtsAudio,
+  isDecisionConnection,
   loadSttModel,
   releaseTtsAudioUrl,
   startSttDownload,
   sttEngineFor,
+  sttEngineStatusFor,
   unloadSttModel,
   useExternalProvidersStore,
   validateSttModel,
 } from "@/features/chat";
 import {
   hfApiToken,
+  listGgufVariants,
   useHfTokenStore,
   useHubModelSearch,
 } from "@/features/hub";
@@ -66,9 +75,11 @@ import {
 } from "../lib/stt-download-mirror";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  AUDIO_CPP_STT_FOLDER_IDS,
+  AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
-  STT_MODELS,
+  STT_PICKER_MODELS,
   type SttModel,
   getSttModelRepo,
   isCuratedSttModel,
@@ -97,8 +108,11 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "it-IT", label: "Italiano" },
   { value: "pt-BR", label: "Português (Brasil)" },
   { value: "ru-RU", label: "Русский" },
+  { value: "sv-SE", label: "Svenska" },
+  { value: "da-DK", label: "Dansk" },
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
+  { value: "he-IL", label: "עברית" },
 ];
 
 // Keep spoken preview content independent of the interface locale. The system
@@ -106,32 +120,69 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth! This is a preview of the selected voice.";
 
-/** Source repository shown under a model row. Curated models download from
- * the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */
+/** Source repository shown under a model row. Curated Whisper models download
+ * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py).
+ * A package of the shared GGUF repo is already named after its folder, so its
+ * row shows the name alone. */
 function sttModelSource(model: SttModel): string {
+  if (AUDIO_CPP_STT_MODELS.has(model) || isAudioCppFolderId(model)) {
+    return sttModelName(model);
+  }
   return isCuratedSttModel(model) && !MTMD_STT_MODELS.has(model)
     ? `unslothai/whisper-${model}-GGUF`
     : getSttModelRepo(model);
 }
 
 /**
- * Model picker for local transcription. Lists the curated whisper.cpp
- * checkpoints and searches Hugging Face for other Whisper repos (safetensors via
- * Transformers). The trigger is a plain button so the selection never renders
- * inside a text input.
+ * Model picker for local transcription. Lists the curated models and every
+ * other ASR model the Transcribe page offers, and searches Hugging Face for
+ * other Whisper repos (safetensors via Transformers). The trigger is a plain
+ * button so the selection never renders inside a text input.
  */
 function SttModelPicker({
   value,
   language,
+  downloadedModels,
   onChange,
 }: {
   value: SttModel;
   language: string;
+  downloadedModels: ReadonlySet<string>;
   onChange: (model: SttModel) => void;
 }) {
   const t = useT();
   const hfToken = useHfTokenStore((state) => state.token);
   const [open, setOpen] = useState(false);
+  // Folder rows have no curated size: read the default quant's from the same
+  // cached listing the Transcribe picker uses. A row stays blank until it lands.
+  const [folderSizes, setFolderSizes] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    for (const id of AUDIO_CPP_STT_FOLDER_IDS) {
+      if (!isSttModelLanguageCompatible(id, language)) continue;
+      listGgufVariants(id, hfApiToken(hfToken))
+        .then((listing) => {
+          const variant =
+            listing.variants.find(
+              (row) => row.quant === listing.default_variant,
+            ) ?? listing.variants[0];
+          if (cancelled || !variant) return;
+          const size = audioCppSizeLabel(
+            variant.download_size_bytes ?? variant.size_bytes,
+          );
+          setFolderSizes((sizes) =>
+            sizes.get(id) === size ? sizes : new Map(sizes).set(id, size),
+          );
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [open, language, hfToken]);
   const [query, setQuery] = useState("");
   const [validating, setValidating] = useState(false);
   const resultsRef = useWheelScrollRef<HTMLDivElement>();
@@ -148,7 +199,7 @@ function SttModelPicker({
 
   const items = useMemo(() => {
     if (!debouncedQuery) {
-      const defaults: string[] = STT_MODELS.filter((model) =>
+      const defaults: string[] = STT_PICKER_MODELS.filter((model) =>
         isSttModelLanguageCompatible(model, language),
       );
       if (!defaults.includes(value)) {
@@ -156,7 +207,14 @@ function SttModelPicker({
       }
       return defaults;
     }
-    const ids: string[] = [];
+    // Listed models match by name; the Hub search below only finds Whisper repos.
+    const needle = debouncedQuery.toLowerCase();
+    const ids: string[] = STT_PICKER_MODELS.filter(
+      (model) =>
+        (sttModelName(model).toLowerCase().includes(needle) ||
+          model.toLowerCase().includes(needle)) &&
+        isSttModelLanguageCompatible(model, language),
+    );
     for (const result of results) {
       const tags = result.tags?.map((tag) => tag.toLowerCase()) ?? [];
       const isWhisper =
@@ -180,7 +238,8 @@ function SttModelPicker({
     if (!isSttModelId(model) || validating) {
       return;
     }
-    if (!isCuratedSttModel(model)) {
+    // The validator checks Transformers Whisper checkpoints; a GGUF audio runtime repo is checked when it loads.
+    if (!isCuratedSttModel(model) && sttEngineFor(model) !== "audiocpp") {
       setValidating(true);
       try {
         await validateSttModel(model, hfApiToken(hfToken));
@@ -250,7 +309,8 @@ function SttModelPicker({
           data-testid="stt-model-results"
           className="max-h-64 overflow-y-auto p-1"
         >
-          {(isLoading && debouncedQuery) || validating ? (
+          {(isLoading && debouncedQuery && items.length === 0) ||
+          validating ? (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
               {validating
@@ -267,6 +327,7 @@ function SttModelPicker({
               // shape, two-line rows use a squarer radius. Not rounded-sm: the
               // theme's --radius makes that 13.6px, too round at this height.
               const twoLines = sttModelSource(model) !== sttModelName(model);
+              const size = sttModelSize(model) || folderSizes.get(model);
               return (
                 <button
                   key={model}
@@ -279,7 +340,17 @@ function SttModelPicker({
                 >
                   <span className="min-w-0 flex-1 truncate">
                     <span className="flex items-center gap-1.5 truncate text-xs">
-                      <span className="truncate">{sttModelName(model)}</span>
+                      {/* Same green dot the Hub marks an on-device row with. */}
+                      {downloadedModels.has(model) ? (
+                        <span
+                          role="img"
+                          aria-label={t("picker.onDevice")}
+                          className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
+                        />
+                      ) : null}
+                      <span className="truncate" title={sttModelName(model)}>
+                        {sttModelName(model)}
+                      </span>
                       {RECOMMENDED_STT_MODELS.has(model) ? (
                         <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
                           {t("settings.voice.dictation.sttRecommended")}
@@ -292,9 +363,9 @@ function SttModelPicker({
                       </span>
                     ) : null}
                   </span>
-                  {sttModelSize(model) ? (
+                  {size ? (
                     <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-                      {sttModelSize(model)}
+                      {size}
                     </span>
                   ) : null}
                 </button>
@@ -426,6 +497,12 @@ export function VoiceTab() {
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
   const setTtsVoiceURI = useVoiceSettingsStore((s) => s.setTtsVoiceURI);
+  const ttsStudioVoiceId = useVoiceSettingsStore((s) => s.ttsStudioVoiceId);
+  const setTtsStudioVoiceId = useVoiceSettingsStore(
+    (s) => s.setTtsStudioVoiceId,
+  );
+  const savedVoices = useAudioVoicesStore((s) => s.voices);
+  const savedVoicesListed = useAudioVoicesStore((s) => s.loaded && !s.error);
   const ttsProviderId = useVoiceSettingsStore((s) => s.ttsProviderId);
   const setTtsProviderId = useVoiceSettingsStore((s) => s.setTtsProviderId);
   const ttsProviderModel = useVoiceSettingsStore((s) => s.ttsProviderModel);
@@ -436,7 +513,12 @@ export function VoiceTab() {
   const setTtsProviderVoice = useVoiceSettingsStore(
     (s) => s.setTtsProviderVoice,
   );
-  const ttsConnections = useExternalProvidersStore((s) => s.providers);
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const ttsConnections = useMemo(
+    () =>
+      connections.filter((connection) => !isDecisionConnection(connection)),
+    [connections],
+  );
   const hasSelectedTtsConnection = ttsConnections.some(
     (connection) => connection.id === ttsProviderId,
   );
@@ -446,7 +528,7 @@ export function VoiceTab() {
   const setTtsPitch = useVoiceSettingsStore((s) => s.setTtsPitch);
   const ttsVolume = useVoiceSettingsStore((s) => s.ttsVolume);
   const setTtsVolume = useVoiceSettingsStore((s) => s.setTtsVolume);
-  const sttConnections = useExternalProvidersStore((s) => s.providers);
+  const sttConnections = ttsConnections;
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -494,6 +576,28 @@ export function VoiceTab() {
   const effectiveTtsEngine: TtsEngine =
     ttsEngine === "system" && !systemTtsSupported ? "studio" : ttsEngine;
 
+  // Voices saved on the Audio page since the last visit show up without a reload.
+  useEffect(() => {
+    if (effectiveTtsEngine === "studio") {
+      void useAudioVoicesStore.getState().refresh();
+    }
+  }, [effectiveTtsEngine]);
+
+  // A deleted voice would otherwise stay selected and every read aloud would fail on it.
+  const hasSelectedStudioVoice = savedVoices.some(
+    (voice) => voice.id === ttsStudioVoiceId,
+  );
+  useEffect(() => {
+    if (ttsStudioVoiceId && savedVoicesListed && !hasSelectedStudioVoice) {
+      setTtsStudioVoiceId("");
+    }
+  }, [
+    hasSelectedStudioVoice,
+    savedVoicesListed,
+    setTtsStudioVoiceId,
+    ttsStudioVoiceId,
+  ]);
+
   // Local STT stays on-demand. Track its phase without fetching model weights.
   type SttPhase =
     | "idle"
@@ -513,12 +617,14 @@ export function VoiceTab() {
   const isCustomEngine = dictationEngine === "custom";
   // The model decides the backend: curated ids run GGML through whisper.cpp,
   // custom repos run through Transformers.
-  const isMtmdModel = MTMD_STT_MODELS.has(sttModel);
-  const isGgufModel = isCuratedSttModel(sttModel) && !isMtmdModel;
   // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
   );
+  // Every engine's downloaded models, for the picker's on-device dots.
+  const [downloadedSttModels, setDownloadedSttModels] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   // Was a bare two-sample delta over ~800ms with no window or stability gate,
   // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
@@ -560,15 +666,21 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
+        setDownloadedSttModels(
+          new Set(
+            [
+              status.transformers,
+              status.gguf,
+              status.mtmd,
+              status.audiocpp,
+            ].flatMap((engine) => engine?.downloaded_models ?? []),
+          ),
+        );
         // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
         // backend serves it through Transformers instead of failing. Fall back to the Transformers
         // status here too, or the model shows as unavailable and download is blocked even though it
-        // works. mtmd models run nowhere else, so they never fall back.
-        const engineStatus = isMtmdModel
-          ? status.mtmd
-          : isGgufModel && status.gguf?.available
-            ? status.gguf
-            : status.transformers;
+        // works. mtmd and audio.cpp models run nowhere else, so they never fall back.
+        const engineStatus = sttEngineStatusFor(status, sttModel);
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;
@@ -641,8 +753,6 @@ export function VoiceTab() {
     };
   }, [
     isLocalEngine,
-    isGgufModel,
-    isMtmdModel,
     sttModel,
     sttRepoId,
     modelSttSupported,
@@ -659,9 +769,11 @@ export function VoiceTab() {
       case "on-demand":
         return t("settings.voice.dictation.sttOnDemand");
       case "ready":
-        // whisper.cpp and llama.cpp report a runtime name, not a device; show a
-        // plain "Loaded" rather than surfacing it.
-        return sttDevice && !STT_RUNTIME_NAMES.has(sttDevice)
+        // whisper.cpp, llama.cpp and audio.cpp report a runtime name, not a
+        // device; show a plain "Loaded" rather than surfacing it.
+        return sttDevice &&
+          !STT_RUNTIME_NAMES.has(sttDevice) &&
+          !sttDevice.startsWith("audio.cpp")
           ? t("settings.voice.dictation.sttReady", {
               device: sttDevice.toUpperCase(),
             })
@@ -1116,6 +1228,7 @@ export function VoiceTab() {
                 <SttModelPicker
                   value={sttModel}
                   language={dictationLanguage}
+                  downloadedModels={downloadedSttModels}
                   onChange={(next) => {
                     if (next !== sttModel) {
                       void unloadSttModel().catch(() => {});
@@ -1399,30 +1512,70 @@ export function VoiceTab() {
                 </SettingsRow>
               </>
             ) : effectiveTtsEngine === "studio" ? (
-              <SettingsRow
-                label={t("settings.voice.readAloud.modelLabel")}
-                description={t("settings.voice.readAloud.modelDescription")}
-              >
-                {/* The row named the model selector but offered no way to reach it. */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    useSettingsDialogStore.getState().closeDialog();
-                    // Audio keeps the mode it was left in, so name the TTS task.
-                    void navigate({
-                      to: "/audio",
-                      search: { task: "text-to-speech" },
-                    });
-                  }}
+              <>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.modelLabel")}
+                  description={t("settings.voice.readAloud.modelDescription")}
                 >
-                  <HugeiconsIcon
-                    icon={AudioWave01Icon}
-                    className="mr-1.5 size-3.5"
-                  />
-                  {t("settings.voice.readAloud.openAudioAction")}
-                </Button>
-              </SettingsRow>
+                  {/* The row named the model selector but offered no way to reach it. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      useSettingsDialogStore.getState().closeDialog();
+                      // Audio keeps the mode it was left in, so name the TTS task.
+                      void navigate({
+                        to: "/audio",
+                        search: { task: "text-to-speech" },
+                      });
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={AudioWave01Icon}
+                      className="mr-1.5 size-3.5"
+                    />
+                    {t("settings.voice.readAloud.openAudioAction")}
+                  </Button>
+                </SettingsRow>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.voiceLabel")}
+                  description={t(
+                    "settings.voice.readAloud.studioVoiceDescription",
+                  )}
+                >
+                  <Select
+                    value={ttsStudioVoiceId || "model"}
+                    onValueChange={(value) =>
+                      setTtsStudioVoiceId(value === "model" ? "" : value)
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label={t("settings.voice.readAloud.voiceLabel")}
+                      className="min-w-56 max-w-72"
+                      size="sm"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
+                      <SelectItem value="model">
+                        {t("settings.voice.readAloud.studioVoiceDefault")}
+                      </SelectItem>
+                      {savedVoices.length > 0 ? <SelectSeparator /> : null}
+                      {savedVoices.map((voice) => (
+                        <SelectItem key={voice.id} value={voice.id}>
+                          {voice.name}
+                        </SelectItem>
+                      ))}
+                      {/* Until the list loads, or if it fails, keep the stored choice visible. */}
+                      {ttsStudioVoiceId && !hasSelectedStudioVoice ? (
+                        <SelectItem value={ttsStudioVoiceId}>
+                          {t("settings.voice.readAloud.studioVoiceSaved")}
+                        </SelectItem>
+                      ) : null}
+                    </SelectContent>
+                  </Select>
+                </SettingsRow>
+              </>
             ) : (
               <SettingsRow
                 label={t("settings.voice.readAloud.voiceLabel")}

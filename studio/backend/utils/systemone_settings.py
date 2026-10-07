@@ -72,10 +72,14 @@ def get_enabled() -> bool:
 def get_model() -> str:
     if model_locked():
         return _env(ENV_MODEL)
-    from core.systemone.catalog import CHECKPOINTS
+    from core.systemone.catalog import CHECKPOINTS, fine_tune, parse_connection
 
     stored = _owner_setting(MODEL_KEY)
-    return stored if stored in CHECKPOINTS else DEFAULT_MODEL
+    if stored in CHECKPOINTS or parse_connection(stored):
+        return stored
+    if isinstance(stored, str) and fine_tune(stored) is not None:
+        return stored
+    return DEFAULT_MODEL
 
 
 def get_device() -> str:
@@ -91,19 +95,37 @@ def validate(
     model: str | None = None,
     device: str | None = None,
 ) -> dict[str, Any]:
-    from core.systemone.catalog import CHECKPOINTS
+    from core.systemone.catalog import (
+        CHECKPOINTS,
+        decision_connections,
+        fine_tune,
+        parse_connection,
+    )
 
     values: dict[str, Any] = {}
     if enabled is not None:
         if enabled_locked():
             raise ValueError(f"The Decision API is turned off by {ENV_DISABLE}.")
-        if enabled and (reason := runtime_unavailable_reason()):
-            raise ValueError(reason)
         values[ENABLED_KEY] = bool(enabled)
     if model is not None:
         if model_locked():
             raise ValueError(f"The Decision API model is set by {ENV_MODEL}.")
-        if model not in CHECKPOINTS:
+        connection = parse_connection(model)
+        tuned = None if model in CHECKPOINTS else fine_tune(model)
+        if tuned is not None:
+            # Stored under the prefix for the folder's layout, whichever one the caller used.
+            model = tuned.name
+        if (
+            model not in CHECKPOINTS
+            and tuned is None
+            and not (
+                connection
+                and any(
+                    row["id"] == connection.provider_id and connection.model in models
+                    for row, models in decision_connections()
+                )
+            )
+        ):
             raise ValueError(f"Unknown Decision API model: {model}")
         values[MODEL_KEY] = model
     if device is not None:
@@ -112,6 +134,10 @@ def validate(
         if device not in DEVICES:
             raise ValueError("Device must be cpu or gpu.")
         values[DEVICE_KEY] = device
+    serving = enabled if enabled is not None else model is not None and get_enabled()
+    local = parse_connection(get_model() if model is None else model) is None
+    if serving and local and (reason := runtime_unavailable_reason()):
+        raise ValueError(reason)
     return values
 
 

@@ -151,6 +151,54 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
 
 _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 
+# Pass-through flags whose value is a path the child opens (or, for --log-prompts-dir, writes under). llama-server runs
+# as the installation's OS user, and account model access is checked for the model being loaded, not for these, so in
+# multi-account mode only the owner may name one.
+OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
+    {
+        "-mm",
+        "--mmproj",
+        "--spec-draft-model",
+        "-md",
+        "--model-draft",
+        "-mv",
+        "--model-vocoder",
+        "--lora",
+        "--lora-scaled",
+        "--control-vector",
+        "--control-vector-scaled",
+        "--chat-template-file",
+        "--grammar-file",
+        "-jf",
+        "--json-schema-file",
+        "-lcs",
+        "--lookup-cache-static",
+        "-lcd",
+        "--lookup-cache-dynamic",
+        "--log-prompts-dir",
+        # llama-server runs <dir>/ffmpeg to decode a video.
+        "--video-ffmpeg-dir",
+    }
+)
+
+
+def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
+    """``(flag, value)`` for each OWNER_ONLY_PATH_FLAGS occurrence in ``args``, in order."""
+    tokens = [str(a) for a in args or ()]
+    found: list[tuple[str, str]] = []
+    for i, raw in enumerate(tokens):
+        flag = _flag_name(raw)
+        if flag in OWNER_ONLY_PATH_FLAGS:
+            _, eq, inline = raw.partition("=")
+            found.append((flag, inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")))
+    return found
+
+
+def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
+    """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
+    return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
+
+
 # Flags that take TWO values rather than one. Scanned out of `llama-server --help`: every other option is `--flag
 # VALUE` or a switch, and this list exists so the positional check below does not refuse a legitimate second value.
 _TWO_VALUE_FLAGS: frozenset[str] = frozenset({"--control-vector-layer-range"})
@@ -589,6 +637,8 @@ _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 # The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a pass-through value is what the child
 # really keeps free; see fit_target_margin_in.
 _FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
+# The fitter's context floor, also never stripped; see fit_ctx_in.
+_FIT_CTX_FLAGS: frozenset[str] = frozenset({"-fitc", "--fit-ctx"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -1071,6 +1121,25 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_ctx_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the last --fit-ctx, falling back to the supplied environment.
+
+    Unset or invalid values return None. Preserve negatives: llama.cpp stores them
+    unsigned, disabling context reduction.
+    """
+    raw_value = _last_flag_value(args, _FIT_CTX_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_CTX")
+    if raw_value is None:
+        return None
+    try:
+        return int(str(raw_value).strip())
+    except ValueError:
+        return None
 
 
 def fit_target_margin_in(

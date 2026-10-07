@@ -6,7 +6,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
 
-ModelType = Literal["text", "vision", "audio", "embeddings"]
+ModelType = Literal["text", "vision", "audio", "embeddings", "decision"]
 
 
 class CheckpointInfo(BaseModel):
@@ -91,6 +91,13 @@ class ModelDetails(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
+    is_decision: bool = Field(False, description = "Whether model is a decision model")
+    decision_layout: Optional[Literal["laya", "clef"]] = Field(
+        None, description = "Checkpoint layout of a decision model: Laya or Cloudflare Clef"
+    )
+    decision_checkpoints: Optional[List[Dict[str, Any]]] = Field(
+        None, description = "Checkpoints a decision model repo offers for training"
+    )
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp format)")
     is_mlx: bool = Field(
@@ -109,7 +116,7 @@ class ModelDetails(BaseModel):
     )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     model_type: Optional[ModelType] = Field(
-        None, description = "Collapsed model modality: text, vision, audio, or embeddings"
+        None, description = "Collapsed model modality: text, vision, audio, embeddings or decision"
     )
     base_model: Optional[str] = Field(None, description = "Base model if this is a LoRA adapter")
     max_position_embeddings: Optional[int] = Field(
@@ -251,13 +258,18 @@ class GgufVariantsResponse(BaseModel):
     )
 
 
+LocalModelSource = Literal[
+    "models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "hermes", "custom"
+]
+
+
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
+    source: LocalModelSource = Field(
         ...,
         description = "Discovery source",
     )
@@ -320,6 +332,10 @@ class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
     path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+    recursive: Optional[bool] = Field(
+        None,
+        description = "Also scan sub-folders. Omitted keeps the stored setting of an already registered folder.",
+    )
 
 
 class ScanFolderInfo(BaseModel):
@@ -328,6 +344,7 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
         description = "Last scan result: ok, permission_denied, missing, or unreadable",

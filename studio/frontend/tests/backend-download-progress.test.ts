@@ -23,6 +23,9 @@ const { UpdateScreen } = loadWithStubs<typeof UpdateScreenModule>(
       DiagnosticsCopyActions: () => null,
     },
     "@/components/tauri/log-details": { LogDetails: () => null },
+    "@/components/tauri/window-titlebar": {
+      shouldUseNativeMacWindowTitlebar: () => false,
+    },
     "@/components/ui/button": { Button: () => null },
     "@/components/ui/spinner": { Spinner: () => null },
   },

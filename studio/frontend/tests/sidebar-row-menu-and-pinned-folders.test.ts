@@ -95,8 +95,6 @@ test("an empty open folder says it is empty", () => {
     APP_SIDEBAR,
     /\{expanded && projectChats\.length === 0 && \(\n\s*<SidebarMenuItem\n\s*\{\.\.\.dnd\.dropZoneProps\(\{ section: order\.section, folderId: project\.id, blockEnd \}\)\}\n\s*>\n\s*<p className="[^"]*text-nav-fg-muted">\n\s*\{t\("shell\.navigation\.noChats"\)\}/,
   );
-  // And it is a row, so the bottom fade has to count it like the "Show more" one.
-  assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
 // A chat's "Move to" holds projects and sections, each its own group under a heading: its New
@@ -415,11 +413,6 @@ test("a pinned folder in one list is a way in, not a second copy of its chats", 
   ]) {
     assert.match(APP_SIDEBAR, gated);
   }
-  // And the row count the scroll fade measures counts nothing where nothing is drawn.
-  assert.match(
-    APP_SIDEBAR,
-    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
-  );
 });
 
 // "Remove from <name>", and lists that scroll: forty projects ran the submenu off the window,

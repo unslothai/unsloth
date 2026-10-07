@@ -419,3 +419,90 @@ def test_regional_compile_of_a_dense_h3_arms_the_unbacked_temb(monkeypatch):
         assert (getattr(m, "_unsloth_dynamic_text", None) is not None) is dt.unbacked_supported()
     finally:
         dt.uninstall(m)
+
+
+class _Q21Block(torch.nn.Module):
+    """The shape of diffusers' QwenImage21 prefill: ``cache_write_slice is not None`` guards the prefix KV write."""
+
+    def forward(
+        self,
+        hidden_states,
+        kv_cache_mode = None,
+        cache_write_slice = None,
+    ):
+        if kv_cache_mode == "extract" and cache_write_slice is not None:
+            return hidden_states[:, cache_write_slice].clone() * 2
+        return hidden_states * 3
+
+
+class _Q21Transformer(torch.nn.Module):
+    def __init__(self, dynamic = None):
+        super().__init__()
+        self.block = torch.compile(_Q21Block(), dynamic = dynamic)
+
+    def forward(self, prefix_len, total):
+        x = torch.randn(1, total, 8)
+        out = self.block(x, kv_cache_mode = "extract", cache_write_slice = slice(0, prefix_len))
+        torch.testing.assert_close(out, x[:, :prefix_len] * 2)
+        return out
+
+
+@pytest.mark.parametrize("dynamic", [None, True])
+def test_new_prompt_length_does_not_recompile_the_prefix_kv_write(dynamic):
+    """torch 2.13+ guarded ``cache_write_slice.stop`` via ``is not None``: each new prompt length recompiled the block.
+    dynamic=True is an unquantized DiT's default tier once the divisibility backport is in."""
+    from torch._dynamo.utils import counters
+
+    Transformer = type("QwenImage21Transformer2DModel", (_Q21Transformer,), {})
+    torch._dynamo.reset()
+    counters.clear()
+    m = Transformer(dynamic)
+    dt.install(m, dynamic = dynamic)
+    try:
+        for prefix_len, total in ((26, 90), (31, 95), (40, 104)):
+            m(prefix_len, total)
+        assert counters["stats"]["unique_graphs"] == 1
+    finally:
+        dt.uninstall(m)
+        dt.uninstall_slice_identity_fix()
+        torch._dynamo.reset()
+
+
+def test_slice_identity_fix_keeps_identity_answers():
+    """Patched or not, a slice is never None and constant slices still fold."""
+    dt.install_slice_identity_fix()
+    try:
+
+        def f(x, s):
+            a = 1 if s is None else 2
+            b = 1 if s is not None else 2
+            return x[:, s] * a + b
+
+        c = torch.compile(f, fullgraph = True)
+        x = torch.randn(2, 16)
+        for s in (slice(0, 4), slice(2, None), slice(None, 8, 2)):
+            torch.testing.assert_close(c(x, s), f(x, s))
+    finally:
+        dt.uninstall_slice_identity_fix()
+        torch._dynamo.reset()
+
+
+def test_slice_identity_fix_is_probe_gated_and_reversible(monkeypatch):
+    from torch._dynamo.variables import SliceVariable
+
+    stock = SliceVariable.__dict__.get("get_real_python_backed_value")
+    monkeypatch.setenv(dt.SLICE_IDENTITY_ENV, "0")
+    assert dt.install_slice_identity_fix() is False
+    assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock
+    monkeypatch.delenv(dt.SLICE_IDENTITY_ENV)
+    active = dt.install_slice_identity_fix()
+    try:
+        # Only a torch whose stock identity test reads the slice's bounds (2.13+) is patched.
+        assert active == (
+            stock is None
+            and callable(getattr(SliceVariable, "get_real_python_backed_value", None))
+            and dt._SLICE_STATE.get("original") is not None
+        )
+    finally:
+        dt.uninstall_slice_identity_fix()
+    assert SliceVariable.__dict__.get("get_real_python_backed_value") is stock

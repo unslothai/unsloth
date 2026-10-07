@@ -68,6 +68,8 @@ CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+CHAT_HEADER_MENU = FRONTEND / "features/chat/components/chat-header-menu.tsx"
+BROWSER_TOGGLE = FRONTEND / "features/browser/browser-toggle.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
@@ -267,10 +269,13 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in data_tab
     # Open WebUI exports are .json arrays, so the picker takes that too.
-    assert 'accept=".json,.jsonl,.ndjson,.csv"' in data_tab
+    assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
-    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"]' in native_dialogs
+    assert (
+        'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"]'
+        in native_dialogs
+    )
     assert "InvokeBody::Raw" in native_dialogs
 
     assert ".tempfile_in(parent)" in native_dialogs
@@ -307,6 +312,38 @@ def test_media_galleries_save_natively_with_feedback():
     assert "function saveLink(" not in video_page
 
 
+def test_audio_clips_and_stems_save_natively():
+    save_audio = _ui_source(FRONTEND / "features/audio/save-audio.ts")
+    helper = _ui_source(NATIVE_FILES)
+    dialogs = _ui_source(NATIVE_DIALOGS)
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+
+    # desktop re-reads blob URLs because the page CSP blocks fetch()
+    assert 'isTauri && url.startsWith("blob:")' in save_audio
+    assert "await downloadBlobStreaming(blob, filename);" in save_audio
+    assert "await downloadUrl(url, filename);" in save_audio
+    assert "if (isDownloadCancelled(error)) return;" in save_audio
+    # tests/audio-stem-mixer-state.test.ts forbids raw anchors in features/audio
+    for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
+        assert "saveAudio(" in _ui_source(FRONTEND / "features/audio" / page)
+
+    streaming = helper[helper.index("export async function downloadBlobStreaming") :]
+    assert ".slice(offset, offset + NATIVE_FILE_CHUNK_BYTES)" in streaming
+    assert "NATIVE_FILE_CHUNK_BYTES" in streaming
+    assert "await content.arrayBuffer()" not in streaming
+    for command in (
+        "begin_native_file_save",
+        "append_native_file_save_chunk",
+        "finish_native_file_save",
+        "cancel_native_file_save",
+    ):
+        assert f'"{command}"' in streaming
+        assert f"native_file_dialogs::{command}," in main_rs
+    assert "MAX_NATIVE_FILE_SAVE_CHUNK_BYTES" in dialogs
+    assert "staged_temp_file(&destination)" in dialogs
+    assert "spawn_blocking(move || append_native_save" in dialogs
+
+
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
@@ -321,7 +358,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    # #12122 moved chat export into the Library and project menu
     chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
     project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
     for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
@@ -653,9 +690,21 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
     # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
-    assert '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border",' in decoration
-    assert 'pinned && "rounded-tl-[12px] border-l",' in decoration
+    assert (
+        '"absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",'
+        in decoration
+    )
+    # Dark draws no seam: a border lighter than both surfaces reads as a white line on Windows.
+    assert "dark:border-white" not in decoration
+    assert "dark:border-t-white" not in decoration
+    # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
+    assert re.search(
+        r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
+        r'rounded-tl-\[12px\] border-l"',
+        decoration,
+    )
     assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
+    assert "style={{ left: cornerLeft }}" in decoration
     # The sidebar-coloured mask outside the corner only appears when pinned.
     assert decoration.count("{pinned && (") == 1
     assert "transparent_11px,var(--color-sidebar)_12px" in decoration
@@ -678,6 +727,29 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert "window.history.forward()" in titlebar
     assert 'src="/circle-logo-small.png"' in header
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
+
+
+def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
+    label = chat_page.index('aria-label="New chat"')
+    start = chat_page.rindex("<Button", 0, label)
+    # First `>` outside braces and quotes: arrow functions in props hold `>`.
+    depth, quote, end = 0, "", start
+    for end in range(start, len(chat_page)):
+        ch = chat_page[end]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == ">" and depth == 0:
+            break
+    assert label < end, 'aria-label="New chat" is not on the <Button> opening tag'
+    match = re.search(r'className="([^"]*)"', chat_page[start:end])
+    assert match, "the New chat button has no static className"
+    return match.group(1).split()
 
 
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
@@ -722,8 +794,12 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     }
     assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
     assert set(insets.values()) == {188}, insets
-    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
+    # Token by token, not the exact string: #12355 added `shrink-0` beside the same look.
+    new_chat_tokens = _new_chat_button_class_tokens(chat_page)
+    assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
+    assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
+    assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
 
@@ -862,10 +938,17 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
-def test_collapsed_mac_sidebar_hides_divider():
+def test_sidebar_draws_its_edge_unless_the_titlebar_outline_does():
     source = _ui_source(APP_SIDEBAR)
+    inner = _ui_source(SIDEBAR_PRIMITIVE).split('data-slot="sidebar-inner"', 1)[1].split(">", 1)[0]
 
-    assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
+    assert "border-r" not in inner
+    assert re.search(
+        r'!\(usesCustomTitlebar && pinned\) &&\s*"\[&_\[data-sidebar=sidebar\]\]:border-r '
+        r"\[&_\[data-sidebar=sidebar\]\]:border-sidebar-edge "
+        r'dark:\[&_\[data-sidebar=sidebar\]\]:border-r-0"',
+        source,
+    )
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
@@ -2640,11 +2723,13 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (AUDIO_PAGE, "", "h", "34px", 1),
     (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
     (VIDEO_PAGE, "!", "h", "34px", 2),
-    # The chat page's 30px round controls, including the collapsed New Chat button and the
-    # save-temporary-chat button beside them. The header they sit in grows with the setting, so
-    # one left fixed shrinks against its own row.
+    # The chat header's 30px round controls, including the collapsed New Chat button, the chat
+    # menu and temporary-chat buttons, and the browser's new-tab button. The header they sit in
+    # grows with the setting, so one left fixed shrinks against its own row.
     (CHAT_PAGE, "!", "size", "30px", 1),
-    (CHAT_PAGE, "", "size", "30px", 4),
+    (CHAT_PAGE, "", "size", "30px", 2),
+    (CHAT_HEADER_MENU, "", "size", "30px", 2),
+    (BROWSER_TOGGLE, "", "size", "30px", 1),
 )
 
 # Where a class may begin: the start of the string it is written in, or the space after the
@@ -2673,10 +2758,33 @@ _COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "1
 # follows `--spacing`, so a fixed `right` or `padding-right` drifts away from it at any
 # setting other than the default, and the reach arithmetic that decides whether the pin can
 # overlap the title is done against a number the UI no longer renders.
-_CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = (
-    ("right", "1.875rem", 1),
-    ("padding-right", "0.125rem", 1),
-)
+# They are read from the pin's rule by property, not pinned to a length: a design nudge that
+# moves the pin (#12563 took `right` from 1.875rem to 1.6875rem) keeps the scale and must not
+# turn this red, while one that drops the scale wrapper still must.
+_PIN_SELECTOR = ".sidebar-row-action.is-unpin-action"
+_CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = ("right", "padding-right")
+
+
+def _css_rule_body(source: str, selector: str) -> str:
+    """The declarations of the one top-level `selector { ... }` rule, nested braces included."""
+    starts = [m.end() for m in re.finditer(rf"(?<![\w.-]){re.escape(selector)}\s*\{{", source)]
+    assert len(starts) == 1, f"index.css states `{selector} {{` {len(starts)} times, not once"
+    depth, i = 1, starts[0]
+    while depth:
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        i += 1
+    return source[starts[0] : i - 1]
+
+
+def _declared_values(body: str, prop: str) -> list[str]:
+    """Values of `prop` declared directly in a rule body, ignoring comments and nested rules."""
+    body = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    while True:
+        nested = re.sub(r"\{[^{}]*\}", "", body)
+        if nested == body:
+            break
+        body = nested
+    return re.findall(rf"(?<![\w-]){re.escape(prop)}:\s*([^;]+);", body)
 
 
 # The chat header geometry is stated once per platform chrome, and the contracts that do
@@ -2713,21 +2821,16 @@ def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
 
 
 def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
-    source = INDEX_CSS.read_text(encoding = "utf-8")
-    for prop, length, expected in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
-        scaled = len(
-            re.findall(
-                rf"(?<![\w-]){re.escape(prop)}:\s*"
-                rf"calc\(\s*{re.escape(length)}\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\);",
-                source,
-            )
-        )
+    body = _css_rule_body(INDEX_CSS.read_text(encoding = "utf-8"), _PIN_SELECTOR)
+    for prop in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
+        values = _declared_values(body, prop)
         assert (
-            scaled == expected
-        ), f"index.css states {scaled} scaled `{prop}: {length}`, not {expected}"
-        assert not re.search(
-            rf"(?<![\w-]){re.escape(prop)}:\s*{re.escape(length)}\s*;", source
-        ), f"index.css has a bare `{prop}: {length}`, which stays put while the gutter scales"
+            len(values) == 1
+        ), f"`{_PIN_SELECTOR}` declares `{prop}` {len(values)} times, not once"
+        assert re.fullmatch(
+            r"calc\(\s*[\d.]+rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)",
+            values[0].strip(),
+        ), f"`{_PIN_SELECTOR}` states `{prop}: {values[0].strip()}`, which stays put while the gutter scales"
 
 
 def test_the_colours_these_contracts_read_still_carry_their_gain():

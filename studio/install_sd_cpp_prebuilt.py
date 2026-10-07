@@ -100,6 +100,8 @@ def _raw_install_record(root: Path) -> Optional[str]:
 
 # The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at all: with only half of it remembered, an unwritable record leaves a serverless install looking server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
 _INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
+# The same for the pin: an unwritable record still names the old one, which re-downloads on every load.
+_INSTALLED_PIN_MEMO: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
 
 def installed_ships_server(root: Path) -> Optional[bool]:
@@ -119,7 +121,8 @@ def _write_install_record(
 ) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one. The write itself stays best-effort (a metadata failure must not throw away binaries that extracted correctly) but the answer is memoised either way, so this process never re-installs what it just installed."""
     klass = accelerator_class(accelerator)
-    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    # The pin this install was FOR: a fallback (upstream / latest) tag never equals it.
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
     if ships_server is not None:
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
@@ -130,7 +133,9 @@ def _write_install_record(
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
             json.dump(rec, f)
     except OSError as exc:
-        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
+        snapshot = _raw_install_record(root)
+        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, snapshot)
+        _INSTALLED_PIN_MEMO[str(root)] = (rec["requested_tag"], snapshot)
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
             f"remembering {klass} for this process only",
@@ -138,6 +143,7 @@ def _write_install_record(
         )
     else:
         _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
 
 
 def _repo() -> str:
@@ -148,6 +154,28 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def install_is_stale(root: Path) -> bool:
+    """True when ``root`` was installed for another pin. Unknown (no record / tag, tracking latest) is not stale."""
+    want = _pinned_tag()
+    if not want:
+        return False
+    memo = _INSTALLED_PIN_MEMO.get(str(root))
+    if memo is not None:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
+            return memo[0] != want
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
+    rec = read_install_record(root)
+    requested = rec.get("requested_tag")
+    if isinstance(requested, str) and requested:
+        return requested != want
+    have = rec.get("tag")
+    if not isinstance(have, str) or not have:
+        return False
+    # Pre-requested_tag records: the mirror tag, or its upstream release on hosts the mirror does not build.
+    return have not in (want, upstream_tag_for(want))
 
 
 def is_mirror_only_tag(tag: Optional[str]) -> bool:

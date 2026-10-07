@@ -8,6 +8,7 @@ import type * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
 import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -75,6 +76,7 @@ function MenubarContent({
   align = "start",
   alignOffset = -4,
   sideOffset = 0,
+  collisionPadding,
   ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
@@ -84,6 +86,7 @@ function MenubarContent({
       <MenubarPrimitive.Content
         ref={snappedRef}
         data-slot="menubar-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         alignOffset={alignOffset}
         sideOffset={sideOffset}
@@ -130,13 +133,13 @@ function MenubarCheckboxItem({
     <MenubarPrimitive.CheckboxItem
       data-slot="menubar-checkbox-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-3 pl-8 text-sm data-disabled:opacity-50 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-9 pl-3 text-sm data-disabled:opacity-50 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       checked={checked}
       {...props}
     >
-      <span className="left-2 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
+      <span className="right-3 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
         <MenubarPrimitive.ItemIndicator>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
         </MenubarPrimitive.ItemIndicator>
@@ -155,12 +158,12 @@ function MenubarRadioItem({
     <MenubarPrimitive.RadioItem
       data-slot="menubar-radio-item"
       className={cn(
-        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-3 pl-8 text-sm data-disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "focus:bg-accent focus:text-accent-foreground focus:**:text-accent-foreground gap-2.5 rounded-xl py-2 pr-9 pl-3 text-sm data-disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 relative flex cursor-default items-center outline-hidden select-none data-disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
     >
-      <span className="left-2 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
+      <span className="right-3 size-4 [&_svg:not([class*='size-'])]:size-4 pointer-events-none absolute flex items-center justify-center">
         <MenubarPrimitive.ItemIndicator>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
         </MenubarPrimitive.ItemIndicator>
@@ -255,6 +258,7 @@ function MenubarSubTrigger({
 
 function MenubarSubContent({
   className,
+  collisionPadding,
   ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.SubContent>) {
@@ -263,6 +267,7 @@ function MenubarSubContent({
     <MenubarPrimitive.SubContent
       ref={snappedRef}
       data-slot="menubar-sub-content"
+      collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
       className={cn(
         "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] min-w-32 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
         className,

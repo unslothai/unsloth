@@ -21,6 +21,12 @@ const CLOSED_DECORATION_PATTERN = /<\/div>\s*\)\}\s*$/;
 const DIALOG_SURFACE_CLASSES =
   /<(?:DialogContent|AlertDialogContent|CommandDialog)\b(?:[^>]|=>)*?\bclassName="([^"]*)"/g;
 const WHOLE_WINDOW_CENTRE = /(?:^|\s)(?:max-sm:)?top-1\/2(?:\s|$)/;
+const DIRECT_VIEWPORT_BACKDROP_PATTERN =
+  /body:has\(> \[data-viewport-backdrop="true"\]\[data-state="open"\]\)/;
+const DESCENDANT_VIEWPORT_BACKDROP_PATTERN =
+  /body:has\(\[data-viewport-backdrop="true"\]\[data-state="open"\]\)/;
+const TOUR_VIEWPORT_BACKDROP_PATTERN =
+  /data-slot="dialog-overlay"[\s\S]*?data-viewport-backdrop=\{true\}/;
 
 /** Every component under src, so a new dialog cannot slip past. */
 const COMPONENTS = readdirSync(join(import.meta.dirname, "../src"), {
@@ -92,4 +98,15 @@ test("dialogs that set their own top still centre below the window chrome", () =
     }
   }
   assert.ok(checked > 10, `only ${checked} dialog surfaces matched`);
+});
+
+test("viewport titlebar effects stay mutation-scoped and cover custom modal chrome", async () => {
+  const [styles, tour] = await Promise.all([
+    readSrc("index.css"),
+    readSrc("features/tour/components/guided-tour.tsx"),
+  ]);
+
+  assert.match(styles, DIRECT_VIEWPORT_BACKDROP_PATTERN);
+  assert.doesNotMatch(styles, DESCENDANT_VIEWPORT_BACKDROP_PATTERN);
+  assert.match(tour, TOUR_VIEWPORT_BACKDROP_PATTERN);
 });

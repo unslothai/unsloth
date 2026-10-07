@@ -47,6 +47,7 @@ import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
+  hubModelRunsOnAudioPage,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
@@ -405,7 +406,7 @@ export type ModelInspectorActions = {
   onSearchHub?: (query: string) => void;
   onRun?: (
     selection: HubModelRunSelection,
-    mediaPage: ReturnType<typeof studioPageForTask>,
+    mediaPage: ReturnType<typeof studioPageForTask> | "audio",
   ) => void;
   runConfigPending?: boolean;
 };
@@ -554,10 +555,11 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   // Media models use a separate runtime, so the llama.cpp memory estimate does
   // not describe their load.
-  const mediaPage = studioPageForTask(
-    taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
-  );
-  const runsOnMediaRuntime = mediaPage !== undefined;
+  const mediaTask = taskForMediaPick(model.pipelineTag, model.task);
+  const mediaPage = studioPageForTask(mediaTask ?? undefined);
+  const audioPage =
+    mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
+  const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
@@ -567,7 +569,8 @@ export const ModelInspector = memo(function ModelInspector({
   });
   const runAction =
     runEligible && onRun
-      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
+      ? (selection: HubModelRunSelection) =>
+          onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
 
   const languages = parseLanguageTags(model.tags);
@@ -704,7 +707,8 @@ export const ModelInspector = memo(function ModelInspector({
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
-              mediaRuntime={runsOnMediaRuntime}
+              mediaPage={mediaPage}
+              assetRuntime={mediaPage ?? (["text-to-speech", "text-to-audio"].includes(model.pipelineTag ?? model.task ?? "") ? "audio" : undefined)}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}

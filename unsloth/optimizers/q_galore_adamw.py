@@ -16,6 +16,7 @@ import inspect
 import torch
 from typing import Optional, List
 
+from unsloth_zoo.device_type import device_synchronize
 from .q_galore_projector import (
     GaLoreProjector,
     _quantize,
@@ -171,7 +172,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
                         group["_wd_saved"] = group["weight_decay"]
                         group["weight_decay"] = 0
 
-                    grad = state["projector"].project(p.grad, state["step"])
+                    full_rank_grad = p.grad
+                    grad = state["projector"].project(full_rank_grad, state["step"])
 
                     # Zero p.data so the 8-bit update writes the pure delta.
                     p._saved_data = p.data.clone()
@@ -197,6 +199,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                     # project_back stays inline: a loop-local name outlives the iteration (+64 MiB).
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
+                    p.grad = full_rank_grad
                     del p._saved_data
 
                 if has_weight_quant:
@@ -213,8 +216,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     # dequantizes before the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        device_synchronize()
 
         return loss
 

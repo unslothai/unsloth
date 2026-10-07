@@ -3,10 +3,10 @@
 
 """Give the desktop app the ROCm environment a terminal launch already has.
 
-unsloth#9926: ``fix_path_env::fix()`` is ``fix_vars(&["PATH"])``, so src-tauri
-reads the login shell and keeps PATH out of it, dropping every ROCm variable
-beside it. Parity, not policy: only a desktop launch, only an AMD host, only
-allowlisted names that are absent here. Every other launch reads no shell.
+unsloth#9926: ``shell_path::fix_path()`` in src-tauri reads the login shell and
+keeps PATH out of it, dropping every ROCm variable beside it. Parity, not
+policy: only a desktop launch, only an AMD host, only allowlisted names that
+are absent here. Every other launch reads no shell.
 """
 
 from __future__ import annotations
@@ -48,6 +48,8 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
+    # Preserve shell overrides, including an explicit opt-out (0).
+    "MIOPEN_SEARCH_CUTOFF",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",
@@ -60,6 +62,25 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "GPU_MAX_HW_QUEUES",
 )
 # Not HSA_TOOLS_LIB: HSA dlopens it, which loads a library rather than tuning one.
+
+# Exception list, so a renamed bash/zsh still gets the unsloth#12678 probe.
+_NON_POSIX_SHELLS = frozenset(
+    {"fish", "nu", "nushell", "csh", "tcsh", "xonsh", "elvish", "pwsh", "ion", "murex"}
+)
+
+
+def probe_command(shell: str, command: str) -> str:
+    """``command`` for ``shell -ilc`` without the exit-time history save (unsloth#12678).
+
+    ``RCS`` covers zsh's readonly HISTFILE; subshell first, as dash exits on a readonly unset.
+    """
+    if os.path.basename(shell) in _NON_POSIX_SHELLS:
+        return command
+    return (
+        "if [ -n \"${ZSH_VERSION-}\" ]; then eval 'unsetopt RCS' 2>/dev/null || :; fi; "
+        f"(unset HISTFILE) 2>/dev/null && unset HISTFILE; exec {command}"
+    )
+
 
 # NVIDIA's open kernel module registers KFD nodes too (4318), hence the check.
 _AMD_VENDOR_ID = "4098"
@@ -115,30 +136,12 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
         target = os.path.join(work, "env")
-        try:
-            process = subprocess.Popen(
-                [shell, "-ilc", f"env -0 > {shlex.quote(target)}"],
-                stdin = subprocess.DEVNULL,
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                # Oh My Zsh's auto-update prompt can block the shell forever.
-                env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
-                # Its own group, so the cleanup below takes the whole shell.
-                start_new_session = True,
-            )
-        except Exception as error:
-            logger.debug("login shell environment unavailable: %s", error)
-            return {}
-        # pgid == pid, read before the wait reaps it: getpgid then raises.
-        group = process.pid
-        try:
-            returncode = process.wait(timeout = timeout)
-        except Exception as error:
-            logger.debug("login shell did not finish: %s", error)
-            returncode = None
-        finally:
-            # Every path: a clean exit still leaves an rc's agent running.
-            _terminate_group(group, process)
+        command = f"env -0 > {shlex.quote(target)}"
+        probe = probe_command(shell, command)
+        returncode = _run_login_shell(shell, probe, timeout)
+        # A non-POSIX shell missing from the list rejects the probe; never after a timeout.
+        if returncode not in (0, None) and probe != command:
+            returncode = _run_login_shell(shell, command, timeout)
         if returncode != 0:
             logger.debug("login shell exited %s", returncode)
             return {}
@@ -156,6 +159,34 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
         if sep and name:
             out[name] = value
     return out
+
+
+def _run_login_shell(shell: str, command: str, timeout: float) -> "int | None":
+    """``shell -ilc command``'s exit status; ``None`` if it could not start or timed out."""
+    try:
+        process = subprocess.Popen(
+            [shell, "-ilc", command],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            # Oh My Zsh's auto-update prompt can block the shell forever.
+            env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
+            # Its own group, so the cleanup below takes the whole shell.
+            start_new_session = True,
+        )
+    except Exception as error:
+        logger.debug("login shell environment unavailable: %s", error)
+        return None
+    # pgid == pid, read before the wait reaps it: getpgid then raises.
+    group = process.pid
+    try:
+        return process.wait(timeout = timeout)
+    except Exception as error:
+        logger.debug("login shell did not finish: %s", error)
+        return None
+    finally:
+        # Every path: a clean exit still leaves an rc's agent running.
+        _terminate_group(group, process)
 
 
 def _terminate_group(group: int, process) -> None:

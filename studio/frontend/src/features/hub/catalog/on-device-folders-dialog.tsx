@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -76,6 +77,7 @@ export function OnDeviceFoldersDialog({
 }) {
   const [folders, setFolders] = useState<ScanFolderInfo[]>([]);
   const [path, setPath] = useState("");
+  const [recursive, setRecursive] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -195,7 +197,7 @@ export function OnDeviceFoldersDialog({
       setPending("add");
       setError(null);
       try {
-        const folder = await addScanFolder(nextPath);
+        const folder = await addScanFolder(nextPath, recursive);
         setPath("");
         mutationVersionRef.current += 1;
         setFolders((current) => {
@@ -216,7 +218,7 @@ export function OnDeviceFoldersDialog({
         setPending(null);
       }
     },
-    [handleInventoryChanged, pending],
+    [handleInventoryChanged, pending, recursive],
   );
 
   // Scan folders are arbitrary paths that may be moved or deleted after they
@@ -415,6 +417,19 @@ export function OnDeviceFoldersDialog({
                   </Button>
                 </div>
               </div>
+              <div className="mt-2 flex items-center gap-2">
+                <Checkbox
+                  id="scan-folder-recursive"
+                  checked={recursive}
+                  onCheckedChange={(checked) => setRecursive(checked === true)}
+                />
+                <label
+                  htmlFor="scan-folder-recursive"
+                  className="text-ui-12 text-muted-foreground"
+                >
+                  Also scan sub-folders
+                </label>
+              </div>
             </div>
 
             {error ? (
@@ -506,6 +521,11 @@ export function OnDeviceFoldersDialog({
                               {folder.path}
                             </TooltipContent>
                           </Tooltip>
+                          {folder.recursive ? (
+                            <p className="text-ui-10p5 text-muted-foreground">
+                              Includes sub-folders
+                            </p>
+                          ) : null}
                           {problem ? (
                             <p
                               data-testid={`scan-folder-problem-${folder.id}`}

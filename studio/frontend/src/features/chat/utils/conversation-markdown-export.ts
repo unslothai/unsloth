@@ -53,7 +53,9 @@ export function createConversationMarkdownBuilder<
         content: stripSearchImageTokens(renderMessage(message)),
       }),
     );
-    return buildConversationMarkdown(normalizedMessages);
+    return buildConversationMarkdown(normalizedMessages, {
+      includeImportMetadata: true,
+    });
   };
 }
 

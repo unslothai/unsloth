@@ -20,6 +20,7 @@ on:
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
@@ -59,6 +60,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/playwright_titlebar_blur.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_research_review.py'
@@ -435,10 +437,21 @@ jobs:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
 
+      - name: Browser smoke for the MCP App tool bridge
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_BROWSER: chromium
+        run: python3 tests/studio/playwright_mcp_app_bridge_smoke.py
+
       - name: Composer icon alignment
         working-directory: ${{ github.workspace }}
         timeout-minutes: 3
         run: python3 tests/studio/playwright_composer_icons.py chromium
+
+      - name: Titlebar modal blur and window controls (Chromium)
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_titlebar_blur.py
 
       # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
       # wrapper and killing it orphans the node child.
@@ -495,7 +508,7 @@ jobs:
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
 
-      # A failure means dismissal triggered an unconfirmed delete.
+      # A failure means the click that dismissed a menu also reached the control under it.
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
@@ -687,16 +700,28 @@ jobs:
         timeout-minutes: 3
         run: python tests/studio/playwright_composer_icons.py chromium firefox
 
-      - name: Data settings deletion choices in Chromium
+      - name: Data settings deletion choices in Chromium and Firefox
         working-directory: ${{ github.workspace }}
-        run: python tests/studio/playwright_data_settings.py
-
-      - name: Data settings deletion choices in Firefox
-        working-directory: ${{ github.workspace }}
-        env:
-          PW_ENGINE: firefox
-          PW_OUT: logs/data_settings_firefox_report.json
-        run: python tests/studio/playwright_data_settings.py
+        run: |
+          mkdir -p logs
+          # each driver owns its Vite server, optimizer cache, and report
+          PW_ENGINE=chromium PW_PORT=5420 PW_OUT=logs/data_settings_report.json \
+            VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-data-chromium" \
+            python tests/studio/playwright_data_settings.py > logs/data_settings_chromium.log 2>&1 &
+          chromium_pid=$!
+          PW_ENGINE=firefox PW_PORT=5421 PW_OUT=logs/data_settings_firefox_report.json \
+            VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-data-firefox" \
+            python tests/studio/playwright_data_settings.py > logs/data_settings_firefox.log 2>&1 &
+          firefox_pid=$!
+          failed=0
+          wait "$chromium_pid" || failed=1
+          wait "$firefox_pid" || failed=1
+          for engine in chromium firefox; do
+            echo "::group::Data settings: $engine"
+            cat "logs/data_settings_$engine.log" || failed=1
+            echo "::endgroup::"
+          done
+          exit "$failed"
 
       - name: Upload alignment failure artifacts
         if: failure()
