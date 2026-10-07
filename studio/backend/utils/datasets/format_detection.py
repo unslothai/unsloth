@@ -101,16 +101,18 @@ def _detect_conversation_column(rows: list[dict], column_names: list[str]) -> di
         if inspected and unknown_exact is None:
             unknown_exact = inspected
 
-    prompt_completion = {"prompt", "completion"} <= column_name_set
     structural_candidates = []
     for column_name in column_names:
         if column_name in CONVERSATION_COLUMNS:
             continue
-        if prompt_completion and column_name in ("prompt", "completion"):
-            continue
         inspected = _inspect_conversation_column(rows, column_name)
         if inspected and inspected["format"] in {"sharegpt", "chatml"}:
             structural_candidates.append(inspected)
+
+    if {"prompt", "completion"} <= column_name_set and any(
+        candidate["chat_column"] in ("prompt", "completion") for candidate in structural_candidates
+    ):
+        return unknown_exact
 
     trace_candidates = [
         candidate

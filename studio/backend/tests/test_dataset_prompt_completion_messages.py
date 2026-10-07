@@ -75,3 +75,17 @@ def test_check_suggests_prompt_and_completion_together(row, conversation):
 
     assert result["detected_format"] == "custom_heuristic"
     assert result["suggested_mapping"] == _MAPPING
+
+
+@pytest.mark.parametrize("prompt", [[_user("Sky?")], "Sky?"], ids = ["messages", "text"])
+def test_prompt_completion_pair_wins_over_another_chat_column(prompt):
+    row = {
+        "prompt": prompt,
+        "completion": [_assistant("Blue")],
+        "history": [_user("Hi"), _assistant("Hello")],
+    }
+    dataset = Dataset.from_list([row])
+
+    assert check_dataset_format(dataset)["suggested_mapping"] == _MAPPING
+    result = format_dataset(dataset)
+    assert result["dataset"][0]["conversations"] == [_user("Sky?"), _assistant("Blue")]
