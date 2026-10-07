@@ -4526,7 +4526,9 @@ export function ImagesPage({
         const model = withEngagedFamily(
           lastLoad.current && matchesRememberedModel(lastLoad.current, status)
             ? lastLoad.current
-            : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+            : rememberedModel && matchesRememberedModel(rememberedModel, status)
+              ? rememberedModel
+              : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
           status,
         );
         rememberImageModel(model);

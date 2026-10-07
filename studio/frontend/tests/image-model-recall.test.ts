@@ -149,6 +149,19 @@ test("recalling a quantized model carries the selected adapters into its load", 
   await withFiles.callbacks.handleGenerateWithRecall();
   assert.deepEqual((withFiles.loads[0][2] as Files).text_encoder_file, supplied.textEncoderFiles);
   assert.equal((withFiles.loads[0][2] as Files).vae_file, supplied.vaeFile);
+  // After a refresh with the model still resident, the stored paths survive (status names only basenames).
+  const resident = recall({
+    rememberedModel: supplied,
+    status: { loaded: true, repo_id: supplied.repoId, model_kind: "gguf", gguf_filename: "z.gguf" },
+    matchesRememberedModel,
+    withEngagedFamily: (m: Record<string, unknown>) => m,
+    rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
+    setRememberedModel: () => {},
+    handleGenerate: async () => {},
+  });
+  await resident.callbacks.handleGenerateWithRecall();
+  assert.deepEqual(readImageModel()?.textEncoderFiles, supplied.textEncoderFiles);
+  assert.equal(readImageModel()?.vaeFile, supplied.vaeFile);
   const without = recall({ rememberedModel: { ...supplied, textEncoderFiles: undefined, vaeFile: undefined }, textEncoderFiles: "live.safetensors" });
   await without.callbacks.handleGenerateWithRecall();
   assert.equal((without.loads[0][2] as Files).text_encoder_file, undefined);

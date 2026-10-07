@@ -809,3 +809,40 @@ def test_supplied_int8_encoder_reported_as_int8_without_a_request():
         ).mode
         is None
     )
+
+
+def test_mixed_supplied_int8_encoder_still_reported():
+    from core.inference.diffusion_precision import quantize_text_encoders
+
+    int8 = torch.nn.Linear(2, 2)
+    int8._unsloth_te_prequant_scheme = "int8"
+    pipe = types.SimpleNamespace(text_encoder = torch.nn.Linear(2, 2), text_encoder_2 = int8)
+    outcome = quantize_text_encoders(pipe, types.SimpleNamespace(device = "cpu"), mode = None)
+    assert outcome.mode == "int8" and "text_encoder_2 only" in outcome.reason
+
+
+def test_hub_repo_ids_names_only_hub_specs(tmp_path):
+    te = _save(tmp_path / "clip_l.safetensors", {"x": torch.zeros(1)})
+    assert C.hub_repo_ids(
+        [te, "unsloth/A/te.safetensors", "unsloth/A/te2.safetensors"],
+        "unsloth/B/vae/ae.safetensors",
+        model_path = str(tmp_path),
+    ) == ("unsloth/A", "unsloth/B")
+
+
+def test_quantized_hub_vae_refused_at_planning(tmp_path, monkeypatch):
+    vae = _save(
+        tmp_path / "hub" / "ae.safetensors",
+        {k: torch.zeros(shape) for k, shape in _ldm_vae_header().items()},
+    )
+    monkeypatch.setattr(
+        C, "quant_layers", lambda path: {"decoder.conv_in": object()} if path == vae else {}
+    )
+    with pytest.raises(C.ComponentFileError, match = "quantized VAE"):
+        C.plan_component_overrides(
+            text_encoder_files = [],
+            vae_file = "unsloth/R/ae.safetensors",
+            model_path = None,
+            model_index = {"vae": ["diffusers", "AutoencoderKL"]},
+            resolve_hub = lambda ref: vae,
+        )

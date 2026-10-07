@@ -3397,6 +3397,20 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             kwargs["base_repo"] = base
+            # Claimed before a byte moves, so the cache-delete guard sees a Hub component repo.
+            from .diffusion_comfy_components import hub_repo_ids
+
+            component_repos = hub_repo_ids(
+                kwargs.get("text_encoder_files") or (),
+                kwargs.get("vae_file"),
+                model_path = kwargs["repo_id"],
+            )
+            if component_repos:
+                with self._load_cancel_lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + component_repos)
+                        )
             # Assigned before the plan so replaced components' shards are never staged.
             component_overrides = self._plan_component_overrides(
                 fam,
@@ -10861,7 +10875,14 @@ class DiffusionBackend:
                     # _run_load's finally drops this, so it spans the prefetch too, where nothing
                     # is registered in _load_accounts.
                     self._draining_repos.setdefault(cancelled_token, set()).update(
-                        r for r in (loading.repo_id, loading.base_repo, loading.fetch_repo) if r
+                        r
+                        for r in (
+                            loading.repo_id,
+                            loading.base_repo,
+                            loading.fetch_repo,
+                            *loading.asset_repos,
+                        )
+                        if r
                     )
                 self._cancel_event.set()
                 self._load_token += 1

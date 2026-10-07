@@ -991,8 +991,13 @@ def plan_component_overrides(
         out.classes[component] = classes[component]
         local = ref.local_path or paths.get(id(ref))
         if local:
+            # Refused before anything is evicted (a Hub file is only on disk from here).
             if component != COMPONENT_VAE:
-                quant_layers(local)  # refuse an unsupported quantization before anything is evicted
+                quant_layers(local)
+            elif quant_layers(local):
+                raise ComponentFileError(
+                    f"'{ref.name}': quantized VAE files are not supported; use the bf16/fp32 VAE"
+                )
             out.paths[component] = local
     return out
 
@@ -1097,6 +1102,21 @@ def scanned_component_bytes(sizes: dict[str, int], components: Iterable[str]) ->
     """The ``{relative path: bytes}`` entries of a base-repo scan that ``components`` replace."""
     wanted = set(components)
     return {rel: size for rel, size in sizes.items() if rel.split("/", 1)[0] in wanted}
+
+
+def hub_repo_ids(
+    text_encoder_files: Sequence[str], vae_file: Optional[str], *, model_path: Optional[str]
+) -> tuple[str, ...]:
+    """Hub repos the supplied specs name; unparseable specs are left to validation."""
+    out: list[str] = []
+    for spec in [*(text_encoder_files or ()), *([vae_file] if vae_file else [])]:
+        try:
+            ref = parse_component_file(spec, model_path = model_path)
+        except ComponentFileError:
+            continue
+        if ref.is_hub and ref.repo_id not in out:
+            out.append(ref.repo_id)
+    return tuple(out)
 
 
 def validate_component_specs(
