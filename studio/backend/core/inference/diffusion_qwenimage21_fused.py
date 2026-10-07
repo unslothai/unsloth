@@ -17,7 +17,6 @@ import types
 from typing import Any, Optional
 
 Q21_CONVROT_FUSED_ENV = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED"
-_MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _PREPARE = "_qwenimage21_prepare_qkv"
 _QKV_ATTR = "_unsloth_q21_fused_qkv"
 _OUT_MARK = "_unsloth_q21_out_prev"
@@ -157,8 +156,7 @@ def _out_forward(self: Any, x: Any) -> Any:
 
 def _patch_prepare(logger: Any = None) -> bool:
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        from diffusers.models.transformers import transformer_qwenimage21 as mod
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
     with _LOCK:
