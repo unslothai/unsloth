@@ -112,6 +112,7 @@ function loadExporters(
       threads.find((thread) => thread.id === id),
     resolveChatInstructions: async () => "",
     threadScopedDefault: () => undefined,
+    awaitThreadScopedSettingsWrite: async () => true,
     buildNamedConversationsMarkdown,
     CONVERSATION_MARKDOWN_MIME_TYPE,
     canMergeConversationExport,

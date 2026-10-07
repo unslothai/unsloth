@@ -126,6 +126,7 @@ function loadExporters(
   threadIds: string[],
   downloads: string[],
   sources: string[] = [],
+  overrides: Record<string, unknown> = {},
 ) {
   const javascript = ts.transpileModule(
     [
@@ -154,6 +155,7 @@ function loadExporters(
     getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
+    awaitThreadScopedSettingsWrite: async () => true,
     threadScopedDefault: (key: string) => INSTALLATION_DEFAULTS[key],
     composerProjectByPendingThread: new Map(),
     ...liveThreadHead,
@@ -184,6 +186,7 @@ function loadExporters(
       sources.push(body);
       return true;
     },
+    ...overrides,
   } as Record<string, unknown>;
   vm.runInNewContext(javascript, context);
   return context.__exporters as Exporters;
@@ -276,6 +279,28 @@ test("a chat whose snapshot omits the system prompt exports the default it runs 
   assert.deepEqual(JSON.parse(downloads[0]).messages[0], {
     role: "system",
     content: "Sign off as Ada.",
+  });
+});
+
+test("an export waits for the chat's settings edit still being saved", async () => {
+  const downloads: string[] = [];
+  let saved = false;
+  const exporters = loadExporters(["plain"], downloads, [], {
+    awaitThreadScopedSettingsWrite: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      saved = true;
+      return true;
+    },
+    getStoredChatThread: async (id: string) => ({
+      ...THREADS.find((thread) => thread.id === id),
+      settings: { systemPrompt: saved ? "Edited prompt." : "" },
+    }),
+  });
+
+  await exporters.exportConversationRawJsonl("plain");
+  assert.deepEqual(JSON.parse(downloads[0]).messages[0], {
+    role: "system",
+    content: "Edited prompt.",
   });
 });
 

@@ -79,7 +79,10 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
-import { threadScopedDefault } from "../stores/chat-runtime-store";
+import {
+  awaitThreadScopedSettingsWrite,
+  threadScopedDefault,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -261,6 +264,8 @@ async function loadConversationMessages(
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  // An edit still in its debounce is not on the row yet, and the next reply already runs with it.
+  await awaitThreadScopedSettingsWrite(threadId);
   const thread = await getStoredChatThread(threadId);
   if (!thread) return [];
   const text = await resolveChatInstructions(
