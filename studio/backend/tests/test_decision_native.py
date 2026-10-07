@@ -157,6 +157,9 @@ def _stub_probabilities(question):
 
 @pytest.fixture
 def stub(tmp_path, monkeypatch):
+    if os.name == "nt":
+        # The stub server is a shebang script; CreateProcess cannot run it (WinError 193).
+        pytest.skip("stub llama-server needs a POSIX shebang")
     record = tmp_path / "stub_record.jsonl"
     script = tmp_path / "stub_server.py"
     script.write_text(STUB, encoding = "utf-8")
@@ -473,6 +476,30 @@ def test_gpu_flags_offload_to_the_freest_device(home, stub, tmp_path):
     second = native_worker.NativeClefAgent(model, None, "x", gpu = True)
     second.close()
     assert second._key != api_key
+
+
+@pytest.mark.parametrize("mask, expected", [("1,0", "CUDA0"), ("0,1", "CUDA1"), ("5", "CUDA1")])
+def test_freest_gpu_follows_the_visibility_order(stub, monkeypatch, mask, expected):
+    # Physical GPU 1 is the freest; llama.cpp numbers devices in CUDA_VISIBLE_DEVICES order.
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = mask)
+    assert native_worker._pick_device("llama-server", env) == expected
+    # Vulkan ordinals ignore the CUDA mask.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: ["Vulkan0", "Vulkan1"])
+    )
+    assert native_worker._pick_device("llama-server", env) == "Vulkan1"
+    # ROCm follows HIP_VISIBLE_DEVICES.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: ["ROCm0", "ROCm1"])
+    )
+    hip = dict(os.environ, HIP_VISIBLE_DEVICES = mask, CUDA_VISIBLE_DEVICES = mask)
+    hip.pop("ROCR_VISIBLE_DEVICES", None)
+    assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
+    hip.pop("HIP_VISIBLE_DEVICES")
+    assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
+    rocr = {k: v for k, v in hip.items() if k != "CUDA_VISIBLE_DEVICES"}
+    rocr["ROCR_VISIBLE_DEVICES"] = mask
+    assert native_worker._pick_device("llama-server", rocr) == expected.replace("CUDA", "ROCm")
 
 
 @pytest.mark.parametrize("mode", ["nodecisions", "wrongalias"])
@@ -891,8 +918,9 @@ def test_an_idle_server_unloads_and_a_stale_timer_does_nothing(home, client, stu
     assert _post(client).status_code == 200
     agent = laya_runtime._agent
     generation = laya_runtime._generation
-    deadline = time.monotonic() + 5
-    while laya_runtime._agent is not None and time.monotonic() < deadline:
+    # Unload clears _agent, then closes the server outside the lock: wait for both.
+    deadline = time.monotonic() + 30
+    while (laya_runtime._agent is not None or agent.is_alive()) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert laya_runtime._agent is None and not agent.is_alive()
     # A timer from that generation never touches the server loaded after it.
@@ -1277,3 +1305,56 @@ def test_an_image_that_decodes_to_too_many_pixels_is_refused(home, client, stub)
     refused = _post(client, images = [_image_url("png", big.getvalue())])
     assert refused.status_code == 422 and "4096 x 4096" in refused.text
     assert stub.records("start") == []
+
+
+def test_a_laya_model_never_reports_an_earlier_clefs_fallback_reason(monkeypatch):
+    from core.systemone import laya_runtime
+
+    monkeypatch.setattr(laya_runtime, "_fallback_reason", "The GGUF is not downloaded.")
+    clef = SimpleNamespace(name = "clef-flash", backend = "pytorch", layout = "clef")
+    laya = SimpleNamespace(name = "laya-multilingual", backend = "pytorch", layout = "laya")
+    monkeypatch.setattr(laya_runtime, "_loaded", clef)
+    assert laya_runtime.status()["fallback_reason"] == "The GGUF is not downloaded."
+    monkeypatch.setattr(laya_runtime, "_loaded", laya)
+    assert laya_runtime.status()["fallback_reason"] is None
+    # A Laya request leaves the reason alone, so a concurrent Clef load keeps its own.
+    monkeypatch.setattr(laya_runtime, "select", lambda checkpoint, *a, **k: (checkpoint, None))
+    monkeypatch.setattr(laya_runtime, "_decide", lambda *_: {"ok": True})
+    assert laya_runtime._route(laya, "s", {}, None) == {"ok": True}
+    assert laya_runtime._fallback_reason == "The GGUF is not downloaded."
+
+
+def test_a_uuid_mask_keeps_its_order_when_choosing_the_gpu(stub, monkeypatch):
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(nvidia, "resolve_uuid_mask", lambda mask: {"GPU-b,GPU-a": [1, 0]}.get(mask))
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "GPU-b,GPU-a")
+    assert native_worker._pick_device("llama-server", env) == "CUDA0"
+
+
+@pytest.mark.parametrize("devices, expected", [(["CUDA0"], True), ([], False)])
+def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, tmp_path, devices, expected):
+    from utils import systemone_settings
+    from utils.hardware import hardware
+
+    calls = []
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CPU)
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: str(binary))
+    monkeypatch.setattr(LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda _: {}))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_enumerated_gpu_devices",
+        staticmethod(lambda *_: calls.append(1) or devices),
+    )
+    monkeypatch.setattr(systemone_settings, "_LLAMA_GPU_CACHE", [])
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
+    assert not systemone_settings.gpu_available() and not calls
+    # Without torch: the binary's own devices decide (a CPU-only build has none), probed once.
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "no torch")
+    assert systemone_settings.gpu_available() is expected
+    assert systemone_settings.gpu_available() is expected and len(calls) == 1
+    # A reinstalled build (new mtime) is probed again.
+    os.utime(binary, ns = (0, 10**9))
+    assert systemone_settings.gpu_available() is expected and len(calls) == 2

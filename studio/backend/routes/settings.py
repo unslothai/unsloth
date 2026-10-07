@@ -689,6 +689,8 @@ class SystemOneSettingsResponse(BaseModel):
     loaded_backend: Optional[str] = None
     fallback_reason: Optional[str] = None
     input_modalities: list[str] = ["text"]
+    # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
+    layout: Optional[str] = None
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -1549,7 +1551,10 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        device = systemone_settings.get_device(),
+        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        device = systemone_settings.clef_device()
+        if effective == "llama.cpp"
+        else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
         gpu_available = systemone_settings.gpu_available(),
         models = [
@@ -1585,6 +1590,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         loaded_backend = runtime["loaded_backend"] if runtime["loaded_model"] else None,
         fallback_reason = fallback if effective == "pytorch" or effective is None else None,
         input_modalities = laya_runtime.input_modalities(configured),
+        layout = getattr(configured, "layout", None),
     )
 
 
