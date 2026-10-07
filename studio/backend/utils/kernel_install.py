@@ -217,9 +217,8 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
     return _PINNED[name].wheel_url(env)
 
 
-# Kernels Unsloth only uses on Ampere or newer. FlashAttention 2 does not run below sm80, and
-# unsloth_zoo turns mamba_ssm's Triton kernels off there (patch_mamba_ssm_pre_ampere_fallback), so a
-# wheel below sm80 is never used and only prints that fallback warning in every notebook.
+# FlashAttention 2 needs sm80, and unsloth_zoo turns mamba_ssm's fast path off below sm80
+# (patch_mamba_ssm_pre_ampere_fallback), so either wheel would go unused there.
 _NEEDS_SM80 = ("flash_attn", "mamba_ssm")
 _CAPABILITY: dict = {}
 
