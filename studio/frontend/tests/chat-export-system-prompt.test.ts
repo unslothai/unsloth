@@ -155,7 +155,7 @@ function loadExporters(
     getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
-    awaitThreadScopedSettingsWrite: async () => true,
+    settleThreadScopedSettingsForCopy: async () => {},
     threadScopedDefault: (key: string) => INSTALLATION_DEFAULTS[key],
     composerProjectByPendingThread: new Map(),
     ...liveThreadHead,
@@ -286,7 +286,7 @@ test("an export waits for the chat's settings edit still being saved", async () 
   const downloads: string[] = [];
   let saved = false;
   const exporters = loadExporters(["plain"], downloads, [], {
-    awaitThreadScopedSettingsWrite: async () => {
+    settleThreadScopedSettingsForCopy: async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       saved = true;
       return true;

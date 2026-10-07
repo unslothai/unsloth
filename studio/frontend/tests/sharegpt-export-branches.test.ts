@@ -84,7 +84,7 @@ function loadExporters(
       return stored;
     },
     getStoredChatThread: async () => undefined,
-    awaitThreadScopedSettingsWrite: async () => true,
+    settleThreadScopedSettingsForCopy: async () => {},
     ...liveThreadHead,
     orderByParentChain,
     exportFormatIncludesSiblings,

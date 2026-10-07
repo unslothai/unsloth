@@ -80,7 +80,7 @@ import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapte
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
 import {
-  awaitThreadScopedSettingsWrite,
+  settleThreadScopedSettingsForCopy,
   threadScopedDefault,
 } from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
@@ -264,8 +264,8 @@ async function loadConversationMessages(
 }
 
 async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
-  // An edit still in its debounce is not on the row yet, and the next reply already runs with it.
-  await awaitThreadScopedSettingsWrite(threadId);
+  // A debounced or held edit is not on the row yet, and the next reply already runs with it.
+  await settleThreadScopedSettingsForCopy(threadId);
   const thread = await getStoredChatThread(threadId);
   if (!thread) return [];
   const text = await resolveChatInstructions(

@@ -861,9 +861,16 @@ function readThreadScopedSettings(
 export function threadScopedDefault<K extends ThreadScopedSettingKey>(
   key: K,
 ): ThreadScopedSettings[K] | undefined {
-  // No chat paired, so the store still holds the installation's own values.
+  // No chat paired, so the store holds the installation's values, except a held edit, which is
+  // the pairing chat's: resolved the way applyThreadScopedSettings captures the defaults.
   if (threadScopedSettingsThreadId === null) {
-    return readThreadScopedSettings(useChatRuntimeStore.getState())[key];
+    if (!isHeldThreadScopedField(key)) {
+      return readThreadScopedSettings(useChatRuntimeStore.getState())[key];
+    }
+    if (hydratedDefaultsByHeldField.has(key)) {
+      return hydratedDefaultsByHeldField.get(key) as ThreadScopedSettings[K];
+    }
+    return (pairingWindowDefaults ?? globalThreadScopedDefaults)?.[key];
   }
   return globalThreadScopedDefaults?.[key];
 }
