@@ -9,7 +9,7 @@ Standard library only: Unsloth's save path loads this file by path, without impo
 import hashlib
 import json
 import os
-import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -96,9 +96,10 @@ def write_export(export_dir, layout: str, files: dict, source_fingerprint: str) 
     }
     if not _valid(data):
         raise ValueError(f"invalid decision GGUF export: {data}")
-    fd, tmp = tempfile.mkstemp(prefix = ".export-", suffix = ".json", dir = export_dir)
+    # open(..., "x") rather than mkstemp: the file gets the umask's mode, not 0600.
+    tmp = export_dir / f".export-{os.getpid()}-{uuid.uuid4().hex[:8]}.json"
     try:
-        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        with open(tmp, "x", encoding = "utf-8") as f:
             json.dump(data, f, indent = 2)
         os.replace(tmp, export_dir / EXPORT_FILE)
     except BaseException:

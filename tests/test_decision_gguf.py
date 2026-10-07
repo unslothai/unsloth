@@ -172,6 +172,7 @@ def _snapshot(path: Path) -> tuple:
 def test_metadata_writer_replaces_only_the_temperatures_and_is_idempotent(tmp_path):
     path = tmp_path / "model-Q8_0.gguf"
     _write_gguf(path, {"choice": 3.0, "choice.2": 0.1})
+    os.chmod(path, 0o644)
     before = _snapshot(path)
     wanted = {"choice": 1.229, "score": 0.025, "noul": 0.05, "noul.2": 0.7}
     assert write_decision_temperatures(path, wanted) is True
@@ -179,6 +180,7 @@ def test_metadata_writer_replaces_only_the_temperatures_and_is_idempotent(tmp_pa
     assert set(got) == set(wanted)
     assert all(np.float32(got[k]) == np.float32(v) for k, v in wanted.items())
     assert _snapshot(path) == before
+    assert os.name == "nt" or (path.stat().st_mode & 0o777) == 0o644
     data = path.read_bytes()
     assert write_decision_temperatures(path, dict(wanted)) is False
     assert path.read_bytes() == data
@@ -254,6 +256,10 @@ def test_fingerprint_and_export_json(tmp_path):
         "source_fingerprint": "abc",
     }
     assert contract.read_export(tmp_path / "run") == data == contract.read_export(out)
+    umask = os.umask(0)
+    os.umask(umask)
+    assert os.name == "nt" or ((out / "export.json").stat().st_mode & 0o777) == 0o666 & ~umask
+    assert sorted(p.name for p in out.iterdir()) == ["export.json"]
     (out / "export.json").write_text(json.dumps({**data, "version": 2}))
     assert contract.read_export(out) is None
     (out / "export.json").write_text("{not json")

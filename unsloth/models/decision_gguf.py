@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -263,8 +264,7 @@ def write_decision_temperatures(
         prefix + name: MetadataDetails(gguf.GGUFValueType.FLOAT32, value)
         for name, value in sorted(wanted.items())
     }
-    fd, tmp = tempfile.mkstemp(prefix = f".{gguf_file.name}.", suffix = ".tmp", dir = gguf_file.parent)
-    os.close(fd)
+    tmp = gguf_file.with_name(f".{gguf_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         writer = gguf.GGUFWriter(tmp, arch = arch, endianess = reader.endianess)
         copy_with_new_metadata(reader, writer, new, remove)
@@ -273,6 +273,7 @@ def write_decision_temperatures(
             raise RuntimeError(
                 f"Unsloth: the decision temperatures did not survive rewriting {gguf_file}."
             )
+        shutil.copymode(gguf_file, tmp)
         os.replace(tmp, gguf_file)
     except BaseException:
         Path(tmp).unlink(missing_ok = True)
