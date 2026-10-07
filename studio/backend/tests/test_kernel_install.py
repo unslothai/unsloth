@@ -46,6 +46,8 @@ def _env(
 @pytest.fixture(autouse = True)
 def _no_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+    # Forces the mamba_ssm decision below sm80; an inherited value would override the mocked Triton.
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
 
 
 @pytest.mark.parametrize(
@@ -419,6 +421,16 @@ def test_mamba_ssm_follows_the_unsloth_zoo_override(uv, monkeypatch, forced, cap
     run = _Runner([False, True], capability = capability)
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert bool(run.installer_calls) is installs
+
+
+def test_the_override_skip_message_reads_as_a_sentence(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "0")
+    run = _Runner([], capability = "7 5")
+    kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True)
+    assert (
+        "Unsloth: skipping mamba_ssm, which UNSLOTH_MAMBA_PRE_AMPERE_FAST=0 turns off "
+        "(the best GPU is sm75)." in capsys.readouterr().out
+    )
 
 
 def test_flash_attn_stays_sm80_only_with_a_new_triton(monkeypatch):

@@ -220,7 +220,7 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
 # FlashAttention 2 needs sm80. mamba_ssm's Triton kernels also run on sm75 with Triton 3.4+
 # (torch 2.8+), the same rule unsloth_zoo's patch_mamba_ssm_pre_ampere_fallback applies, which
 # turns the fast path off anywhere else, so the wheel would go unused there.
-_NEEDS_SM80 = ("flash_attn", "mamba_ssm")
+_GPU_GATED = ("flash_attn", "mamba_ssm")
 _MAMBA_SM75_MIN_TRITON = (3, 4)
 _CAPABILITY: dict = {}
 
@@ -260,7 +260,7 @@ def _pre_ampere_skip_reason(
         return "needs sm80 or newer"
     forced = os.environ.get("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "").strip()
     if forced in ("0", "1"):
-        return None if forced == "1" else "UNSLOTH_MAMBA_PRE_AMPERE_FAST=0 is set"
+        return None if forced == "1" else "UNSLOTH_MAMBA_PRE_AMPERE_FAST=0 turns off"
     if capability < (7, 5):
         return "needs sm80, or sm75 with Triton 3.4+"
     triton = _triton_version(run)
@@ -332,7 +332,7 @@ def install_kernel(
 ) -> int:
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
-    if name in _NEEDS_SM80 and url is not None:
+    if name in _GPU_GATED and url is not None:
         capability = _gpu_capability(run)
         if capability is None:
             print(f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible).")
