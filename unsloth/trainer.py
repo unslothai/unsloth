@@ -532,8 +532,7 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
             return True
 
-    # Module-level: any mixer carrying recurrent or causal-conv state (gated-delta, Mamba, short conv,
-    # lightning attention, RWKV), whether or not the varlen shim can serve it.
+    # Module-level: any recurrent / causal-conv mixer, whether or not the varlen shim can serve it.
     modules = getattr(model, "modules", None)
     if modules is None:
         return False

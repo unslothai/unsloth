@@ -952,7 +952,6 @@ def _wrap_qkv_conv_forward(conv, owner) -> None:
 
 
 def _wrap_short_conv_forward(module) -> None:
-    # Short-conv mixers (LFM2) reset their conv at seq_idx boundaries on both kernel and torch paths.
     forward_orig = module.forward
 
     @wraps(forward_orig)
