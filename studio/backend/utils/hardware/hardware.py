@@ -459,9 +459,9 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
 
 # XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
 _INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
-# Core Ultra iGPUs PyTorch XPU lists (pciids.h: MTL less MTL_U, ARL_H, LNL, PTL).
+# Core Ultra iGPUs PyTorch XPU lists (pciids.h + Intel compute-runtime devices_base.inl: MTL-H, ARL-H, LNL, PTL).
 _INTEL_XPU_PCI_IDS = frozenset(
-    (0x7D55, 0x7D60, 0x7DD5)
+    (0x7D55, 0x7DD5)
     + (0x7D51, 0x7DD1)
     + (0x6420, 0x64A0, 0x64B0)
     + (
@@ -4709,17 +4709,21 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         }
 
     tokens = [value.strip() for value in cuda_visible.split(",") if value.strip()]
+    # Parsed as the CUDA runtime does (torch's _parse_visible_devices): strtoul-style, so "1gpu2" is 1, a
+    # negative or non-numeric index ends the list ("0,2,-1,1" exposes 0 and 2), a repeat empties it.
     numeric_ids = []
     for value in tokens:
-        try:
-            gpu_id = int(value)
-        except ValueError:
-            # A UUID/MIG id keeps the UUID path below; any other invalid token ends the list.
+        prefix = re.match(r"[+-]?\d+", value)
+        if prefix is None:
+            # A UUID/MIG id, or a mask not starting with a number, keeps the UUID path below.
             if not numeric_ids or value.upper().startswith(("GPU-", "MIG-")):
                 numeric_ids = None
             break
-        # The runtime keeps only the devices before an invalid index: "0,2,-1,1" exposes 0 and 2.
+        gpu_id = int(prefix.group())
         if gpu_id < 0:
+            break
+        if gpu_id in numeric_ids:
+            numeric_ids = []
             break
         numeric_ids.append(gpu_id)
     if numeric_ids is None:

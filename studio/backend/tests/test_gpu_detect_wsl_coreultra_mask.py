@@ -98,6 +98,7 @@ def test_no_nvidia_smi_anywhere_still_reports_unavailable(monkeypatch, system):
         ("0x7d67", False),  # Arrow Lake-S desktop iGPU
         ("0x9a49", False),  # Tiger Lake Iris Xe
         ("0x46a6", False),  # Alder Lake iGPU
+        ("0x7d60", False),  # Meteor Lake-M, absent from Intel compute-runtime
     ],
 )
 def test_core_ultra_arc_igpus_are_xpu_class(tmp_path, device_id, xpu_class):
@@ -128,6 +129,8 @@ def test_a_core_ultra_record_establishes_a_mismatch(monkeypatch, tmp_path):
         ("-1,0", []),
         ("1,0,abc,2", [1, 0]),
         ("0,abc", [0]),
+        ("0,1gpu2,2", [0, 1, 2]),  # strtoul prefix, as torch parses it
+        ("1,0,1", []),  # a repeated ordinal empties the set
         # Unchanged:
         ("-1", []),
         ("", []),
