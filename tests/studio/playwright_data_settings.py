@@ -850,9 +850,7 @@ def run_restore_notifications(page):
             expect(dialog.get_by_role("heading")).to_have_text(f"{heading} ({count})")
             confirm = "Unarchive" if action == "restore" else "Delete"
             dialog.get_by_role("button", name = confirm, exact = True).click()
-            # A bulk restore makes up to 23 sequential mocked HTTP requests.
-            # Give the whole batch time to finish on a shared runner before
-            # checking its exact mutations and notifications below.
+            # allow shared runners 30 seconds for 23 sequential mocked HTTP requests
             expect(dialog).to_have_count(0, timeout = 30_000)
             completed = count if failure_index is None else failure_index
             expected_events = [kind] if completed and action == "restore" else []

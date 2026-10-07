@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards that the installer test suites actually run on a PR.
-
-Two ways coverage went missing without anyone noticing:
-
-1. Backend CI ran a hardcoded list of tests/sh/*.sh files. New tests were added
-   to the directory and never to the list, so by the time this was written the
-   list was seven files behind -- including test_strixhalo_wsl_reroute.sh, the
-   only shell coverage of the ROCm WSL reroute, which had never run on a PR.
-   tests/run_all.sh, the local entrypoint, had drifted the other way.
-
-2. Backend CI's path filter did not include install.sh / install.ps1, while a
-   large share of the suites it runs (tests/sh/*, tests/studio/install/*) assert
-   against exactly those two files. An install-only change -- the shape most
-   AMD/ROCm routing fixes take, e.g. #7277 / #7293 / #7300 -- skipped the
-   workflow that tests it.
-
-Both are now discovery-based. These tests fail if either reverts to a list, if a
-shell test lands somewhere the discovery cannot see it, or if a skip is added
-without a reason next to it.
-"""
+"""guard installer shell-suite discovery, path triggers, and parallel result reporting."""
 
 import os
 import re
@@ -40,7 +21,6 @@ _PARITY_CI = _WORKFLOWS / "cross-platform-parity-ci.yml"
 _RUN_ALL = REPO_ROOT / "tests" / "run_all.sh"
 _SH_DIR = REPO_ROOT / "tests" / "sh"
 
-# Files deliberately not run by the auto-discovered Backend CI step.
 _EXPECTED_CI_SKIPS = {
     "test_install_rollback_lifecycle.sh": "runs on both platforms in cross-platform-parity-ci.yml",
 }
@@ -373,7 +353,7 @@ class TestWindowsPowerShellStepsAreGated:
                     )
 
     def test_the_rule_finds_the_steps_it_is_about(self):
-        """Without this, a walk that matched nothing would leave the rule above vacuous."""
+        """prevent a vacuous pass when workflow traversal finds no matching steps."""
         found = 0
         for workflow in sorted(_WORKFLOWS.glob("*.yml")):
             doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))

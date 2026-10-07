@@ -704,7 +704,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           mkdir -p logs
-          # Each driver owns its Vite server, optimizer cache and report.
+          # each driver owns its Vite server, optimizer cache, and report
           PW_ENGINE=chromium PW_PORT=5420 PW_OUT=logs/data_settings_report.json \
             VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-data-chromium" \
             python tests/studio/playwright_data_settings.py > logs/data_settings_chromium.log 2>&1 &
