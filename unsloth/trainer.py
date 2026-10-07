@@ -465,11 +465,8 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     # explicit `model_init_kwargs["trust_remote_code"] = None` keeps its falsy meaning.
     # Disagreeing with that function would execute a module under a grant the config
     # load itself did not accept.
+    trust_remote_code = _string_model_trust_remote_code(config_arg)
     init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
-    if "trust_remote_code" in init_kwargs:
-        trust_remote_code = init_kwargs["trust_remote_code"]
-    else:
-        trust_remote_code = getattr(config_arg, "trust_remote_code", None)
 
     auto_map = getattr(model_config, "auto_map", None) or {}
     if not trust_remote_code or not isinstance(auto_map, dict):
@@ -508,6 +505,13 @@ def _resolve_string_model_class(model_name, model_config, config_arg):
     return None
 
 
+def _string_model_trust_remote_code(config_arg):
+    init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+    if "trust_remote_code" in init_kwargs:
+        return init_kwargs["trust_remote_code"]
+    return getattr(config_arg, "trust_remote_code", None)
+
+
 def _is_hybrid_linear_attention_model(model) -> bool:
     """Detect models mixing linear-attention / state-space mixers (gated-delta,
     Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
@@ -535,11 +539,14 @@ def _is_hybrid_linear_attention_model(model) -> bool:
     # Module-level: any recurrent / causal-conv mixer, whether or not the varlen shim can serve it.
     modules = getattr(model, "modules", None)
     if modules is None:
-        return _config_has_stateful_mixer(getattr(model, "config", None))
+        return _config_has_stateful_mixer(
+            getattr(model, "config", None),
+            trust_remote_code = bool(getattr(model, "trust_remote_code", False)),
+        )
     return any(_stateful_mixer_kind(module) is not None for module in modules())
 
 
-def _config_has_stateful_mixer(config) -> bool:
+def _config_has_stateful_mixer(config, trust_remote_code = False) -> bool:
     # A string model= only has its config here: build it on the meta device and classify its modules.
     if config is None or not hasattr(config, "model_type"):
         return False
@@ -548,11 +555,14 @@ def _config_has_stateful_mixer(config) -> bool:
         from transformers import AutoModel, AutoModelForCausalLM
         with torch.device("meta"):
             try:
-                model = AutoModelForCausalLM.from_config(config)
+                model = AutoModelForCausalLM.from_config(
+                    config, trust_remote_code = trust_remote_code
+                )
             except Exception:
-                model = AutoModel.from_config(config)
+                model = AutoModel.from_config(config, trust_remote_code = trust_remote_code)
     except Exception:
-        return False
+        # Unclassifiable remote code may hide a recurrent mixer: fail closed.
+        return bool(trust_remote_code and getattr(config, "auto_map", None))
     return any(_stateful_mixer_kind(module) is not None for module in model.modules())
 
 
@@ -1362,7 +1372,10 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 is_vlm = _is_vlm_config(model_config, model_types)
                 is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
             hybrid_target = (
-                SimpleNamespace(config = model_config)
+                SimpleNamespace(
+                    config = model_config,
+                    trust_remote_code = _string_model_trust_remote_code(config_arg),
+                )
                 if isinstance(model, str) and model_config is not None
                 else model
             )

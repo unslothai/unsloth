@@ -2725,3 +2725,50 @@ def test_string_model_config_detects_stateful_mixers(model_type, stateful, extra
         if hasattr(config, key):
             setattr(config, key, value)
     assert _is_hybrid_linear_attention_model(SimpleNamespace(config = config)) is stateful
+
+
+_REMOTE_MODELING = """
+import torch
+from transformers import PretrainedConfig, PreTrainedModel
+
+
+class RemoteSSMConfig(PretrainedConfig):
+    model_type = "remote_ssm_pr9812"
+
+
+class RemoteMixer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.A_log = torch.nn.Parameter(torch.zeros(4))
+        self.dt_bias = torch.nn.Parameter(torch.zeros(4))
+        self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
+
+
+class RemoteSSMForCausalLM(PreTrainedModel):
+    config_class = RemoteSSMConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.mixer = RemoteMixer()
+"""
+
+
+@pytest.mark.parametrize("grant", [True, False])
+def test_string_remote_code_model_forwards_trust_grant(tmp_path, grant):
+    # An auto_map-only checkpoint is built under the user's own trust_remote_code grant.
+    import json
+    from unsloth.trainer import _is_hybrid_linear_attention_model
+
+    (tmp_path / "modeling_remote_ssm.py").write_text(_REMOTE_MODELING, encoding = "utf-8")
+    auto_map = {
+        "AutoConfig": "modeling_remote_ssm.RemoteSSMConfig",
+        "AutoModelForCausalLM": "modeling_remote_ssm.RemoteSSMForCausalLM",
+    }
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "remote_ssm_pr9812", "auto_map": auto_map}), encoding = "utf-8"
+    )
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(str(tmp_path), trust_remote_code = True)
+    target = SimpleNamespace(config = config, trust_remote_code = grant)
+    assert _is_hybrid_linear_attention_model(target) is grant
