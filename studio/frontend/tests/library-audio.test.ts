@@ -68,7 +68,7 @@ test("a stem shows its stem, music its kind and take, speech nothing extra", () 
   assert.equal(audioDetail(clip("e", { workflow: "music", role: "edit", mode: "edit" })), "Edit");
   assert.equal(audioDetail(clip("t", {})), null);
   assert.deepEqual(audioSummary(stem("v", "vocals")), ["0:42", "Vocals"]);
-  assert.deepEqual(audioSummary(clip("t", { durationS: null })), ["Speak"]);
+  assert.deepEqual(audioSummary(clip("t", { durationS: null })), ["Text to Speech"]);
   assert.deepEqual(audioSummary(clip("upload", null)), []);
 });
 
