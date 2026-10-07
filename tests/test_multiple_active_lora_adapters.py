@@ -132,3 +132,22 @@ def test_fast_linear_forward_applies_dora_magnitude(q_len):
         torch.testing.assert_close(
             fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
         )
+
+
+@pytest.mark.parametrize("q_len", [1, 5])
+def test_fast_linear_forward_adds_lora_bias(q_len):
+    from peft import LoraConfig, get_peft_model
+    from unsloth.kernels import fast_linear_forward
+
+    torch.manual_seed(3407)
+    cfg = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["q_proj"], init_lora_weights = False, lora_bias = True
+    )
+    block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
+    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        # A trained lora_B bias is no longer the zeros it starts from.
+        block.q_proj.lora_B["default"].bias.normal_()
+        torch.testing.assert_close(
+            fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
+        )
