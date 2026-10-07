@@ -64,7 +64,7 @@ export async function saveBrowserDownload(download: BrowserDownload, target?: Sa
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
     if (saveNeedsClick()) {
       const locale = getLocale();
-      toast(translate("browser.downloadPrompt.ready", { name: download.name }, locale), {
+      toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(download.name) }, locale), {
         action: {
           label: translate("browser.downloadPrompt.save", {}, locale),
           onClick: () => void writeDownload(download, undefined),

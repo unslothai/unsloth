@@ -42,16 +42,18 @@ function runsCode(name: string): boolean {
   return DANGEROUS.has(extension.toLowerCase()) || DANGEROUS.has(extension.toUpperCase().toLowerCase());
 }
 
-/** Whether `name` runs code when opened, judged as the OS will (Windows drops trailing dots and spaces),
- *  both as given and as the desktop app shortens it. */
-export function isDangerousDownload(name: string): boolean {
-  // As the desktop app cleans it before the cut: controls, bidi controls and reserved characters become
-  // one-byte "_", trailing dots and spaces go.
-  const flat = name
+/** As the desktop app cleans a name before the cut: controls, bidi controls and reserved characters become
+ *  one-byte "_", trailing dots and spaces go. */
+function cleaned(name: string): string {
+  return name
     .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069/\\:*?"<>|]/g, "_")
     .replace(/[. ]+$/, "");
-  return (
-    runsCode(name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1)) ||
-    runsCode(savedAs(flat))
-  );
+}
+
+/** Whether `name` runs code when opened, judged as the OS will (Windows drops trailing dots and spaces),
+ *  both as given and as the desktop app shortens it. Its last path part and the whole name (separators as
+ *  "_") are both judged: which one the app saves depends on where the name came from. */
+export function isDangerousDownload(name: string): boolean {
+  const base = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1);
+  return runsCode(base) || [base, name].some((candidate) => runsCode(savedAs(cleaned(candidate))));
 }

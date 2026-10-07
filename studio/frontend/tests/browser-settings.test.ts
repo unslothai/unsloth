@@ -381,6 +381,8 @@ test("files that run code are recognised however the name is cased, padded or pa
   // A Windows device name gets a leading "_", which moves the cut by one byte.
   assert.equal(isDangerousDownload(`con.${"a".repeat(231)}.exe${"x".repeat(40)}`), true);
   assert.equal(isDangerousDownload(`cox.${"a".repeat(231)}.exe${"x".repeat(40)}`), false);
+  // A decoded "dir/" before the name: the desktop app may save only the last part, cut to end in .exe.
+  assert.equal(isDangerousDownload(`dir/${"a".repeat(236)}.exe${"x".repeat(40)}`), true);
   // Controls are one-byte "_" when saved, so two-byte C1 controls move the cut.
   assert.equal(isDangerousDownload(`${"\u0085".repeat(236)}.exe${"x".repeat(40)}`), true);
 });
