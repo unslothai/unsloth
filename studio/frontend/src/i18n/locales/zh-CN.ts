@@ -1668,7 +1668,6 @@ export const zhCN = {
         switchFailed: "无法切换嵌入模型",
         back: "返回来源",
         menuSubtitle: "用于文件搜索",
-        pinHint: "在 设置 > 文档与 RAG 中固定更多模型，即可在此切换。",
       },
       storage: {
         sectionTitle: "存储",

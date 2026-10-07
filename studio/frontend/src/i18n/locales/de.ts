@@ -1715,7 +1715,6 @@ export const de = {
         switchFailed: "Embedding-Modell konnte nicht gewechselt werden",
         back: "Zurück zu den Quellen",
         menuSubtitle: "Für die Dateisuche",
-        pinHint: "Hefte weitere Modelle unter Einstellungen > Dokumente & RAG an, um hier zu wechseln.",
       },
       storage: {
         sectionTitle: "Speicher",

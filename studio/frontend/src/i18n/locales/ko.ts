@@ -1686,7 +1686,6 @@ export const ko = {
         switchFailed: "임베딩 모델을 전환하지 못했습니다",
         back: "소스로 돌아가기",
         menuSubtitle: "파일 검색에 사용",
-        pinHint: "설정 > 문서 및 RAG에서 모델을 더 고정하면 여기서 전환할 수 있습니다.",
       },
       storage: {
         sectionTitle: "저장소",

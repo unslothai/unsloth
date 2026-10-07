@@ -1692,7 +1692,6 @@ export const it = {
         switchFailed: "Impossibile cambiare il modello di embedding",
         back: "Torna alle fonti",
         menuSubtitle: "Per la ricerca nei file",
-        pinHint: "Fissa altri modelli in Impostazioni > Documenti e RAG per cambiarli qui.",
       },
       storage: {
         sectionTitle: "Archiviazione",

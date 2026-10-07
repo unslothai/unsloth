@@ -305,11 +305,6 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
             </div>
           );
         })}
-        {pinned.length === 0 ? (
-          <p className="px-3 pt-1 pb-2 text-xs text-muted-foreground">
-            {t("settings.general.rag.pinHint")}
-          </p>
-        ) : null}
       </div>
       {settings.backendLoaded ? (
         <div className="shrink-0">

@@ -1675,7 +1675,6 @@ export const ja = {
         switchFailed: "埋め込みモデルを切り替えられませんでした",
         back: "ソースに戻る",
         menuSubtitle: "ファイル検索に使用",
-        pinHint: "設定 > ドキュメントと RAG でモデルをピン留めすると、ここで切り替えられます。",
       },
       storage: {
         sectionTitle: "ストレージ",

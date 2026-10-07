@@ -1702,7 +1702,6 @@ export const ptBR = {
         switchFailed: "Não foi possível trocar o modelo de embedding",
         back: "Voltar às fontes",
         menuSubtitle: "Para busca em arquivos",
-        pinHint: "Fixe mais modelos em Configurações > Documentos e RAG para trocar aqui.",
       },
       storage: {
         sectionTitle: "Armazenamento",

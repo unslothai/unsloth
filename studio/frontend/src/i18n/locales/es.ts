@@ -1710,7 +1710,6 @@ export const es = {
         switchFailed: "No se pudo cambiar el modelo de embedding",
         back: "Volver a las fuentes",
         menuSubtitle: "Para buscar en archivos",
-        pinHint: "Fija más modelos en Ajustes > Documentos y RAG para cambiar aquí.",
       },
       storage: {
         sectionTitle: "Almacenamiento",

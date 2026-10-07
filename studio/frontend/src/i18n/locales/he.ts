@@ -1793,7 +1793,6 @@ export const he = {
         switchFailed: "לא ניתן להחליף את מודל ההטמעה",
         back: "חזרה למקורות",
         menuSubtitle: "מפעיל את חיפוש הקבצים",
-        pinHint: "הצמידו מודלים נוספים בהגדרות > מסמכים ו-RAG כדי לעבור ביניהם כאן.",
       },
       storage: {
         sectionTitle: "אחסון",

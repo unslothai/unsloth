@@ -1713,7 +1713,6 @@ export const fr = {
         switchFailed: "Impossible de changer le modèle d'embedding",
         back: "Retour aux sources",
         menuSubtitle: "Pour la recherche de fichiers",
-        pinHint: "Épinglez d'autres modèles dans Paramètres > Documents et RAG pour changer ici.",
       },
       storage: {
         sectionTitle: "Stockage",

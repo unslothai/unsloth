@@ -1693,7 +1693,6 @@ export const hi = {
         switchFailed: "एम्बेडिंग मॉडल नहीं बदला जा सका",
         back: "स्रोतों पर वापस जाएँ",
         menuSubtitle: "फ़ाइल खोज के लिए",
-        pinHint: "यहाँ बदलने के लिए सेटिंग्स > दस्तावेज़ और RAG में और मॉडल पिन करें।",
       },
       storage: {
         sectionTitle: "स्टोरेज",

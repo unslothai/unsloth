@@ -1749,7 +1749,6 @@ export const en = {
         switchFailed: "Couldn't switch the embedding model",
         back: "Back to sources",
         menuSubtitle: "Powers file search",
-        pinHint: "Pin more models in Settings > Documents & RAG to switch here.",
       },
       storage: {
         sectionTitle: "Storage",

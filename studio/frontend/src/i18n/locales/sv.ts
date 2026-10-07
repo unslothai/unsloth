@@ -1860,7 +1860,6 @@ export const sv = {
         switchFailed: "Kunde inte byta inbäddningsmodell",
         back: "Tillbaka till källor",
         menuSubtitle: "Används för filsökning",
-        pinHint: "Fäst fler modeller i Inställningar > Dokument och RAG för att byta här.",
       },
       storage: {
         sectionTitle: "Lagring",
