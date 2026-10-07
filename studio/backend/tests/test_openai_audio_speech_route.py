@@ -109,12 +109,25 @@ def test_voice_and_speed_accepted_and_ignored(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_non_wav_response_format_is_400(monkeypatch):
+def test_unknown_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
     assert resp.status_code == 400
-    assert "mp3" in resp.json()["error"]["message"]
+    error = resp.json()["error"]
+    assert error["param"] == "response_format"
+    assert "'wma'" in error["message"] and "mp3" in error["message"]
     assert calls == []  # rejected before any generation
+
+
+def test_sse_stream_format_is_400(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "stream_format": "sse"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert calls == []
+    assert (
+        cli.post("/v1/audio/speech", json = {"input": "hi", "stream_format": "audio"}).status_code
+        == 200
+    )
 
 
 def test_null_response_format_means_wav(monkeypatch):
@@ -282,6 +295,44 @@ def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, na
             )
         )
     assert str(error.value) == ("reached the switch" if named else "reached the voice slot")
+
+
+@pytest.mark.parametrize(
+    "run_inputs, workflow",
+    [
+        ({"workflow": "clone", "audio_inputs": {"reference": "r.wav"}}, "clone"),
+        ({"workflow": "speak", "audio_inputs": {"reference": "r.wav"}}, "clone"),
+        ({"workflow": "convert", "audio_inputs": {"source": "s.wav"}}, "convert"),
+    ],
+)
+def test_the_voice_slot_leaves_cloning_and_conversion_to_the_workflow_check(
+    monkeypatch, run_inputs, workflow
+):
+    """The voice slot's GGUF path only speaks, so a clone or conversion must reach the
+    switch, whose workflow check refuses a model that can't do it."""
+    seen = {}
+
+    async def _switch(_model, *_a, **kw):
+        seen.update(kw)
+        raise RuntimeError("reached the switch")
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _is_audio = True,
+        _audio_type = "snac",
+        _process = SimpleNamespace(poll = lambda: None),
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 8)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(RuntimeError, match = "reached the switch"):
+        asyncio.run(
+            routes_module._generate_tts_wav("hi", payload, request, "tester", run_inputs = run_inputs)
+        )
+    assert seen["require_audio_workflow"] == workflow
 
 
 def test_the_voice_slot_budgets_speech_against_its_own_context(monkeypatch):
@@ -614,6 +665,23 @@ def test_external_rejects_non_wav_response_format(monkeypatch):
     assert "Only 'wav' is supported" in resp.json()["error"]["message"]
     assert created == []
     assert speech_calls == []
+
+
+def test_external_rejects_sse_before_the_upstream_call(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
+    created, speech_calls = _install_external(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "hi",
+            "provider_id": "conn-1",
+            "model": "kokoro",
+            "voice": "alloy",
+            "stream_format": "sse",
+        },
+    )
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "stream_format")
+    assert created == [] and speech_calls == []
 
 
 def test_external_missing_model_is_400(monkeypatch):
@@ -1111,6 +1179,22 @@ def test_speech_opens_a_monitor_row(monkeypatch):
     assert rows[0]["model"] == "unsloth/orpheus-3b-0.1-ft"
 
 
+def test_v1_audio_generate_opens_a_monitor_row_and_the_chat_mount_does_not(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    cli.app.include_router(router, prefix = "/api/inference")
+    api_monitor.clear()
+    body = {"messages": [{"role": "user", "content": "read me"}]}
+    assert cli.post("/api/inference/audio/generate", json = body).status_code == 200
+    assert api_monitor.snapshot(include_details = False) == []
+    assert cli.post("/v1/audio/generate", json = body).status_code == 200
+    (row,) = api_monitor.snapshot(include_details = False)
+    assert (row["endpoint"], row["status"], row["model"]) == (
+        "/v1/audio/generate",
+        "completed",
+        "unsloth/orpheus-3b-0.1-ft",
+    )
+
+
 def test_tts_failure_records_an_error_row(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
@@ -1125,7 +1209,7 @@ def test_rejected_response_format_records_nothing(monkeypatch):
     # Refused before any work, so it is not traffic the monitor should show.
     cli, calls, saved = _make_client(monkeypatch)
     api_monitor.clear()
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
     assert resp.status_code == 400
     assert api_monitor.snapshot(include_details = False) == []
 

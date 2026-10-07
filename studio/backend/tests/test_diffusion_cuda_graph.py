@@ -576,6 +576,19 @@ def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
     assert cg._POOL_BOX[0] == pool
 
 
+def test_a_graph_in_an_earlier_pool_does_not_keep_the_current_token(stub_torch):
+    """Liveness is per graph: a wrapper still holding a graph in a pool dropped earlier (a placement move re-recorded
+    another wrapper into a fresh pool) must not keep the current token alive after its own last graph is gone."""
+    first, second = _armed(), _armed()
+    first(_t(), timestep = _t((1,)), return_dict = False)
+    cg._POOL_BOX[0] = None  # what a drop of the first pool's token leaves
+    second(_t(), timestep = _t((1,)), return_dict = False)
+    current = cg._POOL_BOX[0]
+    assert current is not None and first.cache
+    cg.reset_all([second])
+    assert cg._POOL_BOX[0] is None
+
+
 def test_reset_all_forgets_the_pool_token_with_the_last_graph(stub_torch):
     """A reset that destroys the last graph in the shared pool must forget its token, or the next
     capture dies on the allocator's "use_count > 0 INTERNAL ASSERT FAILED"."""
@@ -787,6 +800,12 @@ def test_graph_eligible_family_opt_in_on_the_video_backend(stub_torch, monkeypat
     assert _eligible(monkeypatch, family = opted_in, family_default = False)[0] is True
     bare = types.SimpleNamespace()
     assert _eligible(monkeypatch, family = bare, family_default = False)[0] is False
+    # a family can opt in only for an offloaded denoiser
+    offload_only = types.SimpleNamespace(offload_cuda_graph = True)
+    assert _eligible(monkeypatch, family = offload_only, family_default = False)[0] is False
+    assert (
+        _eligible(monkeypatch, family = offload_only, family_default = False, offloaded = True)[0] is True
+    )
 
 
 def test_stats_and_describe_are_json_safe(stub_torch):
@@ -804,11 +823,20 @@ def test_stats_and_describe_are_json_safe(stub_torch):
         "eager_calls": 1,
         "fallbacks": 0,
         "cap_skips": 0,
+        "invalidations": 0,
+        "pool_bytes": aggregate["pool_bytes"],
+        "planned_eager": 0,
+        "shape_warmups": 0,
+        "evictions": 0,
+        "speed_eager": 0,
         "refused_float": 0,
         "refused_host_tensor": 0,
         "refused_object": 0,
+        "placements": ["resident"],
         "poisoned": False,
         "capture_error": None,
+        "eager_ms": None,
+        "replay_ms": None,
     }
     assert json.loads(json.dumps(aggregate)) == aggregate
 
@@ -1134,3 +1162,20 @@ def test_real_cuda_compiled_module_capture_matches_the_compiled_call():
     finally:
         cg.uninstall_all(handles)
     assert unet._compiled_call_impl is compiled
+
+
+@pytest.mark.parametrize("backend", ["sage", "sage_hub"])
+def test_graph_eligible_declines_a_sage_denoiser(stub_torch, monkeypatch, backend):
+    """SageAttention under a replayed graph renders noise (FLUX.1-schnell, A100), so a Sage load stays ungraphed; the
+    kernels-hub build (sage_hub) is the same kernel."""
+    dit = _FakeDiT()
+    dit._unsloth_attention_backend = backend
+    ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit))
+    assert (ok, reason) == (False, "SageAttention is not CUDA-graph safe")
+
+
+@pytest.mark.parametrize("backend", [None, "_native_cudnn", "flash", "native"])
+def test_graph_eligible_keeps_other_backends(stub_torch, monkeypatch, backend):
+    dit = _FakeDiT()
+    dit._unsloth_attention_backend = backend
+    assert _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit)) == (True, "eligible")

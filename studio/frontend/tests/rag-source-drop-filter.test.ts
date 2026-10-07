@@ -4,11 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { partitionSupported } from "../src/features/rag/components/source-drop-policy.ts";
 import {
-  RAG_UPLOAD_ACCEPT,
+  RAG_SOURCE_UPLOAD_ACCEPT,
   isSupportedSourceName,
-} from "../src/features/rag/types/rag.ts";
+  partitionSupported,
+} from "../src/features/rag/components/source-drop-policy.ts";
+import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 
 test("every type the picker offers is accepted from a drop", () => {
   for (const ext of RAG_UPLOAD_ACCEPT.split(",")) {
@@ -66,4 +67,11 @@ test("an empty drop yields nothing to upload and nothing to report", () => {
   );
   assert.equal(supported.length, 0);
   assert.equal(unsupported.length, 0);
+});
+
+test("source files the project picker offers are accepted from a drop", () => {
+  for (const ext of RAG_SOURCE_UPLOAD_ACCEPT.split(",")) {
+    assert.equal(isSupportedSourceName(`app${ext}`), true, ext);
+  }
+  assert.equal(isSupportedSourceName("index.php"), true);
 });

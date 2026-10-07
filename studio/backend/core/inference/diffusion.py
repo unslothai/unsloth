@@ -69,6 +69,8 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    transformer_config_overrides_for,
+    transformer_variant_differs_from_base,
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
@@ -146,6 +148,8 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     release_resident_groups,
+    resident_group_mib,
+    hook_resident_denoiser,
     measured_request_extra_mib,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -163,7 +167,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
 from .mcp_images import flattened_rgb
-from .media_decode_phase import decode_phase
+from .media_decode_phase import decode_phase, denoise_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -180,6 +184,7 @@ from .diffusion_speed import (
     fp16_unet_offloaded,
     fresh_compile_count,
     int8_gemm_live,
+    arm_graphs_after_placement,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -188,8 +193,10 @@ from .diffusion_speed import (
     vae_decode_compile_allowed,
 )
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
+from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
+    auto_attention_reason,
     normalize_attention_backend,
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
@@ -197,12 +204,15 @@ from .diffusion_attention import (
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
+from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
+from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
+from .diffusion_postprocess import install as install_device_postprocess
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -215,7 +225,9 @@ from .diffusion_cache import (
     TC_AUTO,
     TC_STATIC,
     apply_step_cache,
+    auto_static_skip_plan,
     auto_step_cache_allowed,
+    skip_tier,
     cache_breaks_graph,
     effective_denoise_steps,
     effective_request_strength,
@@ -225,16 +237,17 @@ from .diffusion_cache import (
     step_cache_supported,
 )
 from .diffusion_step_skip import (
+    auto_static_settings,
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_is_auto,
     static_skip_stats,
     static_skip_view,
     uninstall_static_step_skip,
 )
 from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
-    TE_QUANT_FP8,
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
@@ -262,6 +275,13 @@ from .diffusion_denoiser_prequant import (
     pipeline_seed_supported,
     prequant_artifact_label,
 )
+from .diffusion_comfy_quant import (
+    comfy_fp8_backend,
+    comfy_int8_backend,
+    comfy_torchao_quantized,
+    load_comfy_quant_transformer,
+    refuse_comfy_quant,
+)
 from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
@@ -269,6 +289,7 @@ from .diffusion_prequant import (
     prequant_checkpoint_cached,
     prequant_unreadable_reason,
     resolve_prequant_source,
+    scoped_local_files_only,
     usable_prequant_source,
 )
 from .diffusion_auto_policy import (
@@ -712,7 +733,23 @@ def _compile_shape_dims(
     if init_pil is None or not _is_source_sized(workflow, family):
         return int(width), int(height)
     iw, ih = init_pil.size
+    if getattr(family, "layer_count", 0):
+        return _layered_canvas(family, (iw, ih))
     return int(iw), int(ih)
+
+
+def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
+    """The (width, height) QwenImageLayeredPipeline decomposes at: the ``layer_resolution`` square's area at the input's
+    aspect ratio, each side rounded to 32 (``calculate_dimensions`` in the pipeline). The input image's own size only
+    sets the ratio."""
+    import math
+
+    iw, ih = size
+    area = float(getattr(family, "layer_resolution", 640)) ** 2
+    ratio = float(iw) / float(max(1, ih))
+    width = math.sqrt(area * ratio)
+    height = width / ratio
+    return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
 
 
 # Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match
@@ -744,6 +781,7 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
+        "qwen/qwen-image-layered",
         # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
         # not a family at all. Detection resolves it, the version gate passes once the pinned main
         # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
@@ -1055,6 +1093,8 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: the load stays eager, generate() engages `default` at the 3rd generation
     speed_deferred: bool = False
+    # Auto static skip plan for that deferred `default` tier, installed when it engages.
+    deferred_static_plan: Optional[dict] = None
     # Successful generations on this load; drives the deferred engagement above.
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
@@ -1163,8 +1203,10 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
-    # "decode" once pipe() enters its decoder, which runs after the last step callback.
-    phase: str = "denoise"
+    # encode -> denoise (pipe() entered its loop) -> decode (pipe() entered its decoder).
+    phase: str = "encode"
+    preview: Optional[str] = None
+    preview_seq: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -1390,6 +1432,49 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
     return state_dict
 
 
+def _dequantize_gguf_outside_linears(
+    model: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> int:
+    """Dequantise GGUF-packed params outside GGUFLinear (only those dequantise per forward; numpy has no bf16, so BF16
+    stays raw bytes too). Qwen-Image-Layered's BF16 addition_t_embedding otherwise fails the first step with 3072 vs
+    6144. A few KB, kept dense at ``dtype``. Returns the count."""
+    try:
+        import torch
+        from diffusers.quantizers.gguf.utils import (
+            GGUFLinear,
+            GGUFParameter,
+            dequantize_gguf_tensor,
+        )
+    except Exception:  # noqa: BLE001 - no GGUF support, nothing packed to fix
+        return 0
+    named_modules = getattr(model, "named_modules", None)
+    if not callable(named_modules):
+        return 0
+    fixed: list = []
+    for module_name, module in named_modules():
+        if isinstance(module, GGUFLinear):
+            continue
+        for name, param in list(module.named_parameters(recurse = False)):
+            if not isinstance(param, GGUFParameter):
+                continue
+            dense = dequantize_gguf_tensor(param).to(dtype)
+            setattr(
+                module,
+                name,
+                torch.nn.Parameter(dense.as_subclass(torch.Tensor), requires_grad = False),
+            )
+            fixed.append(f"{module_name}.{name}" if module_name else name)
+    if fixed and logger is not None:
+        logger.info(
+            "diffusion.gguf: dequantised %d non-linear parameter(s): %s",
+            len(fixed),
+            ", ".join(fixed[:8]),
+        )
+    return len(fixed)
+
+
 def _install_gguf_dim_restore(logger: Any) -> None:
     """Wrap diffusers' meta loader so a GGUF's trimmed dimensions are restored before its shape
     check. Patched here rather than in the mapping fn because a GGUF whose tensor names already
@@ -1515,6 +1600,7 @@ def _uncached_prequant_repo(
     *,
     base_repo: Optional[str],
     prequant_path: Optional[str],
+    online: Optional[bool] = None,
 ) -> Optional[str]:
     """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or None
     when it costs no extra bytes (no hosted source, a local override, or already cached).
@@ -1532,7 +1618,7 @@ def _uncached_prequant_repo(
         )
         if source is None or source.kind != "repo":
             return None
-        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir(), online = online):
             return None
         return source.location
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the prequant shortcut
@@ -1898,6 +1984,11 @@ def _uninstall_fused_dit_patches() -> None:
         uninstall_flux2_rope()
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
+    try:
+        from .diffusion_rocm_fused import uninstall as uninstall_rocm_fused
+        uninstall_rocm_fused()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _clear_exception_frames(exc: BaseException) -> None:
@@ -1919,8 +2010,12 @@ def _dense_fast_path_reason(
     kind: str,
     path_override: Optional[str],
     loras: Any = None,
+    failure: Optional[str] = None,
 ) -> str:
-    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake).
+
+    ``failure`` is why a pre-quantized checkpoint that WAS tried did not load (``last_prequant_failure``):
+    planning thought it readable, so only the load can say what went wrong."""
     note = (
         prequant_unreadable_reason(fam, scheme, base_repo = base)
         if kind == "pipeline" and not path_override and not _has_active_lora(loras)
@@ -1928,6 +2023,11 @@ def _dense_fast_path_reason(
     )
     if note:
         return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
+    if failure:
+        return (
+            f"engaged on the dense fast path; the pre-quantized {scheme} checkpoint did not load "
+            f"({failure}), so the dense bf16 transformer was quantized instead"
+        )
     return "engaged on the dense fast path"
 
 
@@ -2498,6 +2598,14 @@ class DiffusionBackend:
         speed = kwargs.get("speed_mode")
         if speed is not None and str(speed).strip().lower() == SPEED_OFF:
             return False
+        if transformer_variant_differs_from_base(
+            fam,
+            kwargs.get("base_repo"),
+            kwargs.get("gguf_filename"),
+            kwargs.get("repo_id"),
+            kwargs.get("display_repo_id"),
+        ):
+            return False
         try:
             # A definite-offload policy skips the dense build, so widening wastes a multi-GB pull with no GGUF
             # fallback.
@@ -2586,17 +2694,14 @@ class DiffusionBackend:
         # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense
         # path anyway
         from .diffusion_memory import (
-            _reserve_mib,
             snapshot_device_memory,
+            total_capacity_budget_mib,
         )
 
-        memory = snapshot_device_memory(target)
-        total = memory.total_mib
+        budget = total_capacity_budget_mib(snapshot_device_memory(target))
         steady = getattr(candidate, "steady_total_mib", None)
-        if total is not None and steady is not None:
-            budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
-            if int(steady) > budget:
-                return False
+        if budget is not None and steady is not None and int(steady) > budget:
+            return False
         return True
 
     def _hosted_prequant_reachable(self, fam: Any, scheme: Optional[str], kwargs: dict) -> bool:
@@ -2613,7 +2718,11 @@ class DiffusionBackend:
             )
             if source is None or getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source,
+                cache_dir = hub_cache_dir(),
+                online = False if kwargs.get("local_files_only") else None,
+            ):
                 return True
             if kwargs.get("local_files_only"):
                 return False
@@ -3100,6 +3209,7 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
+    @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -3489,7 +3599,9 @@ class DiffusionBackend:
         if local_files_only:
             return {}
         try:
-            if normalize_te_quant(text_encoder_quant) != TE_QUANT_FP8:
+            from .diffusion_te_prequant import TE_PREQUANT_SCHEMES
+
+            if normalize_te_quant(text_encoder_quant) not in TE_PREQUANT_SCHEMES:
                 return {}
             from huggingface_hub import HfApi
 
@@ -3877,9 +3989,19 @@ class DiffusionBackend:
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
         # Every candidate, in the order the loader tries them: safetensors first, then the pickle
         # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
-        from .diffusion_prequant import candidate_filenames_of, restricted_prequant_load_supported
+        from .diffusion_prequant import (
+            candidate_filenames_of,
+            prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
+        )
 
-        for name in candidate_filenames_of(source):
+        # The resolver's order, so a cached .pt is priced and staged instead of its uncached twin.
+        ordered = prefer_cached_pickle_twins(
+            source.location,
+            candidate_filenames_of(source),
+            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+        )
+        for name in ordered:
             if name and name in sizes and restricted_prequant_load_supported(scheme, name):
                 return (source.location, name, int(sizes[name]))
         # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to
@@ -3916,7 +4038,9 @@ class DiffusionBackend:
                 return False
             if getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source, cache_dir = hub_cache_dir(), online = False if local_files_only else None
+            ):
                 return True
             if local_files_only:
                 return False
@@ -4260,7 +4384,13 @@ class DiffusionBackend:
                 (
                     lambda companions, transformer_files: self._dense_quant_prefetch_needed(
                         fam,
-                        {**load_kwargs, "base_repo": base, "hf_token": hf_token},
+                        {
+                            **load_kwargs,
+                            "repo_id": repo_id,
+                            "gguf_filename": gguf_filename,
+                            "base_repo": base,
+                            "hf_token": hf_token,
+                        },
                         companion_files = companions,
                         transformer_files = transformer_files,
                     )
@@ -4408,7 +4538,13 @@ class DiffusionBackend:
                 }
             )
 
+        from .diffusion_te_prequant import te_prequant_unmirrored
+
         for repo, files in te_files.values():
+            # A mirrored encoder still drops the dense shards above but is never staged: the Hub may not hold it.
+            files = te_prequant_unmirrored(repo, files)
+            if not files:
+                continue
             add_missing_entry(
                 repo,
                 [name for name, _size in files],
@@ -5068,6 +5204,7 @@ class DiffusionBackend:
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
                 te_candidate_filenames,
+                te_candidate_is_readable,
                 te_prequant_sources_for_base,
             )
 
@@ -5093,19 +5230,45 @@ class DiffusionBackend:
                     except OSError:
                         size = 0
                 elif kind == "repo":
-                    names = te_candidate_filenames(source)
+                    from .diffusion_prequant import (
+                        first_cached_as_resolved,
+                        prefer_cached_pickle_twins,
+                    )
 
-                    def _sizes(d: Path, names = names) -> dict[str, int]:
-                        for name in names:
+                    repo = str(source.location)
+                    sized: dict[str, int] = {}
+
+                    def _size_of(name: str) -> int:
+                        def _sizes(d: Path) -> dict[str, int]:
                             f = d / name
                             if f.is_file():
                                 try:
                                     return {"precast": f.stat().st_size}
                                 except OSError:
                                     return {}
-                        return {}
+                            return {}
 
-                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
+                        if name not in sized:
+                            sized[name] = DiffusionBackend._union_over_cached_revs(repo, _sizes)
+                        return sized[name]
+
+                    # The file the load opens: a cached older encoder does not make an uncached one ahead free.
+                    names = [
+                        n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)
+                    ]
+                    hit = first_cached_as_resolved(
+                        repo,
+                        prefer_cached_pickle_twins(
+                            repo,
+                            names,
+                            readable = te_candidate_is_readable,
+                            cache_dir = hub_cache_dir(),
+                            log = False,
+                        ),
+                        is_cached = lambda n: _size_of(n) > 0,
+                        cache_dir = hub_cache_dir(),
+                    )
+                    size = _size_of(hit) if hit else 0
                 if size > 0:
                     total += int(size)
                     continue
@@ -5171,6 +5334,7 @@ class DiffusionBackend:
     @_invalidates_gpu_memory("diffusion load")
     @_account_owned_load
     @_plans_at_requested_speed
+    @scoped_local_files_only
     def load_pipeline(
         self,
         repo_id: str,
@@ -5344,6 +5508,8 @@ class DiffusionBackend:
                     self._active_generate_cancel.set()
             self._reserve_teardown_locked()
         with self._model_transition_slot():
+            # Per load: a previous load's pre-quant failure must never reach this one's status.
+            self._prequant_fallback_note = None
             with self._lock:
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -5368,6 +5534,11 @@ class DiffusionBackend:
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
+                # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
+                # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
+                comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
+                # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
+                comfy_compile = False
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
@@ -5575,6 +5746,25 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # 2509 / original Edit GGUFs resolve to the 2511 base, whose transformer/ is another model.
+                if (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and transformer_variant_differs_from_base(
+                        fam, base, gguf_filename, repo_id, display_repo_id
+                    )
+                ):
+                    dense_declined = True
+                    if transformer_quant_decline is None:
+                        transformer_quant_decline = (
+                            f"{base} has a different transformer than this GGUF, so only the GGUF "
+                            "itself can run it"
+                        )
+                    # Baking adapters needs the dense build; staying on auto lets the load fail loudly below.
+                    if transformer_quant_pinned is None and not _has_active_lora(loras):
+                        transformer_quant = "off"
+                    else:
+                        transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
                 gguf_offload_placement: Optional[Any] = None
                 gguf_offload_scheme: Optional[str] = None
@@ -5602,6 +5792,7 @@ class DiffusionBackend:
                         transformer_quant,
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
+                        online = False if local_files_only else None,
                     )
                     if uncached_prequant is not None:
                         logger.info(
@@ -6290,32 +6481,7 @@ class DiffusionBackend:
 
                     if pipe is None:
                         if kind == "pipeline":
-                            if fam.name == KREA2_FAMILY_NAME:
-                                # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble
-                                # per-component; that path never sees pipe_kwargs, so pass the pre-cast TE. Fetches EVERY
-                                # component from the id given, so it must get the mirror.
-                                pipe = load_krea2_pipeline(
-                                    fetch_base,
-                                    dtype,
-                                    hf_token = hf_token,
-                                    check_cancelled = lambda: self._raise_if_load_cancelled(
-                                        _load_token
-                                    ),
-                                    # The branch never sees pipe_kwargs, so the one keyword that keeps the no-download
-                                    # promise has to be handed over with the rest
-                                    local_files_only = local_files_only,
-                                    text_encoder = te_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        te_quant_mode = text_encoder_quant,
-                                        target = target,
-                                        dtype = dtype,
-                                        hf_token = hf_token,
-                                        logger = logger,
-                                        local_files_only = local_files_only,
-                                    ).get("text_encoder"),
-                                )
-                            elif fam.name == IDEOGRAM4_FAMILY_NAME:
+                            if fam.name == IDEOGRAM4_FAMILY_NAME:
                                 # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too,
                                 # from the mirror for the same reason.
                                 pipe = load_ideogram4_pipeline(
@@ -6413,9 +6579,20 @@ class DiffusionBackend:
                                         )
                                     else:
                                         # The plan was priced on the seed landing, so re-plan at bf16 without it.
+                                        from utils.native_path_leases import redact_native_paths
+
+                                        from .diffusion_prequant import last_prequant_failure
+
+                                        failure = last_prequant_failure()
+                                        self._prequant_fallback_note = (
+                                            redact_native_paths(failure)
+                                            if failure
+                                            else "the checkpoint was unavailable"
+                                        )
                                         logger.warning(
                                             "diffusion.denoiser_prequant: no pre-quantized denoiser was "
-                                            "seeded; re-planning memory at the released bf16 size"
+                                            "seeded (%s); re-planning memory at the released bf16 size",
+                                            self._prequant_fallback_note,
                                         )
                                         pipeline_seed_scheme = None
                                         plan = bf16_pipeline_plan
@@ -6460,26 +6637,45 @@ class DiffusionBackend:
                                     )
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
-                                # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
-                                small_host = self._small_host_decision(
-                                    _base_local_dir or fetch_base,
-                                    pipe_kwargs,
-                                    target,
-                                    dtype,
-                                    lora_active = _has_active_lora(loras),
-                                )
-                                if small_host is not None and small_host.engaged:
-                                    pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
-                                        small_host, dtype
+                                small_host = None
+                                if fam.name == KREA2_FAMILY_NAME:
+                                    # krea's transformers-5.x configs break the 4.x line: assemble per component from
+                                    # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
+                                    try:
+                                        pipe = load_krea2_pipeline(
+                                            fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
+                                else:
+                                    # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
+                                    small_host = self._small_host_decision(
+                                        _base_local_dir or fetch_base,
+                                        pipe_kwargs,
+                                        target,
+                                        dtype,
+                                        lora_active = _has_active_lora(loras),
                                     )
-                                # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
-                                # otherwise)
-                                try:
-                                    pipe = pipeline_cls.from_pretrained(
-                                        _base_local_dir or fetch_base, **pipe_kwargs
-                                    )
-                                finally:
-                                    self._stop_load_prefetch()
+                                    if small_host is not None and small_host.engaged:
+                                        pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
+                                            small_host, dtype
+                                        )
+                                    # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
+                                    # otherwise)
+                                    try:
+                                        pipe = pipeline_cls.from_pretrained(
+                                            _base_local_dir or fetch_base, **pipe_kwargs
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -6504,6 +6700,11 @@ class DiffusionBackend:
                             }
                             if hf_token:
                                 sf_pipe_kwargs["token"] = hf_token
+                            if comfy_scan is not None:
+                                raise ValueError(
+                                    "A ComfyUI-quantized checkpoint holds only a denoiser; this family's single "
+                                    "file is a whole pipeline, so it cannot be loaded here."
+                                )
                             pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
@@ -6517,6 +6718,10 @@ class DiffusionBackend:
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
+                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
+                                **transformer_config_overrides_for(
+                                    fam, gguf_filename, repo_id, display_repo_id, base
+                                ),
                             }
                             # Before the prefix shim below, which wraps whatever entry it finds and
                             # finds nothing for a class that is not registered yet.
@@ -6530,10 +6735,39 @@ class DiffusionBackend:
                                 # choke.
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
-                            # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
-                            transformer = transformer_cls.from_single_file(
-                                single_file_path, **sf_kwargs
-                            )
+                            if comfy_scan is not None:
+                                # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
+                                _comfy_offload = not plan_keeps_transformer_resident(plan)
+                                transformer = load_comfy_quant_transformer(
+                                    transformer_cls,
+                                    single_file_path,
+                                    comfy_scan,
+                                    sf_kwargs,
+                                    int8_backend = comfy_int8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = _comfy_offload,
+                                    ),
+                                    fp8_backend = comfy_fp8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = _comfy_offload,
+                                    ),
+                                    family = fam.name,
+                                    target = target,
+                                    fast_accum = transformer_quant_fast_accum,
+                                    logger = logger,
+                                )
+                                comfy_compile = comfy_torchao_quantized(transformer)
+                            else:
+                                # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
+                                transformer = transformer_cls.from_single_file(
+                                    single_file_path, **sf_kwargs
+                                )
+                                if kind == "gguf":
+                                    _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
 
                             if fam.name == KREA2_FAMILY_NAME:
@@ -6863,7 +7097,7 @@ class DiffusionBackend:
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF).
                     if (
-                        transformer_quant_engaged is not None
+                        (transformer_quant_engaged is not None or comfy_compile)
                         and native_scheme is None
                         and effective_speed == SPEED_OFF
                     ):
@@ -6878,6 +7112,7 @@ class DiffusionBackend:
                         speed_mode is None
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
+                        and not comfy_compile
                         and compile_eligible(target, is_gguf = False, family = fam)
                         and not fp16_compile_explicit_only(target)
                     )
@@ -6888,7 +7123,11 @@ class DiffusionBackend:
                     attention_engaged = apply_attention_backend(
                         pipe,
                         select_attention_backend(
-                            target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                            target,
+                            attention_backend,
+                            speed_active = effective_speed != SPEED_OFF,
+                            family = fam,
+                            speed_unset = speed_mode is None,
                         ),
                         logger = logger,
                         target = target,
@@ -6903,15 +7142,33 @@ class DiffusionBackend:
                         gguf_filename
                     )
                     default_steps: Optional[int] = None
+                    static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                        static_plan = auto_static_skip_plan(
+                            (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps
+                        )
+                        cache_request = resolve_auto_step_cache(
+                            effective_speed, default_steps, static_plan = static_plan
+                        )
+                    cache_engaged = None
                     if cache_request == TC_STATIC:
-                        # Explicit only: auto never resolves to static.
-                        cache_engaged = install_static_step_skip(pipe, logger = logger)
-                    else:
+                        cache_engaged = (
+                            install_static_step_skip(
+                                pipe,
+                                settings = auto_static_settings(static_plan, logger = logger),
+                                logger = logger,
+                            )
+                            if static_plan
+                            else install_static_step_skip(pipe, logger = logger)
+                        )
+                        if cache_engaged is None and static_plan:
+                            # Declined (second denoiser, no forward): auto falls back to what it picked before.
+                            static_plan = None
+                            cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                    if cache_request != TC_STATIC:
                         cache_engaged = apply_step_cache(
                             pipe,
                             mode = cache_request,
@@ -6923,15 +7180,37 @@ class DiffusionBackend:
                             length_changes_ok = not cache_auto,
                             logger = logger,
                         )
+                    # Speed unset on a dense load: `default` engages on the 3rd image, and the skip with it.
+                    deferred_static_plan = (
+                        auto_static_skip_plan((repo_id, base), SPEED_DEFAULT, default_steps)
+                        if cache_auto and speed_deferred and cache_engaged is None
+                        else None
+                    )
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
-                    cache_may_toggle = cache_auto_live and (
-                        cache_engaged is not None
-                        or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                    cache_may_toggle = (
+                        cache_auto_live
+                        and cache_engaged != TC_STATIC
+                        and (
+                            cache_engaged is not None
+                            or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                        )
                     )
                     if cache_auto:
-                        if not cache_auto_live:
+                        if cache_engaged == TC_STATIC:
+                            cache_reason = (
+                                f"auto: static step skip (every {static_plan['every']}) for this model "
+                                f"at {static_plan['min_steps']}+ steps; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif deferred_static_plan:
+                            cache_reason = (
+                                f"auto: static step skip (every {deferred_static_plan['every']}) engages "
+                                "with the compiled profile on the 3rd image; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif not cache_auto_live:
                             # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
                             cache_reason = (
                                 "auto: step caching engages on the max speed tier only"
@@ -6972,6 +7251,10 @@ class DiffusionBackend:
                     from .diffusion_flux2_rope import install_for_pipe as install_flux2_rope
 
                     install_flux2_rope(pipe, dtype, device, logger)
+                    # ROCm (auto) FLUX.1 / FLUX.2: one-kernel RoPE (bit-identical) and AdaLN modulation.
+                    from .diffusion_rocm_fused import install_for_pipe as install_rocm_fused
+
+                    install_rocm_fused(pipe, dtype, device, logger)
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
 
@@ -7018,15 +7301,31 @@ class DiffusionBackend:
                                 if effective_speed == SPEED_MAX
                                 else "default",
                                 "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
+                                # An offloaded denoiser compiles its blocks below the hooks, a different graph than a
+                                # bundle from the traced-hook compile holds.
+                                **(
+                                    {"below_hooks": True}
+                                    if plan.offload_policy != OFFLOAD_NONE
+                                    and compile_below_hooks_enabled()
+                                    else {}
+                                ),
                             },
                             logger = logger,
+                            reduction_filter = family_filters_reductions(fam),
                         )
 
                     self._raise_if_load_cancelled(_load_token)
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
-                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                        pipe,
+                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        logger,
                     )
+                    # Before the speed optims, so the fused batched tile decode does not replace it.
+                    try:
+                        install_wide_vae_tiles(getattr(pipe, "vae", None), logger)
+                    except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
+                        logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
@@ -7043,6 +7342,7 @@ class DiffusionBackend:
                         cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         denoiser_offloaded = not plan_keeps_transformer_resident(plan),
+                        stream_int8_gemm = True,
                         logger = logger,
                     )
                     if vae_fp16:
@@ -7059,6 +7359,17 @@ class DiffusionBackend:
                             "diffusion.transformer_quant: %s engaged but the transformer is NOT "
                             "compiled; eager torchao quant is ~30x slower than GGUF here",
                             transformer_quant_engaged,
+                        )
+                    # Before the cast and placement, so the unused head is never cast or moved.
+                    from .diffusion_text_encoder_trim import trim_text_encoder
+
+                    te_trim = trim_text_encoder(
+                        getattr(pipe, "text_encoder", None), family = fam.name
+                    )
+                    if te_trim.get("lm_head") == "dropped" and te_trim.get("params"):
+                        logger.info(
+                            "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
+                            te_trim["params"] / 1e6,
                         )
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
@@ -7174,16 +7485,29 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
-                    if speed_applied.get("cuda_graph") and _denoiser_hooked(pipe):
-                        cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-                        pipe._unsloth_cuda_graphs = ()
-                        pipe._unsloth_cuda_graph_reason = "offload active"
-                        speed_applied["cuda_graph"] = False
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
                     if denoisers_pinned_resident(pipe):
                         engage_pinned_denoisers(pipe, speed_applied, logger)
+                    # Placement decides the graph layer: a whole-forward recording holds only while no hook moves the
+                    # denoiser; otherwise (and for a forward that is not capture-safe) its blocks are recorded instead.
+                    if not speed_deferred:
+                        if _denoiser_hooked(pipe):
+                            compile_pipe_below_offload_hooks(pipe, logger)
+                        # the whole-step graph, with the offload copies recorded in it, where placement allows one
+                        arm_graphs_after_placement(pipe, speed_applied, logger)
+                        cuda_graph.arm_block_graphs(
+                            pipe,
+                            speed_applied,
+                            target = target,
+                            family = fam,
+                            hooked = _denoiser_hooked(pipe),
+                            pinned = denoisers_pinned_resident(pipe),
+                            cache_engaged = bool(cache_graph_break),
+                            speed_mode = effective_speed,
+                            logger = logger,
+                        )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -7194,7 +7518,7 @@ class DiffusionBackend:
                                 speed_mode,
                                 "deferred" if speed_deferred else effective_speed,
                                 "quantized transformer requires compile"
-                                if transformer_quant_engaged is not None
+                                if (transformer_quant_engaged is not None or comfy_compile)
                                 and native_scheme is None
                                 and normalize_speed_mode(speed_mode) in (None, SPEED_OFF)
                                 else "auto: exact eager for the first two images; "
@@ -7237,6 +7561,7 @@ class DiffusionBackend:
                                     kind,
                                     transformer_prequant_path,
                                     loras,
+                                    failure = getattr(self, "_prequant_fallback_note", None),
                                 ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)
@@ -7261,7 +7586,7 @@ class DiffusionBackend:
                             "attention_backend": (
                                 attention_backend,
                                 attention_engaged or "native",
-                                "cuDNN fused attention upgrade"
+                                auto_attention_reason(attention_engaged)
                                 if attention_engaged and attention_backend is None
                                 else "diffusers default"
                                 if attention_engaged is None
@@ -7285,11 +7610,8 @@ class DiffusionBackend:
                             "cuda_graph": (
                                 None,
                                 "on" if speed_applied.get("cuda_graph") else "off",
-                                "denoiser step captured per input shape, replayed bit-identically"
-                                if speed_applied.get("cuda_graph")
-                                else str(
-                                    getattr(pipe, "_unsloth_cuda_graph_reason", None)
-                                    or "speed tier does not capture"
+                                cuda_graph.status_reason(
+                                    pipe, bool(speed_applied.get("cuda_graph"))
                                 ),
                             ),
                             "cpu_offload": (
@@ -7361,6 +7683,7 @@ class DiffusionBackend:
                         cache_threshold = transformer_cache_threshold,
                         eager_patched = eager_patched,
                         speed_deferred = speed_deferred,
+                        deferred_static_plan = deferred_static_plan,
                         compile_cache_ctx = compile_ctx,
                         bg_compile = load_bg_compile,
                         hf_token = hf_token,
@@ -7378,6 +7701,11 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
+                    try:
+                        from . import diffusion_vae_prebuild
+                        diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
+                    except Exception:  # noqa: BLE001 - a prebuild, never a failed load
+                        pass
                 except BaseException as exc:
                     _clear_exception_frames(exc)
                     raise
@@ -7404,6 +7732,7 @@ class DiffusionBackend:
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
+                            _uninstall_fused_dit_patches()
                         state = pipe = transformer = None
                         pipe_kwargs.clear()
                         clear_gpu_cache()
@@ -7445,6 +7774,27 @@ class DiffusionBackend:
                 transformer,
             )
         except Exception:  # noqa: BLE001 - status only
+            return None
+
+    @staticmethod
+    def _comfy_single_file_resident_mib(
+        single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
+    ) -> Optional[int]:
+        """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
+        try:
+            from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
+
+            scan = scan_comfy_quant(single_file_path)
+            if scan is None or scan.problems:
+                return None
+            name = getattr(fam, "name", None)
+            return comfy_resident_mib(
+                single_file_path,
+                scan,
+                keep_int8 = comfy_int8_backend(target, name, base) is not None,
+                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+            )
+        except Exception:  # noqa: BLE001 - a planning aid: the file-size estimate stands
             return None
 
     @staticmethod
@@ -7539,6 +7889,7 @@ class DiffusionBackend:
             self._raise_if_load_cancelled(_load_token)
 
         check_cancelled()
+        self._prequant_fallback_note = None
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = _planned_quant_scheme(
@@ -7585,8 +7936,28 @@ class DiffusionBackend:
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                     placement_device = None if seed_device == device else seed_device,
+                    family = fam.name,
                 )
                 check_cancelled()
+                if transformer is None:
+                    # Never a silent swap: the status names why the checkpoint was not used.
+                    from utils.native_path_leases import redact_native_paths
+
+                    from .diffusion_prequant import last_prequant_failure
+
+                    failure = last_prequant_failure()
+                    self._prequant_fallback_note = (
+                        redact_native_paths(failure)
+                        if failure
+                        else "the checkpoint was unavailable"
+                    )
+                    logger.warning(
+                        "diffusion.prequant: %s checkpoint from %s not used (%s); quantizing the dense "
+                        "transformer instead",
+                        scheme,
+                        getattr(source, "location", "?"),
+                        self._prequant_fallback_note,
+                    )
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
@@ -7613,8 +7984,11 @@ class DiffusionBackend:
         if not allow_dense_fallback:
             # The plan only budgeted the prequant-sized build, so the dense bf16 transformer would exceed it after
             # eviction.
+            note = getattr(self, "_prequant_fallback_note", None)
             raise RuntimeError(
-                "prequant checkpoint unavailable and the dense transformer does not fit resident"
+                "prequant checkpoint unavailable"
+                + (f" ({note})" if note else "")
+                + " and the dense transformer does not fit resident"
             )
         # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as terminal (_get_model_file
         # raises rather than falling back to the hub) and a sharded load raises per missing shard, so a partial
@@ -8237,6 +8611,8 @@ class DiffusionBackend:
 
         from .diffusion_small_host import (
             cast_resident_,
+            int8_act_device_ok,
+            int8_act_family,
             mark,
             prepare_streamed_encoder_,
             quantize_int8_weight_,
@@ -8260,11 +8636,18 @@ class DiffusionBackend:
                 info["components"][name] = "converted"
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
+                act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
                 stats = quantize_int8_weight_(
-                    module, compute_dtype = dtype, work_device = device, keep_device = "cpu"
+                    module,
+                    compute_dtype = dtype,
+                    work_device = device,
+                    keep_device = "cpu",
+                    act_int8 = act_int8,
                 )
                 info["components"][name] = (
-                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears)"
+                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears"
+                    + (", int8 activations" if act_int8 else "")
+                    + ")"
                 )
             if load_token is not None:
                 self._raise_if_load_cancelled(load_token)
@@ -8497,6 +8880,13 @@ class DiffusionBackend:
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
+                if not getattr(fam, "single_file_is_pipeline", False):
+                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
+                    _comfy_mib = self._comfy_single_file_resident_mib(
+                        single_file_path, fam, target, base
+                    )
+                    if _comfy_mib is not None:
+                        transformer_resident = _comfy_mib
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base's
@@ -8990,6 +9380,42 @@ class DiffusionBackend:
                 pass
 
     def _engage_deferred_speed(self, state: _LoadState) -> None:
+        """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
+        object.__setattr__(state, "speed_deferred", False)
+        plan = state.deferred_static_plan
+        object.__setattr__(state, "deferred_static_plan", None)
+        tc = (state.resolved or {}).get("transformer_cache")
+        tc_before = dict(tc) if isinstance(tc, dict) else None
+        installed = False
+        # Before compile, as at load: the skip is an outer forward on the transformer.
+        if plan and state.transformer_cache is None:
+            installed = (
+                install_static_step_skip(
+                    state.pipe, settings = auto_static_settings(plan, logger = logger), logger = logger
+                )
+                == TC_STATIC
+            )
+            if installed:
+                object.__setattr__(state, "transformer_cache", TC_STATIC)
+                if isinstance(tc, dict):
+                    tc["value"] = TC_STATIC
+                    tc["reason"] = (
+                        f"auto: static step skip (every {plan['every']}) for this model at "
+                        f"{plan['min_steps']}+ steps, engaged with the compiled profile; set "
+                        "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                    )
+        try:
+            self._engage_deferred_profile(state)
+        except BaseException:
+            if installed:
+                uninstall_static_step_skip(state.pipe)
+                object.__setattr__(state, "transformer_cache", None)
+                if isinstance(tc, dict) and tc_before is not None:
+                    tc.clear()
+                    tc.update(tc_before)
+            raise
+
+    def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
         repeated use is established, so pay the one-time compile now: eager patches + attention
@@ -9007,7 +9433,9 @@ class DiffusionBackend:
         # Re-run the load-time selection with the caller's ORIGINAL request: auto still upgrades to cuDNN here.
         attention_engaged = apply_attention_backend(
             state.pipe,
-            select_attention_backend(target, state.attention_request, speed_active = True),
+            select_attention_backend(
+                target, state.attention_request, speed_active = True, family = state.family
+            ),
             logger = logger,
             target = target,
         )
@@ -9037,8 +9465,14 @@ class DiffusionBackend:
                     "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                     "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
+                    **(
+                        {"below_hooks": True}
+                        if state.offload_policy != OFFLOAD_NONE and compile_below_hooks_enabled()
+                        else {}
+                    ),
                 },
                 logger = logger,
+                reduction_filter = family_filters_reductions(state.family),
             )
             object.__setattr__(state, "compile_cache_ctx", compile_ctx)
         speed_applied = apply_speed_optims(
@@ -9052,10 +9486,25 @@ class DiffusionBackend:
             offload_active = state.offload_policy != OFFLOAD_NONE,
             denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
             and _denoiser_hooked(state.pipe),
+            stream_int8_gemm = True,
             logger = logger,
         )
         if denoisers_pinned_resident(state.pipe):
             engage_pinned_denoisers(state.pipe, speed_applied, logger)
+        if _denoiser_hooked(state.pipe):
+            compile_pipe_below_offload_hooks(state.pipe, logger)
+        arm_graphs_after_placement(state.pipe, speed_applied, logger)
+        cuda_graph.arm_block_graphs(
+            state.pipe,
+            speed_applied,
+            target = target,
+            family = state.family,
+            hooked = _denoiser_hooked(state.pipe),
+            pinned = denoisers_pinned_resident(state.pipe),
+            cache_engaged = cache_breaks_graph(state.transformer_cache),
+            speed_mode = SPEED_DEFAULT,
+            logger = logger,
+        )
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
@@ -9073,21 +9522,14 @@ class DiffusionBackend:
         att = (state.resolved or {}).get("attention_backend")
         if isinstance(att, dict) and att.get("source") == "auto":
             att["value"] = attention_engaged or "native"
-            att["reason"] = (
-                "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
-            )
+            att["reason"] = auto_attention_reason(attention_engaged)
         # The load recorded "speed tier does not capture" for the deferred tier; the profile that just engaged may
         # have armed graphs, so re-derive the entry the same way the load does or the badge keeps saying "off".
         graph = (state.resolved or {}).get("cuda_graph")
         if isinstance(graph, dict):
             graph["value"] = "on" if speed_applied.get("cuda_graph") else "off"
-            graph["reason"] = (
-                "denoiser step captured per input shape, replayed bit-identically"
-                if speed_applied.get("cuda_graph")
-                else str(
-                    getattr(state.pipe, "_unsloth_cuda_graph_reason", None)
-                    or "speed tier does not capture"
-                )
+            graph["reason"] = cuda_graph.status_reason(
+                state.pipe, bool(speed_applied.get("cuda_graph"))
             )
         bg_module = _bg_compile_module(
             state.pipe,
@@ -9149,6 +9591,8 @@ class DiffusionBackend:
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
+        # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
+        live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -9280,7 +9724,10 @@ class DiffusionBackend:
                             "support masks (mask_image)."
                         )
                     workflow = "edit"
-                    init_pil = decode_b64_image(init_image, mode = "RGB")
+                    # RGB for the instruction editors; the layered VAE reads the alpha as a fourth channel.
+                    init_pil = decode_b64_image(
+                        init_image, mode = getattr(fam, "condition_image_mode", "RGB") or "RGB"
+                    )
                 elif requested_workflow == "edit":
                     if not getattr(fam, "unified_edit", False):
                         raise ValueError(
@@ -9466,6 +9913,12 @@ class DiffusionBackend:
                             )
                         else:
                             kwargs["guidance_schedule"] = None
+                layer_count = int(getattr(fam, "layer_count", 0) or 0)
+                if layer_count:
+                    if "layers" in call_params:
+                        kwargs["layers"] = layer_count
+                    if "resolution" in call_params:
+                        kwargs["resolution"] = int(getattr(fam, "layer_resolution", 640))
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
@@ -9520,8 +9973,9 @@ class DiffusionBackend:
                         kwargs["control_mode"] = cn_mode
 
                 # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
-                # cap; the OOM backoff below halves a failed chunk.
-                chunks = chunk_jobs(jobs, batch_size)
+                # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
+                # per-prompt layer stride is only right for one).
+                chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -9532,24 +9986,33 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
+                    guard_condition_pixels = (
+                        int(
+                            (1 + len(ref_extra))
+                            * ref_resolution
+                            * ref_resolution
+                            * getattr(fam, "condition_pixel_weight", 1.0)
+                        )
+                        if ref_resolution is not None
+                        else 0
+                    )
+                    if layer_count:
+                        # layers + 1 extra canvas-sized frames beside the output-sized one.
+                        guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
                     # past what the measured placement reserved: stream resident groups again for this call
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
-                        condition_pixels = (
-                            int(
-                                (1 + len(ref_extra))
-                                * ref_resolution
-                                * ref_resolution
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if ref_resolution is not None
-                            else 0
-                        ),
+                        condition_pixels = guard_condition_pixels,
                     )
                     if extra_mib > 0:
+                        releasable_mib = resident_group_mib(state.pipe)
+                        if guard_condition_pixels > 0 and extra_mib > releasable_mib:
+                            # The guard credits a conditioned request nothing the load reserved: hook the resident
+                            # transformer so this request can stream part of it.
+                            hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
                         restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
                     guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once
@@ -9567,16 +10030,7 @@ class DiffusionBackend:
                         # resolution" is actionable there; the rest size from the upload alone and get the upload-side
                         # remedy.
                         source_driven = source_sized and workflow != "img2img",
-                        condition_pixels = (
-                            int(
-                                (1 + len(ref_extra))
-                                * ref_resolution
-                                * ref_resolution
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if ref_resolution is not None
-                            else 0
-                        ),
+                        condition_pixels = guard_condition_pixels,
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
                         vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
                         quadratic_attention = _quadratic_attention(
@@ -9619,17 +10073,96 @@ class DiffusionBackend:
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
 
-                def _on_step(pipe, step_index, timestep, callback_kwargs):
-                    if static_skip:
-                        mark_step_end(state.pipe)
+                def _publish_preview(
+                    url: str,
+                    seq: int,
+                    gen = gen,
+                ) -> None:
+                    gen.preview = url
+                    gen.preview_seq = seq
+
+                # Started inside the try below, whose exits finish() it: its worker thread polls until then.
+                previewer = None
+
+                def _start_previewer():
+                    if "callback_on_step_end" not in call_params:
+                        return None
+                    from .diffusion_preview import LatentPreviewer
+
+                    try:
+                        preview_w, preview_h = _compile_shape_dims(
+                            workflow, init_pil, width, height, fam
+                        )
+                    except Exception:  # noqa: BLE001 - no size, no preview
+                        preview_w = preview_h = None
+                    return LatentPreviewer.create(
+                        family = state.family.name,
+                        requested = live_preview,
+                        height = preview_h,
+                        width = preview_w,
+                        device = state.device,
+                        publish = _publish_preview,
+                        total_steps = steps,
+                    )
+
+                # Count steps the GPU FINISHED (per-step CUDA events, as the video path): under CUDA graphs the host
+                # enqueues all steps early, and a host count read N/N "decode" mid-denoise.
+                from .video import (
+                    _BOUNDARY_MARK_ATTEMPTS,
+                    _BOUNDARY_MARK_RETRY_SECONDS,
+                    _CompletedStepTicker,
+                    _completed_step_poller,
+                    _hold_off_cuda_graph_capture,
+                )
+
+                # Replaced per chunk: a finished chunk's boundary must not end the next one's denoise.
+                chunk_ticker = [_CompletedStepTicker(steps)]
+
+                def _report(done_in_chunk: int) -> None:
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
+                    if done <= gen.step:
+                        return
+                    gen.phase = "denoise"
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
-                    gen.step = steps_done[0] + step_index + 1
+                    gen.step = done
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
                     gen.eta_seconds = _estimate_eta(
                         gen.total_steps, gen.step, gen.first_step_at, now
                     )
+
+                def _flip_to_decode(gen = gen) -> None:
+                    # The chunk's denoise is provably over: complete it even if a skipped event left the count short.
+                    _report(steps)
+                    gen.phase = "decode"
+                    gen.eta_seconds = None
+
+                def _pump() -> None:
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    ticker = chunk_ticker[0]
+                    if ticker.boundary_marked and ticker.boundary_reached():
+                        _flip_to_decode()
+                        return
+                    _report(ticker.completed())
+
+                def _on_step(pipe, step_index, timestep, callback_kwargs):
+                    if static_skip:
+                        mark_step_end(state.pipe)
+                    if gen.phase == "encode":
+                        gen.phase = "denoise"
+                    if previewer is not None:
+                        previewer.on_step(
+                            callback_kwargs.get("latents"), getattr(pipe, "scheduler", None)
+                        )
+                    # Runs after scheduler.step, so this step's update is already enqueued.
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if clear:
+                            chunk_ticker[0].record(step_index + 1)
+                            _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
                     return callback_kwargs
@@ -9674,6 +10207,7 @@ class DiffusionBackend:
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
                 try:
+                    previewer = _start_previewer()
                     pending = list(chunks)
                     while pending:
                         chunk = pending.pop(0)
@@ -9711,9 +10245,14 @@ class DiffusionBackend:
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
                         if static_skip:
+                            # Auto skip was measured on txt2img only; explicit "static" applies to every workflow.
+                            auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(
+                                state.pipe
+                            )
                             reset_static_step_skip(
                                 state.pipe,
                                 denoise_steps,
+                                compute_all = auto_only_txt2img,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
                                 keep_stats = static_chunks_run > 0,
                                 owner = current_account_id(),
@@ -9723,13 +10262,31 @@ class DiffusionBackend:
                         elif state.transformer_cache:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
+                        # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
+                        install_device_postprocess(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
-                        # Per chunk: a later chunk denoises again after an earlier one decoded.
-                        gen.phase = "denoise"
+                        # Per chunk: a later chunk encodes again after an earlier one decoded.
+                        gen.phase = "encode"
 
-                        def _enter_decode_phase(gen = gen) -> None:
-                            gen.phase = "decode"
-                            gen.eta_seconds = None
+                        def _enter_denoise_phase(gen = gen) -> None:
+                            if gen.phase == "encode":
+                                gen.phase = "denoise"
+
+                        chunk_ticker[0] = _CompletedStepTicker(steps)
+
+                        def _enter_decode_phase() -> None:
+                            """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
+                            boundary in the stream and let the poller flip once the GPU reaches it; with no event
+                            to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            marked = False
+                            for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                                with _hold_off_cuda_graph_capture() as clear:
+                                    if clear:
+                                        marked = chunk_ticker[0].mark_boundary()
+                                        break
+                                time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
+                            if not marked:
+                                _flip_to_decode()
 
                         try:
                             # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
@@ -9740,11 +10297,15 @@ class DiffusionBackend:
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,
+                                denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
+                                _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
+                            if gen.phase in ("encode", "denoise"):
+                                _flip_to_decode()
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:
@@ -9778,11 +10339,19 @@ class DiffusionBackend:
                             settle_compile_fallback(state, state.pipe, logger)
                         if cancel.is_set():
                             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                        images.extend(out)
-                        per_image_seeds.extend(s for _, s in chunk)
+                        if layer_count:
+                            # One list of layers per input; each layer is an output image with its input's seed.
+                            for (_, s), layers_out in zip(chunk, out):
+                                images.extend(layers_out)
+                                per_image_seeds.extend(s for _ in layers_out)
+                        else:
+                            images.extend(out)
+                            per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
                         steps_done[0] += steps
                 except BaseException:
+                    if previewer is not None:
+                        previewer.finish()
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
@@ -9794,6 +10363,8 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
                     raise
+                if previewer is not None:
+                    previewer.finish()
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
@@ -9932,6 +10503,8 @@ class DiffusionBackend:
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
             "phase": gen.phase,
+            "preview": gen.preview,
+            "preview_seq": gen.preview_seq,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
@@ -10061,6 +10634,9 @@ class DiffusionBackend:
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
+        prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+        if prebuild is not None:
+            prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
@@ -10082,6 +10658,8 @@ class DiffusionBackend:
 
             uninstall_patches()
             uninstall_arch_patches()
+            # Again: the deferred profile layers the eager patch over the fused AdaLN.
+            _uninstall_fused_dit_patches()
         # Deliberately NOT unload_lora_weights(): the whole pipe is dropped below, freeing any adapters with it. Drop
         # the workflow pipes so they do not pin the freed pipeline modules past unload.
         self._aux_pipes.clear()

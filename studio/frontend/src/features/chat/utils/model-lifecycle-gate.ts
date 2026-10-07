@@ -21,6 +21,10 @@ export class ModelLifecycleGate {
     return lease;
   }
 
+  currentPhase(): ModelLifecyclePhase | null {
+    return this.phase;
+  }
+
   canQueue(): boolean {
     return this.activeLease === null || this.phase === "loading";
   }
