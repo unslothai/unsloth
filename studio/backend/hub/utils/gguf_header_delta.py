@@ -45,8 +45,7 @@ _COPY_CHUNK = 16 << 20
 _DISK_MARGIN = 256 << 20
 _METADATA_TIMEOUT = 10.0
 _RANGE_TIMEOUT = 60.0
-# The catalog's image / video GGUF tasks. "image-diffusion-unsupported" is still an image / video model, one this install
-# cannot run yet (a diffusers or sd.cpp too old for the family), so it is rebuilt like the rest.
+# "image-diffusion-unsupported" is an image / video family this install cannot run yet; still rebuilt.
 _MEDIA_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
 
 _SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
@@ -54,8 +53,7 @@ _STRING, _ARRAY, _UINT32 = 8, 9, 4
 
 FetchRange = Callable[[int, int], bytes]
 
-# Refused rebuilds, keyed by (repo cache dir, path, new sha256): not retried on later loads. Persisted under Studio's
-# state dir so a restart does not try again either; in memory only when there is no state dir.
+# Refused (repo cache dir, path, new sha256), persisted under Studio's state dir so a restart does not retry them.
 _REFUSED_FILE = "gguf_header_delta_refused.json"
 _REFUSED_LIMIT = 512
 _refused: Optional[list] = None
@@ -79,7 +77,6 @@ class DeltaResult:
     fetched_bytes: int = 0
     size: int = 0
     reason: str = ""
-    # Seconds until the rebuild was decided (or refused), and spent writing + hashing the new file.
     decide_s: float = 0.0
     build_s: float = 0.0
 
