@@ -82,9 +82,11 @@ _CACHE_TTL_SECONDS = 24 * 60 * 60
 _FAILURE_BACKOFF_SECONDS = 300
 
 _CACHE_FILE_NAME = "transformers_latest_check.json"
-_SNAPSHOT_SCHEMA = 1
+# 2: adds main_version; a schema-1 file on disk would hide the main install for a day.
+_SNAPSHOT_SCHEMA = 2
 
-# Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types"}.
+# Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types",
+# "main_checked", "main_version"}.
 # Install-in-progress state lives in utils.transformers_version (the sidecar swap reservation).
 _lock = threading.Lock()
 _memory_snapshot: dict | None = None

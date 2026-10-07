@@ -323,6 +323,18 @@ class TestLatestTransformersSupports:
         latest_transformers_supports("brandnew_arch")
         assert counter["__total__"] > first_total
 
+    def test_pre_main_version_snapshot_refetches(self, monkeypatch):
+        # A snapshot written before main_version existed must not hide the main install.
+        counter = {}
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory(counter))
+        latest_transformers_supports("brandnew_arch")
+        old = dict(tl._memory_snapshot, schema = 1)
+        old.pop("main_version")
+        tl.clear_caches()
+        tl._save_snapshot_file(old)
+        result = latest_transformers_supports("dev_only_arch")
+        assert result["main_version"] == "5.14.0.dev0"
+
     def test_corrupt_disk_cache_ignored(self, monkeypatch, tmp_path: Path):
         counter = {}
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory(counter))
