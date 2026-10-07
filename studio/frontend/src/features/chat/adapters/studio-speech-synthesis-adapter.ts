@@ -466,8 +466,7 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   }
 
   speak(spokenText: string): SpeechSynthesisAdapter.Utterance {
-    // Renderer markup: without this the reader says the token id out loud, and the markdown
-    // symbols ("asterisk asterisk") around every bold word.
+    // Renderer tokens and markdown would otherwise be spoken aloud.
     const text = markdownToSpeechText(stripSearchImageTokens(spokenText));
     const subscribers = new Set<() => void>();
 

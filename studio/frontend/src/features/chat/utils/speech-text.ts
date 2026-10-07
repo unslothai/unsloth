@@ -10,9 +10,7 @@ import { math } from "micromark-extension-math";
 import { normalizeEscapedInlineMath } from "../../../lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../../../lib/latex.ts";
 
-/** The words of a markdown reply, for read-aloud. A voice speaks the source it is handed, so
- *  "**Note**" comes out as "asterisk asterisk Note" (#12547): keep what the page shows as text,
- *  drop the markup that only styles it. */
+/** The words a markdown reply shows, for read-aloud: voices speak raw markup ("asterisk asterisk", #12547). */
 export function markdownToSpeechText(markdown: string): string {
   let root: Root;
   try {
@@ -38,8 +36,7 @@ function collectBlocks(
     case "paragraph":
       out.push(inList ? sentence(inline(node)) : inline(node).trim());
       return;
-    // A heading, list item or table row runs into the next one when spoken; a full stop
-    // gives the voice the pause the layout gives the eye.
+    // Full stop = the pause the layout gives the eye; else lines run together when spoken.
     case "heading":
       out.push(sentence(inline(node)));
       return;
