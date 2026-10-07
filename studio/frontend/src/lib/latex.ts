@@ -33,9 +33,10 @@ const DOLLAR_REGEX = /(?<![\\$])\$(?!\$)/g;
  */
 const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 
-const HEADING_LINE_RE = / {0,3}#/y;
+const HEADING_LINE_RE = / {0,3}#{1,6}(?=[ \t\r\n]|$)/y;
 const TABLE_ROW_RE = /[ \t]*\|/y;
-const BLOCK_BREAK_RE = /\n[ \t\r]*(?:\n|[#>|]|[-*+][ \t]|\d+[.)][ \t]|```|~~~)/;
+const BLOCK_BREAK_RE =
+  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|[>|]|[-*+][ \t]|1[.)][ \t]|```|~~~)/;
 
 /** A `$NAME ... $` span that reads as prose: no math symbols, and the closer starts a word. */
 const VARIABLE_PROSE_RE =
