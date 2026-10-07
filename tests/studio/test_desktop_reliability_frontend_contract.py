@@ -2867,9 +2867,9 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
                 source,
             )
         )
-        assert scaled >= expected, (
-            f"{path.name} states {scaled} scaled {named}, fewer than the {expected} its contracts measure"
-        )
+        assert (
+            scaled >= expected
+        ), f"{path.name} states {scaled} scaled {named}, fewer than the {expected} its contracts measure"
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
