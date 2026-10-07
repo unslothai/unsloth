@@ -322,6 +322,15 @@ def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in _OFF
 
 
+def comfy_nvfp4_runtime_possible(family: Optional[str]) -> bool:
+    """Whether the switch and the family let a ComfyUI nvfp4 file keep its codes (the device is the load's call)."""
+    try:
+        from .diffusion_transformer_quant import TQ_NVFP4, _family_denied
+        return not _env_off(COMFY_NVFP4_ENV) and not _family_denied(family, TQ_NVFP4)
+    except Exception:  # noqa: BLE001 -- no answer, no install
+        return False
+
+
 def comfy_block_backend(
     fmt: str,
     target: Any,

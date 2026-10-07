@@ -500,6 +500,13 @@ def test_nvfp4_without_flashinfer_or_on_a_denied_family_dequantizes(monkeypatch)
     assert cb.comfy_block_backend("nvfp4", _target("cuda:0"), "qwen-image")[0] is None
 
 
+def test_flashinfer_install_is_only_wanted_when_the_codes_can_stay_nvfp4(monkeypatch):
+    assert cb.comfy_nvfp4_runtime_possible("z-image")
+    assert not cb.comfy_nvfp4_runtime_possible("qwen-image")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMFY_NVFP4", "0")
+    assert not cb.comfy_nvfp4_runtime_possible("z-image")
+
+
 def test_mxfp8_needs_blackwell_bf16_and_an_allowed_family(monkeypatch):
     monkeypatch.setattr(cb, "mxfp8_runtime_reason", lambda target: None)
     assert (

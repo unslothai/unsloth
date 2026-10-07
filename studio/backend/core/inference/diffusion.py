@@ -275,7 +275,11 @@ from .diffusion_denoiser_prequant import (
     pipeline_seed_supported,
     prequant_artifact_label,
 )
-from .diffusion_comfy_block import comfy_block_backend, comfy_block_backends
+from .diffusion_comfy_block import (
+    comfy_block_backend,
+    comfy_block_backends,
+    comfy_nvfp4_runtime_possible,
+)
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
@@ -5473,6 +5477,7 @@ class DiffusionBackend:
         if (
             kind == "single_file"
             and nvfp4_diffusion_enabled()
+            and comfy_nvfp4_runtime_possible(getattr(fam, "name", None))
             and self._comfy_single_file_holds_nvfp4(repo_id, gguf_filename)
         ) or (
             dense_quant_supported_kind(kind)
