@@ -1298,20 +1298,18 @@ def test_an_image_that_decodes_to_too_many_pixels_is_refused(home, client, stub)
     assert stub.records("start") == []
 
 
-def test_a_failed_laya_load_keeps_the_resident_clefs_fallback_reason(monkeypatch):
+def test_a_laya_model_never_reports_an_earlier_clefs_fallback_reason(monkeypatch):
     from core.systemone import laya_runtime
 
-    laya = SimpleNamespace(layout = "laya")
     monkeypatch.setattr(laya_runtime, "_fallback_reason", "The GGUF is not downloaded.")
+    clef = SimpleNamespace(name = "clef-flash", backend = "pytorch", layout = "clef")
+    laya = SimpleNamespace(name = "laya-multilingual", backend = "pytorch", layout = "laya")
+    monkeypatch.setattr(laya_runtime, "_loaded", clef)
+    assert laya_runtime.status()["fallback_reason"] == "The GGUF is not downloaded."
+    monkeypatch.setattr(laya_runtime, "_loaded", laya)
+    assert laya_runtime.status()["fallback_reason"] is None
+    # A Laya request leaves the reason alone, so a concurrent Clef load keeps its own.
     monkeypatch.setattr(laya_runtime, "select", lambda checkpoint, *a, **k: (checkpoint, None))
-
-    def fail(*_):
-        raise laya_runtime.Unavailable(503, "unavailable", "still loading")
-
-    monkeypatch.setattr(laya_runtime, "_decide", fail)
-    with pytest.raises(laya_runtime.Unavailable):
-        laya_runtime._route(laya, "s", {}, None)
-    assert laya_runtime._fallback_reason == "The GGUF is not downloaded."
     monkeypatch.setattr(laya_runtime, "_decide", lambda *_: {"ok": True})
     assert laya_runtime._route(laya, "s", {}, None) == {"ok": True}
-    assert laya_runtime._fallback_reason is None
+    assert laya_runtime._fallback_reason == "The GGUF is not downloaded."

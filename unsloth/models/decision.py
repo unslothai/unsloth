@@ -914,8 +914,8 @@ def _load_clef(
         if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
-        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
-        # which stores bfloat16 weights: the gated delta net NaNs in pure float16.
+        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path:
+        # float16 linear weights, float32 activations, no autocast (the gated delta net NaNs in pure float16).
         # An adapter folder loads its base and the adapters through Unsloth's own PEFT path.
         backbone, processor = FastModel.from_pretrained(
             str(folder),
@@ -1287,7 +1287,7 @@ def _clef_mixed_precision(model, args) -> None:
     if _clef_forced_float32(model):
         if args.fp16 or args.bf16:
             print(
-                "Unsloth: Qwen3.5 overflows under float16 autocast, so Clef keeps float16 weights with float32 activations instead."
+                "Unsloth: Qwen3.5 overflows under float16 autocast, so Clef trains without autocast, keeping float32 activations."
             )
         args.fp16 = args.bf16 = False
     elif args.fp16 and getattr(model._backbone(), "dtype", None) == torch.bfloat16:
