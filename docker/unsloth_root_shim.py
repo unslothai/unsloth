@@ -59,7 +59,7 @@ def _sudo_command(argv):
 
 def main():
     tool = os.path.basename(sys.argv[0])
-    privileged_run = os.environ.get("UNSLOTH_NB_ROOT_INSTALL") == "1"
+    privileged_run = os.geteuid() == 0 or os.environ.get("UNSLOTH_NB_ROOT_INSTALL") == "1"
     if privileged_run:
         _become_root()
     if tool == "sudo" and privileged_run:

@@ -269,6 +269,7 @@ def test_root_shim_does_not_elevate_an_unprivileged_container(monkeypatch):
     spec.loader.exec_module(shim)
     calls = []
     monkeypatch.delenv("UNSLOTH_NB_ROOT_INSTALL", raising = False)
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1234)
     monkeypatch.setattr(
         shim.os,
         "setuid",
