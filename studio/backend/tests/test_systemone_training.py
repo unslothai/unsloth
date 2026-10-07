@@ -185,3 +185,12 @@ def test_gpu_registration_rechecks_training(resident, monkeypatch):
     monkeypatch.setattr(owned_runtime, "decide", lambda *args: {"answers": {}})
     with pytest.raises(runtime.Unavailable, match = "training"):
         runtime.decide(catalog.CHECKPOINTS["clef-flash"], "state", {"q": {"type": "noul"}}, [])
+
+
+@pytest.mark.parametrize("trainer", ["llm", "diffusion"])
+def test_training_preserves_active_decisions(resident, cleanup, trainer):
+    with owned_runtime._run_lock:
+        with pytest.raises(RuntimeError) as refused:
+            cleanup(trainer)
+        assert refused.value.blocks_training is True
+        assert owned_runtime._worker is resident and resident.is_alive()

@@ -604,9 +604,7 @@ def unload_for_training():
         if _loading is None and _device_name in (None, "cpu"):
             _ensure_not_retiring()
             return False
-    result = _stop(False)
-    _ensure_not_retiring()
-    return result
+    return unload()
 
 
 def shutdown():
