@@ -31,7 +31,11 @@ def _fast_inference_block():
     raise AssertionError("FastModel.from_pretrained has no fast_inference GB10 block")
 
 
-def _run(device_type, capability, name = "Tesla P100-PCIE-16GB"):
+def _run(
+    device_type,
+    capability,
+    name = "Tesla P100-PCIE-16GB",
+):
     device_type_torch = {"cuda": "cuda", "hip": "cuda", "xpu": "xpu"}[device_type]
     cuda = types.SimpleNamespace(
         get_device_name = lambda i = 0: name,
@@ -39,7 +43,9 @@ def _run(device_type, capability, name = "Tesla P100-PCIE-16GB"):
     )
     ns = {
         "fast_inference": True,
-        "importlib": types.SimpleNamespace(util = types.SimpleNamespace(find_spec = lambda m: object())),
+        "importlib": types.SimpleNamespace(
+            util = types.SimpleNamespace(find_spec = lambda m: object())
+        ),
         "_vllm_unavailable_error": lambda: RuntimeError("no vllm"),
         "DEVICE_TYPE": device_type,
         "DEVICE_TYPE_TORCH": device_type_torch,
@@ -56,14 +62,17 @@ def test_pre_volta_cuda_falls_back(capability, capsys):
     assert "vLLM does not work on older GPUs" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("device_type,capability", [
-    ("cuda", (7, 0)),
-    ("cuda", (7, 5)),
-    ("cuda", (9, 0)),
-    ("hip", (9, 4)),
-    ("hip", (6, 0)),  # gfx arch major, not a CUDA capability: left to vLLM
-    ("xpu", (0, 0)),
-])
+@pytest.mark.parametrize(
+    "device_type,capability",
+    [
+        ("cuda", (7, 0)),
+        ("cuda", (7, 5)),
+        ("cuda", (9, 0)),
+        ("hip", (9, 4)),
+        ("hip", (6, 0)),  # gfx arch major, not a CUDA capability: left to vLLM
+        ("xpu", (0, 0)),
+    ],
+)
 def test_other_devices_keep_fast_inference(device_type, capability, capsys):
     assert _run(device_type, capability) is True
     assert "older GPUs" not in capsys.readouterr().out
