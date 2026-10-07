@@ -150,13 +150,24 @@ test("folders of the shared repo the pickers leave out are never seeded and say 
     assert.match(folder, /-GGUF$/);
     assert.ok(reason.trim(), folder);
   }
-  // Single-language transcription models say so; the rest are multilingual.
+  // Transcription models with limited language coverage declare it.
   for (const [folder, languages] of [
+    ["Citrinet-ASR-GGUF", ["en"]],
+    [
+      "Cohere-Transcribe-GGUF",
+      ["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko"],
+    ],
+    ["Fun-ASR-Nano-2512-GGUF", ["zh", "en", "ja"]],
     ["Granite-Speech-5.0-470M-TurboCTC-GGUF", ["en"]],
+    ["Higgs-Audio-v3-STT-GGUF", ["en"]],
     ["Kroko-ASR-GGUF", ["en"]],
     ["Niagara-ASR-GGUF", ["en"]],
     ["Hviske-v5.3-GGUF", ["da"]],
-    ["GigaAM-ASR-GGUF", undefined],
+    ["GigaAM-ASR-GGUF", ["ru", "en", "kk", "ky", "uz"]],
+    [
+      "Voxtral-Mini-4B-Realtime-2602-GGUF",
+      ["en", "fr", "es", "de", "ru", "zh", "ja", "it", "pt", "nl", "ar", "hi", "ko"],
+    ],
   ] as const) {
     assert.deepEqual(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`)?.languages, languages, folder);
   }
@@ -629,7 +640,9 @@ test("English-only and partial-language ASR models are gated by language", () =>
     "audiocpp-moonshine-small",
     "audiocpp-moonshine-medium",
     "audiocpp-nemotron-3.5-asr-0.6b",
+    `${AUDIO_CPP_REPO}/Citrinet-ASR-GGUF`,
     `${AUDIO_CPP_REPO}/Granite-Speech-5.0-470M-TurboCTC-GGUF`,
+    `${AUDIO_CPP_REPO}/Higgs-Audio-v3-STT-GGUF`,
     `${AUDIO_CPP_REPO}/Kroko-ASR-GGUF`,
     `${AUDIO_CPP_REPO}/Niagara-ASR-GGUF`,
   ]) {
@@ -649,13 +662,26 @@ test("English-only and partial-language ASR models are gated by language", () =>
   assert.equal(isSttModelLanguageCompatible(hviske, "da-DK"), true);
   assert.equal(isSttModelLanguageCompatible(hviske, "auto"), true);
   assert.equal(isSttModelLanguageCompatible(hviske, "en-US"), false);
+  for (const [folder, languages, unsupported] of [
+    ["Cohere-Transcribe-GGUF", ["ko-KR", "ar-SA", "pt-BR"], "ru-RU"],
+    ["Fun-ASR-Nano-2512-GGUF", ["en-US", "zh-CN", "ja-JP"], "ko-KR"],
+    ["GigaAM-ASR-GGUF", ["en-US", "ru-RU"], "ja-JP"],
+    ["Voxtral-Mini-4B-Realtime-2602-GGUF", ["ko-KR", "hi-IN", "ru-RU"], "sv-SE"],
+  ] as const) {
+    const id = `${AUDIO_CPP_REPO}/${folder}`;
+    for (const language of languages) {
+      assert.equal(isSttModelLanguageCompatible(id, language), true, `${folder}: ${language}`);
+    }
+    assert.equal(isSttModelLanguageCompatible(id, unsupported), false, folder);
+    assert.equal(isSttModelLanguageCompatible(id, "auto"), true, folder);
+  }
   for (const key of [
     "audiocpp-parakeet-tdt-0.6b-v3",
     "audiocpp-qwen3-asr-0.6b",
     "qwen3-asr-0.6b",
     "small",
-    `${AUDIO_CPP_REPO}/Citrinet-ASR-GGUF`,
-    `${AUDIO_CPP_REPO}/Voxtral-Mini-4B-Realtime-2602-GGUF`,
+    `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`,
+    `${AUDIO_CPP_REPO}/VibeVoice-ASR-GGUF`,
   ]) {
     assert.equal(STT_MODEL_LANGUAGES.has(key), false, key);
     assert.equal(isSttModelLanguageCompatible(key, "ja-JP"), true, key);

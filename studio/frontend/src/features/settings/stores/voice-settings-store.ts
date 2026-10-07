@@ -28,11 +28,9 @@ export interface RecentDictation {
   chatId?: string;
 }
 
-// Dictation history is kept in full; the list view paginates. QUOTA_TRIM_KEEP is
-// the emergency floor if localStorage runs out of room (see persist wrapper).
+// pagination keeps full history; quota failures trim it to QUOTA_TRIM_KEEP.
 const QUOTA_TRIM_KEEP = 200;
-// Cap stored transcript length so a few long dictations cannot bloat the
-// persisted blob and trip a synchronous localStorage quota error on save.
+// transcript caps prevent synchronous localStorage quota failures.
 const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
