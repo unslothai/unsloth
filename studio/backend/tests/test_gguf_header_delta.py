@@ -97,7 +97,7 @@ def cache_with_old(
         blobs = repo_dir / "blobs"
         blobs.mkdir()
         (blobs / sha(data)).write_bytes(data)
-        os.symlink(f"../../blobs/{sha(data)}", snap / NAME)
+        os.symlink(os.path.join("..", "..", "blobs", sha(data)), snap / NAME)
     else:
         (snap / NAME).write_bytes(data)
     return repo_dir
@@ -464,7 +464,7 @@ def _worker_cache(tmp_path, repo: str, name: str, data: bytes) -> Path:
     snap.mkdir(parents = True)
     (repo_dir / "blobs").mkdir()
     (repo_dir / "blobs" / sha(data)).write_bytes(data)
-    os.symlink(f"../../blobs/{sha(data)}", snap / name)
+    os.symlink(os.path.join("..", "..", "blobs", sha(data)), snap / name)
     return repo_dir
 
 
