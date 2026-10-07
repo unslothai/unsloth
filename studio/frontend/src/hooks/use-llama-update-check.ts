@@ -176,6 +176,11 @@ type OfferSuppression =
   | { kind: "dismissed"; offerKey: string }
   | { kind: "snoozed"; offerKey: string; until: number };
 
+let retainedSuppression: {
+  value: OfferSuppression | null;
+  persisted: boolean;
+} = { value: null, persisted: true };
+
 function offerKey(status: LlamaUpdateStatus): string {
   return JSON.stringify({
     llama: status.llama.update_available
@@ -225,16 +230,20 @@ function parseOfferSuppression(raw: string | null): OfferSuppression | null {
 }
 
 function getOfferSuppression(): OfferSuppression | null {
+  if (!retainedSuppression.persisted) return retainedSuppression.value;
   try {
-    return parseOfferSuppression(
+    const value = parseOfferSuppression(
       localStorage.getItem(OFFER_SUPPRESSION_STORAGE_KEY),
     );
+    retainedSuppression = { value, persisted: true };
+    return value;
   } catch {
-    return null;
+    return retainedSuppression.value;
   }
 }
 
 function publishOfferSuppression(suppression: OfferSuppression | null): void {
+  retainedSuppression = { value: suppression, persisted: false };
   try {
     if (suppression) {
       localStorage.setItem(
@@ -244,6 +253,7 @@ function publishOfferSuppression(suppression: OfferSuppression | null): void {
     } else {
       localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
     }
+    retainedSuppression.persisted = true;
   } catch {
     // Storage can be unavailable in restricted browser contexts.
   }
@@ -550,7 +560,9 @@ export function useLlamaUpdateCheck({
     };
     const onStorage = (event: StorageEvent) => {
       if (event.key === OFFER_SUPPRESSION_STORAGE_KEY) {
-        acceptSuppression(parseOfferSuppression(event.newValue));
+        const value = parseOfferSuppression(event.newValue);
+        retainedSuppression = { value, persisted: true };
+        acceptSuppression(value);
         return;
       }
       if (
@@ -564,6 +576,7 @@ export function useLlamaUpdateCheck({
     };
     window.addEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
     window.addEventListener("storage", onStorage);
+    acceptSuppression(getOfferSuppression());
     return () => {
       window.removeEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
       window.removeEventListener("storage", onStorage);
