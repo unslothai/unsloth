@@ -304,6 +304,8 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
     ["Read [1](not a link) first.", "[1]: https://x.test/one"],
     ["Read [1](foo(and(bar)) first.", "[1]: https://x.test/one"],
     ["Read [1](<foo\nbar>) first.", "[1]: https://x.test/one"],
+    ["Read [1](<https://x.test>\"title\") first.", "[1]: https://x.test/one"],
+    ["> `open\n>\n> [1]\n> `", "[1]: https://x.test/one"],
     ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
     ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
   ]) {

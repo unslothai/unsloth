@@ -129,7 +129,7 @@ const LINK_DEFINITION_LABEL_RE = new RegExp(
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
 const BACKTICK_RUN_RE = /`+/g;
-const BLANK_LINE_RE = /\n[ \t]*\n/g;
+const BLANK_LINE_RE = /\n(?:[ \t]*>[ \t]*)*\n/g;
 
 // find closers from the right so unmatched openers do not rescan the paragraph.
 function codeSpanRegions(text: string): [number, number][] {
@@ -286,11 +286,15 @@ function inlineLinkEnd(text: string, from: number): number {
     return linkEnd;
   }
 
+  const destinationEnd = at;
   at = skipInlineWhitespace(text, at);
   if (at < 0) {
     return -1;
   }
-  return text[at] === ")" ? at + 1 : inlineTitleEnd(text, at);
+  if (text[at] === ")") {
+    return at + 1;
+  }
+  return at > destinationEnd ? inlineTitleEnd(text, at) : -1;
 }
 
 // micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.
