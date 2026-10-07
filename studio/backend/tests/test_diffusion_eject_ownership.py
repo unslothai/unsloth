@@ -264,8 +264,7 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
 
 
 def test_a_cancelled_load_still_reports_its_claimed_asset_repos(backend):
-    """The hosted pre-cast encoder downloads inside load_pipeline without the cancel event, so it
-    writes on after an eject. Its claimed repo must stay undeletable until the thread unwinds."""
+    """The encoder download ignores the cancel event, so its repo stays undeletable after an eject."""
     backend._loading = _LoadingState(
         repo_id = "unsloth/Qwen-Image-2.1-GGUF",
         base_repo = "Qwen/Qwen-Image-2.1",

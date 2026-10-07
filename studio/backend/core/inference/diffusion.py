@@ -3422,8 +3422,7 @@ class DiffusionBackend:
                     self._loading.fetch_repo = fetch_base
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
-                        # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing. File
-                        # entry first: load_progress reads lock-free and counts a repo with no file entry whole.
+                        # Claimed before a byte moves. File entry first: load_progress reads lock-free.
                         self._loading.asset_files += (
                             (
                                 dit_prequant[0],
@@ -3548,7 +3547,7 @@ class DiffusionBackend:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
                 downloaded += self._cache_bytes(companion)
-        # Repos before files, the reverse of the order _run_load stores them: every repo seen here has its file entry.
+        # Repos read before files (_run_load stores files first), so every repo seen has its file entry.
         asset_repos = loading.asset_repos
         asset_files = loading.asset_files
         scoped = {entry[0] for entry in asset_files}

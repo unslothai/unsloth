@@ -4891,7 +4891,6 @@ def _stub_te_run_load(
     file_bytes,
     dit_prequant = None,
 ):
-    # _run_load with every network edge stubbed and a hosted pre-cast encoder of 900 bytes planned.
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(dmod, "_resolve_base_repo", lambda *a, **k: base)
@@ -4939,8 +4938,7 @@ def _run_te_load(monkeypatch, on_load, **run_kwargs):
 
 
 def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
-    # GGUF + base are cached and load_pipeline downloads the hosted encoder. A cached fp8 sibling in
-    # the encoder repo must not stand in for the int8 file.
+    # GGUF + base cached; a cached fp8 sibling in the encoder repo must not stand in for the int8 file.
     cache = {"unsloth/Qwen-Image-2.1-GGUF": 700, "Qwen/Qwen-Image-2.1": 300, _TE_REPO: 950}
     file_bytes: dict = {}
     _stub_te_run_load(
@@ -4954,7 +4952,6 @@ def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypat
     repo_ids = []
 
     def on_load(backend):
-        # _run_load turns an exception here into a load error, so record and assert after it returns.
         seen.append(backend.load_progress())
         repo_ids.extend(backend.loading_repo_ids())
         cache[_TE_REPO] = 950 + 400  # 400 bytes in flight as an .incomplete blob
@@ -4979,8 +4976,7 @@ def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypat
 
 
 def test_run_load_credits_a_shared_prequant_repo_once(monkeypatch):
-    # unsloth/Qwen-Image-2.1-FP8 hosts both the denoiser checkpoint and the encoder. The denoiser
-    # lands first, so an encoder baseline taken before that fetch would count its bytes twice.
+    # One repo hosts denoiser and encoder; a pre-fetch encoder baseline would count the denoiser twice.
     dit_file = "Qwen-Image-2.1-INT8.safetensors"
     cache = {"unsloth/Qwen-Image-2.1": 300}
     file_bytes: dict = {}
@@ -5013,8 +5009,7 @@ def test_run_load_credits_a_shared_prequant_repo_once(monkeypatch):
 
 
 def test_run_load_leaves_a_mirrored_pre_cast_encoder_out_of_the_download(monkeypatch):
-    # A mirrored encoder is read in place and never reaches the HF cache, so counting it would
-    # hold the bar short of 100% for the rest of the load.
+    # A mirrored encoder never reaches the HF cache, so counting it would stall the bar short of 100%.
     from core.inference import diffusion_te_prequant
 
     monkeypatch.setattr(
@@ -5046,7 +5041,6 @@ def test_run_load_leaves_a_mirrored_pre_cast_encoder_out_of_the_download(monkeyp
 
 
 class _PollOnClaimState(_LoadingState):
-    # load_progress reads the claim without the lock, so poll it after EVERY store to it.
     def __setattr__(self, name, value):
         super().__setattr__(name, value)
         if name in ("asset_repos", "asset_files") and getattr(self, "backend", None) is not None:
@@ -5055,8 +5049,7 @@ class _PollOnClaimState(_LoadingState):
 
 @pytest.mark.parametrize("claim", ["encoder", "denoiser"])
 def test_run_load_never_shows_a_claimed_repo_without_its_file(monkeypatch, claim):
-    # A repo claimed with no file entry is counted whole, cached sibling checkpoint included, so no
-    # poll between the two stores may see that state.
+    # A repo claimed with no file entry is counted whole (cached siblings included).
     dit_repo = "unsloth/Qwen-Image-2.1-DiT"
     cache = {"unsloth/Qwen-Image-2.1": 300}
     cache[_TE_REPO if claim == "encoder" else dit_repo] = 1700
@@ -5085,8 +5078,6 @@ def test_run_load_never_shows_a_claimed_repo_without_its_file(monkeypatch, claim
 
 
 def test_load_progress_reads_a_claimed_repo_before_its_file(monkeypatch):
-    # The whole claim can land between the poll's two reads; the repo must still not be seen
-    # without its file entry.
     class _ClaimLandsMidPoll(_LoadingState):
         def __getattribute__(self, name):
             value = super().__getattribute__(name)
