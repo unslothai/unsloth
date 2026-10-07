@@ -624,3 +624,9 @@ def test_a_lora_load_prices_block_layers_dequantized(monkeypatch, tmp_path):
         path, fam, _target("cuda:0"), None, lora = True
     )
     assert kept is not None and lora > kept
+
+
+def test_mxfp8_e8m0_scales_are_priced_one_byte(tmp_path):
+    path = _layer_file(tmp_path, "mxfp8", rows = 4096, cols = 8192)
+    # 32 MiB of fp8 codes + 1 MiB of e8m0 block scales + the comfy_quant bytes, rounded up (35 at 2 bytes)
+    assert cq.comfy_resident_mib(path, keep_int8 = False, keep_fp8 = False, keep_mxfp8 = True) == 34
