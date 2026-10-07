@@ -427,6 +427,91 @@ def check_lifetime(page, checks: Checks) -> None:
     close_all(page)
 
 
+GLOW_JS = (
+    "() => document.querySelector('[role=menu]')"
+    "?.style.getPropertyValue('--dropdown-surround-bg') ?? ''"
+)
+
+# Opaque fixed surfaces laid around the control menu. Each case has one answer that real
+# hit-testing gives and one that a plausible mistake in the DOM walk gives instead.
+GLOW_CASES = (
+    (
+        # Sonner and the update card mount before a dialog's portal, but paint over it.
+        "a toast earlier in the document paints over a later dialog",
+        """(r) => {
+          const add = (css, first) => {
+            const el = document.createElement('div');
+            el.dataset.glowFixture = '';
+            el.style.cssText = 'position: fixed; inset: 0; ' + css;
+            if (first) document.body.prepend(el); else document.body.append(el);
+          };
+          add('z-index: 100; background: rgb(10, 20, 30)', true);
+          add('z-index: 50; background: rgb(40, 50, 60)', false);
+        }""",
+        "rgb(10 20 30)",
+    ),
+    (
+        # A probe point 2px inside a box's cut-off corner is not on the box.
+        "a probe point in a rounded corner does not sample the box",
+        """(r) => {
+          const add = (css) => {
+            const el = document.createElement('div');
+            el.dataset.glowFixture = '';
+            el.style.cssText = 'position: fixed; ' + css;
+            document.body.append(el);
+          };
+          add('inset: 0; z-index: 40; background: rgb(60, 60, 60)');
+          add(`left: ${r.right + 6}px; top: ${r.bottom + 6}px; width: 400px; height: 400px;`
+            + ' border-top-left-radius: 40px; z-index: 45; background: rgb(5, 5, 5)');
+        }""",
+        "rgb(60 60 60)",
+    ),
+    (
+        # rounded-full computes to a huge radius; CSS scales it down to a pill.
+        "a rounded-full surface around the menu is sampled",
+        """(r) => {
+          const add = (css) => {
+            const el = document.createElement('div');
+            el.dataset.glowFixture = '';
+            el.style.cssText = 'position: fixed; ' + css;
+            document.body.append(el);
+          };
+          const w = r.width + 600;
+          const h = r.height + 100;
+          add('inset: 0; z-index: 40; background: rgb(60, 60, 60)');
+          add(`left: ${r.left + r.width / 2 - w / 2}px; top: ${r.top + r.height / 2 - h / 2}px;`
+            + ` width: ${w}px; height: ${h}px; border-radius: calc(infinity * 1px);`
+            + ' z-index: 45; background: rgb(15, 15, 15)');
+        }""",
+        "rgb(15 15 15)",
+    ),
+)
+
+
+def glow_over(page, fixture_js: str) -> str:
+    """The glow the control menu gets when it opens over the surfaces `fixture_js` adds."""
+    open_control(page)
+    rect = page.evaluate(
+        "() => { const r = document.querySelector('[role=menu]').getBoundingClientRect();"
+        " return {left: r.left, top: r.top, right: r.right, bottom: r.bottom,"
+        " width: r.width, height: r.height}; }"
+    )
+    close_all(page)
+    page.evaluate(fixture_js, rect)
+    # The fixtures cover the trigger, so open it from the keyboard.
+    page.get_by_label("Control options", exact = True).focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector("[role=menu]", state = "visible")
+    try:
+        page.wait_for_function(GLOW_JS, timeout = 3000)
+    except Exception:
+        pass
+    glow = page.evaluate(GLOW_JS)
+    close_all(page)
+    page.evaluate("() => document.querySelectorAll('[data-glow-fixture]').forEach((el) => el.remove())")
+    return glow
+
+
 def check_dark_glow_probe(page, checks: Checks) -> None:
     # The dark dropdown glow samples the surface around each menu as it opens. Lifting a
     # modal layer's `pointer-events: none` on <body> for that probe restyled the whole
@@ -446,15 +531,11 @@ def check_dark_glow_probe(page, checks: Checks) -> None:
         }"""
     )
     open_control(page)
-    glow_js = (
-        "() => document.querySelector('[role=menu]')"
-        "?.style.getPropertyValue('--dropdown-surround-bg') ?? ''"
-    )
     try:
-        page.wait_for_function(glow_js, timeout = 3000)
+        page.wait_for_function(GLOW_JS, timeout = 3000)
     except Exception:
         pass
-    glow = page.evaluate(glow_js)
+    glow = page.evaluate(GLOW_JS)
     writes = page.evaluate(
         "() => { window.bodyStyleObserver.disconnect(); return window.bodyStyleWrites; }"
     )
@@ -465,6 +546,10 @@ def check_dark_glow_probe(page, checks: Checks) -> None:
     )
     checks.record("the dark glow probe still measures the modal menu", bool(glow), glow)
     close_all(page)
+
+    for name, fixture_js, expected in GLOW_CASES:
+        glow = glow_over(page, fixture_js)
+        checks.record(f"glow colour: {name}", glow == expected, f"{glow!r}, want {expected!r}")
     page.evaluate("() => document.documentElement.classList.remove('dark')")
 
 
