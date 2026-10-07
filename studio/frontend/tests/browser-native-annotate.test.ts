@@ -129,3 +129,46 @@ test("an install or start that failed is sent again after the next answer", asyn
     await settle();
   }
 });
+
+test("a start that reaches the page after its install failed goes again behind the install", async () => {
+  calls.length = 0;
+  const channel = startNativeAnnotate("t5", () => undefined);
+  try {
+    channel.send({ command: "annotateInstall", code: "return {}" });
+    channel.send({ command: "annotate", on: true, color: "#fff" });
+    await settle();
+    calls[0]?.fail();
+    await settle();
+    // The view now exists, but without the code: the start does nothing there.
+    calls[1]?.answer({ installed: false, events: [] });
+    await settle();
+    calls[2]?.answer({ installed: true, events: [] });
+    await settle();
+    assert.deepEqual(sent().slice(0, 4), ["install", "start", "install", "start"]);
+  } finally {
+    channel.stop();
+    await settle();
+  }
+});
+
+test("a start that finds no code is not resent until the code is in", async () => {
+  calls.length = 0;
+  const channel = startNativeAnnotate("t6", () => undefined);
+  try {
+    channel.send({ command: "annotate", on: true, color: "#fff" });
+    await settle();
+    calls[0]?.answer({ installed: false, events: [] });
+    // Polls only: no tight loop of starts while the page has no code.
+    for (let wait = 0; wait < 100 && calls.length < 2; wait++) await settle();
+    calls[1]?.answer({ installed: false, events: [] });
+    for (let wait = 0; wait < 100 && calls.length < 3; wait++) await settle();
+    assert.deepEqual(sent().slice(0, 3), ["start", "poll", "poll"]);
+    // Once a poll finds the code, the start goes again.
+    calls[2]?.answer({ installed: true, events: [] });
+    await settle();
+    assert.equal(sent()[3], "start");
+  } finally {
+    channel.stop();
+    await settle();
+  }
+});

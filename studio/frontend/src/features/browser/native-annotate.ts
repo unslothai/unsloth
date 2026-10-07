@@ -53,7 +53,7 @@ export function startNativeAnnotate(
   let live = true;
   // Null until the first answer; `ready` fires on installed -> not installed.
   let installed: boolean | null = null;
-  // Install or start calls that failed (no view yet, mid-navigation), replayed after the next answer.
+  // Install or start calls that failed or found no code, replayed after the next answer.
   const failed = new Map<"install" | "start", NativeCommand>();
 
   const deliver = (answer: Answer) => {
@@ -75,6 +75,8 @@ export function startNativeAnnotate(
         (value) => {
           const answer = answerOf(value);
           if (answer) deliver(answer);
+          // A start that found no code (its install failed) goes again behind the install.
+          if (live && command.command === "start" && answer && !answer.installed) failed.set("start", command);
           replay();
         },
         () => {
@@ -96,10 +98,16 @@ export function startNativeAnnotate(
 
   const replay = () => {
     if (!live) return;
-    for (const key of ["install", "start"] as const) {
-      const command = failed.get(key);
-      failed.delete(key);
-      if (command) void run(command);
+    const install = failed.get("install");
+    const start = failed.get("start");
+    if (install) {
+      failed.delete("install");
+      void run(install);
+    }
+    // Start only behind its install or once the code is in, so a navigating page can't loop it.
+    if (start && (install || installed)) {
+      failed.delete("start");
+      void run(start);
     }
   };
 
