@@ -35,16 +35,24 @@ const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
 /// Clear labels are a small fixed set; this only bounds a pathological producer.
 const MAX_UNPAIRED_CLEARS: usize = 64;
 
-/// uv, Windows, and libc all phrase a full disk differently. Match the stable
-/// phrases, not a single tool's wording.
+/// uv prints `std::io::Error`'s Display, `{strerror} (os error {code})`:
+/// <https://github.com/rust-lang/rust/blob/master/library/core/src/io/error.rs>
+///
+/// Unix ENOSPC is 28 and its strerror is "No space left on device". Rust maps
+/// Windows `ERROR_DISK_FULL` (112) and `ERROR_HANDLE_DISK_FULL` (39) to
+/// `ErrorKind::StorageFull`; FormatMessage's English text is "There is not
+/// enough space on the disk." The parenthesized code is the stable half,
+/// because Windows localizes the sentence:
+/// <https://github.com/rust-lang/rust/blob/master/library/std/src/sys/io/error/windows.rs>
+///
+/// The parentheses are part of the match so "os error 28" cannot hit "os error 280".
 fn is_disk_full_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("no space left on device")
         || lower.contains("not enough space on the disk")
-        || lower.contains("os error 28")
-        || lower.contains("os error 112")
-        || lower.contains("enospc")
-        || lower.contains("disk quota exceeded")
+        || lower.contains("(os error 28)")
+        || lower.contains("(os error 112)")
+        || lower.contains("(os error 39)")
 }
 
 fn generic_failure_message(code: i32) -> String {
@@ -1981,6 +1989,20 @@ mod tests {
             context.message(1),
             "Installation failed: install unsloth failed (exit code 1): No space left on device (os error 28)"
         );
+    }
+
+    #[test]
+    fn disk_full_matches_rust_io_error_display_only() {
+        assert!(is_disk_full_text("No space left on device (os error 28)"));
+        assert!(is_disk_full_text(
+            "There is not enough space on the disk. (os error 112)"
+        ));
+        assert!(is_disk_full_text(
+            "There is not enough space on the disk. (os error 39)"
+        ));
+        assert!(!is_disk_full_text("enospc"));
+        assert!(!is_disk_full_text("Disk quota exceeded"));
+        assert!(!is_disk_full_text("os error 280"));
     }
 
     #[test]
