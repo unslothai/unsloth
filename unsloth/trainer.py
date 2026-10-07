@@ -535,8 +535,25 @@ def _is_hybrid_linear_attention_model(model) -> bool:
     # Module-level: any recurrent / causal-conv mixer, whether or not the varlen shim can serve it.
     modules = getattr(model, "modules", None)
     if modules is None:
-        return False
+        return _config_has_stateful_mixer(getattr(model, "config", None))
     return any(_stateful_mixer_kind(module) is not None for module in modules())
+
+
+def _config_has_stateful_mixer(config) -> bool:
+    # A string model= only has its config here: build it on the meta device and classify its modules.
+    if config is None or not hasattr(config, "model_type"):
+        return False
+    try:
+        import torch
+        from transformers import AutoModel, AutoModelForCausalLM
+        with torch.device("meta"):
+            try:
+                model = AutoModelForCausalLM.from_config(config)
+            except Exception:
+                model = AutoModel.from_config(config)
+    except Exception:
+        return False
+    return any(_stateful_mixer_kind(module) is not None for module in model.modules())
 
 
 def _resolve_string_model_config(model_name, config_arg):

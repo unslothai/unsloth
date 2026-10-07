@@ -2696,3 +2696,32 @@ def test_generate_restores_packed_stash_for_pending_backward(monkeypatch):
     model.generate()
     assert seen == [None]  # generate never sees training boundaries
     assert model.mixer._unsloth_varlen is stash  # recompute in backward still does
+
+
+@pytest.mark.parametrize(
+    "model_type, stateful, extra",
+    [
+        ("lfm2", True, {"num_hidden_layers": 2, "layer_types": ["conv", "full_attention"]}),
+        ("mamba2", True, {}),
+        ("falcon_h1", True, {}),
+        ("llama", False, {}),
+    ],
+)
+def test_string_model_config_detects_stateful_mixers(model_type, stateful, extra):
+    # A string model= reaches the detector as its config only.
+    from transformers import AutoConfig
+    from unsloth.trainer import _is_hybrid_linear_attention_model
+
+    # Keep the default layer count: shrinking it truncates hybrid layer schedules.
+    small = dict(
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        vocab_size = 128,
+    )
+    config = AutoConfig.for_model(model_type, **extra)
+    for key, value in small.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+    assert _is_hybrid_linear_attention_model(SimpleNamespace(config = config)) is stateful
