@@ -155,9 +155,7 @@ async function poll(
     download?.download_id &&
     requestedDownloadId !== download.download_id
   ) {
-    // A shared engine can move to another transfer before this row polls. The
-    // attempt history is authoritative: downloaded_models is only row-level
-    // and could describe an older audio.cpp quant.
+    // Attempt history, not row-level downloaded_models (could be an older quant), decides.
     if (download.completed_download_ids?.includes(requestedDownloadId)) {
       settle(model, "complete", undefined, engine);
       return;
@@ -206,8 +204,7 @@ async function poll(
   }
 }
 
-/** Whether a status poll's transfer already has a row, so adopting it must not
- * take over the completion policy of the surface that started it. */
+/** Adopting an already tracked attempt must not take over its starter's completion policy. */
 export function isTrackingSttDownload(
   model: SttModel,
   engine?: SttEngine,
@@ -245,8 +242,7 @@ function trackSttDownloadNow(
     }
     trackedDownloadIds.set(key, options.downloadId);
   }
-  // Another owner of the same attempt keeps its progress and poller. A newer
-  // attempt reuses the poller but refreshes the row and cancellation identity.
+  // A newer attempt reuses the poller but refreshes the row and cancel identity.
   if (wasTracking && !changedAttempt) {
     if (options.warmSelectedVoiceModelOnComplete !== false)
       warmSelectedVoiceModelOnComplete.set(key, true);
@@ -331,7 +327,6 @@ async function confirmSttDownloadReplacement(
     if (replacementChecks.get(key) === candidate) replacementChecks.delete(key);
   }
   if (retry) {
-    // Re-check after either a transient fetch failure or another candidate changing local state.
     window.setTimeout(() => {
       if (
         shouldRecheckSttReplacement(trackedDownloadIds.get(key), candidate)

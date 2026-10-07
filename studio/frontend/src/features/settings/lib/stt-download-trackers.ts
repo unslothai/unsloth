@@ -50,7 +50,6 @@ export function sttReplacementAction(
   return "retry";
 }
 
-/** A failed confirmation still needs another status check if no poller owns the candidate. */
 export function shouldRecheckSttReplacement(
   currentDownloadId: string | null | undefined,
   candidateDownloadId: string,

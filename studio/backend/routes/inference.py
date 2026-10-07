@@ -24645,8 +24645,7 @@ def _account_stt_status(status):
             if attempt_accounts.get(download_id) == current_account_id()
         ]
         if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
-            # The opaque identity lets an older local tracker detect that the
-            # engine moved on without revealing another account's model or error.
+            # Opaque ids tell stale trackers the engine moved on; no other account's model leaks.
             section["download"] = {
                 "downloading": False,
                 "download_id": download.get("download_id"),

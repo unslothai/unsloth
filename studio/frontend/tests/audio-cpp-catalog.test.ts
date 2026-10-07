@@ -965,7 +965,6 @@ test("adopting a saved-key audio download keeps it warmable", async () => {
   const { sttModelVariant } = await import(
     "../src/features/settings/stores/stt-model-catalog.ts"
   );
-  // The backend reports a saved key's intrinsic hint; the mirror compares against null.
   assert.equal(sttModelVariant("audiocpp-moonshine-tiny", "tiny/Q8_0"), null);
   assert.equal(sttModelVariant("audiocpp-moonshine-tiny", ""), null);
 });
