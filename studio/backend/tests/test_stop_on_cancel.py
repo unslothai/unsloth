@@ -4,6 +4,7 @@
 """_stop_on_cancel must let a cancelled upstream read finish closing its httpcore connection."""
 
 import asyncio
+import gc
 import threading
 
 import anyio
@@ -32,3 +33,27 @@ def test_cancelled_read_finishes_closing_the_upstream():
         await asyncio.wait_for(closed.wait(), timeout = 2)
 
     asyncio.run(main())
+
+
+def test_cancelled_read_exception_is_retrieved():
+    contexts = []
+
+    async def upstream():
+        yield "data: first"
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0)
+            raise RuntimeError("transport close failed")
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+        cancel_event = threading.Event()
+        async for _line in _stop_on_cancel(upstream(), cancel_event):
+            cancel_event.set()
+        gc.collect()
+        await asyncio.sleep(0)
+
+    asyncio.run(main())
+    assert contexts == []
