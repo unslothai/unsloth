@@ -691,10 +691,14 @@ function inlineMathRegions(text: string): [number, number][] {
   return regions;
 }
 
-function opaqueInlineRegions(text: string, scan: InlineScan): [number, number][] {
+function opaqueInlineRegions(
+  text: string,
+  scan: InlineScan,
+  inlineLinks = inlineLinkRegions(text, scan),
+): [number, number][] {
   if (!text.includes("`")) return [];
   const candidates = [
-    ...inlineLinkRegions(text, scan),
+    ...inlineLinks,
     ...autolinkRegions(text),
     ...inlineHtmlRegions(text, scan),
     ...inlineMathRegions(text),
@@ -744,10 +748,15 @@ function hasShortcutReference(
   }
   const uses = references;
   const inlineScan = exact ? createInlineScan(uses) : null;
+  const inlineLinks = exact ? inlineLinkRegions(uses, inlineScan!) : null;
   const code = exact
-    ? codeSpanRegions(uses, opaqueInlineRegions(uses, inlineScan!))
+    ? codeSpanRegions(
+        uses,
+        opaqueInlineRegions(uses, inlineScan!, inlineLinks!),
+      )
     : [];
   let codeIndex = 0;
+  let linkIndex = 0;
   let inlineEnd = -1;
   for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
     if (exact) {
@@ -756,6 +765,18 @@ function hasShortcutReference(
         codeIndex += 1;
       }
       if (codeIndex < code.length && code[codeIndex][0] <= match.index) {
+        continue;
+      }
+      while (
+        linkIndex < inlineLinks!.length &&
+        inlineLinks![linkIndex][1] <= match.index
+      ) {
+        linkIndex += 1;
+      }
+      if (
+        linkIndex < inlineLinks!.length &&
+        inlineLinks![linkIndex][0] <= match.index
+      ) {
         continue;
       }
     }
