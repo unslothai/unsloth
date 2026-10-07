@@ -65,7 +65,6 @@ function safeFavicon(url: string | null): string | null {
   }
 }
 
-/** The address the tab's page is at (moves in its own history included), if it is a web page. */
 function pageAddress(tab: BrowserTab | undefined): string | undefined {
   const entry = tab ? currentEntry(tab) : null;
   return tab && entry?.kind === "web" ? (tab.displayUrl ?? entry.url) : undefined;
@@ -78,7 +77,6 @@ function useFrameMessages(tabId: string, origin: string | null) {
       const store = useBrowserStore.getState();
       switch (message.type) {
         case "navigate": {
-          // The page asking: a file at the address is downloaded on its behalf, not the file's site's.
           const from = pageAddress(store.tabs.find((candidate) => candidate.id === tabId));
           if (message.newTab) {
             store.openUrl(message.url, {
@@ -291,15 +289,12 @@ function WebPage({
         cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
-        // Like any browser, a file the panel can't show downloads (after the usual prompt).
-        // Only on a fresh load, so switching back to the tab doesn't ask again.
+        // A file the panel can't show downloads, as in a browser; fresh loads only, so returning to the tab doesn't ask again.
         if (page.kind === "raw") {
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
-            // Asked for the page that sent the tab here, else the address asked for (not where it
-            // redirected): another site's remembered "allow" must not cover it.
+            // The sending page, else the address asked for (not the redirect target), so another site's "allow" can't cover it.
             void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
-            // A page's link to a file leaves that page showing, as in a browser.
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
         }

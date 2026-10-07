@@ -282,7 +282,6 @@ test("a site's download answer is remembered, changed and forgotten, per account
   sites.setSite("example.com", "block");
   sites.setSite("example.org", null);
   assert.deepEqual(useDownloadSitesStore.getState().sites, { "example.com": "block" });
-  // Bob's answers live under Bob's name, not the shared browser prefs.
   const name = useDownloadSitesStore.persist.getOptions().name;
   assert.equal(name, accountDatabaseName("unsloth_browser_download_sites"));
   assert.notEqual(name, "unsloth_browser_download_sites");
@@ -306,7 +305,6 @@ test("a remembered answer settles the site's other waiting downloads", async () 
   assert.equal(await second, false);
   assert.deepEqual(useApprovalStore.getState().queue.map((request) => request.origin), ["https://b.example"]);
   assert.equal(useDownloadSitesStore.getState().sites["https://a.example"], "block");
-  // Not remembered: only the one asked about is answered.
   const fourth = approveDownload("https://b.example/4.zip", "4.zip");
   answerDownload(useApprovalStore.getState().queue[0], true, false);
   assert.equal(await other, true);
@@ -334,7 +332,6 @@ test("download answers are kept per origin, never for every site", async () => {
   answerDownload(request, true, true);
   assert.equal(await blob, true);
   assert.deepEqual(useDownloadSitesStore.getState().sites, {});
-  // From a page, the page's site is the one remembered.
   const paged = approveDownload("blob:https://cdn.example/uuid", "file.bin", "https://a.example/page");
   assert.equal(useApprovalStore.getState().queue[0].origin, "https://a.example");
   answerDownload(useApprovalStore.getState().queue[0], true, true);
@@ -379,7 +376,6 @@ test("a download whose click has expired waits for Save rather than skip the sav
   assert.equal(toasts.length, 1);
   assert.equal(toasts[0].message, "browser.downloadPrompt.ready");
   assert.deepEqual(picked, []);
-  // The Save click is a fresh one: the dialog opens and the file is written there.
   active = true;
   toasts[0].options!.action!.onClick();
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -403,7 +399,6 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   const entry = currentEntry(tab);
   assert.ok(entry.kind === "web");
   assert.equal(entry.from, "https://a.example/page");
-  // Typed or bookmarked: no page sent it.
   store.navigate(tabId, { url: "https://b.example/other.zip" });
   const typed = currentEntry(useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!);
   assert.ok(typed.kind === "web" && typed.from === undefined);
@@ -428,7 +423,6 @@ test("a blocked site's blob: page can't download past the block", async () => {
   const prefs = useBrowserPrefsStore.getState();
   prefs.setAskBeforeDownloading(false);
   useDownloadSitesStore.getState().setSite("https://a.example", "block");
-  // The page made a blob: document and downloaded from it: still the blocked site asking.
   assert.equal(await approveDownload("blob:https://a.example/f", "f.zip", "blob:https://a.example/doc"), false);
   assert.equal(await approveDownload("https://cdn.example/f.zip", "f.zip", "https://b.example/"), true);
   useDownloadSitesStore.getState().setSite("https://a.example", null);

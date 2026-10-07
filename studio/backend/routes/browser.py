@@ -70,26 +70,16 @@ _REFRESH_RE = re.compile(
 )
 _META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
 
-# Module scripts load with CORS, which the sandbox's opaque origin fails unless the host allows
-# any origin. Self-contained ones are fetched here and inlined; ones with imports keep their src.
+# The sandbox's opaque origin fails CORS module loads: self-contained modules are inlined, ones with imports keep src.
 _MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
-# One attribute of a start tag, read as the HTML tokenizer does: a name, then an optional value,
-# quoted or bare. Quoted values are skipped whole, so an attribute named inside another's value
-# (onerror="this.src='x'") isn't taken for the real one. A stray "/" matches on its own.
+# One start-tag attribute; quoted values are skipped whole so a name inside a value isn't matched.
 _TAG_ATTR_RE = re.compile(r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?|/""")
-# Dropped from an inlined tag: they only concern fetching the file.
 _FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
-# Static or dynamic imports and re-exports resolve against the module's own URL.
-# A comment may sit between the keyword and what follows (import /* chunk */ ("./a.js")), so "/"
-# counts too: after "import", a reserved word, it can only start one. After "from", which needn't
-# be a keyword, it may be division; keeping such a tag external is only the safe side.
+# Imports resolve against the module URL. "/" after import may start a comment; after from it may be division (keeping the tag is the safe side).
 _MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
 _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
-# Where markup stops being markup: a comment, an element whose content is text (raw text and
-# RCDATA, noscript as scripting is on, and script itself), or another tag, whose quoted
-# attribute values may hold "<script ...>" as text, or a template, whose content is an inert
-# document. A script tag written inside one is shown or ignored, not run.
+# Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
 _INERT_START_RE = re.compile(
     r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
     + _TAG_BODY
@@ -126,9 +116,7 @@ _MAX_MODULE_BYTES = 2 * 1024 * 1024
 _MODULE_TIMEOUT_S = 8
 # Separate from _FETCH_POOL, whose workers wait on these.
 _MODULE_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-module")
-# Answers for recently seen module tags (code to inline, or None to keep the tag), so each page
-# of a site doesn't fetch its bundles again: (expiry, code), kept only as long as the response
-# says it stays fresh, and at most _MODULE_CACHE_TTL_S. Failed fetches aren't kept.
+# (url, integrity, credentials) -> (expiry, code or None); kept only while the response says fresh, failures never.
 _MODULE_CACHE: "OrderedDict[tuple[str, str, bool], tuple[float, Optional[str]]]" = OrderedDict()
 _MODULE_CACHE_LOCK = threading.Lock()
 _MODULE_CACHE_TTL_S = 600
@@ -1214,10 +1202,7 @@ def _studio_headers(host: str) -> dict:
 
 
 def _integrity_ok(body: bytes, integrity: str) -> bool:
-    """Whether ``body`` matches a tag's ``integrity`` metadata, as the browser would check it.
-
-    Inlining drops the attribute, so the check happens here instead.
-    """
+    """Whether ``body`` matches the tag's SRI ``integrity``; inlining drops the attribute, so check here."""
     hashes: dict[str, list[str]] = {}
     for token in integrity.split():
         algorithm, _, value = token.partition("-")
@@ -1233,10 +1218,7 @@ def _integrity_ok(body: bytes, integrity: str) -> bool:
 
 
 def _fresh_for(cache_control: Optional[str], age: Optional[str]) -> float:
-    """Seconds a response may be reused, from its headers: none unless they give a lifetime.
-
-    This cache is shared, so ``private`` and ``no-cache`` (always revalidate) rule it out too.
-    """
+    """Seconds a response may be reused by this shared cache; ``private``/``no-cache`` rule it out."""
     directives = (cache_control or "").lower()
     if any(word in directives for word in ("no-store", "no-cache", "private")):
         return 0
@@ -1301,19 +1283,16 @@ def _fetch_module(
             host_headers = _studio_headers,
         )
     except Exception as exc:
-        # One bad module must not fail the page.
         logger.warning("browser_module_fetch_failed", error = type(exc).__name__)
         return None
     if error is not None or not isinstance(body, bytes):
         return None
-    # Redirected to plain http: code anyone on the network could have changed. The frame's
-    # upgrade-insecure-requests would not run it that way either.
+    # Redirected to http: tamperable, and the frame's upgrade-insecure-requests wouldn't run it either.
     if not str(meta.get("url") or url).lower().startswith("https://"):
         return None
     code = None
     allow_origin = (meta.get("allow_origin") or "").strip()
-    # A host that lets any origin load it works from the sandbox as it is, and the browser
-    # caches it; a mismatched hash is refused there too.
+    # ACAO * or null already loads from the sandbox (where SRI is enforced too).
     loads_itself = allow_origin in ("*", "null") and not credentials
     if content_type in _JS_TYPES and not loads_itself and _integrity_ok(body, integrity):
         # Browsers decode module scripts as UTF-8 whatever the header says.
@@ -1323,8 +1302,7 @@ def _fetch_module(
             "<!--" in text and _SCRIPT_OPEN_RE.search(text)
         ):
             code = re.sub(r"</(script)", r"<\\/\1", text, flags = re.IGNORECASE)
-    # Only the last response's headers are known: a redirect (often "latest" to a versioned file)
-    # may have said not to reuse it, so a redirected answer isn't kept.
+    # Only the final hop's headers are known, so a redirected answer isn't cached.
     redirected = str(meta.get("url") or url) != url
     fresh_for = 0 if redirected else _fresh_for(meta.get("cache_control"), meta.get("age"))
     _cache_module(key, code, fresh_for)
@@ -1332,9 +1310,7 @@ def _fetch_module(
 
 
 def _inert_spans(page: str) -> list[tuple[int, int]]:
-    """Spans of ``page`` that are text, not markup, in order: comments, the content of raw-text
-    elements, and other tags (their attribute values). Read front to back as the parser does, so
-    a "<style" inside a script's code or a comment doesn't open one."""
+    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does."""
     spans: list[tuple[int, int]] = []
     at = 0
     while match := _INERT_START_RE.search(page, at):
@@ -1343,11 +1319,9 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
             end = len(page) if close < 0 else close + 3
             spans.append((match.start(), end))
         elif match.group(1) is None:
-            # Any other tag: a script tag can only be text inside it.
             end = match.end()
             spans.append((match.start(), end))
         elif match.group(1).lower() == "template":
-            # Templates nest: the content runs to the matching close tag.
             depth, close = 1, None
             for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
                 depth += -1 if tag.group(1) else 1
@@ -1361,7 +1335,6 @@ def _inert_spans(page: str) -> list[tuple[int, int]]:
             close = (
                 None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
             )
-            # Unclosed (or plaintext): text to the end of the page.
             end = close.end() if close else len(page)
             spans.append((match.end(), close.start() if close else len(page)))
         at = max(end, match.end())
@@ -1403,8 +1376,7 @@ def _inline_module_scripts(
         url = _join(base_url, src) if src else None
         if not url or not url.lower().startswith("https://"):
             continue
-        # A tag in a comment or in a textarea, title, style... is text: it stays as it is, and
-        # inlined code could end that element.
+        # A tag inside text (comment, textarea, style...) stays; inlined code could end that element.
         if inert is None:
             inert = _inert_spans(page)
         at = bisect.bisect_right(inert, (match.start(), len(page))) - 1
@@ -1422,8 +1394,6 @@ def _inline_module_scripts(
     )
     parts: list[str] = []
     end = 0
-    # Inlined code counts toward the panel's page limit, like the page itself: in bytes, as the
-    # limit is, not characters.
     room = _MAX_BROWSER_HTML_BYTES - len(page.encode("utf-8"))
     for (match, *_), code in zip(tags, codes):
         size = len(code.encode("utf-8")) if code is not None else 0

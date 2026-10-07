@@ -16,17 +16,14 @@ import { useT } from "@/i18n";
 import { useId, useState } from "react";
 import { answerDownload, useApprovalStore } from "./download-approval-queue";
 
-/** Asks about each waiting download in turn; mounted once for the app. */
 export function DownloadApprovalDialog() {
   const t = useT();
   const request = useApprovalStore((state) => state.queue[0]);
   const [remember, setRemember] = useState(false);
   const checkboxId = useId();
 
-  // `kept`: a button press. Escape or a click outside only cancels this once, so a stray click
-  // with the box ticked doesn't block the site for good.
+  // Escape or an outside click cancels this once only, so a stray click with the box ticked doesn't block the site for good.
   const answer = (allow: boolean, kept = true) => {
-    // A button press also closes the dialog; only the first answer counts for this request.
     if (!request || useApprovalStore.getState().queue[0] !== request) return;
     setRemember(false);
     answerDownload(request, allow, kept && remember);

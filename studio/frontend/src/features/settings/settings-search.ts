@@ -364,7 +364,6 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
-    // Desktop only, like the row.
     browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

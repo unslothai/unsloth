@@ -201,13 +201,11 @@ test("a page's link that turns out to be a download leaves that page showing", (
   assert.equal(currentEntry(tab()), page);
   assert.equal(tab().history.length, 1);
   assert.equal(tab().history.includes(file), false);
-  // A refresh replaced the page that sent it: there's no page of its own to go back to.
   store.navigate(tabId, { url: "https://a.example/wait" });
   store.navigate(tabId, { url: "https://cdn.example/f.zip", from: "https://a.example/wait" }, { replace: true });
   const replaced = currentEntry(tab());
   store.leaveDownload(tabId, replaced);
   assert.equal(currentEntry(tab()), replaced);
-  // Typed, or moved on since: left alone.
   store.navigate(tabId, { url: "https://cdn.example/typed.zip" });
   const typed = currentEntry(tab());
   store.leaveDownload(tabId, typed);

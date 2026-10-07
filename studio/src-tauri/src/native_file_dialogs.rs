@@ -463,7 +463,6 @@ fn request_file<'a>(
 }
 
 /// Save the request body where the user picks, starting in `directory`; None if cancelled.
-/// Keep the path off the webview.
 pub(crate) async fn save_request_with_dialog(
     app: &AppHandle,
     request: &tauri::ipc::Request<'_>,
@@ -583,9 +582,7 @@ const WINDOWS_DEVICE_NAMES: [&str; 22] = [
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// A website's name for a file, made safe to save under on every platform: no separators,
-/// control or Windows-reserved characters, no trailing dots or spaces (Windows drops them), no
-/// device name (`CON`, `nul.txt`), and short enough for the file system.
+/// A website's file name made safe everywhere: no separators, control or reserved characters, trailing dots/spaces or device names; length capped.
 pub(crate) fn safe_download_name(name: &str) -> String {
     let mut name: String = name
         .chars()
@@ -602,7 +599,6 @@ pub(crate) fn safe_download_name(name: &str) -> String {
     if name.trim_matches(['.', ' ']).is_empty() {
         return "download".into();
     }
-    // Reserved whatever the extension.
     let device = name.split('.').next().unwrap_or("").trim_end();
     if WINDOWS_DEVICE_NAMES
         .iter()
@@ -611,7 +607,6 @@ pub(crate) fn safe_download_name(name: &str) -> String {
         name.insert(0, '_');
     }
     if name.len() > MAX_DOWNLOAD_NAME_BYTES {
-        // Shorten the stem and keep the extension, on a character boundary.
         let extension = name
             .rfind('.')
             .filter(|&at| at > 0 && name.len() - at <= 32)
@@ -625,7 +620,6 @@ pub(crate) fn safe_download_name(name: &str) -> String {
     name
 }
 
-/// Save the request body in `directory` under a free name, without a dialog.
 pub(crate) fn save_request_in(
     request: &tauri::ipc::Request<'_>,
     directory: &Path,
@@ -1117,7 +1111,6 @@ mod tests {
         assert_eq!(safe_download_name("notes. . "), "notes");
         assert_eq!(safe_download_name(".."), "download");
         assert_eq!(safe_download_name(" "), "download");
-        // 255 three-byte characters: cut on a character boundary, extension kept.
         let long = format!("{}.pdf", "\u{3042}".repeat(255));
         let safe = safe_download_name(&long);
         assert!(safe.len() <= MAX_DOWNLOAD_NAME_BYTES, "{}", safe.len());

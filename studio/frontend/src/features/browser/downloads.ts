@@ -12,7 +12,6 @@ import { useBrowserHistoryStore } from "./history-store";
 import { saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
-/** `site`: the page a download is asked about for, when not the file's own address. */
 export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null; site?: string };
 
 type SaveHandle = {
@@ -26,12 +25,10 @@ function saveFilePicker(): SaveFilePicker | null {
   return typeof picker === "function" ? picker : null;
 }
 
-/** The desktop app has its own dialog; the web build needs the browser's (Chromium). */
 export function canAskWhereToSave(): boolean {
   return isTauri || saveFilePicker() !== null;
 }
 
-/** The web build's save dialog is on in Settings. */
 function asksWhereToSave(): boolean {
   return !isTauri && saveFilePicker() !== null && useBrowserPrefsStore.getState().askWhereToSave;
 }
@@ -55,20 +52,15 @@ async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   }
 }
 
-/** Whether a file from `url` may be saved; files from websites wait for the user's approval,
- *  remembered for `site` (the file's own address unless given). */
 function approved(url: string | null, name: string, site?: string): Promise<boolean> {
   return url && isWebUrl(url) ? approveDownload(url, name, site ?? url) : Promise.resolve(true);
 }
 
-/** Save a file from the panel and add it to the download history. A file from a website
- *  waits for approval first. `target` is a save location already picked (approval included),
- *  or null for none; left out, the dialog opens here when Settings asks. */
+/** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
   if (target === undefined) {
     if (!(await approved(download.url, download.name, download.site))) return;
-    // The save dialog opens only right after a click, and one that finished later (a slow file,
-    // or one nobody was asked about) would save without it: wait for a click on Save instead.
+    // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
     if (saveNeedsClick()) {
       const locale = getLocale();
       toast(translate("browser.downloadPrompt.ready", { name: download.name }, locale), {
@@ -83,7 +75,6 @@ export async function saveBrowserDownload(download: BrowserDownload, target?: Sa
   await writeDownload(download, target);
 }
 
-/** Write an approved download where Settings says, and add it to the download history. */
 async function writeDownload(
   { blob, name, contentType, url }: BrowserDownload,
   target: SaveHandle | null | undefined,
@@ -154,7 +145,6 @@ export async function saveLinkAs(url: string): Promise<void> {
     if (quick && "error" in quick) throw quick.error;
     const name = quick?.download.name ?? fileNameFromUrl(url);
     try {
-      // Approved before the dialog, which creates the file. Answering is a fresh click for it.
       if (!(await approved(url, name))) throw new DownloadCancelledError();
       target = await pickSaveTarget(name);
     } catch (error) {

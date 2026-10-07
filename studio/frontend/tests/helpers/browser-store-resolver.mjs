@@ -6,12 +6,10 @@ const CHAT_STUB =
   "data:text/javascript," +
   encodeURIComponent("export const useChatArtifactsStore = { getState: () => ({ closeArtifactSurface() {} }) };");
 
-// Messages come back as their keys; the browser stores only need translate() to return a string.
 const I18N_STUB =
   "data:text/javascript," +
   encodeURIComponent("export const getLocale = () => \"en\"; export const translate = (key) => key;");
 
-// Toasts render through the UI kit; a stand-in records them in globalThis.__toasts.
 const TOAST_STUB =
   "data:text/javascript," +
   encodeURIComponent(
@@ -19,7 +17,6 @@ const TOAST_STUB =
       " toast.error = toast.success = toast; export { toast };",
   );
 
-// No network in these tests: the panel's fetches fail loudly if one is attempted.
 const AUTH_STUB =
   "data:text/javascript," +
   encodeURIComponent("export const authFetch = () => { throw new Error(\"no network in tests\"); };");

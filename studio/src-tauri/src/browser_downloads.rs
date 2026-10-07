@@ -1,5 +1,4 @@
-//! Browser panel downloads: the folder they go to, the approval a site download waits for, and
-//! where each one landed so Download history can reveal it. The webview only gets opaque ids.
+//! Browser panel downloads: folder, approval for site downloads, and where each landed. The webview only gets opaque ids.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -20,12 +19,10 @@ const FILE_NAME: &str = "browser-downloads.json";
 const FOLDER_FILE_NAME: &str = "browser-download-folder.json";
 const STAGING_DIR: &str = "browser-download-staging";
 const ASK_HEADER: &str = "x-unsloth-ask";
-/// The web address a panel file came from, for the quarantine mark.
 const SOURCE_HEADER: &str = "x-unsloth-source";
-/// Page downloads a tab may have waiting for an answer; more are refused, so a page can't fill
-/// the disk with staged files while the prompt is ignored.
+/// Per-tab cap on unanswered page downloads, so an ignored prompt can't fill the disk with staged files.
 pub(crate) const MAX_UNANSWERED_PER_TAB: usize = 3;
-/// A prompt nobody answers (the window reloaded, say) counts as Cancel after this.
+/// An unanswered prompt (window reloaded, say) counts as Cancel after this.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
@@ -40,7 +37,6 @@ enum Decision {
     Deny,
 }
 
-/// A page download held in staging until the user answers and it finishes.
 struct Pending {
     tab_id: String,
     url: Url,
@@ -55,10 +51,9 @@ pub struct BrowserDownloads {
     /// Loaded from disk on first use, newest last.
     entries: Mutex<Option<Vec<Entry>>>,
     pending: Mutex<HashMap<String, Pending>>,
-    /// The folder chosen in Settings; loaded on first use, None for the system Downloads.
+    /// None = system Downloads; outer None = not loaded yet.
     folder: Mutex<Option<Option<PathBuf>>>,
     staging_cleared: AtomicBool,
-    /// Held from picking a free name to taking it, so two saves can't pick the same one.
     naming: Mutex<()>,
 }
 
@@ -117,7 +112,6 @@ fn load(path: Option<&Path>) -> Vec<Entry> {
         .unwrap_or_default()
 }
 
-/// Best effort: the list is rebuilt as downloads come and go.
 fn save(path: Option<&Path>, value: &impl Serialize) {
     if let Some(path) = path {
         let _ = write_json(path, value);
@@ -178,8 +172,7 @@ fn path_of(entries: &[Entry], id: &str) -> Option<PathBuf> {
         .map(|entry| entry.path.clone())
 }
 
-/// Save a panel file, in the download folder or where the user picks (the `x-unsloth-ask`
-/// header), and remember it.
+/// Save a panel file in the download folder, or via a dialog when `x-unsloth-ask` is set, and remember it.
 #[tauri::command]
 pub async fn browser_download_save(
     webview: tauri::Webview,
@@ -210,7 +203,7 @@ pub async fn browser_download_save(
     let Some(path) = saved else {
         return Ok(None);
     };
-    // From a website: quarantined like a page download, so Gatekeeper or SmartScreen checks it.
+    // Quarantined like a page download, so Gatekeeper or SmartScreen checks it.
     if let Some(source) = &source {
         crate::browser_webview::mark_downloaded(&path, source);
     }
@@ -284,7 +277,6 @@ fn folder_file<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
         .map(|dir| dir.join(FOLDER_FILE_NAME))
 }
 
-/// The chosen folder while it still exists.
 fn custom_folder<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     let state = app.state::<BrowserDownloads>();
     let mut guard = state.folder.lock().unwrap();
@@ -297,7 +289,6 @@ fn custom_folder<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     folder.clone().filter(|path| path.is_dir())
 }
 
-/// Where downloads go: the folder chosen in Settings, else the system Downloads folder.
 pub(crate) fn download_folder<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     if let Some(folder) = custom_folder(app) {
         return Ok(folder);
@@ -321,7 +312,7 @@ fn folder_info<R: Runtime>(app: &AppHandle<R>) -> Result<DownloadFolder, String>
     })
 }
 
-/// Kept only once it is on disk, so Settings never shows a choice that a restart would lose.
+/// Cached only once written, so Settings never shows a choice a restart would lose.
 fn set_folder<R: Runtime>(app: &AppHandle<R>, folder: Option<PathBuf>) -> Result<(), String> {
     let file = folder_file(app).ok_or_else(|| "Could not find the app data folder.".to_string())?;
     let written = match &folder {
@@ -345,7 +336,7 @@ pub fn browser_download_folder(
     folder_info(&app)
 }
 
-/// Pick the download folder in the system's folder dialog; the webview never names a path.
+/// The webview never names a path: the folder comes from the system dialog.
 #[tauri::command]
 pub async fn browser_download_folder_pick(
     webview: tauri::Webview,
@@ -370,7 +361,6 @@ pub async fn browser_download_folder_pick(
     folder_info(&app).map(Some)
 }
 
-/// Back to the system Downloads folder.
 #[tauri::command]
 pub fn browser_download_folder_reset(
     webview: tauri::Webview,
@@ -381,8 +371,7 @@ pub fn browser_download_folder_reset(
     folder_info(&app)
 }
 
-/// A fresh folder for one page download to land in until it is approved, with its id. The
-/// staging folder is emptied on first use, dropping any a quit left behind.
+/// A fresh staging folder for one page download, with its id; the staging root is emptied on first use after launch.
 pub(crate) fn staging_dir<R: Runtime>(app: &AppHandle<R>) -> Option<(String, PathBuf)> {
     let root = app.path().app_cache_dir().ok()?.join(STAGING_DIR);
     let state = app.state::<BrowserDownloads>();
@@ -395,7 +384,6 @@ pub(crate) fn staging_dir<R: Runtime>(app: &AppHandle<R>) -> Option<(String, Pat
     Some((id, dir))
 }
 
-/// How many of a tab's page downloads still wait for an answer.
 pub(crate) fn unanswered<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> usize {
     app.state::<BrowserDownloads>()
         .pending
@@ -406,8 +394,6 @@ pub(crate) fn unanswered<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> usize 
         .count()
 }
 
-/// Hold a staged page download until `browser_download_decide` answers for it, or until
-/// ANSWER_TIMEOUT refuses it.
 pub(crate) fn add_pending<R: Runtime>(
     app: &AppHandle<R>,
     id: String,
@@ -452,7 +438,6 @@ pub(crate) fn add_pending<R: Runtime>(
     });
 }
 
-/// The staged download at `staged` finished.
 pub(crate) fn finished<R: Runtime>(app: &AppHandle<R>, staged: &Path, success: bool) {
     let id = {
         let state = app.state::<BrowserDownloads>();
@@ -466,7 +451,6 @@ pub(crate) fn finished<R: Runtime>(app: &AppHandle<R>, staged: &Path, success: b
     settle(app, &id);
 }
 
-/// Allow or refuse a page download; `ask` picks its place in a save dialog.
 #[tauri::command]
 pub fn browser_download_decide(
     webview: tauri::Webview,
@@ -490,8 +474,7 @@ pub fn browser_download_decide(
     Ok(())
 }
 
-/// Record the one answer a download gets. A second is refused: after ANSWER_TIMEOUT has denied
-/// it, a late click on Download must not allow it after all.
+/// A second answer is refused: after ANSWER_TIMEOUT denied it, a late Download click must not allow it.
 fn decide(
     pending: &mut HashMap<String, Pending>,
     id: &str,
@@ -507,7 +490,7 @@ fn decide(
     Ok(())
 }
 
-/// Once a download is both answered and finished, move it out of staging or drop it.
+/// Once answered and finished, move the download out of staging or drop it.
 fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
     let entry = {
         let state = app.state::<BrowserDownloads>();
@@ -552,7 +535,7 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
     });
 }
 
-/// Move an approved download to its place; None if the save dialog was cancelled.
+/// None if the save dialog was cancelled.
 async fn deliver<R: Runtime>(
     app: &AppHandle<R>,
     entry: &Pending,
@@ -596,8 +579,7 @@ async fn deliver<R: Runtime>(
     Ok(Some((target, id)))
 }
 
-/// File work off the async runtime's workers: a copy to another volume can take minutes, and
-/// IPC and timers share those workers.
+/// A cross-volume copy can take minutes; keep it off the workers IPC and timers share.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -606,7 +588,6 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| format!("Failed to save the download: {error}"))?
 }
 
-/// Rename, or copy where the target is on another volume.
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     if fs::rename(from, to).is_ok() {
         return Ok(());
@@ -614,8 +595,7 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     copy_into_place(from, to)
 }
 
-/// Copied beside `to` and renamed over it once complete, so a copy that fails (a full or
-/// unplugged drive) leaves no half file, and a file the user chose to replace intact.
+/// Copied beside `to` and renamed over it once complete, so a failed copy leaves no half file and the target intact.
 fn copy_into_place(from: &Path, to: &Path) -> Result<(), String> {
     let failed = |error: std::io::Error| format!("Failed to save {}: {error}", to.display());
     let mut temporary = crate::native_file_dialogs::staged_temp_file(to)?;
@@ -662,7 +642,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let to = dir.path().join("file.zip");
         fs::write(&to, b"kept").unwrap();
-        // A source that can't be read: the file being replaced is untouched, no temp is left.
         assert!(copy_into_place(&dir.path().join("missing.zip"), &to).is_err());
         assert_eq!(fs::read(&to).unwrap(), b"kept");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -676,7 +655,6 @@ mod tests {
     #[test]
     fn a_failed_location_write_is_reported() {
         let dir = tempfile::tempdir().unwrap();
-        // The parent is a file, so the folder can't be made.
         let blocker = dir.path().join("blocker");
         fs::write(&blocker, b"x").unwrap();
         let folder = FolderFile {
@@ -703,7 +681,7 @@ mod tests {
                 finished: None,
             },
         );
-        // The timeout denies it; the prompt's Download click comes later and changes nothing.
+        // A late Download click after the timeout's Deny changes nothing.
         decide(&mut pending, "a", Decision::Deny).unwrap();
         assert!(decide(&mut pending, "a", Decision::Allow { ask: false }).is_err());
         assert_eq!(pending["a"].decision, Some(Decision::Deny));

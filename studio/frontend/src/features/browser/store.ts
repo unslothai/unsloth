@@ -16,8 +16,7 @@ export type BrowserEntry =
       url: string;
       method?: "GET" | "POST";
       body?: string;
-      /** The page that sent the tab here, when a page did (a link, form, script or refresh): a
-       *  file the address turns out to be is downloaded on its behalf. */
+      /** The page that sent the tab here (link, form, script, refresh); a file here downloads on its behalf. */
       from?: string;
     }
   | {
@@ -300,8 +299,7 @@ type BrowserState = {
     request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
     options?: { replace?: boolean },
   ) => void;
-  /** A page sent the tab to `entry`, which turned out to be a file to download: back to that
-   *  page, as a browser stays on it, and out of history. Nothing if the tab has moved on. */
+  /** A page-sent entry that became a download: back to that page and out of history, unless the tab moved on. */
   leaveDownload: (tabId: string, entry: BrowserEntry) => void;
   goBack: (tabId: string) => void;
   goForward: (tabId: string) => void;

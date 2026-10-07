@@ -36,9 +36,7 @@ interface BrowserPrefsState {
   /** Days visits are kept (HISTORY_RETENTION_DAYS); 0 for until cleared. */
   historyRetentionDays: number;
   saveDownloadHistory: boolean;
-  /** A save dialog for each download (in the web build, where the browser offers one). */
   askWhereToSave: boolean;
-  /** Confirm downloads from websites before they're saved. */
   askBeforeDownloading: boolean;
   annotationScreenshots: AnnotationScreenshots;
   setOpenLinksInBrowser: (value: boolean) => void;

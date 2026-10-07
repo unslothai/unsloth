@@ -54,7 +54,6 @@ const RETENTION_LABELS: Record<number, TranslationKey> = {
   1: "browser.retention.days1",
 };
 
-/** Desktop app: where downloads go, picked in the system's folder dialog. */
 function DownloadLocationRow() {
   const t = useT();
   const [folder, setFolder] = useState<DownloadFolder | null>(null);
@@ -95,12 +94,10 @@ function DownloadLocationRow() {
   );
 }
 
-/** Sites with a remembered download answer, each changeable or removable. */
 function DownloadSiteRows() {
   const t = useT();
   const sites = useDownloadSitesStore((state) => state.sites);
   const { setSite: setDownloadSite } = useDownloadSitesStore.getState();
-  // Origins, as they are kept (https://example.com).
   const origins = Object.keys(sites).sort();
   return (
     <SettingsRow

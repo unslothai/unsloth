@@ -373,7 +373,6 @@ def _modules(
 
 
 def test_self_contained_module_scripts_are_inlined(monkeypatch):
-    # Module scripts load with CORS, which the sandbox's null origin fails on most hosts.
     _modules(
         monkeypatch,
         {
@@ -400,7 +399,6 @@ def test_self_contained_module_scripts_are_inlined(monkeypatch):
         (None, b'export * from "./c.js"', "text/javascript"),
         # Resolves against the module's own URL, which inlining would change to the page's.
         (None, b'new Worker(new URL("./w.js", import.meta.url))', "text/javascript"),
-        # A comment between the keyword and the specifier is still an import.
         (None, b'import /* webpackChunkName: "lazy" */ ("./chunk.js")', "text/javascript"),
         (None, b'import//x\n("./chunk.js")', "text/javascript"),
         (None, b'export { a } from /* re-export */ "./a.js"', "text/javascript"),
@@ -447,7 +445,6 @@ def _sri(algorithm, body):
 
 
 def test_an_inlined_module_still_has_its_integrity_checked(monkeypatch):
-    # Inlining drops the integrity attribute, so a tampered file must keep its tag (and fail there).
     _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
     tag = '<script type="module" src="/m.js" integrity="{}"></script>'
     good = tag.format(f"{_sri('sha256', b'other')} {_sri('sha384', b'ready()')}")
@@ -457,7 +454,6 @@ def test_an_inlined_module_still_has_its_integrity_checked(monkeypatch):
 
 
 def test_modules_any_origin_may_load_keep_their_tag(monkeypatch):
-    # The sandbox loads these itself, and the browser caches them.
     _modules(
         monkeypatch,
         {"https://cdn.example/m.js": (None, b"ready()", "application/javascript")},
@@ -495,7 +491,6 @@ def test_a_module_is_fetched_once_for_many_pages(monkeypatch):
     ],
 )
 def test_a_module_the_host_says_to_recheck_is_fetched_again(monkeypatch, cache_control, age):
-    # As a browser would revalidate it: a deploy at the same URL must show on the next load.
     fetched = _modules(
         monkeypatch,
         {"https://example.com/m.js": (None, b"ready()", "text/javascript")},
@@ -543,7 +538,6 @@ def test_a_module_fetch_that_raises_leaves_the_page_alone(monkeypatch):
 
 
 def test_script_attributes_are_read_from_the_tag_not_from_values(monkeypatch):
-    # "src" and "type" written inside another attribute's value aren't the tag's own.
     fetched = _modules(
         monkeypatch,
         {
@@ -579,7 +573,6 @@ def test_script_attributes_are_read_from_the_tag_not_from_values(monkeypatch):
     ],
 )
 def test_a_module_tag_written_as_text_is_left_alone(monkeypatch, wrap):
-    # Inside these the tag is text the page shows, and inlined code could close the element.
     fetched = _modules(
         monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
     )
@@ -589,7 +582,6 @@ def test_a_module_tag_written_as_text_is_left_alone(monkeypatch, wrap):
 
 
 def test_text_elements_in_script_code_dont_hide_later_modules(monkeypatch):
-    # The parser reads a script's code as text: an unclosed "<style" in it opens nothing.
     _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
     page = (
         "<script>var css = '<style' + '>'; var t = '<textarea>';</script>"
@@ -630,7 +622,6 @@ def test_a_module_tag_inside_an_attribute_value_is_left_alone(monkeypatch, page)
 
 
 def test_a_module_redirected_to_plain_http_keeps_its_tag(monkeypatch):
-    # Inlined, code fetched over http would run as if it came over https.
     def fake_fetch(url, **kwargs):
         kwargs["meta_out"]["url"] = "http://example.com/m.js"
         return None, b"ready()", "text/javascript"
@@ -649,7 +640,6 @@ def test_a_module_redirected_to_plain_http_keeps_its_tag(monkeypatch):
     ],
 )
 def test_a_module_tag_in_a_template_is_left_alone(monkeypatch, page):
-    # Template content is an inert document: its scripts don't run, and code may clone them.
     fetched = _modules(
         monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
     )
@@ -665,7 +655,6 @@ def test_a_module_after_a_template_is_still_inlined(monkeypatch):
 
 
 def test_a_redirected_module_is_not_cached(monkeypatch):
-    # Only the final response's headers are seen; the redirect may have been no-store.
     fetched = []
 
     def fake_fetch(url, **kwargs):

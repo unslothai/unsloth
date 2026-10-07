@@ -51,7 +51,6 @@ type NativeEvent =
       success: boolean;
       downloadId: string | null;
     }
-  /** `site`: the page showing when the download started. */
   | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
@@ -114,21 +113,15 @@ function listenOnce(): void {
   );
 }
 
-/** The file downloads into staging meanwhile; it reaches the download folder only if allowed.
- *  Always answered: an unanswered download would sit in staging until the app quits. */
+/** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name } = event;
   const entry = tab ? currentEntry(tab) : null;
-  // The page that started it is the site asking, as in a browser (blob: and data: downloads have
-  // no site of their own). Taken when it started: the tab may show another site by now, whose
-  // remembered answer must not cover this one. A blob: page counts as the site that made it.
-  // Before the view showed a page of its own (site ""), or on one with no web origin of its own
-  // (about:, data:), it is the page that opened the tab, else the address the tab was sent to.
+  // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
   void decided
     .then(async (allow) => {
-      // Refused once the download's prompt has expired (denied): then nothing is downloading.
       await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
       if (allow) toast(t("browser.native.downloading", { name }));
     })
@@ -183,7 +176,6 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        // The opener asks for any download the new tab turns out to be.
         store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {

@@ -154,9 +154,7 @@ struct ViewsState {
     polling: bool,
     /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
     muted: HashSet<String>,
-    /// Tabs whose view shows a page it loaded itself, since it opened or the app last sent it to
-    /// an address. Until then a download comes from the address asked for (or the page that
-    /// opened the tab), not from whatever the view holds (about:blank, or the address itself).
+    /// Tabs whose view committed a page of its own since it opened or was last sent somewhere; until then a download's site is the address asked for (or the opener).
     committed: HashSet<String>,
 }
 
@@ -240,13 +238,10 @@ enum BrowserEvent {
         /// A finished download's handle for Download history (browser_downloads.rs).
         download_id: Option<String>,
     },
-    /// A page download waits in staging for the user to allow it (`browser_download_decide`).
     DownloadPrompt {
         tab_id: String,
         url: String,
-        /// The page showing when the download started: the site a remembered answer is for,
-        /// whatever the tab shows by the time the prompt is handled. "" when the view had not
-        /// shown a page of its own yet.
+        /// Page showing when the download started (the site a remembered answer is for); "" before the view showed one.
         site: String,
         name: String,
         id: String,
@@ -534,7 +529,6 @@ fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
     let _ = app.emit_to(MAIN_WEBVIEW, EVENT, event);
 }
 
-/// A page download reached its place; the path itself stays here.
 pub(crate) fn emit_download_done<R: Runtime>(
     app: &AppHandle<R>,
     tab_id: &str,
@@ -1016,7 +1010,6 @@ fn create_view<R: Runtime>(
             let app = webview.app_handle();
             match event {
                 DownloadEvent::Requested { url, destination } => {
-                    // Prompts nobody answered yet: refuse more rather than stage them all.
                     if crate::browser_downloads::unanswered(app, &download_tab)
                         >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
                     {
@@ -1027,7 +1020,6 @@ fn create_view<R: Runtime>(
                         emit_download_failed(app, &download_tab, &url, &name);
                         return false;
                     }
-                    // Lands in staging until the user allows it (browser_downloads.rs).
                     let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
                         return false;
                     };
@@ -1075,8 +1067,7 @@ fn create_view<R: Runtime>(
                         url.clone(),
                         path,
                     );
-                    // The page that started it; "" before the view has shown one of its own,
-                    // when the frontend knows better (the tab's address, or its opener).
+                    // "" before the view showed its own page: the frontend knows the tab's address or opener.
                     let committed = app
                         .state::<BrowserViews>()
                         .inner
@@ -1336,7 +1327,6 @@ pub fn browser_view_navigate<R: Runtime>(
     require_main(&webview)?;
     let url = parse_page_url(&url)?;
     let page = view(webview.app_handle(), &tab_id)?;
-    // Sent by the app (address bar, bookmark): not a download the last page started.
     webview
         .state::<BrowserViews>()
         .inner

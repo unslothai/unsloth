@@ -46,7 +46,6 @@ export function browserTabType(name: string, contentType: string): string | null
   return SAFE_TAB_TYPE.test(contentType) ? contentType : null;
 }
 
-/** Whether the panel shows a file rather than asking to download it. */
 export function canShowFile(name: string, contentType: string): boolean {
   if (documentKind(name, contentType) || mediaKind(name, contentType)) return true;
   return TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType;
