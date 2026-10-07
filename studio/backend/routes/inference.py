@@ -45935,7 +45935,16 @@ async def load_diffusion_model_gated(
     # deferred to the launch below, since the validation in between 400s without moving a byte.
     _media_repos_to_record = [
         ref
-        for ref in (request.model_path, request.base_repo)
+        for ref in (
+            request.model_path,
+            request.base_repo,
+            # Hub-hosted text-encoder / VAE files are fetched with this request's token too.
+            *(
+                r
+                for r in account_access.media_component_file_references(request)
+                if r and not Path(r).is_absolute()
+            ),
+        )
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
     from core.inference.diffusion import (
@@ -46210,6 +46219,7 @@ async def load_diffusion_model_gated(
             request.model_path,
             request.base_repo,
             *account_access.media_adapter_references(request),
+            *(r for r in account_access.media_component_file_references(request) if r),
         )
         reset_media_load_progress("image")
         return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))

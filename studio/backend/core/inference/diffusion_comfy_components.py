@@ -161,7 +161,11 @@ def parse_component_file(
         except OSError:
             root = None
     local: Optional[Path] = None
-    if _path_shaped(spec):
+    if root is not None and not _path_shaped(spec) and (root / spec).is_file():
+        local = (
+            root / spec
+        )  # an existing file under model_path wins over the owner/repo/file reading
+    elif _path_shaped(spec):
         local = Path(spec).expanduser()
         if not local.is_absolute():
             if root is None:
@@ -930,11 +934,12 @@ def hub_header(ref: ComponentFileRef, hf_token: Optional[str]) -> dict:
     """A Hub file's safetensors header without downloading its weights."""
     from huggingface_hub import HfApi
 
-    meta = HfApi().get_safetensors_metadata(ref.repo_id, ref.filename, token = hf_token)
-    files = getattr(meta, "files_metadata", None) or {}
-    info = files.get(ref.filename) or next(iter(files.values()), None)
-    if info is None:
-        raise ComponentFileError(f"'{ref.name}': no safetensors header on the Hub")
+    try:
+        info = HfApi().parse_safetensors_file_metadata(ref.repo_id, ref.filename, token = hf_token)
+    except Exception as exc:  # noqa: BLE001
+        raise ComponentFileError(
+            f"'{ref.name}': cannot read its safetensors header on the Hub: {exc}"
+        )
     return {
         name: {"dtype": t.dtype, "shape": list(t.shape)} for name, t in (info.tensors or {}).items()
     }

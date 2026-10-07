@@ -59,6 +59,72 @@ def test_parse_local_absolute_relative_and_bare(tmp_path):
     assert bare.local_path.endswith("vae_here.safetensors")
 
 
+def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):
+    dit_dir = tmp_path / "models" / "diffusion_models"
+    two = _save(dit_dir / "components" / "clip_l.safetensors", {"x": torch.zeros(1)})
+    three = _save(dit_dir / "unsloth" / "nested" / "ae.safetensors", {"x": torch.zeros(1)})
+    trusted = lambda r: r.startswith("unsloth/")
+    assert C.parse_component_file(
+        "components/clip_l.safetensors", model_path = str(dit_dir), trusted_repo = trusted
+    ).local_path == str(Path(two).resolve())
+    # A local file shadows the owner/repo/file reading of the same string.
+    assert C.parse_component_file(
+        "unsloth/nested/ae.safetensors", model_path = str(dit_dir), trusted_repo = trusted
+    ).local_path == str(Path(three).resolve())
+    hub = C.parse_component_file(
+        "unsloth/other/ae.safetensors", model_path = str(dit_dir), trusted_repo = trusted
+    )
+    assert (hub.repo_id, hub.filename) == ("unsloth/other", "ae.safetensors")
+
+
+def test_hub_header_reads_one_file(monkeypatch):
+    calls = []
+
+    class _Api:
+        def parse_safetensors_file_metadata(
+            self,
+            repo_id,
+            filename,
+            *,
+            token = None,
+        ):
+            calls.append((repo_id, filename, token))
+            tensor = types.SimpleNamespace(dtype = "BF16", shape = [4, 8])
+            return types.SimpleNamespace(tensors = {"encoder.block.0.w": tensor})
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    ref = C.ComponentFileRef(
+        spec = "unsloth/r/te.safetensors", repo_id = "unsloth/r", filename = "te.safetensors"
+    )
+    assert C.hub_header(ref, "tok") == {"encoder.block.0.w": {"dtype": "BF16", "shape": [4, 8]}}
+    assert calls == [("unsloth/r", "te.safetensors", "tok")]
+
+
+def test_account_access_resolves_component_references(tmp_path):
+    from hub.services.models import account_access
+
+    models = tmp_path / "ComfyUI" / "models"
+    te = _save(models / "text_encoders" / "clip_l.safetensors", {"x": torch.zeros(1)})
+    dit_dir = models / "diffusion_models"
+    dit_dir.mkdir(parents = True)
+    request = types.SimpleNamespace(
+        model_path = str(dit_dir),
+        text_encoder_file = ["../text_encoders/clip_l.safetensors", "unsloth/r/te.safetensors"],
+        vae_file = str(models / "vae" / "ae.safetensors"),
+    )
+    assert account_access.media_component_file_references(request) == [
+        str(Path(te).resolve()),
+        "unsloth/r",
+        str((models / "vae" / "ae.safetensors").resolve()),
+    ]
+    hub_model = types.SimpleNamespace(
+        model_path = "unsloth/FLUX.1-schnell", text_encoder_file = "../x.safetensors", vae_file = None
+    )
+    assert account_access.media_component_file_references(hub_model) == [None]
+
+
 def test_parse_refuses_non_safetensors_missing_and_untrusted(tmp_path):
     with pytest.raises(C.ComponentFileError, match = "not a .safetensors"):
         C.parse_component_file(str(tmp_path / "t5.gguf"))
