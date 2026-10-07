@@ -301,7 +301,8 @@ def test_clef_fine_tune_exports_and_serves_like_pytorch(tmp_path):
     floor = {"choice": 0.25, "score": 0.25, "noul": 0.25}
     assert read_decision_temperatures(export_dir / "model-BF16.gguf") == pytest.approx(floor)
     results = _serve_and_compare(export_dir, data, reference, rows, "clef_floor", tmp_path)
-    _assert_parity(results, "BF16", 0.01)
+    # Temperature 0.25 multiplies logit rounding by 4 (measured 0.0087 and 0.0105); the control drifts > 0.1.
+    _assert_parity(results, "BF16", 0.02)
 
     # Negative control: the same file without the keys, as the converter alone writes it.
     write_decision_temperatures(export_dir / "model-BF16.gguf", {})
