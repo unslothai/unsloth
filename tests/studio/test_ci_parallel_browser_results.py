@@ -18,7 +18,7 @@ pytestmark = pytest.mark.skipif(not shutil.which("bash"), reason = "requires bas
 
 @pytest.mark.parametrize("failing", ["", "chromium", "firefox"])
 def test_browser_children_are_isolated_and_both_results_gate(tmp_path, failing):
-    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["windows"]["steps"]
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["windows"]["steps"]
     script = next(
         s["run"]
         for s in steps
