@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import HTTPException
+from markdown_it import MarkdownIt
 
 from core import research_runs
 from core.research.citations import (
@@ -266,6 +267,19 @@ def test_citation_title_strips_brackets_for_catalog_and_citation():
     )
     assert _citation_title({"title": "[]"}, "https://x/a") == "https://x/a"
     assert _citation_title({}, "https://x/a") == "https://x/a"
+
+
+def test_citation_title_with_a_pipe_keeps_its_table_row_intact():
+    report = "| Model | Context |\n|---|---|\n| Qwen3 [blog](https://q.example/) | 128K |"
+    sources = [{"url": "https://q.example/", "title": "Qwen3: Think Deeper | Qwen"}]
+    tokens = MarkdownIt("commonmark").enable("table").parse(_validate_report(report, sources, []))
+    body = tokens[[token.type for token in tokens].index("tbody_open") :]
+    row = [token.children for token in body if token.type == "inline"]
+    assert len(row) == 2
+    assert [child.type for child in row[0]] == ["text", "link_open", "text", "link_close"]
+    assert row[0][1].attrGet("href") == "https://q.example/"
+    assert row[0][2].content == "Qwen3: Think Deeper | Qwen"
+    assert row[1][0].content == "128K"
 
 
 def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
