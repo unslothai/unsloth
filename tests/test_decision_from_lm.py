@@ -132,7 +132,6 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
     )
     assert getattr(model, "is_clef", False)
     assert model.head.hidden_norm.weight.dtype == torch.float32
-    # The same seed gives the same fresh head.
     again, _ = FastDecisionModel.from_pretrained(
         base, decision_head = "clef", head_config = {**HEAD, "hidden_size": hidden}, max_seq_length = 512
     )
@@ -178,8 +177,7 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
         "records": [record["record"]],
     }
     device = next(model.parameters()).device
-    # Under the autocast evaluate and serving use: an earlier load in the process (any Clef checkpoint)
-    # leaves UNSLOTH_HIGH_PRECISION_LAYERNORM set, so this backbone has float32 norms beside bf16 weights.
+    # An earlier Clef load leaves UNSLOTH_HIGH_PRECISION_LAYERNORM set: float32 norms need autocast.
     amp_dtype = decision._clef_amp_dtype(model, device)
     autocast = torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None)
     with torch.no_grad(), autocast:
@@ -191,11 +189,8 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
                 for k, v in batch.items()
             }
         )
-    # Served logits: the save folds 1 / T into the head and stores the head and the merged backbone
-    # in bf16, so the reloaded logits match ours / T up to bf16 rounding, which grows with their scale.
-    # Training is not bit-reproducible on GPU: over 30 B200 runs (trained with and without bf16
-    # autocast) the error reached 5.5% of the scale, failing a 3% bound 3 times; T stayed <= 0.87,
-    # where a fold left out or applied twice is off by >= 13%.
+    # The save folds 1 / T into the bf16 head; GPU training is not bit-reproducible, so the bound is relative
+    # to the logit scale (30 B200 runs peaked at 5.5%; a fold left out or doubled is off by >= 13%).
     ours, theirs = ours.float().cpu(), theirs.float().cpu()
     mask = ours > -1e3
     expected = ours[mask] / head_temperature
@@ -231,8 +226,7 @@ def test_float32_norms_train_without_a_precision_flag(tmp_path, monkeypatch):
 
     if not has_real_cuda():
         pytest.skip("the CPU path loads without Unsloth's layernorm upcast")
-    # Gemma 3 / 4, gpt-oss and Qwen3.5 loads set this, and it stays set for the next load in the
-    # process, so a Qwen3 loaded after a Clef checkpoint gets float32 norms beside bf16 weights.
+    # Gemma 3 / 4, gpt-oss and Qwen3.5 loads set this and it outlives them.
     monkeypatch.setenv("UNSLOTH_HIGH_PRECISION_LAYERNORM", "1")
     model, processor = FastDecisionModel.from_pretrained(
         TINY_QWEN3, decision_head = "clef", head_config = {**HEAD, "hidden_size": 8}, max_seq_length = 512

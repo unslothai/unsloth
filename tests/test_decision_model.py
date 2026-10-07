@@ -1107,11 +1107,8 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
-    # Saved in bf16, so the reload rounds the trained weights. The folded head serves trained / folded,
-    # and training is not bit-reproducible on GPU, so folded (0.28 to 0.78 over 10 runs) and with it
-    # the logit scale vary per run; bf16 rounding grows with that scale, so the bound is relative to
-    # it. Over 10 B200 runs the error peaked at 1.6% of the scale (a fixed 0.02 bound on the served
-    # probabilities reached 0.018 in 15); a fold left out or applied twice is off by >= 20%.
+    # bf16 reload rounding grows with the per-run logit scale, so the bound is relative (10 B200 runs
+    # peaked at 1.6%); a fold left out or doubled is off by >= 20%.
     mask = trained > -1e3
     expected = (trained / folded).float()[mask]
     error = (again.float()[mask] - expected).abs().max().item()
