@@ -326,8 +326,17 @@ export function useLlamaUpdateCheck({
 
   const readStatus = useCallback(async (forceRefresh = false) => {
     const sequence = ++statusReadRef.current.issued;
+    const suppressionAtRequest = suppressionRef.current;
     const next = await fetchStatus(forceRefresh);
     if (!next || sequence < statusReadRef.current.accepted) return null;
+    if (
+      next.job.state === "running" &&
+      next.job.operation !== "switch" &&
+      suppressionRef.current !== null &&
+      suppressionRef.current !== suppressionAtRequest
+    ) {
+      return null;
+    }
     statusReadRef.current.accepted = sequence;
     return next;
   }, []);
@@ -595,6 +604,7 @@ export function useLlamaUpdateCheck({
 
   const apply = useCallback(async (): Promise<LlamaApplyResult> => {
     if (applying) return { ok: false, error: "already running" };
+    const suppressionAtRequest = suppressionRef.current;
     setApplying(true);
     setVisible(true);
     let action: {
@@ -647,7 +657,9 @@ export function useLlamaUpdateCheck({
 
     if (
       actionJob.operation !== "switch" &&
-      (action?.started === true || actionJob.state === "running")
+      (action?.started === true || actionJob.state === "running") &&
+      (suppressionRef.current === null ||
+        suppressionRef.current === suppressionAtRequest)
     ) {
       clearSuppression();
     }
