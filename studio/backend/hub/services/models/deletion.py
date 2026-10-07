@@ -724,6 +724,26 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     return None
 
 
+def _decisions_blocks_delete(repo_id: Optional[str] = None) -> Optional[str]:
+    from core.systemone import catalog, runtime
+
+    held = runtime.status()
+    checkpoints = (
+        catalog.NATIVE_CHECKPOINTS if held.get("backend") == "llama.cpp" else catalog.CHECKPOINTS
+    )
+    checkpoint = checkpoints.get(held.get("loaded_model"))
+    if checkpoint is not None and (
+        repo_id is None or _loaded_id_matches_repo(checkpoint.source, repo_id)
+    ):
+        return "Unload the Decision API model before deleting its cache"
+    if any(
+        repo_id is None or _loaded_id_matches_repo(source, repo_id)
+        for source in runtime.loading_repo_ids()
+    ):
+        return "A Decision API model is loading; wait or unload it before deleting its cache"
+    return None
+
+
 def any_model_load_blocks_cache_clear() -> Optional[str]:
     """The refusal detail if ANY inference backend is holding a cached model, else None.
 
@@ -736,6 +756,8 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
     anything this process can see. A backend that IS reachable and raises while being asked is a
     different matter, and the caller fails closed on it rather than unlink weights blindly.
     """
+    if detail := _decisions_blocks_delete():
+        return detail
     try:
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
@@ -927,7 +949,11 @@ async def delete_cached_model_response(
             return "Unload the model before deleting"
         if _audio_cpp_blocks_delete(repo_id):
             return "Unload the audio model before deleting"
-        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+        return (
+            _decisions_blocks_delete(repo_id)
+            or _diffusion_blocks_delete(repo_id)
+            or _video_blocks_delete(repo_id)
+        )
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)

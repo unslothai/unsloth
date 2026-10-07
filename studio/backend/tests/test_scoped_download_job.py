@@ -36,6 +36,7 @@ from fastapi import HTTPException
 from hub.schemas.downloads import DownloadModelRequest, DownloadStartResponse
 from hub.services import download_lifecycle
 from hub.services.models import downloads as dl
+from hub.utils import download_registry
 from hub.utils.paths import is_valid_gguf_variant
 
 
@@ -43,6 +44,8 @@ FILES = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
 
 
 REPO = "black-forest-labs/FLUX.1-dev"
+PINNED_REVISION = "a" * 40
+OTHER_REVISION = "b" * 40
 
 
 @pytest.fixture(autouse = True)
@@ -123,13 +126,14 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch, tmp_path):
     monkeypatch.setattr("huggingface_hub.utils.get_token_to_send", lambda token: None)
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
 
-    result = asyncio.run(dl.download_model_response(_request()))
+    result = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
     assert result["accepted"] is True
     scope_variant = dl._scope_variant("diffusion")
     assert result["job_key"].endswith(scope_variant)
 
     args = spawned["args"]
     assert "--variant" in args and args[args.index("--variant") + 1] == scope_variant
+    assert "--revision" in args and args[args.index("--revision") + 1] == PINNED_REVISION
     manifest_path = args[args.index("--files-json") + 1]
     assert json.loads(Path(manifest_path).read_text(encoding = "utf-8")) == FILES
     Path(manifest_path).unlink(missing_ok = True)
@@ -150,13 +154,15 @@ def test_scoped_files_survive_into_the_registry(monkeypatch):
     monkeypatch.setattr(dl._registry, "claim", _spy_claim)
     monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
 
-    asyncio.run(dl.download_model_response(_request()))
+    asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
     assert captured["scoped_files"] == FILES
+    assert captured["revision"] == PINNED_REVISION
 
     metadata = dl._registry.get_job_metadata(
         dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     )
     assert metadata is not None and list(metadata.scoped_files) == FILES
+    assert metadata.revision == PINNED_REVISION
 
 
 def test_files_manifest_round_trips():
@@ -193,6 +199,37 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
         assert same["accepted"] is True and same["job_key"] == key
     finally:
         dl._registry.set_job(key, "complete")
+
+
+def test_a_different_pinned_revision_is_not_adopted(monkeypatch):
+    _shared_setup_1(monkeypatch)
+
+    key = dl._download_job_key(REPO, dl._scope_variant("diffusion"))
+    try:
+        first = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
+        assert first["accepted"] is True
+
+        with pytest.raises(HTTPException) as other_revision:
+            asyncio.run(dl.download_model_response(_request(revision = OTHER_REVISION)))
+        assert other_revision.value.status_code == 409
+        assert "different revision" in other_revision.value.detail
+
+        # Commit SHAs are case-insensitive, so the same immutable object still adopts.
+        same = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION.upper())))
+        assert same["accepted"] is True and same["attached"] is True
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
+def test_pinned_revision_needs_metadata_to_adopt_an_active_scope():
+    registry = download_registry.DownloadRegistry()
+    key = dl._download_job_key(REPO, dl._scope_variant("diffusion"))
+    assert registry.claim(key, download_registry.TRANSPORT_HTTP) == (True, "running")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_HTTP,
+        revision = PINNED_REVISION,
+    ) == (False, "revision_mismatch")
 
 
 def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
@@ -237,13 +274,24 @@ def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
         def poll(self):
             return None
 
-    monkeypatch.setattr(download_lifecycle, "spawn_worker", lambda *a, **k: _Proc())
+    spawned: dict = {}
+
+    def _spawn_worker(args, *_args, **_kwargs):
+        spawned["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", _spawn_worker)
     monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
 
     key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     try:
         # The retry only exists for a job that started on XET.
-        assert asyncio.run(dl.download_model_response(_request(use_xet = True)))["accepted"] is True
+        assert (
+            asyncio.run(
+                dl.download_model_response(_request(use_xet = True, revision = PINNED_REVISION))
+            )["accepted"]
+            is True
+        )
 
         retried = download_lifecycle._try_http_retry(
             dl._registry,
@@ -257,11 +305,14 @@ def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
             watch_name = "test",
         )
         assert retried is True
+        assert "--revision" in spawned["args"]
+        assert spawned["args"][spawned["args"].index("--revision") + 1] == PINNED_REVISION
 
         metadata = dl._registry.get_job_metadata(key)
         assert metadata is not None and list(metadata.scoped_files) == FILES
+        assert metadata.revision == PINNED_REVISION
         # And the retried job is still adoptable by the page that asked for those files.
-        again = asyncio.run(dl.download_model_response(_request()))
+        again = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
         assert again["accepted"] is True and again["job_key"] == key
     finally:
         dl._registry.set_job(key, "complete")
@@ -334,13 +385,14 @@ def test_active_downloads_publish_the_scoped_file_list(monkeypatch):
 
     key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     try:
-        asyncio.run(dl.download_model_response(_request()))
+        asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
         rows = download_lifecycle.active_download_refs(
             dl._registry, "black-forest-labs/FLUX.1-dev", with_variant = True
         )
         scoped = [r for r in rows if r.variant == "@diffusion"]
         assert scoped, f"no scoped row in {rows}"
         assert list(scoped[0].files or []) == FILES
+        assert scoped[0].revision == PINNED_REVISION
     finally:
         dl._registry.set_job(key, "complete")
 

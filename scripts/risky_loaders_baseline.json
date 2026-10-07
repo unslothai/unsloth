@@ -251,6 +251,14 @@
       "reason": "Prefix-bounded to core.inference.<gallery>; the name comes from the fixed _GALLERIES table."
     },
     {
+      "file": "studio/backend/core/systemone/clef_worker.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "83de516e6f1182d5",
+      "count": 1,
+      "reason": "Loads only Studio's vendored Apache Clef adapter at a fixed package-relative path after checking its audited SHA-256; no request, model-cache or downloaded Python code supplies the path."
+    },
+    {
       "file": "studio/backend/core/systemone/laya_runtime.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",

@@ -92,6 +92,60 @@ def test_a_dangling_symlink_does_not_count_as_present(offline, capsys):
     assert "incomplete" in capsys.readouterr().err
 
 
+def test_pinned_scoped_download_uses_the_commit_for_metadata_manifest_and_snapshot(
+    monkeypatch, tmp_path
+):
+    revision = "a" * 40
+    captured: dict = {}
+    expected_files = [
+        SimpleNamespace(rfilename = rel, size = 7, lfs = {"sha256": rel.replace("/", "-")})
+        for rel in FILES
+    ]
+
+    def _metadata(
+        repo_id,
+        _token,
+        requested_revision = None,
+    ):
+        captured["metadata"] = (repo_id, requested_revision)
+        return SimpleNamespace(sha = revision, siblings = expected_files)
+
+    monkeypatch.setattr(hf_download, "_model_info_with_retry", _metadata)
+    monkeypatch.setattr(hf_download, "_protected_blob_hashes", lambda: frozenset())
+    monkeypatch.setattr(hf_download, "_preflight_disk_space", lambda *a, **k: None)
+    monkeypatch.setattr(hf_download, "_reuse_unchanged_files", lambda *a, **k: [])
+    monkeypatch.setattr(
+        hf_download, "_verify_completed_download", lambda *a, **k: captured.update(verify = (a, k))
+    )
+
+    import hub.utils.download_registry as registry_mod
+    import huggingface_hub
+    from hub.utils import download_manifest
+
+    monkeypatch.setattr(registry_mod, "prepare_cache_for_transport", lambda *a, **k: 0)
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *a, **k: None)
+    monkeypatch.setattr(
+        download_manifest,
+        "write_manifest",
+        lambda *a, **k: captured.update(manifest = (a, k)) or True,
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda **kwargs: captured.update(snapshot = kwargs) or str(tmp_path),
+    )
+
+    hf_download._download_scoped_snapshot(
+        "Org/Model", "@systemone", list(FILES), None, "http", revision = revision
+    )
+
+    assert captured["metadata"] == ("Org/Model", revision)
+    assert captured["snapshot"]["revision"] == revision
+    assert captured["manifest"][1] == {"commit_hash": revision, "metadata_derived": True}
+    assert captured["verify"][1]["expected_commit"] == revision
+
+
 def test_disk_space_refusal_reports_decimal_gigabytes(monkeypatch, tmp_path, capsys):
     import hub.utils.download_registry as registry_mod
     import hub.utils.hf_cache_state as cache_state_mod

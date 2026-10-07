@@ -58,8 +58,9 @@ schema. External providers always get the full listing.
 
 When the Decision API is on (**Settings → API**), the chat's MCP menu lists
 **Unsloth Decisions**. Enable it and a tool-capable chat model can call `decide`,
-which asks the local Laya model the same typed questions `POST /v1/systemone`
+which asks the selected decision backend the same typed questions `POST /v1/systemone`
 answers (`noul`, `choice` and `score`), with the model chosen in Settings.
+See [local Decisions models and their media limits](DECISIONS.md).
 
 Other MCP clients reach the same tool at `http://127.0.0.1:8888/mcp/decisions/`
 (use the actual Unsloth port). It takes the credentials `/v1/systemone` takes, so

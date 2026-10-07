@@ -219,9 +219,14 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
 _RESOLVED_COMMITS: dict[str, str] = {}
 
 
-def _model_info_with_retry(repo_id: str, hf_token: str | None):
+def _model_info_with_retry(
+    repo_id: str,
+    hf_token: str | None,
+    revision: str | None = None,
+):
     from huggingface_hub import model_info as hf_model_info
 
+    revision = (revision or "").strip() or None
     info = _retry_metadata_fetch(
         repo_id,
         lambda timeout: _metadata_read(
@@ -230,6 +235,7 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
             repo_id,
             timeout = timeout,
             files_metadata = True,
+            **({"revision": revision} if revision is not None else {}),
         ),
         label = "Metadata",
     )
@@ -302,12 +308,17 @@ def _verify_completed_download(
     snapshot_path: str,
     *,
     metadata_unavailable: bool = False,
+    expected_commit: str | None = None,
 ) -> None:
     """Verify every manifest file is on disk at its declared size, exiting nonzero with a diagnostic if not. No-op when no manifest exists: the manifest write is best-effort, so absence means "verification unavailable, trust snapshot_download's exit code"."""
     from hub.utils import download_manifest
 
     manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
     if manifest is None:
+        return
+    if expected_commit is not None and (
+        not manifest.metadata_derived or manifest.commit_hash != expected_commit
+    ):
         return
     result = download_manifest.verify_against_disk(
         manifest,
@@ -815,6 +826,7 @@ def _download_scoped_snapshot(
     hf_token: str | None,
     mode: str,
     tqdm_class: type | None = None,
+    revision: str | None = None,
 ) -> None:
     """Fetch exactly ``files`` from ``repo_id``, keyed under ``scope``. For consumers that read a deliberate subset of a repo (the diffusion loader skips the packaged root single, transformer/ shards and fp16 twins). Keyed apart from the repo's full snapshot so neither manifest describes the other, and the repo is not later judged partial against expectations it was never meant to meet."""
     from huggingface_hub import HfApi, snapshot_download
@@ -822,9 +834,10 @@ def _download_scoped_snapshot(
     from hub.utils import download_manifest
     from hub.utils.download_manifest import ExpectedFile
 
+    revision = (revision or "").strip() or None
     wanted = set(files)
     try:
-        info = _model_info_with_retry(repo_id, hf_token)
+        info = _model_info_with_retry(repo_id, hf_token, revision)
     except Exception as e:
         print(
             f"metadata unavailable for scoped download of {repo_id} " f"({type(e).__name__}: {e})",
@@ -834,6 +847,14 @@ def _download_scoped_snapshot(
 
     expected_files: list[ExpectedFile] = []
     blob_hashes: frozenset[str] = frozenset()
+    if revision is not None:
+        existing = download_manifest.read_manifest("model", repo_id, scope)
+        if existing is not None and (
+            not existing.metadata_derived or existing.commit_hash != revision
+        ):
+            # State is keyed by scope, not revision. Do not let an old scope manifest
+            # prove the pinned snapshot before this worker has attested the new one.
+            download_manifest.delete_manifest("model", repo_id, scope)
     if info is not None:
         siblings = [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
         # Every requested file must resolve: dropping an unmatched name would shrink the manifest to the survivors, and snapshot_download also succeeds when an allow pattern matches nothing.
@@ -856,7 +877,25 @@ def _download_scoped_snapshot(
         from hub.utils.snapshot_filters import blob_hashes_for_siblings
 
         blob_hashes = blob_hashes_for_siblings(siblings)
-        download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
+        if revision is not None:
+            resolved = getattr(info, "sha", None)
+            if isinstance(resolved, str) and resolved.strip().lower() != revision:
+                print(
+                    f"Metadata for {repo_id} did not resolve pinned revision {revision}.",
+                    file = sys.stderr,
+                )
+                sys.exit(1)
+            download_manifest.write_manifest(
+                "model",
+                repo_id,
+                scope,
+                expected_files,
+                mode,
+                commit_hash = revision,
+                metadata_derived = True,
+            )
+        else:
+            download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
 
     download_manifest.clear_cancel_marker("model", repo_id, scope)
     purged = prepare_cache_for_transport(
@@ -877,13 +916,16 @@ def _download_scoped_snapshot(
         "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
     )
     _preflight_disk_space("model", repo_id, to_download)
-    snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        allow_patterns = files,
-        max_workers = 1,
-        tqdm_class = tqdm_class,
-    )
+    snapshot_kwargs = {
+        "repo_id": repo_id,
+        "token": _hf_token_arg(hf_token),
+        "allow_patterns": files,
+        "max_workers": 1,
+        "tqdm_class": tqdm_class,
+    }
+    if revision is not None:
+        snapshot_kwargs["revision"] = revision
+    snapshot_path = snapshot_download(**snapshot_kwargs)
     if info is None:
         # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
         root = Path(snapshot_path)
@@ -902,6 +944,7 @@ def _download_scoped_snapshot(
         scope,
         snapshot_path,
         metadata_unavailable = info is None,
+        expected_commit = revision,
     )
 
 
@@ -1029,6 +1072,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
     parser.add_argument("--repo-id", required = True)
     parser.add_argument("--variant", default = None)
+    parser.add_argument("--revision", default = None)
     parser.add_argument("--dataset", action = "store_true")
     parser.add_argument("--transport", choices = ("http", "xet"), default = "http")
     parser.add_argument("--parent-pid", type = int, default = None)
@@ -1066,7 +1110,13 @@ def main() -> None:
             _download_dataset(args.repo_id, hf_token, args.transport, progress)
         elif scoped_files:
             _download_scoped_snapshot(
-                args.repo_id, args.variant, scoped_files, hf_token, args.transport, progress
+                args.repo_id,
+                args.variant,
+                scoped_files,
+                hf_token,
+                args.transport,
+                progress,
+                args.revision,
             )
         elif args.variant:
             _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport, progress)

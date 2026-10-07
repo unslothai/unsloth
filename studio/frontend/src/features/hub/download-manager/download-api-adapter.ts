@@ -110,6 +110,7 @@ export function apiStart(
         // A scoped job carries its scope instead of a quant; the backend derives the same "@scope" variant this surface keyed it under.
         gguf_variant: req.scopeId ? null : req.variant,
         scope_id: req.scopeId ?? null,
+        ...(req.revision ? { revision: req.revision } : {}),
         files: req.files,
         hf_token: hfToken,
         use_xet: useXet,

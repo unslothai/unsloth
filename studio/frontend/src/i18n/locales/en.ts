@@ -2793,6 +2793,15 @@ export const en = {
       decisionApi: {
         title: "Decision API",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
+        descriptionClef:
+          "Answer yes/no, multiple choice and score questions with Clef on this machine. Image support depends on the runtime. Works with the TypeSafe SDK.",
+        backend: "Runtime",
+        backendAuto: "Auto",
+        backendDescription:
+          "Auto prefers compatible llama.cpp for text. Images or missing native capabilities use PyTorch. Runtime errors are not retried on another backend.",
+        backendStatus: "Runtime: {backend}",
+        mediaImages: "Images use PyTorch. Video and audio are not served.",
+        mediaText: "Text only. Images, video and audio are not served.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
         enableRemoteDescription: "Serves /v1/systemone.",
@@ -2807,6 +2816,8 @@ export const en = {
         recommended: "Recommended",
         device: "Run on",
         deviceDescription: "GPU answers faster, but keeps its memory reserved until restart.",
+        clefDeviceDescription:
+          "GPU answers faster. Clef releases its memory on unload or after five idle minutes. Unload any resident chat, image or video model first.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         checking: "Checking…",

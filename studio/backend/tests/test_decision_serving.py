@@ -474,7 +474,9 @@ def test_the_catalog_offers_the_stock_clef_models():
 
 
 @pytest.mark.parametrize("kind", ["mlx", "xpu", "cpu"])
-def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef, monkeypatch, kind):
+def test_clef_fine_tunes_need_gpu_but_base_checkpoints_remain_available(
+    home, client, clef, monkeypatch, kind
+):
     served = _clef_fine_tune(home, "clef_nogpu_1")
     assert _put(client, enabled = True, model = served).status_code == 200
     _spoof_device(monkeypatch, kind)
@@ -484,9 +486,11 @@ def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef,
     assert refused.json()["detail"]["message"] == catalog.CLEF_NEEDS_GPU
     assert clef.agents == []
     models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
-    for name in (served, "clef", "clef-flash"):
-        assert models[name]["available"] is False
-        assert models[name]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU
+    assert models[served]["available"] is False
+    assert models[served]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU
+    for name in ("clef", "clef-flash"):
+        assert models[name]["available"] is True
+        assert models[name]["unavailable_reason"] is None
     assert all(m["available"] for n, m in models.items() if n.startswith("laya"))
 
 

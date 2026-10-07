@@ -92,3 +92,9 @@ Replace `laya/` with the new wheel's `laya/` directory, copy its licence to `LIC
 `version`, `wheel`, `wheel_sha256` and the per-file hashes in `laya_manifest.json`. Then check every
 laya internal `laya_runtime.py` reaches into, and run `SYSTEMONE_TEST_LAYA=<snapshot> pytest
 tests/test_systemone.py`, which compares the fast path against `laya.Agent.predict`.
+
+## Cloudflare Clef (Apache-2.0)
+
+Unsloth's Decision API reuses the hash-pinned reference source and license in `unsloth/_vendor/clef`.
+`core/systemone/clef_worker.py` loads it by file path in the owned child process,
+with UTF-8 config reads; no snapshot Python or `trust_remote_code` is executed.

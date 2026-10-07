@@ -38,8 +38,8 @@ import { cn } from "@/lib/utils";
 import { TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  type SystemOneBackend,
   type SystemOneConnection,
   type SystemOneDevice,
   type SystemOneDownloadPlan,
@@ -55,6 +55,7 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
@@ -63,6 +64,15 @@ const RECOMMENDED_MODEL = "laya-multilingual";
 const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
 const ENV_MODEL = "UNSLOTH_SYSTEMONE_MODEL";
 const ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE";
+
+function isClefModel(name: string | undefined): boolean {
+  return [
+    "clef",
+    "clef-flash",
+    "Cloudflare/clef",
+    "Cloudflare/clef-flash",
+  ].includes(name ?? "");
+}
 
 function deviceLabel(device: string | null): string {
   return device && device !== "cpu" ? "GPU" : "CPU";
@@ -80,6 +90,7 @@ export function DecisionApiSection(): ReactElement | null {
   );
   const [planState, setPlanState] = useState<{
     model: string;
+    backend: SystemOneBackend;
     plan: SystemOneDownloadPlan;
   } | null>(null);
   const [confirm, setConfirm] = useState<{
@@ -94,7 +105,11 @@ export function DecisionApiSection(): ReactElement | null {
 
   const enabled = settings?.enabled ?? false;
   const model = settings?.model ?? null;
-  const plan = planState && planState.model === model ? planState.plan : null;
+  const backend = settings?.backend ?? "auto";
+  const plan =
+    planState?.model === model && planState?.backend === backend
+      ? planState.plan
+      : null;
 
   useEffect(() => {
     let live = true;
@@ -152,14 +167,14 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (!enabled || !model) return;
     let live = true;
-    resolveSystemOneDownload(model).then(
-      (next) => live && setPlanState({ model, plan: next }),
+    resolveSystemOneDownload(model, backend).then(
+      (next) => live && setPlanState({ model, backend, plan: next }),
       (err) => live && setError(errorMessage(err)),
     );
     return () => {
       live = false;
     };
-  }, [enabled, model, downloadDone]);
+  }, [enabled, model, backend, downloadDone]);
 
   const modelLabel = (name: string) => {
     const connection = connections?.find((c) => c.name === name);
@@ -192,6 +207,7 @@ export function DecisionApiSection(): ReactElement | null {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
         repoId: next.repo,
+        revision: next.revision ?? undefined,
         variant: scopedVariant(DOWNLOAD_SCOPE),
         scopeId: DOWNLOAD_SCOPE,
         files: next.files,
@@ -227,21 +243,21 @@ export function DecisionApiSection(): ReactElement | null {
     setBusy(true);
     setError(null);
     try {
-      // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
       const nextEnabled = patch.enabled ?? settings?.enabled;
       const nextModel = patch.model ?? settings?.model;
+      const nextBackend = patch.backend ?? backend;
       const settingsPatch =
         downloadAfter && settings
           ? {
               ...patch,
               expectedEnabled: settings.enabled,
               expectedModel: settings.model,
+              expectedBackend: settings.backend,
             }
           : patch;
-      let resolvedPlan: { model: string; plan: SystemOneDownloadPlan } | null =
-        null;
+      let resolvedPlan: typeof planState = null;
       if (nextEnabled && nextModel && downloadAfter) {
-        const nextPlan = await resolveSystemOneDownload(nextModel);
+        const nextPlan = await resolveSystemOneDownload(nextModel, nextBackend);
         if (!nextPlan.cached) {
           if (nextPlan.error || !nextPlan.repo || nextPlan.files.length === 0) {
             throw new Error(
@@ -256,7 +272,11 @@ export function DecisionApiSection(): ReactElement | null {
           });
           return;
         }
-        resolvedPlan = { model: nextModel, plan: nextPlan };
+        resolvedPlan = {
+          model: nextModel,
+          backend: nextBackend,
+          plan: nextPlan,
+        };
       }
       const next = await updateSystemOneSettings(settingsPatch);
       setSettings(next);
@@ -279,7 +299,11 @@ export function DecisionApiSection(): ReactElement | null {
       const next = await updateSystemOneSettings(accepted.patch);
       setSettings(next);
       if (next.model === accepted.model) {
-        setPlanState({ model: accepted.model, plan: accepted.plan });
+        setPlanState({
+          model: accepted.model,
+          backend: next.backend,
+          plan: accepted.plan,
+        });
       }
     } catch (err) {
       await resyncSettingsAfterError(
@@ -302,6 +326,7 @@ export function DecisionApiSection(): ReactElement | null {
     }
   };
 
+  const isClef = isClefModel(settings?.model);
   const header = (
     <>
       <div className="flex items-start gap-3 bg-muted/30 p-4">
@@ -316,7 +341,11 @@ export function DecisionApiSection(): ReactElement | null {
             {t("settings.apiKeys.decisionApi.title")}
           </h2>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.apiKeys.decisionApi.description")}
+            {t(
+              isClef
+                ? "settings.apiKeys.decisionApi.descriptionClef"
+                : "settings.apiKeys.decisionApi.description",
+            )}
           </p>
         </div>
       </div>
@@ -556,6 +585,60 @@ export function DecisionApiSection(): ReactElement | null {
           </div>
         </SettingsRow>
 
+        {current ? (
+          <p className="pb-3 text-xs text-muted-foreground leading-relaxed">
+            {current.description}
+          </p>
+        ) : null}
+
+        {isClef ? (
+          <>
+            <SettingsRow
+              label={t("settings.apiKeys.decisionApi.backend")}
+              description={t("settings.apiKeys.decisionApi.backendDescription")}
+            >
+              <Select
+                value={backend}
+                disabled={busy}
+                onValueChange={(value) =>
+                  void apply({ backend: value as SystemOneBackend }, true)
+                }
+              >
+                <SelectTrigger
+                  className="w-36"
+                  aria-label={t("settings.apiKeys.decisionApi.backend")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("settings.apiKeys.decisionApi.backendAuto")}
+                  </SelectItem>
+                  <SelectItem value="llama.cpp">llama.cpp</SelectItem>
+                  <SelectItem value="pytorch">PyTorch</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <p
+              className="pb-3 text-xs text-muted-foreground leading-relaxed"
+              data-decision-backend
+            >
+              {t("settings.apiKeys.decisionApi.backendStatus", {
+                backend:
+                  settings.loadedModel === settings.model
+                    ? (settings.loadedBackend ?? "—")
+                    : (settings.effectiveBackend ?? "—"),
+              })}
+              {settings.fallbackReason ? ` · ${settings.fallbackReason}` : ""}{" "}
+              {t(
+                settings.inputModalities.includes("image")
+                  ? "settings.apiKeys.decisionApi.mediaImages"
+                  : "settings.apiKeys.decisionApi.mediaText",
+              )}
+            </p>
+          </>
+        ) : null}
+
         {isRemote ? null : (
           <SettingsRow
             label={t("settings.apiKeys.decisionApi.device")}
@@ -564,7 +647,11 @@ export function DecisionApiSection(): ReactElement | null {
                 ? t("settings.apiKeys.decisionApi.lockedByEnv", {
                     name: ENV_DEVICE,
                   })
-                : t("settings.apiKeys.decisionApi.deviceDescription")
+                : t(
+                    isClef
+                      ? "settings.apiKeys.decisionApi.clefDeviceDescription"
+                      : "settings.apiKeys.decisionApi.deviceDescription",
+                  )
             }
           >
             <Select

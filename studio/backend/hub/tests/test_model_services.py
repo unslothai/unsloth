@@ -365,6 +365,7 @@ def _download_body(**over) -> SimpleNamespace:
         "use_xet": False,
         "scope_id": None,
         "files": None,
+        "revision": None,
     }
     body.update(over)
     return SimpleNamespace(**body)

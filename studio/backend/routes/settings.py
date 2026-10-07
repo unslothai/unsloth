@@ -676,6 +676,11 @@ class SystemOneSettingsResponse(BaseModel):
     models: list[SystemOneModelOption]
     loaded_model: Optional[str] = None
     loaded_device: Optional[str] = None
+    backend: str = "auto"
+    effective_backend: Optional[str] = None
+    loaded_backend: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    input_modalities: list[str] = ["text"]
     loading_model: Optional[str] = None
     installing: bool = False
     error: Optional[str] = None
@@ -686,12 +691,15 @@ class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
+    expected_backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None
 
 
 class SystemOneDownloadPlan(BaseModel):
     repo: Optional[str] = None
+    revision: Optional[str] = None
     files: list[str]
     size_bytes: int
     cached: bool
@@ -1466,7 +1474,8 @@ def update_helper_precache(
 
 
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
-    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+    from core.systemone.catalog import ClefCheckpoint
+    if reason is None or isinstance(checkpoint, ClefCheckpoint) or checkpoint.layout != "clef":
         return {}
     return {"available": False, "unavailable_reason": reason}
 
@@ -1474,19 +1483,20 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
-    from core.systemone import catalog, laya_runtime
+    from core.systemone import catalog, runtime as decision_runtime
     from routes.systemone import MCP_PATH
 
     clef_reason = catalog.clef_unsupported_reason(wait = False)
     enabled = systemone_settings.get_enabled()
-    runtime = laya_runtime.status()
-    configured = catalog.default_checkpoint()
-    model = configured.name
+    runtime = decision_runtime.status()
+    checkpoint = catalog.default_checkpoint()
+    model = checkpoint.name
+    backend = decision_runtime.backend_info(checkpoint)
     if is_owner_context():
         fine_tunes = catalog.fine_tunes()
     else:
         # Other accounts see only the configured model, never the owner's other output folders.
-        fine_tunes = [configured] if catalog.is_fine_tune_name(configured.name) else []
+        fine_tunes = [checkpoint] if catalog.is_fine_tune_name(checkpoint.name) else []
         if runtime["loaded_model"] != model:
             runtime["loaded_model"] = runtime["device"] = None
         if runtime["loading_model"] != model:
@@ -1525,6 +1535,11 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         ],
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
+        loaded_backend = runtime.get("backend"),
+        **backend,
+        input_modalities = ["text", "image"]
+        if decision_runtime.accepts_images(checkpoint)
+        else ["text"],
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
@@ -1538,7 +1553,9 @@ _SYSTEMONE_SETTINGS_LOCK = threading.Lock()
 def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
-            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+            **payload.model_dump(
+                include = {"enabled", "model", "device", "backend"}, exclude_none = True
+            )
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1553,11 +1570,18 @@ def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
 def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
     from core.systemone import catalog
     changed = (
-        payload.expected_enabled is not None
-        and systemone_settings.get_enabled() != payload.expected_enabled
-    ) or (
-        payload.expected_model is not None
-        and catalog.default_checkpoint().name != payload.expected_model
+        (
+            payload.expected_enabled is not None
+            and systemone_settings.get_enabled() != payload.expected_enabled
+        )
+        or (
+            payload.expected_model is not None
+            and catalog.default_checkpoint().name != payload.expected_model
+        )
+        or (
+            payload.expected_backend is not None
+            and systemone_settings.get_backend() != payload.expected_backend
+        )
     )
     if changed:
         raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
@@ -1591,15 +1615,15 @@ async def update_systemone_settings(
 def _save_systemone_settings(
     payload: SystemOneSettingsPayload, request: Request
 ) -> SystemOneSettingsResponse:
-    from core.systemone import laya_runtime
+    from core.systemone import runtime as decision_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
         values = _systemone_values(payload)
         if values:
             # The resident model was built from the old settings; drop it so the next request uses the new ones.
             try:
-                laya_runtime.unload()
-            except laya_runtime.Unavailable as exc:
+                decision_runtime.unload()
+            except decision_runtime.Unavailable as exc:
                 raise HTTPException(status_code = 409, detail = exc.message) from None
             systemone_settings.save(values)
     return _systemone_response(request)
@@ -1614,14 +1638,14 @@ async def validate_systemone_settings(
 
 
 def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
-    from core.systemone import laya_runtime
+    from core.systemone import runtime as decision_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
         values = _systemone_values(payload)
         if values:
             try:
-                laya_runtime.ensure_can_unload()
-            except laya_runtime.Unavailable as exc:
+                decision_runtime.ensure_can_unload()
+            except decision_runtime.Unavailable as exc:
                 raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
@@ -1647,11 +1671,15 @@ async def list_systemone_connections(
     ]
 
 
-@_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
+@_owner_settings_router.get(
+    "/systemone/resolve", response_model = SystemOneDownloadPlan, response_model_exclude_unset = True
+)
 def resolve_systemone_download(
-    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    model: Optional[str] = None,
+    backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None,
+    current_subject: str = Depends(get_current_subject),
 ) -> SystemOneDownloadPlan:
-    from core.systemone import catalog, laya_runtime
+    from core.systemone import catalog, runtime as decision_runtime
 
     checkpoint = (
         catalog.default_checkpoint()
@@ -1661,18 +1689,23 @@ def resolve_systemone_download(
     if checkpoint is None:
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
     if isinstance(checkpoint, catalog.Connection):
-        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
+        return SystemOneDownloadPlan(repo = None, files = [], size_bytes = 0, cached = True, error = None)
+    try:
+        return SystemOneDownloadPlan(
+            **decision_runtime.download_plan(checkpoint, preference = backend)
+        )
+    except decision_runtime.Unavailable as exc:
+        raise HTTPException(status_code = exc.status, detail = exc.message) from None
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
 def unload_systemone_model(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
-    from core.systemone import laya_runtime
+    from core.systemone import runtime as decision_runtime
     try:
-        laya_runtime.unload()
-    except laya_runtime.Unavailable as exc:
+        decision_runtime.unload()
+    except decision_runtime.Unavailable as exc:
         raise HTTPException(status_code = 409, detail = exc.message) from None
     return _systemone_response(request)
 

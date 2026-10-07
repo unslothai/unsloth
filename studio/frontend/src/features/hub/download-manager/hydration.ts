@@ -101,6 +101,9 @@ async function adoptActiveModelDownloads(): Promise<void> {
         variant,
         ...(inventoryKind ? { inventoryKind } : {}),
         ...(files ? { files } : {}),
+        ...(download.revision?.trim()
+          ? { revision: download.revision.trim() }
+          : {}),
         expectedBytes: 0,
       },
       safeGeneration(download.generation),
@@ -297,6 +300,7 @@ export function hydrateDownloadManager(): void {
       variant: job.variant,
       ...(job.inventoryKind ? { inventoryKind: job.inventoryKind } : {}),
       ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
+      ...(job.revision ? { revision: job.revision } : {}),
       ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
       ...(job.presentation ? { presentation: job.presentation } : {}),
       expectedBytes: job.expectedBytes,

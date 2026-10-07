@@ -789,6 +789,11 @@ export async function startJob(
       : opts.adopt && existing?.scopedFiles
         ? { scopedFiles: existing.scopedFiles }
         : {}),
+    ...(req.revision?.trim()
+      ? { revision: req.revision.trim() }
+      : opts.adopt && existing?.revision
+        ? { revision: existing.revision }
+        : {}),
     ...(req.checkpoint !== undefined
       ? { checkpoint: req.checkpoint }
       : opts.adopt && existing?.checkpoint !== undefined
@@ -1099,6 +1104,7 @@ export function adoptJob(
           : {}),
         ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
         ...(req.files?.length ? { scopedFiles: [...req.files] } : {}),
+        ...(req.revision?.trim() ? { revision: req.revision.trim() } : {}),
         ...(inventoryKind ? { inventoryKind } : {}),
       });
     }
@@ -1144,8 +1150,13 @@ export async function probeAndAdopt(
             repoId,
             variant: active.variant,
             expectedBytes: 0,
-            // Carry the live job's file list so the adopted record can be matched against a later start for the same slot; without it any sibling checkpoint's request read as "already started".
-            ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
+            // Carry the live job's file list and immutable revision so a later scoped start cannot adopt a different snapshot in this slot.
+            ...(active.files && active.files.length > 0
+              ? { files: [...active.files] }
+              : {}),
+            ...(active.revision?.trim()
+              ? { revision: active.revision.trim() }
+              : {}),
           },
           active.generation,
           active.state,

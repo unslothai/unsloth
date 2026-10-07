@@ -29,6 +29,29 @@ class Checkpoint:
         return Path(self.source).expanduser().is_dir()
 
 
+@dataclass(frozen = True)
+class ClefCheckpoint(Checkpoint):
+    layout: str = "clef"
+    revision: str = ""
+    files: tuple[str, ...] = ()
+
+
+def _clef_files(shards: int) -> tuple[str, ...]:
+    return (
+        "config.json",
+        "generation_config.json",
+        "joint_head_config.json",
+        "joint_head.safetensors",
+        "model.safetensors.index.json",
+        "processor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "chat_template.jinja",
+        "LICENSE",
+        *(f"model-{i:05d}-of-{shards:05d}.safetensors" for i in range(1, shards + 1)),
+    )
+
+
 CHECKPOINTS = {
     c.name: c
     for c in (
@@ -53,26 +76,52 @@ CHECKPOINTS = {
             "Laya English fine-tuned on four typed-decision workflows, 1024-token context.",
             846_195_716,
         ),
-        Checkpoint(
+        ClefCheckpoint(
             "clef-flash",
             "Cloudflare/clef-flash",
             None,
-            "Cloudflare Clef-flash on Qwen3.5 9B: fast multimodal decisions, needs a GPU.",
-            19_063_259_136,
-            "clef",
+            "Clef Flash · 9B · text and images. About 20 GB GPU memory or 40 GB CPU RAM (slow). Video and audio are not served.",
+            19_083_200_000,
+            revision = "17f0b0ad64efb65d273590632833508766b2aae6",
+            files = _clef_files(4),
         ),
-        Checkpoint(
+        ClefCheckpoint(
             "clef",
             "Cloudflare/clef",
             None,
-            "Cloudflare Clef on Qwen3.8 27B: the most accurate decisions, needs a large GPU.",
-            54_976_000_000,
-            "clef",
+            "Clef · 27B · text and images. About 56 GB GPU memory or 112 GB CPU RAM (slow). Video and audio are not served.",
+            54_989_600_000,
+            revision = "2f3de3dd85f379784083b0814d997ab627200f0c",
+            files = _clef_files(12),
         ),
     )
 }
 
-# Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.
+NATIVE_CHECKPOINTS = {
+    c.name: c
+    for c in (
+        ClefCheckpoint(
+            "clef-flash",
+            "ggml-org/Clef-Flash-GGUF",
+            None,
+            "Clef Flash · Q8 · native text decisions",
+            9_657_260_096,
+            revision = "4a7a08c09bc63baf043b62b5ba89dd67a0357d95",
+            files = ("Clef-Flash-Q8_0.gguf",),
+        ),
+        ClefCheckpoint(
+            "clef",
+            "ggml-org/Clef-GGUF",
+            None,
+            "Clef · Q8 · native text decisions",
+            28_732_215_264,
+            revision = "5f70656b6670c65eb85ad07a11efe211b5f211bd",
+            files = ("Clef-Q8_0.gguf",),
+        ),
+    )
+}
+
+# SDK default aliases reach the installation's configured model.
 DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "openjev-latest"})
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"
@@ -206,6 +255,15 @@ def default_checkpoint() -> Checkpoint | Connection:
     configured = get_model()
     if configured in CHECKPOINTS:
         return CHECKPOINTS[configured]
+    if clef := next(
+        (
+            c
+            for c in CHECKPOINTS.values()
+            if isinstance(c, ClefCheckpoint) and c.source == configured
+        ),
+        None,
+    ):
+        return clef
     if connection := parse_connection(configured):
         return connection
     if (checkpoint := fine_tune(configured)) is not None:
@@ -226,8 +284,12 @@ def resolve(model: str) -> Checkpoint | Connection | None:
     if name == LOCAL_NAME or name.startswith(CONNECTION_PREFIX):
         checkpoint = default_checkpoint()
         return checkpoint if checkpoint.name == name else None
-    if name in CHECKPOINTS:
-        return CHECKPOINTS[name]
+    checkpoint = CHECKPOINTS.get(name) or next(
+        (c for c in CHECKPOINTS.values() if isinstance(c, ClefCheckpoint) and c.source == name),
+        None,
+    )
+    if checkpoint is not None:
+        return checkpoint
     from utils.account_context import is_owner_context
 
     checkpoint = fine_tune(name)

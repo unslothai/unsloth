@@ -24,6 +24,7 @@ def scoped_progress(monkeypatch, tmp_path):
         progress_blob_hashes = frozenset({"new"}),
         completed_baseline_bytes = 0,
         hub_cache = str(tmp_path),
+        revision = None,
     )
     monkeypatch.setattr(downloads.account_access, "managed_account", lambda: False)
     monkeypatch.setattr(
@@ -115,6 +116,27 @@ def test_same_filename_new_revision_rejects_old_hash(scoped_progress):
     result = case.poll(627)
     assert result["expected_bytes"] == 627
     assert result["downloaded_bytes"] == 20
+    assert result["complete_on_disk"] is False
+
+
+def test_pinned_scope_rejects_a_manifest_for_another_revision(scoped_progress):
+    case = scoped_progress
+    case.metadata.revision = "a" * 40
+    case.state.manifest = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "@diffusion",
+        started_at = "",
+        expected_files = (download_manifest.ExpectedFile(path = "new.gguf", size = 627, sha256 = "new"),),
+        commit_hash = "b" * 40,
+        metadata_derived = True,
+    )
+    (case.snapshot / "new.gguf").write_bytes(b"n" * 627)
+    (case.blobs / "new").write_bytes(b"n" * 627)
+
+    result = case.poll(627)
+
+    assert result["expected_bytes"] == 627
     assert result["complete_on_disk"] is False
 
 

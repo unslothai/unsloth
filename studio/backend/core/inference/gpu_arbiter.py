@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 CHAT = "chat"
 DIFFUSION = "diffusion"
 VIDEO = "video"
+DECISIONS = "decisions"
 
 _lock = threading.Lock()
 _owner: Optional[str] = None
@@ -92,9 +93,25 @@ def _evict_video() -> None:
     get_video_backend().unload()
 
 
+def _evict_decisions() -> None:
+    from core.systemone import owned_runtime
+    from core.systemone.laya_runtime import Unavailable
+    try:
+        owned_runtime.ensure_can_unload()
+        owned_runtime.unload()
+    except Unavailable:
+        # A typed decision in flight, including another account's, must not be killed.
+        raise GpuOwnerBusyError(DECISIONS) from None
+
+
 # Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
 # generalises to any number of owners.
-_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
+_EVICTORS = {
+    CHAT: _evict_chat,
+    DIFFUSION: _evict_diffusion,
+    VIDEO: _evict_video,
+    DECISIONS: _evict_decisions,
+}
 
 
 class GpuOwnerBusyError(RuntimeError):

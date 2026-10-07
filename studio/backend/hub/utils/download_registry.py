@@ -1130,6 +1130,9 @@ class DownloadMetadata:
     repo_id: str
     variant: Optional[str]
     transport: Optional[str]
+    # Scoped immutable downloads keep their commit SHA here so an adoption or retry cannot
+    # silently switch the scope slot to a different snapshot.
+    revision: Optional[str] = None
     cancel_marker_transport: Optional[str] = None
     # GGUF variant main/writable hashes, identifying the variant-specific shards for concurrency decisions.
     blob_hashes: frozenset[str] = field(default_factory = frozenset)
@@ -1172,6 +1175,14 @@ def variant_from_key(key: str) -> Optional[str]:
         return None
     _, _, variant = key.partition("::")
     return variant or None
+
+
+def normalize_revision(revision: Optional[str]) -> Optional[str]:
+    """Canonicalize an optional immutable revision for registry comparisons."""
+    if not isinstance(revision, str):
+        return None
+    normalized = revision.strip()
+    return normalized.lower() if normalized else None
 
 
 def persist_cancel_marker(
@@ -1499,12 +1510,14 @@ class DownloadRegistry:
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
+        revision: Optional[str] = None,
         owner: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         requested_hashes = blob_hashes or frozenset()
         requested_progress_hashes = progress_blob_hashes or frozenset()
+        requested_revision = normalize_revision(revision)
         with self._lock:
             if repo in self._repository_owners:
                 return False, "repository_owned"
@@ -1550,6 +1563,12 @@ class DownloadRegistry:
             if current in _ACTIVE_STATES and not replace_active:
                 # A scope slot is shared by every file set that rides it (the images and video pages both key as "@diffusion"), so adopting the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
                 live = self._metadata.get(key)
+                if live is None and requested_revision is not None:
+                    # A pin needs affirmative metadata: an active legacy record without it
+                    # cannot prove which snapshot its scope is fetching.
+                    return False, "revision_mismatch"
+                if live is not None and normalize_revision(live.revision) != requested_revision:
+                    return False, "revision_mismatch"
                 if (
                     scoped_files is not None
                     and live is not None
@@ -1572,6 +1591,7 @@ class DownloadRegistry:
                     repo_type = repo_type,
                     repo_id = repo_id,
                     variant = variant,
+                    revision = requested_revision,
                     transport = metadata_transport if metadata_transport is not None else transport,
                     cancel_marker_transport = cancel_marker_transport,
                     blob_hashes = requested_hashes,

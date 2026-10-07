@@ -73,11 +73,17 @@ _REPO_SIBLINGS_TTL_SECONDS = 60.0
 _REPO_SIBLINGS_MAX = 64
 _REPO_SIBLINGS_TIMEOUT_SECONDS = 5.0
 _repo_siblings_lock = threading.Lock()
-# (repo_type, repo_id, token fingerprint) -> (siblings, fetched_at)
-_REPO_SIBLINGS: "dict[tuple[str, str, str], tuple[tuple, float]]" = {}
+# (repo_type, repo_id, token fingerprint, immutable revision) -> (siblings, fetched_at)
+_REPO_SIBLINGS: "dict[tuple[str, str, str, str], tuple[tuple, float]]" = {}
 
 
-def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
+def _repo_siblings(
+    repo_type: str,
+    repo_id: str,
+    hf_token: HfTokenArg,
+    *,
+    revision: Optional[str] = None,
+) -> tuple:
     """Return a briefly cached file listing with sizes, or an empty tuple when none was ever read.
 
     A failed refresh serves the last listing instead: sizes at a revision do not change, and
@@ -85,7 +91,13 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
     HTTP-eligible. What the refresh is really for, whether the oversized file is now cached, is
     decided against the local cache by ``largest_download_file_bytes``.
     """
-    key = (str(repo_type), repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
+    revision = (revision or "").strip() or None
+    key = (
+        str(repo_type),
+        repo_id.lower(),
+        hf_cache_scan.token_fingerprint(hf_token),
+        revision or "",
+    )
     now = time.monotonic()
     with _repo_siblings_lock:
         cached = _REPO_SIBLINGS.pop(key, None)
@@ -96,12 +108,15 @@ def _repo_siblings(repo_type: str, repo_id: str, hf_token: HfTokenArg) -> tuple:
                 return cached[0]
     try:
         from huggingface_hub import HfApi
-        info = HfApi(token = hf_token).repo_info(
-            repo_id,
-            repo_type = repo_type,
-            files_metadata = True,
-            timeout = _REPO_SIBLINGS_TIMEOUT_SECONDS,
-        )
+
+        info_kwargs = {
+            "repo_type": repo_type,
+            "files_metadata": True,
+            "timeout": _REPO_SIBLINGS_TIMEOUT_SECONDS,
+        }
+        if revision is not None:
+            info_kwargs["revision"] = revision
+        info = HfApi(token = hf_token).repo_info(repo_id, **info_kwargs)
         siblings = tuple(info.siblings or ())
     except Exception as exc:  # noqa: BLE001 - a size probe must never be what fails a download
         logger.debug(
@@ -129,6 +144,7 @@ def largest_download_file_bytes(
     hf_token: Optional[str] = None,
     allow_ambient_token: bool = True,
     hub_cache: Optional[str] = None,
+    revision: Optional[str] = None,
 ) -> Optional[int]:
     """Return the largest selected, uncached file, or None when it cannot be measured.
 
@@ -142,7 +158,10 @@ def largest_download_file_bytes(
     a repository the download it is deciding for could not.
     """
     siblings = _repo_siblings(
-        repo_type, repo_id, hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+        repo_type,
+        repo_id,
+        hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token),
+        revision = revision,
     )
     if not siblings:
         return None
@@ -200,6 +219,7 @@ def _largest_file_bytes_for_job(
             hf_token = hf_token,
             allow_ambient_token = allow_ambient_token,
             hub_cache = getattr(metadata, "hub_cache", None),
+            revision = getattr(metadata, "revision", None),
         )
     except Exception as exc:  # noqa: BLE001 - unknown size, same as it was before the probe existed
         logger.debug("Largest-file probe failed for %s %s: %s", repo_type, repo_id, exc)
@@ -776,6 +796,7 @@ def _try_transport_retry(
         )
         return False
     variant = original_metadata.variant
+    revision = original_metadata.revision
     blob_hashes = original_metadata.blob_hashes
     progress_blob_hashes = original_metadata.progress_blob_hashes
     completed_baseline_bytes = (
@@ -822,6 +843,7 @@ def _try_transport_retry(
             xet_cache = original_metadata.xet_cache,
             # Carry the scoped file list across the reclaim: the record it overwrites is what a later start is compared against, so dropping it makes an identical start 409 instead of adopting.
             scoped_files = original_metadata.scoped_files or None,
+            revision = revision,
         )
         if claimed:
             break
@@ -858,6 +880,8 @@ def _try_transport_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
+    if revision:
+        args.extend(["--revision", revision])
     peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()
 
     if retry_over_xet:
@@ -1637,6 +1661,7 @@ def active_download_refs(
             ActiveDownload(
                 repo_id = ref_repo_id,
                 variant = variant,
+                revision = metadata.revision if metadata is not None else None,
                 transport = metadata.transport if metadata is not None else None,
                 cancel_transport = (
                     metadata.cancel_marker_transport if metadata is not None else None

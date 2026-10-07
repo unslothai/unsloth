@@ -1014,6 +1014,10 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
+    from core.systemone.runtime import shutdown as shutdown_decisions
+
+    await asyncio.to_thread(shutdown_decisions)
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         lambda: clear_compiled_cache_unless_shared(app),
@@ -1449,6 +1453,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
 
 
 def _get_request_body_max_bytes(path: str) -> int:
+    if path.rstrip("/") == "/v1/systemone":
+        from core.systemone.media import MAX_BODY_BYTES
+        return MAX_BODY_BYTES
     if path.startswith("/api/inference/audio/transcribe/raw"):
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):

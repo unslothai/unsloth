@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type SystemOneDevice = "cpu" | "gpu";
+export type SystemOneBackend = "auto" | "llama.cpp" | "pytorch";
 
 export type SystemOneModel = {
   name: string;
@@ -27,6 +28,11 @@ export type SystemOneSettings = {
   models: SystemOneModel[];
   loadedModel: string | null;
   loadedDevice: string | null;
+  backend: SystemOneBackend;
+  effectiveBackend: string | null;
+  loadedBackend: string | null;
+  fallbackReason: string | null;
+  inputModalities: string[];
   loadingModel: string | null;
   installing: boolean;
   error: string | null;
@@ -42,6 +48,7 @@ export type SystemOneConnection = {
 
 export type SystemOneDownloadPlan = {
   repo: string | null;
+  revision?: string | null;
   files: string[];
   sizeBytes: number;
   cached: boolean;
@@ -52,8 +59,10 @@ export type SystemOneSettingsPatch = {
   enabled?: boolean;
   model?: string;
   device?: SystemOneDevice;
+  backend?: SystemOneBackend;
   expectedEnabled?: boolean;
   expectedModel?: string;
+  expectedBackend?: SystemOneBackend;
 };
 
 type ApiSystemOneConnection = {
@@ -91,6 +100,15 @@ type ApiSystemOneSettings = {
   loaded_model: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   loaded_device: string | null;
+  backend: SystemOneBackend;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  effective_backend: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  loaded_backend: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  fallback_reason: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  input_modalities: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
   loading_model: string | null;
   installing: boolean;
@@ -101,6 +119,7 @@ type ApiSystemOneSettings = {
 
 type ApiSystemOneDownloadPlan = {
   repo: string | null;
+  revision?: string | null;
   files: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
   size_bytes: number;
@@ -130,13 +149,15 @@ function publishSystemOneSettings(settings: SystemOneSettings) {
 }
 
 function toApiPatch(patch: SystemOneSettingsPatch) {
-  const { expectedEnabled, expectedModel, ...settings } = patch;
+  const { expectedEnabled, expectedModel, expectedBackend, ...settings } =
+    patch;
   return {
     ...settings,
     ...(expectedEnabled !== undefined && {
       expected_enabled: expectedEnabled,
     }),
     ...(expectedModel !== undefined && { expected_model: expectedModel }),
+    ...(expectedBackend !== undefined && { expected_backend: expectedBackend }),
   };
 }
 
@@ -160,6 +181,11 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     })),
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,
+    backend: settings.backend,
+    effectiveBackend: settings.effective_backend,
+    loadedBackend: settings.loaded_backend,
+    fallbackReason: settings.fallback_reason,
+    inputModalities: settings.input_modalities,
     loadingModel: settings.loading_model,
     installing: settings.installing,
     error: settings.error,
@@ -241,8 +267,12 @@ export async function loadSystemOneConnections(): Promise<
 
 export async function resolveSystemOneDownload(
   model?: string,
+  backend?: SystemOneBackend,
 ): Promise<SystemOneDownloadPlan> {
-  const query = model ? `?${new URLSearchParams({ model })}` : "";
+  const params = new URLSearchParams();
+  if (model) params.set("model", model);
+  if (backend) params.set("backend", backend);
+  const query = params.size ? `?${params}` : "";
   const res = await authFetch(`${SETTINGS_PATH}/resolve${query}`);
   if (!res.ok) {
     throw new Error(
@@ -252,6 +282,7 @@ export async function resolveSystemOneDownload(
   const plan = (await res.json()) as ApiSystemOneDownloadPlan;
   return {
     repo: plan.repo,
+    revision: plan.revision ?? null,
     files: plan.files,
     sizeBytes: plan.size_bytes,
     cached: plan.cached,

@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Optional, Sequence, TYPE_CHECKING
 
 from fastapi import HTTPException
 from loggers import get_logger
 
+from core.systemone import runtime as decision_runtime
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDownloadRequest,
@@ -50,6 +52,12 @@ def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
 
 # A scope rides the variant slot as "@name"; no GGUF quant label starts with "@", so a scoped job never collides with a real variant or the full snapshot.
 _SCOPE_PREFIX = "@"
+_IMMUTABLE_REVISION = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+
+
+def _normalize_immutable_revision(revision: Optional[str]) -> Optional[str]:
+    normalized = (revision or "").strip()
+    return normalized.lower() if normalized else None
 
 
 def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
@@ -58,13 +66,20 @@ def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
 
 
 def scoped_file_blob_hashes(
-    repo_id: str, files: Sequence[str], hf_token: Optional[str]
+    repo_id: str,
+    files: Sequence[str],
+    hf_token: Optional[str],
+    *,
+    revision: Optional[str] = None,
 ) -> frozenset[str]:
     """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer protection cover its own files and nothing else in the repo."""
     from huggingface_hub import HfApi
 
     wanted = set(files)
-    info = HfApi().model_info(repo_id, files_metadata = True, token = hf_token)
+    info_kwargs = {"files_metadata": True, "token": hf_token}
+    if revision is not None:
+        info_kwargs["revision"] = revision
+    info = HfApi().model_info(repo_id, **info_kwargs)
     return blob_hashes_for_siblings(
         [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
     )
@@ -126,9 +141,11 @@ def _load_in_flight(repo_id: str) -> bool:
     except Exception:
         pass
     try:
-        from core.systemone.laya_runtime import loading_repo_ids
         key = download_registry.normalize_repo_key(repo_id)
-        if any(download_registry.normalize_repo_key(r) == key for r in loading_repo_ids()):
+        if any(
+            download_registry.normalize_repo_key(r) == key
+            for r in decision_runtime.loading_repo_ids()
+        ):
             return True
     except Exception:
         pass
@@ -170,11 +187,14 @@ def _spawn_download_worker(
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[dict[str, str]] = None,
     files: Optional[Sequence[str]] = None,
+    revision: Optional[str] = None,
     allow_ambient_token: bool = True,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
+    if revision:
+        args.extend(["--revision", revision])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
@@ -242,6 +262,12 @@ async def download_model_response(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    revision = _normalize_immutable_revision(body.revision)
+    if revision is not None and not _IMMUTABLE_REVISION.fullmatch(revision):
+        raise HTTPException(
+            status_code = 400,
+            detail = "revision must be a 40-character Hugging Face commit SHA.",
+        )
     if account_access.managed_account():
         await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
@@ -270,6 +296,11 @@ async def download_model_response(
         if not _is_valid_gguf_variant(scope_variant):
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
+    elif revision is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "revision is supported only with scope_id.",
+        )
     key = _download_job_key(repo_id, variant)
     _reject_if_load_owned(key)
     # Size and Auto resolution may perform network probes, so keep both off the event loop.
@@ -282,6 +313,7 @@ async def download_model_response(
         files = scoped_files if scope_variant is not None else None,
         hf_token = hf_token,
         allow_ambient_token = allow_ambient_token,
+        revision = revision,
     )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
@@ -303,7 +335,11 @@ async def download_model_response(
             if scope_variant is not None:
                 # A scope owns exactly its own files: same set for purge and for progress.
                 variant_blob_hashes = await asyncio.to_thread(
-                    scoped_file_blob_hashes, repo_id, scoped_files, hf_token
+                    scoped_file_blob_hashes,
+                    repo_id,
+                    scoped_files,
+                    hf_token,
+                    revision = revision,
                 )
                 variant_progress_blob_hashes = variant_blob_hashes
             else:
@@ -358,12 +394,21 @@ async def download_model_response(
             hub_cache = str(cache_paths.hub_cache),
             xet_cache = str(cache_paths.xet_cache),
             scoped_files = scoped_files if scope_variant is not None else None,
+            revision = revision,
         )
         generation = _registry.current_generation(key)
         if not claimed:
             download_lifecycle.require_download_account(_registry, key)
             if claim_state == "admission_blocked":
                 raise _load_in_flight_error(repo_id)
+            if claim_state == "revision_mismatch":
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Another download for '{repo_id}' is already fetching a different "
+                        "revision. Wait for it to finish (or cancel it), then start this one."
+                    ),
+                )
             if claim_state == "scope_file_mismatch":
                 raise HTTPException(
                     status_code = 409,
@@ -412,6 +457,7 @@ async def download_model_response(
                 protected_blob_hashes = protected_blob_hashes,
                 cache_env = cache_env,
                 files = scoped_files if scope_variant is not None else None,
+                revision = revision,
                 allow_ambient_token = allow_ambient_token,
             ),
             hf_token = hf_token,

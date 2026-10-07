@@ -41,6 +41,11 @@ class DownloadModelRequest(BaseModel):
         "whose loader reads a scoped subset of a repo). Keyed separately from the full "
         "snapshot of the same repo, so neither one's manifest describes the other.",
     )
+    revision: Optional[str] = Field(
+        None,
+        description = "Immutable 40-character Hugging Face commit SHA for a scoped download. "
+        "Omitted downloads the default revision as before.",
+    )
     files: List[str] = Field(
         default_factory = list,
         description = "Exact files to fetch. Required with scope_id, ignored without it.",
@@ -103,6 +108,7 @@ class ActiveDownload(BaseModel):
 
     repo_id: Optional[str] = None
     variant: Optional[str] = None
+    revision: Optional[str] = None
     transport: Optional[str] = None
     cancel_transport: Optional[str] = None
     owner: Optional[str] = None

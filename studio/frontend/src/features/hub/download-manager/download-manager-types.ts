@@ -36,6 +36,8 @@ export interface ManagedDownload {
   serverAttempt?: number;
   /** Files a scoped job is fetching. Every file set of one repo rides the same scope slot, so this separates "my transfer is running" from "a different quant of this repo is running": adopting the latter reports ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
+  /** Immutable commit SHA for a scoped download. A missing value from an older backend is not interchangeable with a pin. */
+  revision?: string;
   /** True for the entry that IS the model the user picked, false for companion repos. Only the stager can tell them apart, since a checkpoint may be a single `.safetensors` and companions carry `.safetensors` too. */
   checkpoint?: boolean;
   transport?: ResolvedTransport;
@@ -54,6 +56,8 @@ export interface DownloadRequest {
   expectedBytes: number;
   presentation?: DownloadPresentation;
   scopeId?: string | null;
+  /** Immutable commit SHA for a scoped download. */
+  revision?: string | null;
   files?: string[];
   checkpoint?: boolean;
   callerToast?: CallerToast;
@@ -82,6 +86,21 @@ export interface CallerToast {
 /** Mirrors the backend's `_scope_variant`: no GGUF quant label starts with "@", so a scope collides with neither a real variant nor the repo's full snapshot. */
 export function scopedVariant(scopeId: string): string {
   return `@${scopeId}`;
+}
+
+/** Commit SHAs are case-insensitive; empty and absent revisions both mean the legacy default. */
+export function normalizedDownloadRevision(
+  revision: string | null | undefined,
+): string | null {
+  const normalized = revision?.trim().toLowerCase();
+  return normalized || null;
+}
+
+export function sameDownloadRevision(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): boolean {
+  return normalizedDownloadRevision(left) === normalizedDownloadRevision(right);
 }
 
 export function downloadInventoryHintKind(

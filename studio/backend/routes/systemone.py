@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import math
+import threading
 import time
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -24,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from auth.authentication import get_current_subject, security
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.providers import answers_decisions_only, validate_provider_base_url
-from core.systemone import catalog, laya_runtime
+from core.systemone import catalog, media, runtime as decision_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils import systemone_settings
@@ -38,6 +40,7 @@ MAX_QUESTION_CHARS = 20_000
 _TYPES = ("noul", "choice", "score")
 MCP_PATH = "/mcp/decisions"
 LISTED_MODELS_TTL = 300.0
+_media_admission = threading.BoundedSemaphore(2)
 
 router = APIRouter()
 
@@ -54,12 +57,12 @@ class QuestionIn(BaseModel):
 
 
 class SystemOneRequest(BaseModel):
-    # Unknown fields refused, not dropped: an ignored OpenJev extension (`images`) answers a different question.
     model_config = ConfigDict(extra = "allow")
 
     state: JSONContent
     model: str
     questions: dict[str, QuestionIn] = Field(min_length = 1)
+    images: Optional[list[str]] = None
 
 
 def _error(
@@ -152,8 +155,11 @@ async def system_one(
         )
     if checkpoint is None:
         raise _error(400, "api_usage_error", f"Unknown model: {payload.model}")
-    result = await _decide(checkpoint, payload.state, payload.questions)
-    return JSONResponse(result, headers = {"x-typesafe-request-id": str(uuid4())})
+    result = await _decide(checkpoint, payload.state, payload.questions, payload.images)
+    headers = {"x-typesafe-request-id": str(uuid4())}
+    if backend := result.pop("_backend", None):
+        headers["x-unsloth-decision-backend"] = backend
+    return JSONResponse(result, headers = headers)
 
 
 def _require_enabled() -> None:
@@ -165,11 +171,43 @@ def _require_enabled() -> None:
         )
 
 
+async def _prepare_media(checkpoint, state, images):
+    if not _media_admission.acquire(blocking = False):
+        raise _error(529, "overloaded", "Decision API media validation is busy; retry shortly", 1)
+
+    def prepare():
+        try:
+            return media.prepare(
+                state, images, accepts_images = decision_runtime.accepts_images(checkpoint)
+            )
+        finally:
+            _media_admission.release()
+
+    try:
+        context = contextvars.copy_context()
+        work = asyncio.get_running_loop().run_in_executor(None, context.run, prepare)
+    except BaseException:
+        _media_admission.release()
+        raise
+    # Cancellation must not free a slot while its queued/running decoder still owns it.
+    work.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(work)
+
+
 async def _decide(
     checkpoint: catalog.Checkpoint | catalog.Connection,
     state: JSONContent,
     questions: dict[str, QuestionIn],
+    images: list[str] | None = None,
 ) -> dict:
+    try:
+        state, decoded_images = await _prepare_media(checkpoint, state, images)
+    except media.InvalidMedia as exc:
+        raise _error(
+            400 if exc.unsupported else 422,
+            "api_usage_error" if exc.unsupported else "invalid_request_error",
+            str(exc),
+        ) from None
     if not questions:
         raise _error(422, "invalid_request_error", "At least one question is required")
     state_chars = (
@@ -192,14 +230,15 @@ async def _decide(
         )
     try:
         result = await run_in_threadpool(
-            laya_runtime.decide,
+            decision_runtime.decide,
             checkpoint,
             state,
             {name: q.model_dump() for name, q in questions.items()},
+            decoded_images,
         )
-    except laya_runtime.Unavailable as exc:
+    except decision_runtime.Unavailable as exc:
         raise _error(exc.status, exc.error_type, exc.message, exc.retry_after) from None
-    if result.pop("truncated"):
+    if result.pop("truncated", False):
         raise _error(
             422,
             "invalid_request_error",
@@ -301,17 +340,28 @@ async def refresh_listed_decision_models() -> None:
 def decision_model_objects() -> list[dict[str, Any]]:
     if not systemone_settings.get_enabled():
         return []
+    names = list(catalog.CHECKPOINTS)
+    if systemone_settings.runtime_unavailable_reason():
+        names = [
+            name
+            for name in names
+            if isinstance(catalog.CHECKPOINTS[name], catalog.ClefCheckpoint)
+            and decision_runtime.backend_info(catalog.CHECKPOINTS[name])["effective_backend"]
+            == "llama.cpp"
+        ]
     return [
         {
             "id": name,
             "object": "model",
             "owned_by": "unsloth",
-            "architecture": {"input_modalities": ["text"], "output_modalities": ["decisions"]},
+            "architecture": {
+                "input_modalities": ["text", "image"]
+                if decision_runtime.accepts_images(catalog.resolve(name))
+                else ["text"],
+                "output_modalities": ["decisions"],
+            },
         }
-        for name in (
-            "default",
-            *(() if systemone_settings.runtime_unavailable_reason() else catalog.CHECKPOINTS),
-        )
+        for name in ("default", *names)
     ]
 
 
@@ -357,7 +407,9 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
     try:
         await asyncio.to_thread(_require_enabled)
         checkpoint = await asyncio.to_thread(catalog.default_checkpoint)
-        return await _decide(checkpoint, state, questions)
+        result = await _decide(checkpoint, state, questions)
+        result.pop("_backend", None)
+        return result
     except HTTPException as exc:
         raise ToolError(exc.detail["message"]) from None
 

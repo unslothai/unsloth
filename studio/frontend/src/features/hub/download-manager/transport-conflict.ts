@@ -15,9 +15,10 @@ import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
 } from "./download-api-adapter";
-import type {
-  DownloadRequest,
-  ManagedDownload,
+import {
+  sameDownloadRevision,
+  type DownloadRequest,
+  type ManagedDownload,
 } from "./download-manager-types";
 import {
   findActiveJobForRepo,
@@ -109,16 +110,17 @@ export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
 function isJobActiveFor(req: DownloadRequest): boolean {
   const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
   if (!job || !ACTIVE_STATES.has(job.state)) return false;
-  return !scopedFileSetDiffers(job, req);
+  return !scopedRequestDiffers(job, req);
 }
 
 // Every file set of one repo rides the same scope slot, so a live job on this key counts as this request's transfer only when it is fetching the
-// same files: adopting a sibling quant's job would report ready for files nobody fetched. A job with no recorded list is adoptable only when the
-// request is unscoped; the old permissive answer let a second browser profile report "started" for a checkpoint nobody was fetching.
-function scopedFileSetDiffers(
+// same files and immutable revision: adopting a sibling quant or snapshot would report ready for files nobody fetched. A job with no recorded
+// list or revision is not evidence for a scoped pinned request.
+function scopedRequestDiffers(
   job: ManagedDownload,
   req: DownloadRequest,
 ): boolean {
+  if (!sameDownloadRevision(job.revision, req.revision)) return true;
   if (!req.files || req.files.length === 0) return false;
   if (!job.scopedFiles) return true;
   const live = [...new Set(job.scopedFiles)].sort();

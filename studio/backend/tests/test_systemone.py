@@ -453,6 +453,32 @@ def test_settings_validation_checks_the_snapshot_without_saving(client):
     assert updated.json()["model"] == "laya-english"
 
 
+@pytest.mark.parametrize(
+    "method, path, status",
+    [
+        ("post", "/api/settings/systemone/validate", 204),
+        ("put", "/api/settings/systemone", 200),
+    ],
+)
+def test_backend_download_consent_refuses_a_stale_snapshot(client, method, path, status):
+    assert client.put("/api/settings/systemone", json = {"backend": "pytorch"}).status_code == 200
+    payload = {
+        "model": "clef-flash",
+        "expected_enabled": True,
+        "expected_model": "laya-multilingual",
+        "expected_backend": "pytorch",
+    }
+    assert client.post("/api/settings/systemone/validate", json = payload).status_code == 204
+    assert client.put("/api/settings/systemone", json = {"backend": "auto"}).status_code == 200
+    response = getattr(client, method)(path, json = payload)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "Decision API settings changed. Try again."
+    current = client.get("/api/settings/systemone").json()
+    assert (current["model"], current["backend"]) == ("laya-multilingual", "auto")
+    payload["expected_backend"] = "auto"
+    assert getattr(client, method)(path, json = payload).status_code == status
+
+
 def test_env_model_is_locked(client, monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", "laya-english")
     settings = client.get("/api/settings/systemone").json()
@@ -905,6 +931,40 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     assert response.json()["detail"] == reason
     assert client.get("/api/settings/systemone").json()["enabled"] is False
     assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "backend, available, expected",
+    [
+        ("auto", True, {"clef", "clef-flash"}),
+        ("llama.cpp", True, {"clef", "clef-flash"}),
+        ("pytorch", True, set()),
+        ("auto", False, set()),
+        ("llama.cpp", False, set()),
+    ],
+)
+def test_native_models_remain_discoverable_without_torch(monkeypatch, backend, available, expected):
+    from core.systemone import native_worker
+
+    monkeypatch.setattr(systemone_settings, "get_backend", lambda: backend)
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "PyTorch absent")
+    monkeypatch.setattr(
+        native_worker,
+        "native_availability",
+        lambda: {
+            "available": available,
+            "reason": None if available else "old native runtime",
+        },
+    )
+    models = {model["id"]: model for model in systemone.decision_model_objects()}
+    assert models.keys() == {"default", *expected}
+    assert all(model["architecture"]["input_modalities"] == ["text"] for model in models.values())
+    if expected:
+        for name in expected:
+            assert (
+                systemone_settings.validate(enabled = True, model = name)[systemone_settings.MODEL_KEY]
+                == name
+            )
 
 
 def test_runtime_reason_names_what_the_install_lacks(monkeypatch):

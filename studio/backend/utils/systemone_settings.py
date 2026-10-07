@@ -12,6 +12,8 @@ from typing import Any
 ENABLED_KEY = "systemone_enabled"
 MODEL_KEY = "systemone_model"
 DEVICE_KEY = "systemone_device"
+BACKEND_KEY = "systemone_backend"
+BACKENDS = ("auto", "llama.cpp", "pytorch")
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
 
@@ -63,6 +65,21 @@ def runtime_unavailable_reason() -> str | None:
     return None
 
 
+def clef_pytorch_unavailable_reason() -> str | None:
+    if reason := runtime_unavailable_reason():
+        return reason
+    from importlib.metadata import PackageNotFoundError, version
+    from packaging.version import Version
+
+    try:
+        supported = Version(version("transformers")) >= Version("5.5.0")
+    except PackageNotFoundError:
+        supported = False
+    if not supported:
+        return "Clef PyTorch needs Transformers 5.5.0 or newer. Update Unsloth before enabling it."
+    return None
+
+
 def get_enabled() -> bool:
     if enabled_locked():
         return False
@@ -89,11 +106,17 @@ def get_device() -> str:
     return stored if stored in DEVICES else "cpu"
 
 
+def get_backend() -> str:
+    stored = _owner_setting(BACKEND_KEY)
+    return stored if stored in BACKENDS else "auto"
+
+
 def validate(
     *,
     enabled: bool | None = None,
     model: str | None = None,
     device: str | None = None,
+    backend: str | None = None,
 ) -> dict[str, Any]:
     from core.systemone.catalog import (
         CHECKPOINTS,
@@ -134,10 +157,36 @@ def validate(
         if device not in DEVICES:
             raise ValueError("Device must be cpu or gpu.")
         values[DEVICE_KEY] = device
-    serving = enabled if enabled is not None else model is not None and get_enabled()
+    if backend is not None:
+        if backend not in BACKENDS:
+            raise ValueError("Backend must be auto, llama.cpp or pytorch.")
+        values[BACKEND_KEY] = backend
+    serving = (
+        enabled
+        if enabled is not None
+        else (model is not None or backend is not None) and get_enabled()
+    )
     local = parse_connection(get_model() if model is None else model) is None
-    if serving and local and (reason := runtime_unavailable_reason()):
-        raise ValueError(reason)
+    if serving and local:
+        from core.systemone.catalog import ClefCheckpoint, default_checkpoint
+        from core.systemone import runtime
+
+        checkpoint = default_checkpoint() if model is None else CHECKPOINTS.get(model)
+        uses_torch = True
+        if isinstance(checkpoint, ClefCheckpoint):
+            try:
+                selected, _ = runtime.select_checkpoint(checkpoint, preference = backend)
+            except runtime.Unavailable as exc:
+                raise ValueError(exc.message) from None
+            uses_torch = not runtime._clef().is_native(selected)
+        if uses_torch:
+            reason = (
+                clef_pytorch_unavailable_reason()
+                if isinstance(checkpoint, ClefCheckpoint)
+                else runtime_unavailable_reason()
+            )
+            if reason:
+                raise ValueError(reason)
     return values
 
 
