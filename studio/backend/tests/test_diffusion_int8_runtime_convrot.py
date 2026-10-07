@@ -619,7 +619,9 @@ def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "QwenImage21Transformer2DModel", None)
     if cls is None:
-        pytest.skip("diffusers without QwenImage21Transformer2DModel")
+        pytest.skip(
+            reason = "installed diffusers has no QwenImage21Transformer2DModel to build the skeleton from"
+        )
     from accelerate import init_empty_weights
 
     with init_empty_weights():
