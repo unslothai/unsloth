@@ -779,7 +779,11 @@ export function VoiceTab() {
             )
           ) {
             trackSttDownload(download.model, {
-              ggufVariant: download.variant,
+              // Saved keys already encode their quant; only folder rows carry one.
+              ggufVariant: sttModelVariant(
+                download.model,
+                download.variant ?? "",
+              ),
               downloadId: download.download_id,
             });
           }

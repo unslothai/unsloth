@@ -544,7 +544,7 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
   assert.match(voiceTab, /const sttVariant = sttModelVariant\(sttModel, sttGgufVariant\);/);
   assert.match(
     voiceTab,
-    /trackSttDownload\(download\.model, \{[\s\S]*ggufVariant: download\.variant,[\s\S]*downloadId: download\.download_id/,
+    /trackSttDownload\(download\.model, \{[\s\S]*ggufVariant: sttModelVariant\(\s*download\.model,\s*download\.variant \?\? "",\s*\),[\s\S]*downloadId: download\.download_id/,
   );
 });
 
@@ -959,4 +959,13 @@ test("only the pinned quant's own listing row can say it is not on disk", () => 
   };
   assert.equal(sttListedQuantDownloaded(offline, "v3-ctc/F16"), true);
   assert.equal(sttListedQuantDownloaded({ variants: [] }, "small/Q8_0"), true);
+});
+
+test("adopting a saved-key audio download keeps it warmable", async () => {
+  const { sttModelVariant } = await import(
+    "../src/features/settings/stores/stt-model-catalog.ts"
+  );
+  // The backend reports a saved key's intrinsic hint; the mirror compares against null.
+  assert.equal(sttModelVariant("audiocpp-moonshine-tiny", "tiny/Q8_0"), null);
+  assert.equal(sttModelVariant("audiocpp-moonshine-tiny", ""), null);
 });
