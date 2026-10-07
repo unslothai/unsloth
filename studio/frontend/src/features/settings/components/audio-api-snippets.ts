@@ -197,7 +197,7 @@ export interface AudioApiSnippetInput {
   os: AudioApiOs;
 }
 
-const SPEAK_TEXT = "Hello from Unsloth Studio.";
+const SPEAK_TEXT = "Hello from Unsloth.";
 const CLONE_TEXT = "This is my voice, speaking text I never recorded.";
 const CLONE_TRANSCRIPT = "The words spoken in me.wav.";
 const EDIT_FROM = "The quick brown fox jumps over the lazy dog.";

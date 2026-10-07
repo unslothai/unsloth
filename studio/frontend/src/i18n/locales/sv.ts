@@ -2936,6 +2936,23 @@ export const sv = {
         "Appar som använder denna token förlorar åtkomsten omedelbart. Det går inte att ångra.",
       revokeAction: "Återkalla ”{name}”",
       revoking: "Återkallar ...",
+      audioApi: {
+        title: "Ljud-API",
+        description: "Tal, röstkloning, transkribering och ljudsidans arbetsflöden.",
+        speak: "Tala",
+        clone: "Klona",
+        transcribe: "Transkribera",
+        workflows: "Arbetsflöden",
+        separate: "Separera",
+        convert: "Konvertera",
+        music: "Musik",
+        edit: "Redigera",
+        placeholderModel:
+          "Ingen nedladdad modell kan köra det här exemplet än, så modellen som visas är en platshållare. Ladda ned en på ljudsidan först.",
+        autoSwitchOff:
+          "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
+        useViaApi: "Använd via API",
+      },
       decisionApi: {
         title: "Decision API",
         description:
