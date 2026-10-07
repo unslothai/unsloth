@@ -2693,6 +2693,10 @@ def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
 # file states it. Unwrap one and this fails, rather than every contract downstream of it
 # passing while the layout has stopped following the interface font size.
 #
+# The count is a floor, not an exact tally: a new row that scales correctly (#12016's header,
+# #12927's pinned-pages label) is what these contracts ask for and should not turn main red.
+# Unwrapping one is still caught twice, by the bare-length check and by the count dropping.
+#
 # The variant is part of the claim, so each row carries its own. `h-[...]` and
 # `hover:h-[...]` are different guarantees, and the second one is not a fixed band at all.
 _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
@@ -2710,7 +2714,7 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # stay put while the labels grew, so the row clips its own text at a larger setting.
     # Seven rows: #11589 added the drop-cue row, and #12016 a second section header for the
     # custom sidebar sections, both scaled like the rest.
-    (APP_SIDEBAR, "", "h", "30px", 7),
+    (APP_SIDEBAR, "", "h", "30px", 8),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The
@@ -2863,7 +2867,9 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
                 source,
             )
         )
-        assert scaled == expected, f"{path.name} states {scaled} scaled {named}, not {expected}"
+        assert scaled >= expected, (
+            f"{path.name} states {scaled} scaled {named}, fewer than the {expected} its contracts measure"
+        )
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
