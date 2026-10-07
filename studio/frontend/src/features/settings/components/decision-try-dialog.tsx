@@ -802,12 +802,14 @@ function ModelPicker({
 export function DecisionTryDialog({
   open,
   onOpenChange,
+  initialModel,
   settings,
   connections,
   onRun,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialModel?: string;
   settings: SystemOneSettings;
   connections: SystemOneConnection[];
   onRun: () => void;
@@ -817,7 +819,7 @@ export function DecisionTryDialog({
   const [type, setType] = useState<DecisionType>("noul");
   const [drafts, setDrafts] =
     useState<Record<DecisionType, DecisionDraft>>(initialDrafts);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
   const [inputView, setInputView] = useState<InputView>("form");
   const [outputView, setOutputView] = useState<OutputView>("preview");
   const [jsonText, setJsonText] = useState("");
@@ -841,6 +843,10 @@ export function DecisionTryDialog({
   useEffect(() => {
     if (open) return stop;
   }, [open, stop]);
+
+  useEffect(() => {
+    if (open && initialModel) setModel(initialModel);
+  }, [open, initialModel]);
 
   const request = useMemo(
     () => buildRequest(type, draft, model),
