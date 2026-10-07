@@ -1047,3 +1047,57 @@ def test_two_slots_never_load_the_shared_codec_at_once(monkeypatch):
 
     assert peak[0] == 1
     assert LlamaCppBackend._codec_owners == 2
+
+
+def test_a_slot_unloading_waits_for_the_other_slots_codec_load(monkeypatch):
+    """Teardown ran under the owner lock only, so it could free the manager between the other
+    slot's codec load and its claim, leaving that slot on an unloaded codec."""
+    import threading
+    import time
+
+    import core.inference.audio_codecs as audio_codecs
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    events = []
+
+    class _Manager:
+        def __init__(self):
+            self._codec_devices = {}
+
+        def load_codec(
+            self,
+            audio_type,
+            device,
+            model_repo_path = None,
+        ):
+            events.append("load start")
+            time.sleep(0.3)
+            self._codec_devices[audio_type] = device
+            events.append("load end")
+
+        def unload(self):
+            events.append("unload")
+
+    class _Slot(LlamaCppBackend):
+        def __init__(self):
+            self._owns_codec = False
+
+        @property
+        def holds_no_vram(self):
+            return True
+
+    monkeypatch.setattr(audio_codecs, "AudioCodecManager", _Manager)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_owners", 0)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_holders", set())
+    leaving, arriving = _Slot(), _Slot()
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", _Manager())
+    leaving._claim_audio_codec()
+
+    loader = threading.Thread(target = arriving.init_audio_codec, args = ("snac",))
+    loader.start()
+    time.sleep(0.1)  # inside load_codec, before the claim
+    leaving._unload_audio_codec()
+    loader.join(5)
+
+    assert "unload" not in events
+    assert LlamaCppBackend._codec_mgr is not None and LlamaCppBackend._codec_owners == 1

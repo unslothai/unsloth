@@ -41147,6 +41147,12 @@ class LlamaCppBackend:
 
     def _unload_audio_codec(self) -> None:
         """Release this slot's claim; free the shared codec once nobody holds it."""
+        # Outer lock shared with init_audio_codec: a load between its codec load and its claim
+        # must not see the manager torn down under it.
+        with LlamaCppBackend._codec_init_lock:
+            self._release_audio_codec()
+
+    def _release_audio_codec(self) -> None:
         with LlamaCppBackend._codec_owner_lock:
             if self._owns_codec:
                 self._owns_codec = False
@@ -41232,7 +41238,7 @@ class LlamaCppBackend:
                 audio_type, device, model_repo_path = model_repo_path
             )
             self._codec_repo_path = model_repo_path
-        self._claim_audio_codec()
+            self._claim_audio_codec()
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
     def _orpheus_voice_prefix_ok(self) -> bool:
