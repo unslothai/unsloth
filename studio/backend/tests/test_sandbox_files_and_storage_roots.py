@@ -3332,6 +3332,28 @@ def test_a_python_call_that_edits_an_attachment_reports_it(tmp_path, monkeypatch
     assert {entry["name"] for entry in files} == {path, beside}
 
 
+def test_an_attachment_another_chat_copies_in_mid_call_is_not_reported(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    tools = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    session = "__LOCALID_sharedattach"
+    workdir = tools._get_workdir(session)
+    token = tools._call_started(workdir)
+    before = tools._snapshot_workdir_files(workdir)
+    sheet, _ = chat_originals.save([b"a,b\n1,2\n"])
+    tools.materialize_sandbox_attachments(session, [(sheet, "other.csv")])
+    copy = os.path.join(workdir, tools.sandbox_attachment_path(sheet, "other.csv"))
+    with open(os.path.join(os.path.dirname(copy), ".tmp-0123456789ab"), "wb") as handle:
+        handle.write(b"a,b\n")
+    with open(os.path.join(workdir, "out.txt"), "w") as handle:
+        handle.write("x")
+    result = tools._created_file_sentinels(workdir, before, None, token)
+    tools._call_finished(token)
+    files = json.loads(result.split("__FILES__:")[1].split("\n")[0])
+    assert [entry["name"] for entry in files] == ["out.txt"]
+
+
 def test_sandbox_attachment_paths_match_the_frontend():
     """Same table as sandbox-attachments.test.ts: the client notes these paths to the model."""
     from core.inference.tools import sandbox_attachment_path
