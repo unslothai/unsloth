@@ -83,7 +83,21 @@ const THREADS: ThreadRecord[] = [
     createdAt: 2,
     settings: { systemPrompt: "  " },
   },
+  {
+    id: "inherits",
+    title: "Inherits",
+    modelType: "base",
+    projectId: null,
+    archived: false,
+    createdAt: 3,
+    settings: { temperature: 0.2 },
+  },
 ];
+
+const INSTALLATION_DEFAULTS: Record<string, string> = {
+  systemPrompt: "Sign off as {{name}}.",
+  systemVariables: '{"name":"Ada"}',
+};
 
 const PROJECTS: Record<string, { instructions: string; archived: boolean }> = {
   billing: { instructions: "Cite the refund policy.", archived: false },
@@ -140,6 +154,7 @@ function loadExporters(
     getStoredChatProject: async (id: string) => PROJECTS[id] ?? null,
     useChatRuntimeStore: { getState: () => ({ activeProjectId: "openInComposer" }) },
     isThreadIncognito: () => false,
+    threadScopedDefault: (key: string) => INSTALLATION_DEFAULTS[key],
     composerProjectByPendingThread: new Map(),
     ...liveThreadHead,
     orderByParentChain,
@@ -251,6 +266,17 @@ test("a chat with no system prompt exports only its own turns", async () => {
   assert.ok(!downloads[2].includes('"system"'));
   assert.ok(!downloads[3].includes("## System"));
   assert.ok(!downloads.join("").includes("French"));
+});
+
+test("a chat whose snapshot omits the system prompt exports the default it runs with", async () => {
+  const downloads: string[] = [];
+  const exporters = loadExporters(["inherits"], downloads);
+
+  await exporters.exportConversationRawJsonl("inherits");
+  assert.deepEqual(JSON.parse(downloads[0]).messages[0], {
+    role: "system",
+    content: "Sign off as Ada.",
+  });
 });
 
 test("saving a chat to project sources leaves its system prompt out", async () => {

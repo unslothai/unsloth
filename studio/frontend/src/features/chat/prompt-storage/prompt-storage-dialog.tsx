@@ -79,6 +79,7 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import { threadScopedDefault } from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -264,8 +265,8 @@ async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> 
   if (!thread) return [];
   const text = await resolveChatInstructions(
     threadId,
-    thread.settings?.systemPrompt,
-    thread.settings?.systemVariables,
+    thread.settings?.systemPrompt ?? threadScopedDefault("systemPrompt"),
+    thread.settings?.systemVariables ?? threadScopedDefault("systemVariables"),
     async () => thread,
   );
   if (!text) return [];
