@@ -8,7 +8,7 @@ import {
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -50,6 +50,17 @@ export function KnowledgeBaseComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   // The embedding list replaces the source list in the same menu.
   const [view, setView] = useState<"source" | "embedding">("source");
+  const contentRef = useRef<HTMLDivElement>(null);
+  const shownViewRef = useRef(view);
+  // A swap unmounts the focused item while the menu stays open, which strands focus outside it and
+  // kills arrow keys. Focus the new view's first item, as Radix does on open.
+  useLayoutEffect(() => {
+    if (shownViewRef.current === view) return;
+    shownViewRef.current = view;
+    contentRef.current
+      ?.querySelector<HTMLElement>('[role^="menuitem"]:not([data-disabled])')
+      ?.focus();
+  }, [view]);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Refreshes overlap; an older answer landing last would restore a deleted KB.
@@ -136,6 +147,7 @@ export function KnowledgeBaseComposerButton({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
+          ref={contentRef}
           side={side}
           align="start"
           sideOffset={2}

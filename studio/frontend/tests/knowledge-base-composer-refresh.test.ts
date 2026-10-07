@@ -64,6 +64,10 @@ function harness() {
           slots[index] = deps;
           effects.push(effect);
         },
+        // Focus-only; nothing to run here.
+        useLayoutEffect() {
+          cursor++;
+        },
       },
       "react/jsx-runtime": stubJsxRuntime(),
       "lucide-react": {},

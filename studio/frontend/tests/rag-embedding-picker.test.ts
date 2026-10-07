@@ -260,3 +260,11 @@ test("the embedding controls wrap and fit narrow settings panels", () => {
   assert.match(SECTION, /flex max-w-full flex-wrap items-start justify-end gap-2/);
   assert.match(SECTION, /w-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] max-w-full/);
 });
+
+test("swapping menu views moves focus into the new view", () => {
+  assert.match(
+    KB_BUTTON,
+    /useLayoutEffect\(\(\) => \{\s*if \(shownViewRef\.current === view\) return;[\s\S]*?querySelector<HTMLElement>\('\[role\^="menuitem"\]:not\(\[data-disabled\]\)'\)\s*\?\.focus\(\);\s*\}, \[view\]\);/,
+  );
+  assert.match(KB_BUTTON, /<DropdownMenuContent\s+ref=\{contentRef\}/);
+});
