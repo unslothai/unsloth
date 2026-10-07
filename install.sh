@@ -4117,8 +4117,9 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
             :
         else
             # Unpinned hosts keep the path they have always had: a wrong triple breaks the install outright, which costs more than the fallback's score.
+            # The versioned installer installs the same pinned release (and checks its per-asset sha256), not whatever is latest.
             _uv_tmp=$(mktemp)
-            if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+            if download "https://astral.sh/uv/$UV_PINNED_VERSION/install.sh" "$_uv_tmp"; then
                 run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
             else
                 _uv_refreshed=false

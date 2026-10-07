@@ -1857,7 +1857,8 @@ def status() -> dict[str, Any]:
         return {
             "loaded_model": _loaded.name if _loaded else None,
             "loaded_backend": _loaded.backend if _loaded else None,
-            "fallback_reason": _fallback_reason,
+            # Laya never falls back, so a reason left by an earlier Clef is not its status.
+            "fallback_reason": _fallback_reason if _loaded and _loaded.layout != "laya" else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
             # Kept for the settings API: laya is vendored, so there is never an install in flight.

@@ -43,6 +43,7 @@ export type SystemOneSettings = {
   loadedBackend: string | null;
   fallbackReason: string | null;
   inputModalities: string[];
+  layout: string | null;
 };
 
 export type SystemOneConnection = {
@@ -124,6 +125,7 @@ type ApiSystemOneSettings = {
   fallback_reason?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   input_modalities?: string[];
+  layout?: string | null;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -199,6 +201,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     loadedBackend: settings.loaded_backend ?? null,
     fallbackReason: settings.fallback_reason ?? null,
     inputModalities: settings.input_modalities ?? ["text"],
+    layout: settings.layout ?? null,
   };
 }
 

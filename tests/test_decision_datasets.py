@@ -280,3 +280,19 @@ def test_mixture_returns_the_requested_rows_when_shares_round_down():
     }
     for n_rows in (5, 31, 32):
         assert len(dd.build_decision_mixture(pools, n_rows = n_rows, seed = 0)) == n_rows
+
+
+def test_zero_weight_sources_are_never_loaded(monkeypatch):
+    pool = list(dd.SOURCES["boolq"].convert(*SYNTHETIC["boolq"]))
+
+    def refuse(name, *args, **kwargs):
+        raise AssertionError(f"{name} was loaded")
+
+    monkeypatch.setattr(dd, "load_source", refuse)
+    rows = dd.build_decision_mixture({"boolq": pool, "xlam": 0.0}, n_rows = 4, seed = 0)
+    assert len(rows) == 4 and {row["source"] for row in rows} == {"boolq"}
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match = "non-negative"):
+            dd.build_decision_mixture({"boolq": pool, "sst5": bad}, n_rows = 4)
+    with pytest.raises(ValueError, match = "zero"):
+        dd.build_decision_mixture({"sst5": 0.0, "ag_news": 0}, n_rows = 4)
