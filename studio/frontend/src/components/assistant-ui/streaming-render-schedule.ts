@@ -455,6 +455,7 @@ const URI_AUTOLINK_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]{1,31}:/u;
 const EMAIL_AUTOLINK_RE =
   /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u;
 const AUTOLINK_CANDIDATE_RE = /<([^<>\r\n]*)>/gu;
+const LITERAL_AUTOLINK_PREFIX_RE = /(?:https?:\/\/|www\.)/giu;
 
 function isUriAutolink(candidate: string): boolean {
   const scheme = URI_AUTOLINK_SCHEME_RE.exec(candidate);
@@ -474,6 +475,57 @@ function autolinkRegions(text: string): [number, number][] {
     ) {
       regions.push([match.index, match.index + match[0].length]);
     }
+  }
+  return regions;
+}
+
+function literalAutolinkRegions(text: string): [number, number][] {
+  const regions: [number, number][] = [];
+  for (const match of text.matchAll(LITERAL_AUTOLINK_PREFIX_RE)) {
+    const from = match.index;
+    const previous = text[from - 1];
+    const www = match[0].toLowerCase() === "www.";
+    if (
+      www
+        ? previous !== undefined &&
+          !"(*_[]~ \t\n\r".includes(previous)
+        : previous !== undefined && /[A-Za-z]/u.test(previous)
+    ) {
+      continue;
+    }
+
+    const domainStart = from + match[0].length;
+    let domainEnd = domainStart;
+    while (domainEnd < text.length) {
+      const char = text[domainEnd];
+      if (
+        isAsciiControl(char) ||
+        char === " " ||
+        (isAsciiPunctuation(char) && !"-._".includes(char))
+      ) {
+        break;
+      }
+      domainEnd += 1;
+    }
+    if (domainEnd === domainStart) continue;
+    const labels = text.slice(domainStart, domainEnd).split(".");
+    if (
+      labels.at(-1)?.includes("_") ||
+      labels.at(-2)?.includes("_")
+    ) {
+      continue;
+    }
+
+    let end = domainEnd;
+    while (
+      end < text.length &&
+      !isAsciiControl(text[end]) &&
+      text[end] !== " " &&
+      text[end] !== "<"
+    ) {
+      end += 1;
+    }
+    regions.push([from, end]);
   }
   return regions;
 }
@@ -647,7 +699,23 @@ function opaqueInlineRegions(text: string, scan: InlineScan): [number, number][]
     ...inlineHtmlRegions(text, scan),
     ...inlineMathRegions(text),
   ].sort((left, right) => left[0] - right[0]);
-  return candidates;
+  const literals: [number, number][] = [];
+  let candidateIndex = 0;
+  for (const literal of literalAutolinkRegions(text)) {
+    while (
+      candidateIndex < candidates.length &&
+      candidates[candidateIndex][1] <= literal[0]
+    ) {
+      candidateIndex += 1;
+    }
+    if (
+      candidateIndex >= candidates.length ||
+      candidates[candidateIndex][0] >= literal[1]
+    ) {
+      literals.push(literal);
+    }
+  }
+  return [...candidates, ...literals].sort((left, right) => left[0] - right[0]);
 }
 
 // micromark normalizes labels so `[SS]` finds `[ẞ]:` like the renderer.

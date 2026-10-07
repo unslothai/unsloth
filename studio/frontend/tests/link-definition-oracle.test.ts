@@ -318,6 +318,14 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       "[1]: https://x.test/one",
     ],
     [
+      "Read https://x.test/a`b [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    [
+      "Read www.x.test/a`b [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    [
       "Read [a [b]](https://x.test/`tag) [1] ` first.",
       "[1]: https://x.test/one",
     ],
@@ -415,6 +423,7 @@ test("a bracketed label that is not a shortcut reference keeps block rendering",
     "Use ``<https://x.test/`> [1]`` here.\n\n[1]: https://x.test/unused\n",
     "Use ``[a [b]](https://x.test/`tag) [1]`` here.\n\n[1]: https://x.test/unused\n",
     'Use ``<span title="`"> [1]`` here.\n\n[1]: https://x.test/unused\n',
+    "Use ahttps://x.test/a`b [1] ` here.\n\n[1]: https://x.test/unused\n",
     "Use <span title=`bad> [1] ` here.\n\n[1]: https://x.test/unused\n",
     "Use ``$a ` b$ [1]`` here.\n\n[1]: https://x.test/unused\n",
     "Use [1](https://x.test/inline).\n\n[1]: https://x.test/unused\n",
