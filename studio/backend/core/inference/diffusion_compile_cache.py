@@ -302,7 +302,8 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INDUCTOR_BACKPORTS": "on",
     "UNSLOTH_STATIC_STREAM_MERGE_DETECT": "off",
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
-    "UNSLOTH_NVFP4_BACKEND": "raw",
+    "UNSLOTH_NVFP4_BACKEND": "raw:auto",
+    # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
 }
 _OFF_WORDS = ("0", "off", "false", "no", "none")
@@ -312,10 +313,10 @@ _ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
 
 def _switch_value(name: str, default: str) -> Optional[str]:
     raw = (os.environ.get(name) or "").strip().lower()
-    if raw in ("", "auto"):
+    if not raw:
         return None
-    if default == "raw":
-        return None if raw in _OFF_WORDS else raw
+    if default.startswith("raw"):
+        return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
     if value is None:
         return None
@@ -350,7 +351,17 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
             )
         for attr in ("tensor_attribute_names", "optional_tensor_attribute_names"):
             for name in getattr(cls, attr, None) or ():
-                if name in ("block_size", "shape"):
+                if name == "shape":
+                    continue
+                if name == "block_size":
+                    # Relative to the shape: per-row [1, k] vs per-tensor [n, k] trace different scale broadcasts.
+                    shape = tuple(getattr(tensor, "shape", ()) or ())
+                    block = tuple(getattr(tensor, name, None) or ())
+                    rel = ",".join(
+                        "full" if i < len(shape) and b == shape[i] else str(b)
+                        for i, b in enumerate(block)
+                    )
+                    inner.append(f"block_size={rel}")
                     continue
                 inner.append(f"{name}={_ADDRESS_RE.sub('', repr(getattr(tensor, name, None)))}")
     elif cls.__name__ not in ("Tensor", "Parameter") and hasattr(tensor, "__tensor_flatten__"):
@@ -365,8 +376,7 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
 
 
 def _weight_signature(module: Any, weight: Any) -> str:
-    """Scale dtype (fp32 hosted vs bf16 runtime) and W8A8 vs weight-only both land here; ``block_size`` is skipped
-    (it is the weight's shape)."""
+    """Scale dtype (fp32 hosted vs bf16 runtime) and W8A8 vs weight-only both land here."""
     parts = [type(module).__name__, _tensor_signature(weight)]
     group = getattr(module, "convrot_groupsize", None)
     if group is not None:
@@ -385,6 +395,19 @@ def _weight_signature(module: Any, weight: Any) -> str:
     return "/".join(parts)
 
 
+def _stored_weight(module: Any) -> tuple[Any, bool]:
+    """The stored weight, never a ``weight`` property: native layers dequantize the whole matrix on each read."""
+    d = getattr(module, "__dict__", None) or {}
+    for store in ("_parameters", "_buffers"):
+        weight = (d.get(store) or {}).get("weight")
+        if weight is not None:
+            return weight, False
+    if d.get("weight") is not None:
+        return d["weight"], False
+    packed = (d.get("_buffers") or {}).get("weight_q")
+    return packed, packed is not None
+
+
 def graph_variant(transformer: Any) -> dict[str, Any]:
     """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
     plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
@@ -394,10 +417,10 @@ def graph_variant(transformer: Any) -> dict[str, Any]:
 
         counts: dict[str, int] = {}
         for module in transformer.modules():
-            weight = getattr(module, "weight", None) if hasattr(module, "weight") else None
+            weight, packed = _stored_weight(module)
             if not isinstance(weight, torch.Tensor):
                 continue
-            sig = _weight_signature(module, weight)
+            sig = _weight_signature(module, weight) + ("/packed" if packed else "")
             counts[sig] = counts.get(sig, 0) + 1
         variant["weights"] = dict(sorted(counts.items()))
     except Exception as exc:  # noqa: BLE001 - an unreadable tree keys apart rather than sharing a bundle
@@ -424,7 +447,7 @@ def _has_quantized_layout(variant: dict[str, Any]) -> bool:
         if len(parts) < 2 or parts[1] not in ("Parameter", "Tensor") or "(" in sig:
             return True
         # An instance forward alone is not quantized: offload hooks install one on dense loads too.
-        if any(p.startswith(("convrot", "rot", "act_int8")) for p in parts[3:]):
+        if any(p.startswith(("convrot", "rot", "act_int8", "packed")) for p in parts[3:]):
             return True
     return False
 

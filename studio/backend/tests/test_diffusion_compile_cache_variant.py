@@ -125,10 +125,14 @@ def test_an_instance_forward_swap_keys_apart():
 def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, default, quant):
     m = _int8() if quant else _model()
     k0 = _key(m, quant)
-    for same in ("", "auto") + ((default,) if default in ("on", "off") else ()):
+    for same in (
+        ("",)
+        + (() if default == "raw" else ("auto",))
+        + ((default,) if default in ("on", "off") else ())
+    ):
         monkeypatch.setenv(name, same)
         assert _key(m, quant) == k0, same
-    flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao"}[default]
+    flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao", "raw:auto": "torchao"}[default]
     monkeypatch.setenv(name, flipped)
     assert _key(m, quant) != k0
     assert name in cc.model_fingerprint(transformer = m, quant = quant, **_FP_KW)["switches"]
@@ -196,3 +200,55 @@ def test_a_bundle_saved_for_one_variant_is_a_miss_for_the_other(monkeypatch, tmp
     again = cc.begin(transformer = _convrot(_int8()), quant = "int8", **_FP_KW)
     assert again is not None and again.hit and again.key == rotated.key
     cc.restore(again)
+
+
+def test_protect_steps_auto_is_not_its_default(monkeypatch):
+    # Unset means no protection; "auto" protects the head and last step.
+    m = _int8()
+    k0 = _key(m)
+    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "auto")
+    assert _key(m) != k0
+    monkeypatch.setenv("UNSLOTH_NVFP4_BACKEND", "auto")
+    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "auto"}
+
+
+def test_a_dequantizing_weight_property_is_never_read():
+    reads = []
+
+    class PackedLinear(nn.Module):
+        def __init__(self, scheme):
+            super().__init__()
+            self.register_buffer("weight_q", torch.zeros(4, 4, dtype = scheme))
+
+        @property
+        def weight(self):
+            reads.append(1)
+            return self.weight_q.float()
+
+    m = _model()
+    m[0] = PackedLinear(torch.int8)
+    other = _model()
+    other[0] = PackedLinear(torch.uint8)
+    fp = cc.model_fingerprint(transformer = m, quant = None, **_FP_KW)
+    assert not reads
+    assert "variant" in fp and any(sig.endswith("/packed") for sig in fp["variant"]["weights"])
+    assert _key(m, None) != _key(other, None)
+    assert not reads
+
+
+def test_per_row_and_per_tensor_scales_key_apart():
+    class FakeFp8:
+        tensor_data_names = ("qdata", "scale")
+        tensor_attribute_names = ("block_size",)
+        dtype = torch.bfloat16
+
+        def __init__(self, block, scale_shape):
+            self.shape = (64, 256)
+            self.block_size = block
+            self.qdata = torch.zeros(64, 256, dtype = torch.float8_e4m3fn)
+            self.scale = torch.ones(scale_shape)
+
+    per_row = cc._tensor_signature(FakeFp8([1, 256], (64, 1)))
+    per_tensor = cc._tensor_signature(FakeFp8([64, 256], (1,)))
+    assert per_row != per_tensor
+    assert "block_size=1,full" in per_row and "block_size=full,full" in per_tensor
