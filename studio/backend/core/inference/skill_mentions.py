@@ -31,6 +31,7 @@ def _record_inline_code(state, silent: bool) -> bool:
     if (
         matched
         and not silent
+        # The image rule re-enters with alt text, whose offsets address another string.
         and state.src is state.env.get("source")
         and len(state.tokens) > count
         and state.tokens[-1].type == "code_inline"
@@ -43,17 +44,53 @@ _MENTION_MARKDOWN = MarkdownIt("commonmark").disable("inline")
 _MENTION_MARKDOWN.inline.ruler.at("backticks", _record_inline_code)
 
 
+# Each kind runs to the end of the text when unclosed, naming itself through its group.
+_QUOTE_KINDS = {
+    "double": r'"(?:\\.|[^"])*(?:"|(?P<double>\Z))',
+    "curly_double": r"“(?:\\.|[^”])*(?:”|(?P<curly_double>\Z))",
+    # A quote mark between word characters is an apostrophe, never a delimiter.
+    "curly_single": r"‘(?:\\.|(?<=\w)’(?=\w)|[^’])*(?:’|(?P<curly_single>\Z))",
+    "single": r"(?<!\w)'(?:\\.|(?<=\w)'(?=\w)|[^'])*(?:'|(?P<single>\Z))",
+}
+
+
+def _mask_quoted(text: str) -> str:
+    kinds = dict(_QUOTE_KINDS)
+    parts, end = [], 0
+    while kinds:
+        match = re.compile("|".join(kinds.values()), re.DOTALL).search(text, end)
+        if match is None:
+            break
+        if match.lastgroup:
+            # No later opener of this kind can close either; retrying each one is quadratic.
+            del kinds[match.lastgroup]
+            continue
+        parts.extend((text[end : match.start()], " "))
+        end = match.end()
+    return "".join(parts) + text[end:]
+
+
 def mentioned_skill_names(text: str) -> list[str]:
     """Only prose outside code, Markdown blockquotes, and balanced quotation spans."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     tokens = _MENTION_MARKDOWN.parse(text)
+    lines = text.split("\n")
     masked_lines = set()
     for token in tokens:
-        if token.type in ("blockquote_open", "fence", "code_block") and token.map:
+        if not token.map:
+            continue
+        if token.type in ("blockquote_open", "fence", "code_block"):
             masked_lines.update(range(*token.map))
+        elif token.type == "paragraph_open":
+            # User text is shown unrendered, so a reply typed right under a quote reads as its
+            # own line even though CommonMark folds it into the quote as a lazy continuation.
+            masked_lines.difference_update(
+                number
+                for number in range(token.map[0] + 1, token.map[1])
+                if not lines[number].lstrip().startswith(">")
+            )
     text = "\n".join(
-        " " * len(line) if number in masked_lines else line
-        for number, line in enumerate(text.split("\n"))
+        " " * len(line) if number in masked_lines else line for number, line in enumerate(lines)
     )
     offsets = [0, *(match.end() for match in re.finditer("\n", text)), len(text)]
     spans = []
@@ -68,15 +105,7 @@ def mentioned_skill_names(text: str) -> list[str]:
     for start, stop in sorted(spans):
         parts.extend((text[end:start], " "))
         end = stop
-    text = "".join(parts) + text[end:]
-    text = re.sub(
-        r'"(?:\\.|[^"\\])*"|“(?:\\.|[^”\\])*”'
-        r"|‘(?:\\.|(?<=\w)’(?=\w)|[^’\\])*(?:’(?!\w)|(?<!\w)’)"
-        r"|(?<!\w)'(?:\\.|(?<=\w)'(?=\w)|[^'\\])*(?:'(?!\w)|(?<!\w)')",
-        " ",
-        text,
-        flags = re.DOTALL,
-    )
+    text = _mask_quoted("".join(parts) + text[end:])
     return list(dict.fromkeys(match[1] for match in _TOKEN.finditer(text)))
 
 
