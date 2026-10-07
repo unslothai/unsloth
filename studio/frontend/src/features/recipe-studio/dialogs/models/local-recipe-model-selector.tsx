@@ -17,8 +17,9 @@ import {
   listLocalModels,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { Link } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronRightIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { ggufVariantDisplayLabel } from "@/features/hub";
 import {
   type ComponentPropsWithoutRef,
@@ -75,6 +76,8 @@ function sourceLabel(model: LocalModelInfo): string {
       return "HF cache";
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":
@@ -624,7 +627,7 @@ export function LocalRecipeModelSelector({
                 onClick={requestModelRefresh}
                 aria-label="Refresh local models"
               >
-                <RefreshCwIcon className="size-3.5" />
+                <RefreshGlyph className="size-3.5" />
               </Button>
             </div>
           </div>

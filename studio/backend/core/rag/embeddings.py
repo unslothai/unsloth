@@ -106,6 +106,28 @@ def _load_device() -> str:
     )
 
 
+# Matched as a substring of the lowercased model name. EmbeddingGemma's activations overflow float16 and every
+# vector comes back NaN; its model card says to use float32 or bfloat16.
+_FLOAT16_UNSAFE_MODELS = ("embeddinggemma",)
+
+
+def _load_dtype(device: str, name: str) -> str:
+    """float32 on CPU, where fp16 BERT raises "not implemented for Half" and encode() answers by swapping the
+    whole process to llama-server. float16 on an accelerator, except for models that cannot run in it: those
+    get bf16 where the device has it natively, else float32."""
+    if device == "cpu":
+        return "float32"
+    if not any(m in name.lower() for m in _FLOAT16_UNSAFE_MODELS):
+        return "float16"
+    from core.training.diffusion_train_common import (
+        native_bf16_supported,
+        native_bf16_supported_xpu,
+    )
+
+    native = native_bf16_supported_xpu() if device == "xpu" else native_bf16_supported()
+    return "bfloat16" if native else "float32"
+
+
 _torchao_stub_done = False
 # Its own lock, not _lock: that one is held across a whole model construction, so borrowing it made
 # a preflight probe wait out someone else's download.
@@ -404,9 +426,111 @@ def _st_accepts_local_files_only(st_cls) -> bool:
         return False
 
 
+_ST_PACKAGE_PREFIX = "sentence_transformers."
+_ST_GATE_MARKER = "_unsloth_custom_module_gate"
+
+
+def _refuse_custom_module(class_ref, model_name_or_path, trust_remote_code) -> None:
+    if (
+        isinstance(class_ref, str)
+        and not class_ref.startswith(_ST_PACKAGE_PREFIX)
+        and model_name_or_path is not None
+        and not trust_remote_code
+    ):
+        raise ValueError(
+            f"The model {model_name_or_path} references the module class {class_ref!r}, which is not "
+            "part of Sentence Transformers. Importing it executes third-party code, so Studio refuses "
+            "to load it as an embedding model."
+        )
+
+
+def _gate_st_custom_modules() -> None:
+    """Backport sentence-transformers 6.0's trust gate (CVE-2026-68770): before 6.0 a cached
+    model's modules.json could import repo-hosted classes without trust_remote_code."""
+    try:
+        import inspect
+        import sentence_transformers as st
+        from packaging.version import Version
+
+        if Version(st.__version__).major >= 6:
+            return
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return
+    # 5.0-5.4 resolve on the model class; 5.5+ also via util.misc.import_module_class.
+    owner = next(
+        (c for c in SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)),
+        None,
+    )
+    if owner is not None:
+        original = vars(owner)["_load_module_class_from_ref"]
+        if not getattr(original, _ST_GATE_MARKER, False):
+            signature = inspect.signature(original)
+
+            def _load_module_class_from_ref(self, *args, **kwargs):
+                bound = signature.bind_partial(self, *args, **kwargs).arguments
+                _refuse_custom_module(
+                    bound.get("class_ref"),
+                    bound.get("model_name_or_path"),
+                    bound.get("trust_remote_code"),
+                )
+                return original(self, *args, **kwargs)
+
+            setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
+            _load_module_class_from_ref.__wrapped__ = original
+            setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
+    # 5.0-5.4 Router imports via import_from_string, past both resolvers.
+    try:
+        import importlib
+
+        router = importlib.import_module("sentence_transformers.models.Router")
+        original_from_string = getattr(router, "import_from_string", None)
+        if original_from_string is not None and not getattr(
+            original_from_string, _ST_GATE_MARKER, False
+        ):
+
+            def import_from_string(dotted_path, *args, **kwargs):
+                _refuse_custom_module(dotted_path, "behind this Router", False)
+                return original_from_string(dotted_path, *args, **kwargs)
+
+            setattr(import_from_string, _ST_GATE_MARKER, True)
+            import_from_string.__wrapped__ = original_from_string
+            router.import_from_string = import_from_string
+    except Exception:
+        pass
+    try:
+        import sys
+        from sentence_transformers.util import misc
+    except Exception:
+        return
+    original_import = getattr(misc, "import_module_class", None)
+    if original_import is None or getattr(original_import, _ST_GATE_MARKER, False):
+        return
+
+    def import_module_class(
+        class_ref,
+        model_name_or_path = None,
+        *args,
+        **kwargs,
+    ):
+        _refuse_custom_module(class_ref, model_name_or_path, kwargs.get("trust_remote_code"))
+        return original_import(class_ref, model_name_or_path, *args, **kwargs)
+
+    setattr(import_module_class, _ST_GATE_MARKER, True)
+    import_module_class.__wrapped__ = original_import
+    # Rebind every module that imported the function by name.
+    for module in list(sys.modules.values()):
+        if (
+            getattr(module, "__name__", "").startswith("sentence_transformers")
+            and getattr(module, "import_module_class", None) is original_import
+        ):
+            setattr(module, "import_module_class", import_module_class)
+
+
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
-    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
+    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU; see ``_load_dtype``
+    for the models that cannot run in fp16."""
     account_path(model_name, reference = True)
     global _model, _name
     name = model_name or config.effective_embedding_model()
@@ -427,13 +551,13 @@ def _get(model_name: str | None = None):
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
 
+            _gate_st_custom_modules()
+
             logger.info("loading embedding model %s on %s", name, device)
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                # Keyed on the device we load on: fp16 BERT on CPU raises "not implemented for Half", which encode()
-                # answers by swapping the whole process to llama-server.
-                model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
+                model_kwargs = dtype_kwargs(_load_dtype(device, name)),
             )
             if managed_account():
                 st_kwargs["token"] = False

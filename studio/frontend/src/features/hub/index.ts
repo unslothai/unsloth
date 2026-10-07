@@ -17,6 +17,7 @@ export {
   TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
+  useRepoDownload,
   useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
@@ -30,6 +31,7 @@ export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
+export { isHuggingFaceOffline } from "./lib/network";
 export { HubFailureHint } from "./catalog/catalog-states";
 export {
   INVENTORY_HINT_KIND,
@@ -140,3 +142,8 @@ export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
 export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";
+export {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory/inventory-freshness";
+export { withAbort } from "./lib/abort-signals";

@@ -4,16 +4,19 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
+import { Folder01Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { audioSummary, audioWorkflow } from "../audio-items";
+import { toggleLibraryAudio, useLibraryAudioPlaying } from "../audio-playback";
 import {
   KIND_ICONS,
   KIND_ICON_CLASS,
   fileKind,
   hasThumbnail,
 } from "../file-kind";
+import { streamsPreview } from "../file-name";
 import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
@@ -38,7 +41,7 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   const kind = fileKind(item);
   return (
     <HugeiconsIcon
-      icon={KIND_ICONS[kind]}
+      icon={audioWorkflow(item)?.icon ?? KIND_ICONS[kind]}
       strokeWidth={1.5}
       className={cn(KIND_ICON_CLASS[kind], className, kind === "model" && "scale-95")}
     />
@@ -123,6 +126,7 @@ function CardFrame({
   className,
   label,
   glass = false,
+  control,
 }: {
   selectKey: string;
   onOpen: () => void;
@@ -131,6 +135,7 @@ function CardFrame({
   className?: string;
   label: string;
   glass?: boolean;
+  control?: ReactNode;
 }) {
   const t = useT();
   const select = useContext(CardSelectionContext);
@@ -164,8 +169,32 @@ function CardFrame({
           )}
         />
       )}
+      {control}
       <div className="absolute right-2 top-2">{menu}</div>
     </div>
+  );
+}
+
+function PlayButton({ item }: { item: LibraryItem }) {
+  const t = useT();
+  const playing = useLibraryAudioPlaying(item.id);
+  return (
+    <button
+      type="button"
+      aria-label={t(playing ? "library.audio.pause" : "library.audio.play", { name: item.name })}
+      aria-pressed={playing}
+      onClick={() => void toggleLibraryAudio(item)}
+      className={cn(
+        OVERLAY_CONTROL,
+        "absolute bottom-3 left-4 flex size-7 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-neutral-600",
+      )}
+    >
+      <HugeiconsIcon
+        icon={playing ? PauseIcon : PlayIcon}
+        strokeWidth={2}
+        className="size-3.5 [&_path]:fill-current"
+      />
+    </button>
   );
 }
 
@@ -175,11 +204,15 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
   const thumb = hasThumbnail(item);
+  const playable = fileKind(item) === "audio" && streamsPreview(item.id, "audio");
+  const summary = audioSummary(item).join(" · ");
+  const caption = [summary, showTime ? formatCardTime(item.updatedAt, locale) : ""].filter(Boolean);
   return (
     <CardFrame
       selectKey={`item:${item.id}`}
       label={item.name}
       onOpen={() => actions.openItem(item)}
+      control={playable ? <PlayButton item={item} /> : undefined}
       menu={
         <LibraryActionsMenu
           target={{ kind: "item", item }}
@@ -205,15 +238,27 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           )}
         </>
       ) : (
-        <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
-          <p className="line-clamp-2 break-all pr-7 font-medium text-ui-14 leading-snug text-foreground">
+        // Two-line name slot keeps the icon in one place on every card. A 5:7 space split lifts it without growing small cards.
+        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+          <p className="line-clamp-2 min-h-[2.75em] break-all font-medium text-ui-13p5 leading-snug text-foreground">
             {item.name}
           </p>
-          <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center before:flex-5 after:flex-7">
             <KindIcon item={item} className={cardIconClass(item)} />
           </div>
-          <p className="truncate pr-6 text-ui-13 text-muted-foreground">
-            {showTime && formatCardTime(item.updatedAt, locale)}
+          {/* One line: a date that does not fit wraps onto a hidden second line. */}
+          <p
+            className={cn(
+              "flex h-[1lh] flex-wrap overflow-hidden pr-6 text-ui-12 tabular-nums text-muted-foreground",
+              playable && "pl-8",
+            )}
+          >
+            {caption.map((part, index) => (
+              <span key={part} className="truncate">
+                {index > 0 && "\u00a0·\u00a0"}
+                {part}
+              </span>
+            ))}
           </p>
         </div>
       )}

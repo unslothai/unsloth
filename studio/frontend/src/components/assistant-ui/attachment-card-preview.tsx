@@ -38,7 +38,7 @@ export function attachmentPreview(
 
 const DOCUMENT_KINDS: Record<DocumentKind, AttachmentFileKind> = {
   pdf: "pdf",
-  docx: "document",
+  docx: "word",
   sheet: "spreadsheet",
   slides: "presentation",
 };

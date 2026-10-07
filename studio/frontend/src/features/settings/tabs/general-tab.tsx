@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -118,6 +118,7 @@ const PREFS_KEYS: string[] = [
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
@@ -542,15 +543,6 @@ export function GeneralTab() {
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.permissions.bypassLabel")}
-          description={t("settings.general.permissions.bypassDescription")}
-        >
-          <PermissionModeDropdown />
         </SettingsRow>
       </SettingsSection>
 

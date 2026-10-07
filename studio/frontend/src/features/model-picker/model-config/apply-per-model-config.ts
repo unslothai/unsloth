@@ -45,8 +45,16 @@ export function applyPerModelConfigToRuntime(
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
-  if (maxSeqLength !== store.params.maxSeqLength) {
-    store.setParams({ ...store.params, maxSeqLength });
+  const engine = config.engine ?? "auto";
+  const engineParallelism = config.engineParallelism ?? "tensor";
+  const enginePrecision = config.enginePrecision ?? "auto";
+  if (
+    maxSeqLength !== store.params.maxSeqLength ||
+    engine !== (store.params.engine ?? "auto") ||
+    enginePrecision !== (store.params.enginePrecision ?? "auto") ||
+    engineParallelism !== (store.params.engineParallelism ?? "tensor")
+  ) {
+    store.setParams({ ...store.params, maxSeqLength, engine, enginePrecision, engineParallelism });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -59,6 +67,7 @@ export function applyPerModelConfigToRuntime(
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
+    mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -118,12 +127,16 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    engine: s.params.engine ?? "auto",
+    enginePrecision: s.params.enginePrecision ?? "auto",
+    engineParallelism: s.params.engineParallelism ?? "tensor",
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
+    mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -155,18 +168,27 @@ export function currentRuntimePerModelConfig(
   };
 }
 
+/** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
+ *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
+  { followGlobal = false }: { followGlobal?: boolean } = {},
 ): boolean {
+  const speculative = followGlobal
+    ? resolvedSpeculativeType
+    : normalizeSpeculativeType;
   return (
+    (a.engine ?? "auto") === (b.engine ?? "auto") &&
+    (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
+    (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
-    normalizeSpeculativeType(a.speculativeType) ===
-      normalizeSpeculativeType(b.speculativeType) &&
+    Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
@@ -184,6 +206,10 @@ export function perModelConfigsEqual(
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+function resolvedSpeculativeType(value: string | null | undefined): string {
+  return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }
 
 /** Compare on the launched command, so "not loaded" and "cleared" are equal here. They differ

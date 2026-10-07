@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { explicitFamily } from "../model-picker/components/model-selector/family-override.ts";
+
 export interface RememberedImageModel {
   repoId: string;
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
+  // An opaque pipeline reloads only under the family it was loaded with.
+  familyOverride?: string;
 }
 
 const KEY = "unsloth:images:last-model";
@@ -20,12 +24,14 @@ export function readImageModel(): RememberedImageModel | null {
       (typeof value.filename !== "string" || !value.filename)
     )
       return null;
+    const family = explicitFamily(value.familyOverride);
     return {
       repoId: value.repoId,
       kind: value.kind,
       ...(typeof value.filename === "string"
         ? { filename: value.filename }
         : {}),
+      ...(family ? { familyOverride: family } : {}),
     };
   } catch {
     return null;

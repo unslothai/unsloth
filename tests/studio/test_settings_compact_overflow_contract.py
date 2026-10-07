@@ -1,5 +1,6 @@
 """Responsive overflow contracts for the settings dialog."""
 
+import re
 from pathlib import Path
 
 
@@ -34,7 +35,15 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.
-    assert "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
+    # Read as tokens: #12431 added scroll-rounded to these boxes, which changes none of this.
+    text_boxes = [
+        set(literal.split())
+        for literal in re.findall(r'"([^"\n]*)"', source)
+        if {"whitespace-pre-wrap", "rounded-lg"} <= set(literal.split())
+    ]
+    assert text_boxes, "no wrapped, rounded text box in the API monitor"
+    for tokens in text_boxes:
+        assert {"max-h-72", "overflow-auto", "break-words"} <= tokens, sorted(tokens)
     # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
 

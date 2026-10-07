@@ -12,7 +12,7 @@ import {
 import {
   AiEditingIcon,
   AudioWave01Icon,
-  File02Icon,
+  FileEmpty02Icon,
   FilterMailIcon,
   FlimSlateIcon,
   Folder01Icon,
@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowDownUpIcon } from "lucide-react";
 import type { LibrarySource } from "../api";
+import type { LibraryAudioWorkflow } from "../audio-items";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
@@ -57,7 +58,7 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
   { value: "images", label: "library.tabs.images", icon: Image02Icon },
   { value: "videos", label: "library.tabs.videos", icon: FlimSlateIcon },
   { value: "audio", label: "library.tabs.audio", icon: AudioWave01Icon },
-  { value: "documents", label: "library.toolbar.documents", icon: File02Icon },
+  { value: "documents", label: "library.toolbar.documents", icon: FileEmpty02Icon },
   { value: "spreadsheets", label: "library.toolbar.spreadsheets", icon: SheetIcon },
   { value: "presentations", label: "library.toolbar.presentations", icon: Presentation01Icon },
   { value: "pdfs", label: "library.toolbar.pdfs", icon: Pdf01Icon },
@@ -99,14 +100,17 @@ function FilterMenu({
   filters,
   onChange,
   showTypes,
+  workflows,
 }: {
   filters: LibraryFilters;
   onChange: (next: LibraryFilters) => void;
   showTypes: boolean;
+  workflows: readonly LibraryAudioWorkflow[];
 }) {
   const t = useT();
   const option = (
-    { value, label, icon }: MenuOption<string>,
+    { value, icon }: { value: string; icon: IconSvgElement },
+    label: string,
     checked: boolean,
     toggle: () => void,
   ) => (
@@ -118,7 +122,7 @@ function FilterMenu({
       }}
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
-      <span className="flex-1">{t(label)}</span>
+      <span className="flex-1">{label}</span>
       {/* Always rendered so the menu width does not change when ticked. */}
       <HugeiconsIcon
         icon={Tick02Icon}
@@ -147,8 +151,24 @@ function FilterMenu({
               {t("library.toolbar.fileType")}
             </DropdownMenuLabel>
             {TYPE_OPTIONS.map((entry) =>
-              option(entry, filters.types.has(entry.value), () =>
+              option(entry, t(entry.label), filters.types.has(entry.value), () =>
                 onChange({ ...filters, types: toggled(filters.types, entry.value) }),
+              ),
+            )}
+            <DropdownMenuSeparator className="mx-3" />
+          </>
+        )}
+        {workflows.length > 0 && (
+          <>
+            <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
+              {t("library.toolbar.workflow")}
+            </DropdownMenuLabel>
+            {workflows.map((workflow) =>
+              option(
+                { value: workflow.id, icon: workflow.icon },
+                workflow.label,
+                filters.workflows.has(workflow.id),
+                () => onChange({ ...filters, workflows: toggled(filters.workflows, workflow.id) }),
               ),
             )}
             <DropdownMenuSeparator className="mx-3" />
@@ -158,7 +178,7 @@ function FilterMenu({
           {t("library.toolbar.source")}
         </DropdownMenuLabel>
         {SOURCE_OPTIONS.map((entry) =>
-          option(entry, filters.sources.has(entry.value), () =>
+          option(entry, t(entry.label), filters.sources.has(entry.value), () =>
             onChange({ ...filters, sources: toggled(filters.sources, entry.value) }),
           ),
         )}
@@ -311,6 +331,7 @@ export function LibraryToolbar({
   filters,
   onFiltersChange,
   filterMode,
+  workflows = [],
   view,
   onViewChange,
   sort,
@@ -323,6 +344,7 @@ export function LibraryToolbar({
   filters: LibraryFilters;
   onFiltersChange: (next: LibraryFilters) => void;
   filterMode: "none" | "source" | "all";
+  workflows?: readonly LibraryAudioWorkflow[];
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;
   /** Grid view only: list view sorts by column headers. */
@@ -341,6 +363,7 @@ export function LibraryToolbar({
             filters={filters}
             onChange={onFiltersChange}
             showTypes={filterMode === "all"}
+            workflows={workflows}
           />
         )}
         {sort && <SortMenu {...sort} />}

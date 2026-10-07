@@ -238,8 +238,23 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        tail = names[-len(_TOOL_LOOP_HOOKS) :]
-        assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
+        # Later parameters may only be appended after the hooks, never inserted before them.
+        start = names.index(_TOOL_LOOP_HOOKS[0])
+        hooks = names[start : start + len(_TOOL_LOOP_HOOKS)]
+        assert hooks == list(
+            _TOOL_LOOP_HOOKS
+        ), f"the hooks must stay together in order, got {hooks}"
+
+    def test_the_sandbox_level_was_appended_rather_than_inserted(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        names = list(
+            inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
+        )
+        assert names[-1] == "sandbox_level"
+        assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

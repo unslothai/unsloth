@@ -1,7 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turning one raw dataset cell into the text we are willing to train on."""
+"""Turning raw dataset cells into the text we are willing to train on."""
+
+from pathlib import Path
+
+# Feature ids tagging each column of a CSV read by `csv_as_text_kwargs`.
+_CSV_TEXT = "csv_text"
+_CSV_TYPED = "csv_typed"
+# The csv loader types each column from the first chunk of the first file.
+_CSV_CHUNK_ROWS = 10_000
+# pandas' default missing-value markers.
+_NA_CELLS = frozenset(
+    ("", "#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN", "-nan", "1.#IND", "1.#QNAN")
+    + ("<NA>", "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null")
+)
 
 
 def cell_text(value):
@@ -17,7 +30,7 @@ def cell_text(value):
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
-        # SQuAD-style `answers` span: train the first answer, as _extract_column_value does.
+        # match _extract_column_value by training the first SQuAD answer.
         answer = value["text"]
         if isinstance(answer, list):
             answer = answer[0] if answer else None
@@ -27,3 +40,95 @@ def cell_text(value):
     if isinstance(value, float) and value != value:
         return ""
     return str(value)
+
+
+_SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
+
+
+def _message(turn):
+    if not isinstance(turn, dict):
+        return None
+    if {"role", "content"} <= turn.keys():
+        return turn
+    if turn.get("role") == "assistant" and "tool_calls" in turn:
+        return {**turn, "content": None}
+    if {"from", "value"} <= turn.keys():
+        return {"role": _SHAREGPT_ROLES.get(turn["from"], turn["from"]), "content": turn["value"]}
+    return None
+
+
+def message_list_columns(dataset):
+    features = getattr(dataset, "features", None) or {}
+    columns = set()
+    for column, feature in features.items():
+        item = getattr(feature, "feature", None)
+        if item is None and isinstance(feature, list) and len(feature) == 1:
+            item = feature[0]
+        if isinstance(item, dict) and (
+            {"role", "content"} <= item.keys() or {"from", "value"} <= item.keys()
+        ):
+            columns.add(column)
+    return columns
+
+
+def cell_turns(
+    value,
+    role,
+    empty_is_messages = False,
+):
+    messages = [_message(turn) for turn in value] if isinstance(value, list) else [None]
+    if (messages or empty_is_messages) and all(message is not None for message in messages):
+        return [
+            message
+            if message["content"] is None and message.get("tool_calls")
+            else {**message, "content": cell_text(message["content"])}
+            for message in messages
+        ]
+    return [{"role": role, "content": cell_text(value)}]
+
+
+def _column_ids(dataset) -> dict:
+    features = getattr(dataset, "features", None) or {}
+    return {column: getattr(feature, "id", None) for column, feature in features.items()}
+
+
+def typed_csv_columns(dataset) -> frozenset:
+    """CSV columns inferred as numbers, booleans, or all missing by the loader."""
+    return frozenset(column for column, tag in _column_ids(dataset).items() if tag == _CSV_TYPED)
+
+
+def text_cell_check(dataset):
+    """`(column, cell) -> bool`: `False` for CSV cells the loader would not parse as strings."""
+    ids = _column_ids(dataset)
+
+    def is_text(column, cell):
+        tag = ids.get(column)
+        return tag not in (_CSV_TEXT, _CSV_TYPED) or (tag == _CSV_TEXT and cell not in _NA_CELLS)
+
+    return is_text
+
+
+def csv_as_text_kwargs(files):
+    if Path(files[0]).suffix.lower() != ".csv":
+        return {}
+    import pandas as pd
+    import pyarrow as pa
+    from datasets import Features, Value
+
+    with pd.read_csv(files[0], chunksize = _CSV_CHUNK_ROWS) as chunks:
+        first = next(chunks)
+    headers = [first.columns] + [pd.read_csv(path, nrows = 0).columns for path in files[1:]]
+    # A string schema needs the same columns in every file; else keep the loader's defaults.
+    if any(set(columns) != set(headers[0]) for columns in headers):
+        return {}
+    strings = {
+        field.name
+        for field in pa.Table.from_pandas(first).schema
+        if pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
+    }
+    tags = {name: _CSV_TEXT if name in strings else _CSV_TYPED for name in first.columns}
+    return {
+        "features": Features({name: Value("string", id = tag) for name, tag in tags.items()}),
+        "keep_default_na": False,
+        "na_values": [""],
+    }

@@ -55,6 +55,7 @@ def test_every_control_type_is_dropped(frame_type):
         "_diffusionFrame",
         "_reasoningDurationMs",
         "_mcp_provenance",
+        "quote_cut",
     ],
 )
 def test_every_studio_private_key_is_stripped(key):

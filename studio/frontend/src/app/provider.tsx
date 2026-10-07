@@ -21,6 +21,7 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -47,6 +48,7 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
+import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   getToastOffsets,
@@ -60,6 +62,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -464,10 +467,12 @@ function TauriUpdateLayer({
   isExternalServer,
   children,
   appContent,
+  onUpdateScreenChange,
 }: {
   isExternalServer: boolean;
   children?: ReactNode;
   appContent: ReactNode;
+  onUpdateScreenChange: (shown: boolean) => void;
 }) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
@@ -487,6 +492,12 @@ function TauriUpdateLayer({
       resyncInferenceStatusAfterServerModelChange,
     );
   }, [isUpdating]);
+
+  // Sync the parent titlebar before paint to avoid flashing sidebar chrome.
+  useLayoutEffect(() => {
+    onUpdateScreenChange(isUpdating);
+    return () => onUpdateScreenChange(false);
+  }, [isUpdating, onUpdateScreenChange]);
 
   const content = isUpdating ? (
     <UpdateScreen
@@ -624,12 +635,19 @@ function DesktopChromeVarsEffect({
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
     );
+    refreshWindowChromeTop();
+    // The macOS titlebar inset is divided by the zoom.
+    const stopZoom = usesNativeMacTitlebar
+      ? subscribeAppliedInterfaceZoom(refreshWindowChromeTop)
+      : null;
     return () => {
+      stopZoom?.();
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
       set("--studio-content-top-inset", null);
       set("--studio-window-chrome-top", null);
+      refreshWindowChromeTop();
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);
   return null;
@@ -674,6 +692,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
   const [appShellReady, setAppShellReady] = useState(false);
+  const [updateScreenShown, setUpdateScreenShown] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
   // Same as showApp below: until the shell is ready the app sits hidden behind the startup screen.
   useEffect(() => {
@@ -912,6 +931,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
             <TauriUpdateLayer
               isExternalServer={isExternalServer}
+              onUpdateScreenChange={setUpdateScreenShown}
               appContent={
                 <>
                   {showApp && <NativeIntentDrain />}
@@ -1009,7 +1029,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  const showSidebarSurface = showApp && !hidesTitlebarSidebar;
+  // Use the startup screen's bare titlebar during updates.
+  const showSidebarSurface =
+    showApp && !hidesTitlebarSidebar && !updateScreenShown;
 
   return (
     <div
@@ -1080,7 +1102,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
-        <DeepLinkHandler />
+        <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
         <Toaster

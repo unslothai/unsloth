@@ -52,7 +52,7 @@ test("downloads a timestamped Markdown conversation", async () => {
 
   assert.deepEqual(downloads, [
     {
-      content: "## User\n\nHello\n",
+      content: "<!-- unsloth-chat-v1:[14] -->\n\n## User\n\nHello\n",
       filename: "conversation-2026-07-31T00-00-00.md",
       mimeType: "text/markdown",
     },

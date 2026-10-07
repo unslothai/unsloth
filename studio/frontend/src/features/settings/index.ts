@@ -3,6 +3,11 @@
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
 export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
+export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -11,11 +16,15 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
+export { loadMultiModelEnabled } from "./api/multi-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
+export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,
+  updateSystemOneSettings,
 } from "./api/systemone";
+export { DECISION_MODEL_LABELS } from "./lib/decision-model-labels";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
@@ -108,7 +117,9 @@ export {
   applyDictationDictionary,
   recordRecentDictation,
   sttModelName,
+  sttModelVariant,
   useVoiceSettingsStore,
+  withSttVariant,
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 

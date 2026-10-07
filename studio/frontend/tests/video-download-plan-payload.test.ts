@@ -40,7 +40,7 @@ test("the staged plan pins its controls through the eventual load", () => {
     source.indexOf("const loadOrStage = useCallback("),
     source.indexOf("// A GGUF pick can arrive"),
   );
-  const advancedAt = flow.indexOf("const advanced = currentLoadAdvanced(opts.kind);");
+  const advancedAt = flow.indexOf("const advanced = currentLoadAdvanced(opts.kind, familyOverrideRequired);");
   const planAt = flow.indexOf("await getVideoDownloadPlan({");
   assert.ok(advancedAt >= 0, "the staged flow must compute the advanced snapshot");
   assert.ok(planAt >= 0, "the staged flow must request the download plan");
@@ -104,7 +104,7 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
   assert.ok(routeEffect.includes("setPendingH3Load({"));
   // One predicate, so the two entry points cannot drift apart again.
   assert.ok(source.includes("function isH3PipelinePick("));
-  assert.ok(source.includes("isH3PipelinePick(id, spec.kind)"));
+  assert.ok(source.includes("isH3PipelinePick(id, spec.kind, nextFamilyOverride)"));
 });
 
 test("reapply preserves the loaded H3 task", () => {

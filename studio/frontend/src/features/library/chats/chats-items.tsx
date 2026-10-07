@@ -59,6 +59,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -355,7 +356,7 @@ function ForkItem({ chat }: { chat: SidebarItem }) {
       disabled={!canForkChatRow(chat) || generating || forking}
       onSelect={() => actions.fork(chat)}
     >
-      <GitBranchIcon strokeWidth={1.75} className={ICON} />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
       {t("library.chats.menu.fork")}
     </DropdownMenuItem>
   );
@@ -1787,14 +1788,15 @@ function FavoriteTile({
           FILE_CARD_SURFACE,
         )}
       >
-        <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
-          <p className="line-clamp-2 break-words pr-7 font-medium text-ui-14 leading-snug text-foreground">
+        {/* Same layout as the file cards. */}
+        <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
+          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-13p5 leading-snug text-foreground">
             {title}
           </p>
-          <div className="flex flex-1 items-center justify-center text-foreground">
+          <div className="flex flex-col items-center text-foreground before:flex-5 after:flex-7">
             {icon}
           </div>
-          <p className="truncate pr-6 text-ui-13 text-muted-foreground">
+          <p className="truncate pr-6 text-ui-12 text-muted-foreground">
             {showTime && time ? formatCardTime(time, locale) : ""}
           </p>
         </div>

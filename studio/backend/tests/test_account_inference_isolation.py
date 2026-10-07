@@ -342,7 +342,7 @@ def test_stt_private_status_and_download_state_are_filtered(monkeypatch):
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     run_as(ALICE, access.note_resident_account, "stt:transformers", "org/private")
     status = {"loaded_model": "org/private"}
-    for engine in ["transformers", "gguf", "mtmd"]:
+    for engine in ["transformers", "gguf", "mtmd", "audiocpp"]:
         status[engine] = {
             "loaded_model": "org/private",
             "downloaded_models": ["org/private"],

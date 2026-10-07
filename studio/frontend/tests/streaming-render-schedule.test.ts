@@ -3,18 +3,85 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
+  repairStreamingMarkdown,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
+
+test("an unfinished link stays literal instead of showing Streamdown's blocked placeholder", () => {
+  const cache = new IncrementalMarkdownCache();
+  for (const source of [
+    "See [example",
+    "See [example](",
+    "See [example](https://exa",
+  ]) {
+    const render = cache.update(source);
+    assert.equal(render.markdown, source);
+    assert.equal(hasIncompleteLinkRepair(source), true);
+    const html = renderToStaticMarkup(
+      createElement(
+        Streamdown,
+        {
+          mode: "streaming",
+          parseIncompleteMarkdown: false,
+          parseMarkdownIntoBlocksFn: render.parseMarkdownIntoBlocks,
+        },
+        render.markdown,
+      ),
+    );
+    assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+    assert.match(html, /See \[example/);
+  }
+
+  const list = new IncrementalMarkdownCache().update("- >= 16 GB\n\nSee [foo");
+  assert.equal(list.markdown, "- \\>= 16 GB\n\nSee [foo");
+
+  const scoped = new IncrementalMarkdownCache();
+  const body = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.`).join(
+    "\n\n",
+  );
+  const head = `Read [docs][r] first.\n\n${body}\n\n`;
+  scoped.update(head);
+  const both = `${head}[r]: https://example.com\n\nSee [foo`;
+  const scopedRender = scoped.update(both);
+  assert.equal(
+    (scoped as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+  assert.deepEqual(
+    scopedRender.parseMarkdownIntoBlocks(scopedRender.markdown),
+    parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(both)),
+  );
+
+  const complete = "See [example](https://example.com)";
+  assert.equal(cache.update(complete).markdown, complete);
+  assert.equal(hasIncompleteLinkRepair(complete), false);
+  assert.equal(
+    hasIncompleteLinkRepair("literal streamdown:incomplete-link"),
+    false,
+  );
+  const unsafe = "See [example](javascript:alert)";
+  const html = renderToStaticMarkup(
+    createElement(
+      Streamdown,
+      { mode: "streaming", parseIncompleteMarkdown: false },
+      unsafe,
+    ),
+  );
+  assert.match(html, /\[blocked\]/);
+});
 
 test("only Streamdown's animation transformer is removed", () => {
   const first = () => undefined;
@@ -98,6 +165,9 @@ const MARKDOWN_CASES = [
   `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
   `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
+  // A Python return annotation inside a list-nested fence is code, not a
+  // definition, so the incremental path has to keep retaining past it.
+  `See [a][ref].\n\n1. item\n   \`\`\`python\n   def f() -> list[str]:\n       return []\n   \`\`\`\n\n${paragraphs(12)}end`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
   // Every label to CommonMark's 999 is registered, so one past 200 must be held.
@@ -130,7 +200,7 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoRenderableBlocks(remend(input)),
+        parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }
@@ -277,6 +347,9 @@ test("a definition inside a block quote or a list is still document-wide", () =>
     "- [g]: /guide",
     "1. [g]: /guide",
     "> > [g]: /guide",
+    "- - [g]: /guide",
+    "- > [g]: /guide",
+    "> - [g]: /guide",
   ]) {
     assert.equal(
       markdownRenderScope(`See [guide][g].\n\n${container}\n`),
@@ -728,7 +801,14 @@ test("a definition shown inside a fenced example still retains", () => {
 
   // A real definition is never retained, whatever block it sits in, so Marked
   // always lexes it together with a later twin and absorbs the duplicate.
-  for (const first of ["[x]: https://e.test", "> [x]: https://e.test"]) {
+  for (const first of [
+    "[x]: https://e.test",
+    "[x\ny]: https://e.test",
+    "> [x]: https://e.test",
+    "- [x]: https://e.test",
+    "- - [x]: https://e.test",
+    "> - [x]: https://e.test",
+  ]) {
     const repeated = `${first}\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
     const cache = new IncrementalMarkdownCache();
     let repeatedRender = cache.update("");
@@ -741,6 +821,8 @@ test("a definition shown inside a fenced example still retains", () => {
       repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
       parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
     );
+    // Held in the live tail, not committed into an independently parsed prefix.
+    assert.ok(repeatedRender.markdown.length > repeated.length / 2, first);
   }
 });
 
@@ -963,4 +1045,61 @@ test("a seam whose reference label is past the cap is rejected once, not per `[`
   // The rejection is a cost bound, not a change of answer: a label inside the cap still resolves.
   const label = "L".repeat(400);
   assert.equal(markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`), "document");
+});
+
+const STREAM_CHUNK = 24;
+const LOOKALIKE_PROSE = paragraphs(1_200);
+
+const streamInChunks = (source: string) => {
+  const cache = new IncrementalMarkdownCache();
+  for (let length = 0; length < source.length; length += STREAM_CHUNK) {
+    cache.update(source.slice(0, length));
+  }
+  return { cache, render: cache.update(source) };
+};
+
+const isFullDocumentMode = (cache: IncrementalMarkdownCache): boolean =>
+  (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode;
+
+test("a list-nested Python annotation does not stick to the full-document path", () => {
+  // The block opens with the list marker, not the fence (#10529).
+  for (const block of [
+    "1. item\n   ```python\n   def f() -> list[str]:\n       return []\n   ```",
+    "- item\n  ```python\n  def f() -> list[str]:\n      return []\n  ```",
+    "10. item\n    ```python\n    def f() -> list[str]:\n        return []\n    ```",
+  ]) {
+    const source = `See [a][ref].\n\n${block}\n\n${LOOKALIKE_PROSE}`;
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", block);
+    assert.equal(isFullDocumentMode(cache), false, block);
+    assert.ok(render.markdown.length < source.length / 4, block);
+  }
+});
+
+test("wrapped and unfenced lookalikes do not force the document path", () => {
+  for (const block of [
+    "```python\nlist[\n str\n]:\n```",
+    'd[\n "key"\n]: int',
+    'd["key"]: int',
+  ]) {
+    const source = `See [a][ref].\n\n${block}\n\n${LOOKALIKE_PROSE}`;
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", block);
+    assert.equal(isFullDocumentMode(cache), false, block);
+    assert.ok(render.markdown.length < source.length / 4, block);
+  }
+});
+
+test("a live reference pair inside a list or quote still holds as one document", () => {
+  for (const definition of [
+    "- [g]: /guide",
+    "> [g]: /guide",
+    "- - [g]: /guide",
+    "- > [g]: /guide",
+  ]) {
+    const source = `See [guide][g].\n\n${definition}\n\n${paragraphs(12)}end`;
+    const { cache } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "document", definition);
+    assert.equal(isFullDocumentMode(cache), true, definition);
+  }
 });
