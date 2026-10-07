@@ -157,9 +157,8 @@ export function LlamaUpdateBanner({
   const installedTag = offer?.installed_tag ?? null;
 
   async function handleUpdate() {
-    // Read before applying: the status refreshes as the job runs. An audio.cpp update
-    // that could not reach the release keeps the old runtime, so only the job's own
-    // message says which happened, as for a migration.
+    // Read before applying (the status refreshes mid-job). An audio.cpp update may keep
+    // the old runtime, so only the job's message says what happened, as for a migration.
     const migrating = migrationPending || component === "audio.cpp";
     const result = await apply();
     if (result?.ok) {

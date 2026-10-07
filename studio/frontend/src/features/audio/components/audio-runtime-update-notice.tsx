@@ -25,10 +25,8 @@ export function AudioRuntimeUpdateNotice({
     enabled: isOwner,
   });
   const offered = Boolean(status?.audio?.update_available);
-  // Refresh the page once a job this notice followed settles (the card can run it too), or when
-  // the offer disappears without one (another tab updated): a stale notice would send the owner
-  // to the CLI. The offer is gone as soon as the job lands, so stay on "updating" until the page
-  // has re-read the runtime.
+  // Re-read the runtime after a followed job or a withdrawn offer (another tab updated), staying
+  // on "updating" until then: a stale notice would send the owner to the CLI.
   const followedJob = useRef(false);
   const wasOffered = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
