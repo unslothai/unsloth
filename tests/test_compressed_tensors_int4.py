@@ -539,6 +539,36 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     assert rx.search("proj.weight_packed") is None
 
 
+@needs_ct
+@pytest.mark.parametrize("group_size", [1, 16, 64])
+def test_adopt_leaves_a_linear_whose_scale_groups_disagree_with_group_size(tmp_path, group_size):
+    # The kernel indexes weight_scale by group_size, so a mismatch reads past the scales (#12955).
+    from safetensors.torch import save_file
+    from torch import nn
+    from unsloth.models.compressed_tensors_bnb import (
+        _build_quantization_config,
+        adopt_int4_packed_linears,
+    )
+    from test_compressed_tensors_bnb import _w4a16
+
+    with torch.device("meta"):
+        model = nn.Module()
+        model.proj = nn.Linear(64, 16, bias = False)
+    path = str(tmp_path / "model.safetensors")
+    save_file(
+        {
+            "proj.weight_packed": torch.zeros(16, 8, dtype = torch.int32),
+            "proj.weight_scale": torch.ones(16, 2, dtype = torch.float32),
+            "proj.weight_shape": torch.tensor([16, 64]),
+        },
+        path,
+    )
+    ct_config = _build_quantization_config(_w4a16(weights = {"group_size": group_size}))
+    swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
+    assert swapped == [] and leftover == ["proj"]
+    assert type(model.proj) is nn.Linear
+
+
 @needs_gpu
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
