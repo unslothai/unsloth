@@ -1193,6 +1193,13 @@ def _attach_clef_saving(model) -> None:
     model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
     model.push_to_hub = types.MethodType(push_to_hub_clef, model)
     model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+    _attach_gguf_saving(model)
+
+
+def _attach_gguf_saving(model) -> None:
+    from .decision_gguf import push_to_hub_gguf, save_pretrained_gguf
+    model.save_pretrained_gguf = types.MethodType(save_pretrained_gguf, model)
+    model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
 
 
 def _clef_mixed_precision(model, args) -> None:
@@ -1766,6 +1773,7 @@ class FastDecisionModel:
         )
         model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
         model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+        _attach_gguf_saving(model)
         return model, tokenizer
 
     @staticmethod

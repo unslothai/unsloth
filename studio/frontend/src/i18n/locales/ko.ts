@@ -3937,4 +3937,15 @@ export const ko = {
       openFileFailed: "파일을 열 수 없습니다",
     },
   },
+  exportDecision: {
+    title: "의사결정 모델",
+    description: "{layout} 의사결정 모델은 llama.cpp 의사결정 서버용 GGUF로 내보냅니다. 양자화를 하나 이상 선택하세요.",
+    adapterNote: "이 체크포인트에는 LoRA 어댑터가 있으며, 변환 전에 병합됩니다.",
+    notEligibleTitle: "GGUF 내보내기를 사용할 수 없음",
+    ggufOnly: "의사결정 모델은 GGUF로만 내보낼 수 있습니다",
+    existing: "이미 내보냄: {quantizations}",
+    outputNote: "GGUF 파일은 실행 폴더에 저장됩니다: {path}",
+    methodLabel: "의사결정 모델 GGUF",
+    outputLabel: "의사결정 GGUF ({quantizations})",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

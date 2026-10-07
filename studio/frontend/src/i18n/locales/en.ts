@@ -3992,4 +3992,15 @@ export const en = {
       openFileFailed: "Could not open the file",
     },
   },
+  exportDecision: {
+    title: "Decision model",
+    description: "{layout} decision models export to GGUF for llama.cpp's decision server. Pick one or more quantizations.",
+    adapterNote: "This checkpoint holds LoRA adapters; they are merged before conversion.",
+    notEligibleTitle: "GGUF export unavailable",
+    ggufOnly: "Decision models export to GGUF only",
+    existing: "Already exported: {quantizations}",
+    outputNote: "GGUF files are saved in the run folder: {path}",
+    methodLabel: "Decision model GGUF",
+    outputLabel: "Decision GGUF ({quantizations})",
+  },
 } as const;

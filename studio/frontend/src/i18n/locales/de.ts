@@ -4013,4 +4013,15 @@ export const de = {
       openFileFailed: "Die Datei konnte nicht geöffnet werden",
     },
   },
+  exportDecision: {
+    title: "Entscheidungsmodell",
+    description: "{layout}-Entscheidungsmodelle werden für den Entscheidungsserver von llama.cpp nach GGUF exportiert. Wähle eine oder mehrere Quantisierungen.",
+    adapterNote: "Dieser Checkpoint enthält LoRA-Adapter; sie werden vor der Konvertierung zusammengeführt.",
+    notEligibleTitle: "GGUF-Export nicht verfügbar",
+    ggufOnly: "Entscheidungsmodelle werden nur nach GGUF exportiert",
+    existing: "Bereits exportiert: {quantizations}",
+    outputNote: "GGUF-Dateien werden im Run-Ordner gespeichert: {path}",
+    methodLabel: "GGUF des Entscheidungsmodells",
+    outputLabel: "Entscheidungs-GGUF ({quantizations})",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;
