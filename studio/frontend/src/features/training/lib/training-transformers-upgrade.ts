@@ -130,7 +130,6 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // A PyPI release, or transformers main when no release ships the architecture.
   const installable = upgradeInstallVersion(check.upgrade) !== null;
   if (check.installBreaksExactResume) {
     // The checkpoint is attested against a 4-bit load the latest sidecar refuses, and

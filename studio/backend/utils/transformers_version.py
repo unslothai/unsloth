@@ -3332,7 +3332,6 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
         "hf_xet==1.4.2",
         "tiktoken",
     )
-    # A shadow for a package the recipe already pins replaces that pin instead of doubling it.
     overridden = {_pin_spec_name(p) for p in extra_packages}
     return tuple(p for p in base if _pin_spec_name(p) not in overridden) + tuple(extra_packages)
 
@@ -3342,9 +3341,7 @@ def _pin_spec_name(spec: str) -> str:
     return re.sub(r"[-_.]+", "-", re.split(r"[<>=!~ @;\[]", spec, maxsplit = 1)[0]).lower()
 
 
-# transformers main, installed for an architecture no release ships yet (user-consented).
-# PyPI never hosts a transformers .devN build, so a dev pin always means main; the archive
-# needs no git on the user's machine.
+# PyPI never hosts a transformers .devN build, so a dev pin means main (the zip needs no git).
 _TRANSFORMERS_MAIN_ARCHIVE = (
     "transformers @ https://github.com/huggingface/transformers/archive/refs/heads/main.zip"
 )

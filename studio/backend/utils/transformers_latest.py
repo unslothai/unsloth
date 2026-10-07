@@ -82,7 +82,7 @@ _CACHE_TTL_SECONDS = 24 * 60 * 60
 _FAILURE_BACKOFF_SECONDS = 300
 
 _CACHE_FILE_NAME = "transformers_latest_check.json"
-# 2: adds main_version; a schema-1 file on disk would hide the main install for a day.
+# 2 adds main_version: a schema-1 file would hide the main install until its TTL.
 _SNAPSHOT_SCHEMA = 2
 
 # Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types",
@@ -636,8 +636,7 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
             continue
         if name in _SIDECAR_PROVIDED:
             if not req.specifier.contains(_SIDECAR_PROVIDED[name], prereleases = True):
-                # The base env already ships a newer hub (studio.txt): shadow the recipe's pins
-                # with the base env's own hub + hf-xet pair rather than refusing the release.
+                # studio.txt already ships a newer hub: pin the base env's hub + hf-xet pair instead.
                 base_pins = _base_env_sidecar_pins()
                 base_name_pin = next((p for p in base_pins if p.startswith(f"{name}==")), None)
                 if base_name_pin and req.specifier.contains(
