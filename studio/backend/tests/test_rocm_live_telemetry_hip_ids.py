@@ -105,3 +105,14 @@ def test_stacked_masks_keep_the_untranslated_query(rocm, monkeypatch):
 def test_single_gpu_is_unchanged(rocm):
     rocm(1, 1, _metric((0, 1024, 16384, 5)), None)
     assert _by_index(hw.get_visible_gpu_utilization()) == {0: (16.0, 5)}
+
+
+@pytest.mark.parametrize("enumeration", [_REVERSED, None])
+def test_list_e_is_spawned_once_across_polls(rocm, monkeypatch, enumeration):
+    rocm(2, 2, _TWO_CARDS, enumeration)
+    stub, calls = amd._run_amd_smi, []
+    monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: calls.append(a) or stub(*a, **k))
+    first = _by_index(hw.get_visible_gpu_utilization())
+    assert _by_index(hw.get_visible_gpu_utilization()) == first
+    assert calls.count(("list", "-e")) == 1
+    assert calls.count(("metric",)) == 2
