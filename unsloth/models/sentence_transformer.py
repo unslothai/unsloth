@@ -172,10 +172,9 @@ def _apply_max_seq_length(st_model, max_seq_length):
 
 
 def _normalize_save_method(save_method):
-    """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
+    """match unsloth_save_model case and spacing normalization before routing save requests."""
     if isinstance(save_method, str):
-        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
-        # adapter guard below sends the request to the merge path instead.
+        # strip before replacing spaces so " lora " does not become "_lora_" and bypass the adapter guard.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
 
@@ -2410,25 +2409,17 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = st_kwargs.get("cache_folder"),
                 revision = revision,
             )
-            # Load the snapshot that was checked. Without this the gate reads one commit of
-            # a branch and the load resolves the branch again, so a repository that advances
-            # in between is validated on the old files and loaded from the new ones.
-            #
-            # Whenever the gate resolved a commit, including when the caller named a
-            # revision. Restricting it to a falsey revision left `revision = "main"` racing
-            # exactly as before, and it does not override anyone's choice: _validated IS
-            # what the caller's own revision resolved to, so pinning only removes the second
-            # resolution. An explicit commit resolves to itself and the pin is a no-op.
+            # pin the validated commit so a moving branch cannot change between checking and loading.
             if _validated:
                 st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
-            # "auto" keeps a bfloat16 checkpoint in bfloat16 on GPUs without it (T4, V100): emulated and slow. An explicit float16 request is what these families cannot run at all (non-finite activations). Either way move to bfloat16 where supported, else float32 when the copy fits.
+            # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
             if (dtype is None and not SUPPORTS_BFLOAT16) or dtype == torch.float16:
                 _maybe_upcast_force_float32_inference(st_model)
             if _ensure_sentence_attention_masks(
                 getattr(st_model[0], "auto_model", None)
             ) and hasattr(st_model[0], "unpad_inputs"):
-                # Refresh ST's cached capability decision after changing the backend.
+                # refresh ST cached backend capability after attention-mask patching.
                 st_model[0].unpad_inputs = st_model[0].unpad_inputs
             _apply_max_seq_length(st_model, max_seq_length)
             st_model._unsloth_trust_remote_code = trust_remote_code
@@ -2438,14 +2429,14 @@ class FastSentenceTransformer(FastModel):
             kwargs["auto_model"] = AutoModel
 
         transformers4 = Version(transformers.__version__).major < 5
-        # SentenceTransformer's config_kwargs (e.g. {"vision_config": None} to skip a multimodal model's vision tower) must reach the config, not the model constructor.
+        # config_kwargs must reach the config, not the model constructor.
         config_kwargs = kwargs.pop("config_kwargs", None) or {}
         model_type = ""
         config = kwargs.get("config", None)
         if config is not None:
             model_type = getattr(config, "model_type", "")
         else:
-            # One dict, caller's config_kwargs last, so {"trust_remote_code": True} overrides instead of duplicating a keyword (as SentenceTransformer merges them). Same revision and cache as the weight load, since this config builds the model when config_kwargs is set.
+            # merge caller config last to avoid duplicates and reuse the weight revision and cache.
             _config_load_kwargs = {
                 "token": token,
                 "trust_remote_code": trust_remote_code,
@@ -2545,7 +2536,7 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 revision = revision,
             )
-            # Same race as the delegated route above, same pin.
+            # the delegated route has the same race and revision pin.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
