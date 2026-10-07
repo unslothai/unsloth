@@ -121,7 +121,7 @@ def test_a_marked_head_is_counted_by_unsloth_zoo(monkeypatch):
 
     zoo = pytest.importorskip("unsloth_zoo.loss_utils")
     if not hasattr(zoo, "counts_unshifted_labels"):
-        pytest.skip("unsloth_zoo predates the unshifted-label marker")
+        pytest.skip(reason = "unsloth_zoo predates the unshifted-label marker")
     for name in ("T5Gemma2Config", "WhisperConfig", "LlamaConfig"):
         assert dispatch(SimpleNamespace(model = MarkedHead(name)), iter([]), 1) == "unsloth"
         assert dispatch(SimpleNamespace(model = Peft(MarkedHead(name))), iter([]), 1) == "unsloth"

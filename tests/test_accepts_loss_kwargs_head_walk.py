@@ -727,7 +727,7 @@ def test_installed_transformers_heads_consume(ns, module, name):
     try:
         cls = getattr(importlib.import_module(module), name)
     except Exception as exc:
-        pytest.skip(f"{name} not in the installed transformers: {exc}")
+        pytest.skip(reason = f"{name} not in the installed transformers: {exc}")
     import inspect
 
     source = inspect.getsource(cls.forward)
@@ -884,7 +884,7 @@ def test_installed_transformers_delegated_or_composite_heads(ns, module, name):
     try:
         cls = getattr(importlib.import_module(module), name)
     except Exception as exc:
-        pytest.skip(f"{name} not in the installed transformers: {exc}")
+        pytest.skip(reason = f"{name} not in the installed transformers: {exc}")
     head = _bare(cls)
     assert ns["_loss_head"](head) is head
     assert ns["_forward_consumes_num_items_in_batch"](head) is not True
@@ -946,7 +946,7 @@ def test_a_recorded_convention_is_dropped_when_the_forward_stops_counting(ns, mo
 def test_the_dispatcher_reads_the_recorded_convention_through_a_training_wrapper(ns, mods):
     pytest.importorskip("unsloth_zoo.loss_utils").__dict__.get(
         "counts_unshifted_labels"
-    ) or pytest.skip("unsloth_zoo without the unshifted-label count")
+    ) or pytest.skip(reason = "unsloth_zoo without the unshifted-label count")
     peft = mods.PeftModelForCausalLM(mods.MarkedForConditionalGeneration())
     ns["apply_accepts_loss_kwargs_fix"](peft)
     assert ns["_head_counts_unshifted_labels"](torch.nn.DataParallel(peft)) is True
