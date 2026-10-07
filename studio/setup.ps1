@@ -2763,13 +2763,15 @@ function Test-LlamaBuildToolsInstallAllowed {
     if ($opt -in @("0", "false", "no")) { return $false }
     # Unsloth Desktop and CI have no one to answer a prompt.
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { return $false }
+    # The CLI adds -NonInteractive whenever stdout is not a tty (a piped log, CI), and Read-Host
+    # throws there even with a console on stdin.
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return $false }
     Write-StudioLine ""
     Write-StudioLine "The prebuilt llama.cpp could not be installed. Building it from source needs Git," -ForegroundColor Yellow
     Write-StudioLine "CMake and Visual Studio Build Tools (plus the CUDA Toolkit on NVIDIA): several GB," -ForegroundColor Yellow
     Write-StudioLine "installed machine-wide via winget. Without them Unsloth Studio still runs, but GGUF" -ForegroundColor Yellow
     Write-StudioLine "chat and export are disabled." -ForegroundColor Yellow
-    $reply = Read-Host "  Install the build tools now? [y/N]"
+    try { $reply = Read-Host "  Install the build tools now? [y/N]" } catch { return $false }
     return ($reply -match '^\s*y(es)?\s*$')
 }
 
