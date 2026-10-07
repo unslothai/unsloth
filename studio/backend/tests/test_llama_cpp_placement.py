@@ -4261,6 +4261,12 @@ def test_the_probe_reads_the_moe_cache_and_lazy_mode_flags(
         auto,
         lazy,
     )
+    # Which spelling the build reads, so only that one is honoured.
+    assert caps["lazy_mode_flag"] == (
+        ("--tensor-read-lazy" if "--tensor-read-lazy" in extra_help else "--lazy-mode")
+        if lazy
+        else None
+    )
 
 
 def test_a_failed_probe_advertises_no_moe_cache():
@@ -4270,6 +4276,8 @@ def test_a_failed_probe_advertises_no_moe_cache():
 
 _CACHE_CAPS_ON = dict(
     supports_load_mode = True,
+    # The 8 GiB --cache-ram default is charged to the cache's RAM admission.
+    supports_cache_ram = True,
     supports_moe_cache = True,
     supports_moe_cache_auto = True,
     supports_lazy_mode = True,
@@ -4310,16 +4318,21 @@ def _cache_launch(
     expert_gib = 15,
     lazy = None,
     arch = "qwen3moe",
+    size_gib = None,
+    memory = None,
     **load_kwargs,
 ):
     """One launch of an MoE (or dense) model, priced so the fit can answer
     "none". 20 GiB on an 8 GiB card spills; 1 GiB on a 40 GiB card does not."""
-    memory = (
-        [(i, 8_000, 16_000) for i in range(gpus)]
-        if spilled
-        else [(i, 40_000, 48_000) for i in range(gpus)]
-    )
-    backend, gguf = _moe_backend(tmp_path, size_gib = 20 if spilled else 1, memory = memory, moe = moe)
+    if memory is None:
+        memory = (
+            [(i, 8_000, 16_000) for i in range(gpus)]
+            if spilled
+            else [(i, 40_000, 48_000) for i in range(gpus)]
+        )
+    if size_gib is None:
+        size_gib = 20 if spilled else 1
+    backend, gguf = _moe_backend(tmp_path, size_gib = size_gib, memory = memory, moe = moe)
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
     backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
@@ -4505,8 +4518,23 @@ def test_every_retry_drops_the_moe_cache_first():
             True,
         ),
         ("error: unknown model architecture: 'foo'", False),
+        # The fork logs both lines on every healthy cache setup, so a later unrelated
+        # failure is not the cache's.
+        (
+            "common_fit_params: moe cache auto: 12288 MiB, 96 experts resident\n"
+            "llama_moe_cache_init: MoE cache size = 12288.00 MiB\n"
+            "error: unknown model architecture: 'foo'",
+            False,
+        ),
+        (
+            "llama_moe_cache_init: MoE cache size = 12288.00 MiB\n"
+            "llama-moe-cache.cpp:412: GGML_ABORT: the MoE cache is too small for the "
+            "experts selected in layer 7",
+            True,
+        ),
+        ("failed to allocate the MoE cache buffers", True),
     ],
-    ids = ["cache_error", "cuda_oom", "unrelated"],
+    ids = ["cache_error", "cuda_oom", "unrelated", "info_lines_then_unrelated", "abort", "alloc"],
 )
 def test_a_cache_crash_retries_once_without_the_cache(
     tmp_path, _moe_cache_host, crash_line, retried
@@ -4740,3 +4768,139 @@ def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
         tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, extra_args = ["-lzm", "off"]
     )
     assert _load_mode(cmd) is None, cmd
+
+
+@pytest.mark.parametrize("ram_gib, cached", [(60, True), (40, False)])
+def test_the_cache_admission_counts_the_experts_once(tmp_path, _moe_cache_host, ram_gib, cached):
+    """Qwen3.8-Flash-Next IQ1_S on one 24 GiB card. With the lazy table on disk the
+    load is ~41 GiB; the cache needs the 37.11 GiB of experts plus the 8 GiB prompt
+    cache pinned in RAM, which 60 GiB holds and 40 GiB does not. Charging the experts
+    to RAM on top of model_size, as well as in it, refused the 60 GiB host."""
+    backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = _QWEN38_TOTAL / _GIB,
+        memory = [(0, 24_000, 24_576)],
+        ram_gib = ram_gib,
+        expert_gib = _QWEN38_EXPERTS / _GIB,
+        lazy = {"per_layer_token_embd.weight": _QWEN38_PLE},
+        arch = "qwen4exp",
+    )
+
+    # Pinned either way: the cache never demotes a pinned load.
+    assert _load_mode(cmd) == "none", cmd
+    assert _has_moe_cache(cmd) is cached, cmd
+    assert backend._moe_cache_flags == (_MOE_CACHE if cached else [])
+
+
+@pytest.mark.parametrize(
+    "flag, extra_args, env, expected",
+    [
+        ("--lazy-mode", ["-lzm", "off"], {}, 0),
+        ("--lazy-mode", [], {"LLAMA_ARG_LAZY_MODE": "off"}, 0),
+        # The old spelling's env twin is not read by a renamed build.
+        ("--lazy-mode", [], {"LLAMA_ARG_TENSOR_READ_LAZY": "off"}, _QWEN38_PLE),
+        ("--tensor-read-lazy", ["--tensor-read-lazy", "off"], {}, 0),
+        ("--tensor-read-lazy", [], {"LLAMA_ARG_TENSOR_READ_LAZY": "off"}, 0),
+        # Nor the new one's by a build from before the rename.
+        ("--tensor-read-lazy", [], {"LLAMA_ARG_LAZY_MODE": "off"}, _QWEN38_PLE),
+    ],
+    ids = [
+        "new_flag",
+        "new_env",
+        "new_ignores_old_env",
+        "old_flag",
+        "old_env",
+        "old_ignores_new_env",
+    ],
+)
+def test_only_the_probed_lazy_spelling_is_honoured(flag, extra_args, env, expected):
+    backend = LlamaCppBackend()
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": _QWEN38_PLE},
+        0,
+    )
+    caps = {"supports_lazy_mode": True, "lazy_mode_flag": flag}
+    got = backend._lazy_read_host_bytes("/m.gguf", caps = caps, extra_args = extra_args, env = env)
+    assert got == expected
+
+
+def _write_writer_gguf(
+    path,
+    tensors,
+    *,
+    split_max_tensors = 0,
+):
+    """``tensors``: (name, numpy array, raw ggml type or None) each, written by
+    gguf-py's own writer, split llama.cpp-style when ``split_max_tensors`` is set."""
+    import gguf
+
+    writer = gguf.GGUFWriter(path, "qwen4exp", split_max_tensors = split_max_tensors)
+    writer.add_string("tokenizer.ggml.model", "gpt2")
+    writer.add_array("tokenizer.ggml.tokens", ["a", "b", "<c>"])
+    for name, array, raw_dtype in tensors:
+        writer.add_tensor(name, array, raw_dtype = raw_dtype)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+
+def test_the_header_scan_reads_writer_output(tmp_path, monkeypatch):
+    np = pytest.importorskip("numpy")
+    gguf = pytest.importorskip("gguf")
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    q8 = GGMLQuantizationType.Q8_0
+    q8_block, q8_bytes = GGML_QUANT_SIZES[q8]
+    # Q8_0 rows of 64 elements: two blocks each, stored as raw bytes.
+    q8_rows = np.zeros((4, 2 * q8_bytes), dtype = np.uint8)
+    tensors = [
+        ("per_layer_token_embd.weight", np.zeros((8, 16), dtype = np.float32), None),
+        ("blk.0.ffn_up_exps.weight", np.zeros((2, 4, 32), dtype = np.float16), None),
+        ("blk.0.attn_q.weight", np.zeros((4, 32), dtype = np.float32), None),
+        ("blk.1.ffn_down_exps.weight", q8_rows, q8),
+    ]
+    _write_writer_gguf(tmp_path / "m.gguf", tensors, split_max_tensors = 2)
+    shards = sorted(p.name for p in tmp_path.glob("*.gguf"))
+    assert shards == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"], shards
+    first = str(tmp_path / shards[0])
+    expected_experts = 2 * 4 * 32 * 2 + 4 * 64 // q8_block * q8_bytes
+
+    arch, named, experts = LlamaCppBackend()._gguf_tensor_scan(first)
+    assert arch == "qwen4exp"
+    assert named == {"per_layer_token_embd.weight": 8 * 16 * 4}
+    assert experts == expected_experts
+
+    # A quant type the installed gguf package predates is sized from the next
+    # tensor's offset, or the end of the file for the last, which with the writer's
+    # alignment padding is at least the real size and less than one alignment more.
+    monkeypatch.delitem(GGML_QUANT_SIZES, q8)
+    monkeypatch.delitem(GGML_QUANT_SIZES, GGMLQuantizationType.F16)
+    _arch, named, experts = LlamaCppBackend()._gguf_tensor_scan(first)
+    assert named == {"per_layer_token_embd.weight": 8 * 16 * 4}
+    assert expected_experts <= experts < expected_experts + 2 * gguf.GGUF_DEFAULT_ALIGNMENT
+
+    # A missing shard reads as unknown, which discounts nothing.
+    (tmp_path / shards[1]).unlink()
+    assert LlamaCppBackend()._gguf_tensor_scan(first) is None
+
+
+def test_the_header_scan_refuses_what_it_cannot_parse(tmp_path):
+    path = _write_tensor_gguf(
+        tmp_path / "v1.gguf", "qwen4exp", [("per_layer_token_embd.weight", (8, 4), 0)]
+    )
+    data = bytearray(path.read_bytes())
+    # GGUF v1 used 32-bit counts: nothing is read from it.
+    data[4:8] = struct.pack("<I", 1)
+    path.write_bytes(bytes(data))
+    assert LlamaCppBackend._gguf_scan_tensor_bytes(str(path)) == (None, {}, 0)
+
+    # An unknown KV value type has no size to skip, so the scan gives up.
+    header = struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+    header += struct.pack("<Q", 3) + b"odd" + struct.pack("<I", 99) + b"\0" * 8
+    bad = tmp_path / "bad.gguf"
+    bad.write_bytes(header)
+    with pytest.raises(ValueError):
+        LlamaCppBackend._gguf_scan_tensor_bytes(str(bad))
+    assert LlamaCppBackend()._gguf_tensor_scan(str(bad)) is None

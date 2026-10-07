@@ -6979,8 +6979,20 @@ _MOE_CACHE_USER_OWNED_ENV = (
     "LLAMA_ARG_CPU_MOE",
     "LLAMA_ARG_N_CPU_MOE",
     "LLAMA_ARG_DEVICE",
+    "LLAMA_ARG_MAIN_GPU",
     "LLAMA_ARG_SPLIT_MODE",
     "LLAMA_ARG_TENSOR_SPLIT",
+)
+# The fork's MoE cache startup errors (llama-context.cpp / llama-moe-cache.cpp
+# runtime_error texts, and the per-layer GGML_ABORT). Matched exactly: the same
+# fork logs "moe cache auto: ..." and "MoE cache size = ..." on every healthy
+# launch, so a bare "moe cache" would blame the cache for any crash after it.
+_MOE_CACHE_ERROR_RE = re.compile(
+    r"MoE cache (?:requires a GPU backend|does not support tensor parallelism"
+    r"|requires a MoE model|is too small to hold the experts of one token)"
+    r"|failed to (?:create the MoE cache context|allocate the MoE cache buffers)"
+    r"|the MoE cache is too small for the experts selected in layer",
+    re.IGNORECASE,
 )
 
 # Tensors llama.cpp creates with TENSOR_READ_LAZY, per GGUF architecture
@@ -6994,9 +7006,13 @@ _LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
     "qwen4exp": ("per_layer_token_embd.weight",),
 }
 _LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
-# --tensor-read-lazy is the spelling before ggml-org/llama.cpp#27969.
-_LAZY_MODE_FLAGS = frozenset({"-lzm", "--lazy-mode", "--tensor-read-lazy"})
-_LAZY_MODE_ENV_VARS = ("LLAMA_ARG_TENSOR_READ_LAZY", "LLAMA_ARG_LAZY_MODE")
+# The flags and env twin of each spelling, keyed by the long form the probe found:
+# --tensor-read-lazy is the one before ggml-org/llama.cpp#27969. A build reads only
+# its own spelling, so only that one is honoured.
+_LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
+    "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),
+    "--tensor-read-lazy": (frozenset({"--tensor-read-lazy"}), "LLAMA_ARG_TENSOR_READ_LAZY"),
+}
 
 
 # llama-server's --cache-ram default (MiB): the host-RAM prompt cache it grows into.
@@ -7039,19 +7055,23 @@ def _argv_loads_pinned(argv: Iterable[str], env: Optional[Mapping[str, str]] = N
 
 
 def _effective_lazy_mode(
-    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    flag: str = "--lazy-mode",
 ) -> str:
-    """llama.cpp's --lazy-mode for this launch: env first, then last-wins argv.
+    """llama.cpp's lazy mode for this launch: env first, then last-wins argv, both in
+    the build's own spelling ``flag``.
 
     A value llama-server would refuse reads as "off", which discounts nothing."""
     source_env = os.environ if env is None else env
+    flags, env_name = _LAZY_MODE_SPELLINGS.get(flag, _LAZY_MODE_SPELLINGS["--lazy-mode"])
     mode = "auto"
-    for name in _LAZY_MODE_ENV_VARS:
-        value = str(source_env.get(name) or "").strip().lower()
-        if value:
-            mode = value
+    value = str(source_env.get(env_name) or "").strip().lower()
+    if value:
+        mode = value
     try:
-        value = _last_flag_value(extra_args, _LAZY_MODE_FLAGS)
+        value = _last_flag_value(extra_args, flags)
     except ValueError:
         return "off"
     if value:
@@ -9749,6 +9769,7 @@ class LlamaCppBackend:
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
                 "supports_lazy_mode": False,
+                "lazy_mode_flag": None,
                 "spec_draft_ngl_flag": None,
                 "spec_draft_cache_k_flag": None,
                 "spec_draft_cache_v_flag": None,
@@ -9805,6 +9826,7 @@ class LlamaCppBackend:
         supports_moe_cache = False
         supports_moe_cache_auto = False
         supports_lazy_mode = False
+        lazy_mode_flag = None
         spec_draft_ngl_flag = None
         spec_draft_cache_k_flag = None
         spec_draft_cache_v_flag = None
@@ -10060,11 +10082,14 @@ class LlamaCppBackend:
                     (blocks.get("--moe-cache-mib") or "").lower(),
                 )
             )
-            # Lazily read tensors (TENSOR_READ_LAZY) arrived with this flag. Fails
-            # closed: an older build loads them like any other weight.
-            supports_lazy_mode = bool(
-                probe_ok and (_is_real("--lazy-mode") or _is_real("--tensor-read-lazy"))
-            )
+            # Lazily read tensors (TENSOR_READ_LAZY) arrived with this flag, and which
+            # spelling the build reads. Fails closed: an older build loads them like
+            # any other weight.
+            if probe_ok:
+                lazy_mode_flag = next(
+                    (f for f in ("--lazy-mode", "--tensor-read-lazy") if _is_real(f)), None
+                )
+            supports_lazy_mode = lazy_mode_flag is not None
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
             # start on the newer name. Long forms only, since the block parser above
@@ -10165,6 +10190,7 @@ class LlamaCppBackend:
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
             "supports_lazy_mode": supports_lazy_mode,
+            "lazy_mode_flag": lazy_mode_flag,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
             "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
             "spec_draft_cache_v_flag": spec_draft_cache_v_flag,
@@ -10371,7 +10397,9 @@ class LlamaCppBackend:
         with open(path, "rb") as f:
             if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
                 return None, {}, 0
-            f.seek(4, 1)  # version
+            # Version 1 used 32-bit counts and lengths, which this layout misreads.
+            if struct.unpack("<I", f.read(4))[0] < 2:
+                return None, {}, 0
             n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
             for _ in range(n_kv):
                 key = f.read(struct.unpack("<Q", f.read(8))[0])
@@ -10468,7 +10496,9 @@ class LlamaCppBackend:
         ``--lazy-mode off``, and when the header cannot be read."""
         if not model_path or not (caps or {}).get("supports_lazy_mode"):
             return 0
-        mode = _effective_lazy_mode(extra_args, env)
+        mode = _effective_lazy_mode(
+            extra_args, env, flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode")
+        )
         if mode == "off":
             return 0
         scan = self._gguf_tensor_scan(model_path)
@@ -18312,6 +18342,9 @@ class LlamaCppBackend:
             else:
                 for _ in range(alen):
                     LlamaCppBackend._gguf_skip_value(f, atype)
+        else:
+            # Its size is unknown, so every later read would be misaligned.
+            raise ValueError(f"unknown GGUF value type {vtype}")
 
     @staticmethod
     def _gguf_read_array_value(f, atype: int, alen: int) -> Optional[list]:
@@ -18895,10 +18928,10 @@ class LlamaCppBackend:
                                 self._gguf_skip_value(f, vtype)
                         else:
                             self._gguf_skip_value(f, vtype)
-                    except (struct.error, UnicodeDecodeError):
+                    except (struct.error, UnicodeDecodeError, ValueError):
                         # Truncated input (e.g. HTTP byte-range header
-                        # fetch); break so the resolver fallback runs on
-                        # what we have.
+                        # fetch), or a value type with no known size; break
+                        # so the resolver fallback runs on what we have.
                         break
                 else:
                     kv_complete = True
@@ -27848,7 +27881,9 @@ class LlamaCppBackend:
                         # every routed expert is host-resident. Pinned with the cache
                         # needs them all in RAM; otherwise the launch goes without it.
                         # The prompt cache grows into the same RAM, so its bound is
-                        # charged too; an unbounded one admits nothing.
+                        # charged too; an unbounded one admits nothing. The experts
+                        # move out of model_size rather than being added on top, which
+                        # would count them twice.
                         _moe_expert_bytes = (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2]
                         _moe_prompt_cache_bytes = _prompt_cache_host_bytes(
                             cache_ram,
@@ -27862,6 +27897,9 @@ class LlamaCppBackend:
                             and self._fit_derived_load_mode(
                                 **{
                                     **_fit_load_mode_kwargs,
+                                    "model_size": max(
+                                        1, _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes
+                                    ),
                                     "host_only_bytes": _fit_load_mode_kwargs["host_only_bytes"]
                                     + _moe_expert_bytes
                                     + _moe_prompt_cache_bytes,
@@ -30772,7 +30810,7 @@ class LlamaCppBackend:
                             _uncached = self._drop_moe_cache(run_cmd)
                             _crash_text = "\n".join(self._stdout_lines[-200:])
                             if _uncached != run_cmd and (
-                                "moe cache" in _crash_text.lower()
+                                _MOE_CACHE_ERROR_RE.search(_crash_text)
                                 or self._is_gpu_memory_start_failure(_crash_text)
                             ):
                                 logger.warning(
