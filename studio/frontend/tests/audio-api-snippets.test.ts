@@ -381,3 +381,26 @@ test("the workflows a row advertises win over the name hints", () => {
   assert.ok(S.audioApiModelFits([separator], separator.id, "separate"));
   assert.ok(!S.audioApiModelFits([], cpp("HTDemucs-GGUF"), "separate"));
 });
+
+test("curl stops on an HTTP error instead of saving it as audio", () => {
+  for (const os of ["unix", "windows"] as const) {
+    for (const example of ["speak", "clone", "separate"] as const) {
+      const snippet = S.buildAudioApiSnippet(example, {
+        base: BASE,
+        apiKey: KEY,
+        model: S.AUDIO_API_PLACEHOLDER_MODELS[example],
+        lang: "curl",
+        os,
+      });
+      for (const line of snippet
+        .split("\n")
+        .filter((l) => /\bcurl(\.exe)? /.test(l))) {
+        assert.match(
+          line,
+          /curl(\.exe)? -(sS)?f /,
+          `${os} ${example}: ${line}`,
+        );
+      }
+    }
+  }
+});

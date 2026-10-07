@@ -345,13 +345,13 @@ function powershellPreamble(base: string, apiKey: string): string {
 }
 
 function bashUpload(name: string, file: string): string {
-  return `${name.toUpperCase()}=$(curl -s "$BASE/v1/audio/inputs?name=${file}" \\
+  return `${name.toUpperCase()}=$(curl -sSf "$BASE/v1/audio/inputs?name=${file}" \\
   -H "Authorization: Bearer $KEY" \\
   --data-binary @${file} | jq -r .id)`;
 }
 
 function powershellUpload(name: string, file: string): string {
-  return `$${name} = curl.exe -s "$base/v1/audio/inputs?name=${file}" \`
+  return `$${name} = curl.exe -sSf "$base/v1/audio/inputs?name=${file}" \`
   -H "Authorization: Bearer $key" \`
   --data-binary "@${file}" | ConvertFrom-Json`;
 }
@@ -518,13 +518,13 @@ fs.writeFileSync("speech.mp3", Buffer.from(await speech.arrayBuffer()));`;
   if (os === "windows") {
     return `${powershellPreamble(base, apiKey)}# ${voiceNote}
 ${powershellBody(body)}
-curl.exe "$base/v1/audio/speech" \`
+curl.exe -f "$base/v1/audio/speech" \`
   -H "Authorization: Bearer $key" \`
   -H "Content-Type: application/json" \`
   -d "@body.json" -o speech.mp3`;
   }
   return `${bashPreamble(base, apiKey)}# ${voiceNote}
-curl "$BASE/v1/audio/speech" \\
+curl -f "$BASE/v1/audio/speech" \\
   -H "Authorization: Bearer $KEY" \\
   -H "Content-Type: application/json" \\
   -d ${bashBody(body, [])} \\
@@ -596,12 +596,12 @@ fs.writeFileSync("clone.mp3", Buffer.from(await speech.arrayBuffer()));`;
 ${powershellUpload("recording", "me.wav")}
 # ${transcriptNote}
 ${powershellBody(voice)}
-$voice = curl.exe -s "$base/v1/audio/voices" \`
+$voice = curl.exe -sSf "$base/v1/audio/voices" \`
   -H "Authorization: Bearer $key" \`
   -H "Content-Type: application/json" \`
   -d "@body.json" | ConvertFrom-Json
 ${powershellBody(speech)}
-curl.exe "$base/v1/audio/speech" \`
+curl.exe -f "$base/v1/audio/speech" \`
   -H "Authorization: Bearer $key" \`
   -H "Content-Type: application/json" \`
   -d "@body.json" -o clone.mp3`;
@@ -609,11 +609,11 @@ curl.exe "$base/v1/audio/speech" \`
   return `${bashPreamble(base, apiKey)}# ${steps}
 ${bashUpload("recording", "me.wav")}
 # ${transcriptNote}
-VOICE=$(curl -s "$BASE/v1/audio/voices" \\
+VOICE=$(curl -sSf "$BASE/v1/audio/voices" \\
   -H "Authorization: Bearer $KEY" \\
   -H "Content-Type: application/json" \\
   -d ${bashBody(voice, ["recording"])} | jq -r .id)
-curl "$BASE/v1/audio/speech" \\
+curl -f "$BASE/v1/audio/speech" \\
   -H "Authorization: Bearer $KEY" \\
   -H "Content-Type: application/json" \\
   -d ${bashBody(speech, ["voice"])} \\
@@ -736,23 +736,23 @@ for (const clip of result.clips) {
   }
   if (os === "windows") {
     return `${powershellPreamble(base, apiKey)}${uploads.map((item) => `${powershellUpload(item.name, item.file)}\n`).join("")}${powershellBody(body)}
-$result = curl.exe -s "$base/v1/audio/run" \`
+$result = curl.exe -sSf "$base/v1/audio/run" \`
   -H "Authorization: Bearer $key" \`
   -H "Content-Type: application/json" \`
   -d "@body.json" | ConvertFrom-Json
 # ${save}
 foreach ($clip in $result.clips) {
-  curl.exe -s "$base$($clip.url)" -H "Authorization: Bearer $key" -o "$($clip.id).wav"
+  curl.exe -sSf "$base$($clip.url)" -H "Authorization: Bearer $key" -o "$($clip.id).wav"
 }`;
   }
   return `${bashPreamble(base, apiKey)}${uploads.map((item) => `${bashUpload(item.name, item.file)}\n`).join("")}# ${save}
-curl -s "$BASE/v1/audio/run" \\
+curl -sSf "$BASE/v1/audio/run" \\
   -H "Authorization: Bearer $KEY" \\
   -H "Content-Type: application/json" \\
   -d ${bashBody(body, refs)} \\
   | jq -r '.clips[] | .id + " " + .url' \\
   | while read -r id url; do
-      curl -s "$BASE$url" -H "Authorization: Bearer $KEY" -o "$id.wav"
+      curl -sSf "$BASE$url" -H "Authorization: Bearer $KEY" -o "$id.wav"
     done`;
 }
 
