@@ -525,6 +525,17 @@ def _is_mamba2_mask_clear_name(name: str, classes = ()) -> bool:
     return any(name in (f"{c}_cuda_kernels_forward", f"{c}_forward") for c in classes)
 
 
+# Shared kernel wrappers live on module globals and outlive any one model, so they read the running
+# packed batch and SSD mixer from here instead of closing over a model.
+_PACKED: list = [None]
+_ACTIVE_MIXER: list = [None]
+
+
+def _active_mixer_varlen():
+    mixer = _ACTIVE_MIXER[0]
+    return None if mixer is None else getattr(mixer, "_unsloth_varlen", None)
+
+
 def _wrap_clear_attention_mask(fn, varlen_getter):
     if fn is None or not callable(fn) or getattr(fn, "_unsloth_varlen_mask_cleared", False):
         return fn
@@ -558,19 +569,14 @@ _MAMBA2_FALLBACK_SEQ_IDX = {
 }
 
 
-def _install_mamba2_seq_idx_fallbacks(namespace, mixers, varlen_slot) -> None:
+def _install_mamba2_seq_idx_fallbacks(namespace) -> None:
     if not isinstance(namespace, dict):
         return
     for name, hit_attr in _MAMBA2_FALLBACK_SEQ_IDX.items():
         fn = namespace.get(name)
         if not callable(fn) or getattr(fn, "_unsloth_varlen_seq_idx_wrapped", False):
             continue
-        namespace[name] = _wrap_mamba2_seq_idx_call(
-            fn,
-            mixers,
-            varlen_slot = varlen_slot,
-            hit_attr = hit_attr,
-        )
+        namespace[name] = _wrap_mamba2_seq_idx_call(fn, hit_attr = hit_attr)
 
 
 def _resolve_mamba2_fused(module):
@@ -707,31 +713,20 @@ def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
     return total in (tensor.shape[1], tensor.shape[-1])
 
 
-def _wrap_mamba2_seq_idx_call(
-    orig,
-    mixers,
-    *,
-    varlen_slot = None,
-    hit_attr = "_unsloth_varlen_fused_hit",
-):
+def _wrap_mamba2_seq_idx_call(orig, *, hit_attr = "_unsloth_varlen_fused_hit"):
     # Wrap once: Nemotron-H mixers share one kernel name, nesting per layer hits RecursionError.
     if getattr(orig, "_unsloth_varlen_seq_idx_wrapped", False):
         return orig
 
     @wraps(orig)
     def wrapped(*args, **kwargs):
-        varlen = varlen_slot[0] if varlen_slot else None
-        if varlen is None:
-            # Gradient-checkpoint recompute runs outside model.forward: use the per-mixer stash.
-            donors = [m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None]
-            if donors:
-                varlen = donors[0]._unsloth_varlen
+        # The calling mixer's own stash, so recompute and a second patched model both resolve correctly.
+        mixer, varlen = _ACTIVE_MIXER[0], _active_mixer_varlen()
         if varlen is not None:
             if kwargs.get("seq_idx") is None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
                 kwargs["seq_idx"] = varlen[1]
             if kwargs.get("seq_idx") is not None:
-                for mixer in mixers:
-                    setattr(mixer, hit_attr, True)
+                setattr(mixer, hit_attr, True)
         return orig(*args, **kwargs)
 
     wrapped._unsloth_varlen_seq_idx_wrapped = True
@@ -753,7 +748,7 @@ def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
                 namespace[key] = wrapped
 
 
-def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
+def _wrap_mamba2_mixer_forward(module):
     if getattr(module, "_unsloth_mamba2_forward_wrapped", False):
         return
     forward_orig = module.forward
@@ -766,16 +761,15 @@ def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
         pass
 
     def _packed():
-        if varlen_getter is not None:
-            varlen = varlen_getter()
-            if varlen is not None:
-                return varlen
         return getattr(module, "_unsloth_varlen", None)
 
     @wraps(forward_orig)
     def mixer_forward(*args, **kwargs):
         varlen = _packed()
-        if varlen is not None:
+        outer, _ACTIVE_MIXER[0] = _ACTIVE_MIXER[0], module
+        try:
+            if varlen is None:
+                return forward_orig(*args, **kwargs)
             if (
                 forward_names_seq_idx
                 and kwargs.get("seq_idx") is None
@@ -783,7 +777,8 @@ def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
             ):
                 kwargs["seq_idx"] = varlen[1]
             return _call_as_packed_mamba2_prefill(forward_orig, args, kwargs)
-        return forward_orig(*args, **kwargs)
+        finally:
+            _ACTIVE_MIXER[0] = outer
 
     module.forward = mixer_forward
     if callable(cuda_orig) and not getattr(cuda_orig, "_unsloth_varlen_mask_cleared", False):
@@ -1160,9 +1155,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    varlen_slot: list = [None]
     for ns in _iter_mamba2_install_namespaces(hybrid_modules):
-        _install_packed_mask_positions(ns, lambda: varlen_slot[0])
+        _install_packed_mask_positions(ns, lambda: _PACKED[0])
     for ns in _iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs):
         _install_kwargs_probes(ns)
     for module in kwargs_modules:
@@ -1185,7 +1179,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             return fn
         wrapped = wrapped_fused.get(id(fn))
         if wrapped is None:
-            wrapped = _wrap_mamba2_seq_idx_call(fn, mamba2_modules, varlen_slot = varlen_slot)
+            wrapped = _wrap_mamba2_seq_idx_call(fn)
             wrapped_fused[id(fn)] = wrapped
             _rebind_mamba2_fused_aliases(fn, wrapped)
         return wrapped
@@ -1205,7 +1199,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             setattr(loc[1], loc[2], wrapped)
         elif kind == "ssm":
             module._unsloth_varlen_orig_fused = fn
-        _wrap_mamba2_mixer_forward(module, varlen_getter = lambda: varlen_slot[0])
+        _wrap_mamba2_mixer_forward(module)
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
     if mamba2_modules:
@@ -1221,13 +1215,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
         classes = {type(m).__name__ for m in mamba2_modules}
 
-        def packed():
-            return varlen_slot[0]
-
         for ns in _iter_mamba2_install_namespaces(mamba2_modules):
             _force_install_mamba2_fused(ns, wrapped_real, source)
-            _install_mamba2_mask_clear(ns, packed, classes)
-            _install_mamba2_seq_idx_fallbacks(ns, mamba2_modules, varlen_slot)
+            _install_mamba2_mask_clear(ns, _active_mixer_varlen, classes)
+            _install_mamba2_seq_idx_fallbacks(ns)
 
     # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
     # recompute so it stays valid for recomputed inner forwards.
@@ -1259,11 +1250,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
                     module._unsloth_varlen_kwargs_hit = False
-            varlen_slot[0] = varlen
+            outer, _PACKED[0] = _PACKED[0], varlen
             try:
                 out = forward_orig(*args, **kwargs)
             finally:
-                varlen_slot[0] = None
+                _PACKED[0] = outer
             # Handshake: on the first packed forward every module must have hit its boundary kernels.
             if first_pack:
                 model._unsloth_varlen_handshake_done = True

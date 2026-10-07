@@ -1123,6 +1123,18 @@ def test_patch_mamba2_varlen_wraps_shared_kernel_once_per_model(monkeypatch):
             self.mixer = _SharedNemotronHMamba2Mixer()
             self.layers = torch.nn.ModuleList([_SharedNemotronHMamba2Mixer() for _ in range(24)])
 
+        def forward(
+            self,
+            input_ids = None,
+            packed_seq_lengths = None,
+            use_cache = None,
+            **kwargs,
+        ):
+            hidden = self.mixer(input_ids.float(), **kwargs)
+            for layer in self.layers:
+                hidden = layer(hidden, **kwargs)
+            return hidden
+
     model = _ManyLayerModel()
     assert patch_hybrid_linear_attention_varlen(model) is True
 
@@ -2611,5 +2623,59 @@ def test_short_conv_rejects_hub_conv_bound_to_torch_fallback(monkeypatch):
         assert (
             patch_hybrid_linear_attention_varlen(_stateful_model(modeling.Lfm2ShortConv())) is False
         )
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_patch_mamba2_varlen_second_model_gets_its_own_boundaries(monkeypatch):
+    # The kernel is a module global, so its wrapper outlives the first model; a later patched model
+    # must get its own boundaries rather than the first model's context.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+    import types
+
+    name = "fake_modeling_nemotron_h_global"
+    modeling = types.ModuleType(name)
+    exec(
+        "def mamba_split_conv1d_scan_combined(*args, seq_idx = None, **kwargs):\n"
+        "    mamba_split_conv1d_scan_combined.calls.append(seq_idx)\n"
+        "    return args[0]\n"
+        "mamba_split_conv1d_scan_combined.calls = []\n",
+        modeling.__dict__,
+    )
+    modeling._Base = _FakeNemotronHMamba2Mixer
+    exec(
+        "class NemotronHMamba2Mixer(_Base):\n"
+        "    def __init__(self):\n"
+        "        super().__init__()\n"
+        "        del self.mamba2_split_conv1d_scan_combined\n"
+        "    def forward(self, hidden_states, **kwargs):\n"
+        "        return mamba_split_conv1d_scan_combined(hidden_states, seq_idx = None)\n",
+        modeling.__dict__,
+    )
+    modeling.NemotronHMamba2Mixer.__module__ = name
+    sys.modules[name] = modeling
+    calls = modeling.mamba_split_conv1d_scan_combined.calls
+
+    def build():
+        model = _FakeMamba2Model()
+        model.mixer = modeling.NemotronHMamba2Mixer()
+        return model
+
+    try:
+        first, second = build(), build()
+        assert patch_hybrid_linear_attention_varlen(first) is True
+        first(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        assert patch_hybrid_linear_attention_varlen(second) is True
+        second(
+            input_ids = torch.zeros(1, 5, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([4, 1], dtype = torch.int32),
+            use_cache = False,
+        )
+        assert calls[-1].tolist() == [[0, 0, 0, 0, 1]]
     finally:
         sys.modules.pop(name, None)
