@@ -89,9 +89,9 @@ def test_no_nvidia_smi_anywhere_still_reports_unavailable(monkeypatch, system):
     ("device_id", "xpu_class"),
     [
         ("0x7d55", True),  # Core Ultra (Meteor Lake-H) Arc Graphics
-        ("0x7dd1", True),  # Core Ultra 200H (Arrow Lake-H)
+        ("0x7d51", True),  # Core Ultra 200H (Arrow Lake-H) Arc Graphics
         ("0x64a0", True),  # Core Ultra 200V (Lunar Lake) Arc 140V
-        ("0xb080", True),  # Core Ultra Series 3 (Panther Lake)
+        ("0xb080", True),  # Core Ultra Series 3 (Panther Lake) Arc B390
         ("0x56a0", True),  # Arc A770: unchanged
         ("0xe20b", True),  # Arc B580: unchanged
         ("0x7d45", False),  # Meteor Lake-U Intel Graphics: not on the PyTorch XPU list
@@ -99,6 +99,10 @@ def test_no_nvidia_smi_anywhere_still_reports_unavailable(monkeypatch, system):
         ("0x9a49", False),  # Tiger Lake Iris Xe
         ("0x46a6", False),  # Alder Lake iGPU
         ("0x7d60", False),  # Meteor Lake-M, absent from Intel compute-runtime
+        ("0x7dd5", False),  # Meteor Lake "Intel Graphics", not Arc
+        ("0x7dd1", False),  # Arrow Lake-H "Intel Graphics", not Arc
+        ("0x6420", False),  # Lunar Lake "Intel Graphics", not Arc
+        ("0xb0a0", False),  # Panther Lake "Intel Graphics", not Arc
     ],
 )
 def test_core_ultra_arc_igpus_are_xpu_class(tmp_path, device_id, xpu_class):
@@ -153,3 +157,24 @@ def test_a_cuda_mask_stops_at_the_first_invalid_index(monkeypatch, mask, numeric
     spec = hw._get_parent_visible_gpu_spec()
     assert spec["numeric_ids"] == numeric_ids
     assert spec["supports_explicit_gpu_ids"] is (numeric_ids is not None)
+
+
+@pytest.mark.parametrize(
+    ("env", "numeric_ids"),
+    [
+        ({"HIP_VISIBLE_DEVICES": "0,0,1"}, [0, 1]),  # clr skips a repeat
+        ({"ROCR_VISIBLE_DEVICES": "0,0,1"}, [0]),  # ROCr stops at one
+        ({"HIP_VISIBLE_DEVICES": "0,1gpu2,2"}, [0]),  # clr takes only a plain index
+        ({"HIP_VISIBLE_DEVICES": "1,0"}, [1, 0]),
+        ({"HIP_VISIBLE_DEVICES": "0,-1,1"}, [0]),
+    ],
+)
+def test_a_rocm_mask_keeps_the_runtime_repeat_rule(monkeypatch, env, numeric_ids):
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.sys, "platform", "linux")
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"):
+        monkeypatch.delenv(var, raising = False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    assert hw._get_parent_visible_gpu_spec()["numeric_ids"] == numeric_ids

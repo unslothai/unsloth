@@ -459,26 +459,8 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
 
 # XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
 _INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
-# Core Ultra iGPUs PyTorch XPU lists (pciids.h + Intel compute-runtime devices_base.inl: MTL-H, ARL-H, LNL, PTL).
-_INTEL_XPU_PCI_IDS = frozenset(
-    (0x7D55, 0x7DD5)
-    + (0x7D51, 0x7DD1)
-    + (0x6420, 0x64A0, 0x64B0)
-    + (
-        0xB080,
-        0xB081,
-        0xB082,
-        0xB083,
-        0xB084,
-        0xB085,
-        0xB086,
-        0xB087,
-        0xB08F,
-        0xB090,
-        0xB0A0,
-        0xB0B0,
-    )
-)
+# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL).
+_INTEL_XPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083))
 
 
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
@@ -4682,6 +4664,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         "CUDA_VISIBLE_DEVICES" not in os.environ
         and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
     )
+    rocr_mask = False
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
         # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a stray ROCR var there masks nothing and must not be read as the ordinal->physical mapping.
@@ -4690,6 +4673,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             cuda_visible = hip_vis
         elif rocr_vis is not None:
             cuda_visible = rocr_vis
+            rocr_mask = True
     if cuda_visible is None:
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
 
@@ -4708,11 +4692,12 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             "supports_explicit_gpu_ids": True,
         }
 
-    # Parsed as the CUDA runtime does (torch's _parse_visible_devices): strtoul-style, so "1gpu2" is 1, a
-    # negative, empty or non-numeric index ends the list ("0,2,-1,1" exposes 0 and 2), a repeat empties it.
+    # Each runtime's own rule: a negative, empty or non-numeric index ends the list ("0,2,-1,1" exposes 0
+    # and 2). CUDA reads strtoul-style ("1gpu2" is 1) and empties the set on a repeat (torch's
+    # _parse_visible_devices); HIP takes only a plain index and skips a repeat, ROCr stops at one.
     numeric_ids = []
     for value in (token.strip() for token in cuda_visible.split(",")):
-        prefix = re.match(r"[+-]?\d+", value)
+        prefix = re.fullmatch(r"-?\d+", value) if _is_rocm_spec else re.match(r"[+-]?\d+", value)
         if prefix is None:
             # A UUID/MIG id, or a mask not starting with a number, keeps the UUID path below.
             if not numeric_ids or value.upper().startswith(("GPU-", "MIG-")):
@@ -4722,7 +4707,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         if gpu_id < 0:
             break
         if gpu_id in numeric_ids:
-            numeric_ids = []
+            if _is_rocm_spec and not rocr_mask:
+                continue
+            if not _is_rocm_spec:
+                numeric_ids = []
             break
         numeric_ids.append(gpu_id)
     if numeric_ids is None:
