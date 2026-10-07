@@ -472,6 +472,11 @@ def export_decision_gguf(
             print(f"Unsloth: converting the decision model to {outtype.upper()} GGUF...")
             _convert(converter, folder, outtype, target, False, print_output)
             write_decision_temperatures(target, temperatures, gguf_py)
+        if kquants:
+            print(
+                "Unsloth: k-quants of decision models can move answer probabilities and flip "
+                "close answers; q8_0 stays closest to PyTorch serving."
+            )
         for quant in kquants:
             target = staging / model_name(quant)
             print(f"Unsloth: quantizing the decision model to {quant.upper()}...")
