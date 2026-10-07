@@ -158,7 +158,8 @@ def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only)
         raise ValueError(
             f"Unsloth: {folder} is not a decision model checkpoint "
             "(rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, "
-            "or a Clef backbone with joint_head.safetensors and joint_head_config.json)."
+            "or a Clef backbone with joint_head.safetensors and joint_head_config.json). "
+            'To turn a plain language model into a decision model, pass decision_head = "clef".'
         )
     return folder
 
@@ -737,11 +738,15 @@ def _load_clef(
             **kwargs,
         )
     else:
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
-        backbone = AutoModelForImageTextToText.from_pretrained(
-            str(folder), dtype = dtype or torch.float32
-        )
+        # Clef's own backbones are vision models; ones converted from a text-only LM are not.
+        if getattr(AutoConfig.from_pretrained(str(folder)), "vision_config", None) is not None:
+            from transformers import AutoModelForImageTextToText as AutoClass
+        else:
+            from transformers import AutoModelForCausalLM as AutoClass
+            AutoProcessor = AutoTokenizer
+        backbone = AutoClass.from_pretrained(str(folder), dtype = dtype or torch.float32)
         processor = AutoProcessor.from_pretrained(str(folder))
         if not full_finetuning:
             backbone.requires_grad_(False)
@@ -796,7 +801,7 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
             backbone,
             LoraConfig(
                 target_modules = target_modules
-                or r"model\.language_model\.layers\.\d+\..*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)",
+                or r"model\.(?:language_model\.)?layers\.\d+\..*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)",
                 **kwargs,
             ),
         )
@@ -946,7 +951,11 @@ def _clef_mixed_precision(model, args) -> None:
     elif args.fp16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
         args.fp16, args.bf16 = False, True
-    # transformers 5 reads the accelerator's precision from here (4.x from fp16 / bf16).
+    elif not args.bf16 and _clef_amp_dtype(model, next(model.parameters()).device) is not None:
+        # float32 norms (UNSLOTH_HIGH_PRECISION_LAYERNORM) beside bfloat16 projections only run under autocast.
+        args.bf16 = True
+    # transformers 5 reads args.mixed_precision; 4.x reads this variable, set before the switches above.
+    os.environ["ACCELERATE_MIXED_PRECISION"] = "bf16" if args.bf16 else "no"
     if hasattr(args, "mixed_precision"):
         args.mixed_precision = "bf16" if args.bf16 else "no"
 
@@ -1393,6 +1402,21 @@ def push_to_hub_merged(
 
 
 # Decision models in Laya's rl_agent_config.json layout: any encoder plus a typed decision head.
+def _lm_subfolder(model_name, subfolder, token, revision, local_files_only) -> str:
+    if Path(model_name).expanduser().is_dir():
+        return str(Path(model_name).expanduser() / subfolder)
+    from huggingface_hub import snapshot_download
+
+    root = snapshot_download(
+        model_name,
+        allow_patterns = [f"{subfolder}/*"],
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+    )
+    return str(Path(root) / subfolder)
+
+
 class FastDecisionModel:
     @staticmethod
     def from_pretrained(
@@ -1412,6 +1436,24 @@ class FastDecisionModel:
     ):
         if load_in_8bit:
             raise NotImplementedError("Unsloth: decision models do not support load_in_8bit.")
+        if kwargs.get("decision_head") is not None:
+            # A plain language model plus a fresh (or given) decision head: see decision_from_lm.py.
+            from .decision_from_lm import load_lm_as_decision_model
+            if subfolder:
+                model_name = _lm_subfolder(model_name, subfolder, token, revision, local_files_only)
+            return load_lm_as_decision_model(
+                model_name,
+                max_seq_length = max_seq_length,
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                full_finetuning = full_finetuning,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                **kwargs,
+            )
         from safetensors.torch import load_file
         from transformers import AutoModel, AutoTokenizer
 
@@ -1549,6 +1591,17 @@ class FastDecisionModel:
         _lean_lora(model.encoder)
         _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
+
+    @staticmethod
+    def freeze_backbone(model):
+        # Head-only warm-up for a fresh decision head; undo with unfreeze_backbone.
+        from .decision_from_lm import freeze_backbone
+        return freeze_backbone(model)
+
+    @staticmethod
+    def unfreeze_backbone(model):
+        from .decision_from_lm import unfreeze_backbone
+        return unfreeze_backbone(model)
 
     @staticmethod
     def for_inference(model):

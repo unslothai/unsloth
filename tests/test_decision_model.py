@@ -1044,8 +1044,10 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         ours_same_dtype, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         model.head = fp32_head
     for row, z in enumerate(theirs):
-        assert torch.allclose(ours_same_dtype[row, : len(z)].float(), z, atol = 2e-2, rtol = 2e-2)
-        assert torch.allclose(ours[row, : len(z)].float(), z, atol = 0.1)
+        same = ours_same_dtype[row, : len(z)].float()
+        assert torch.allclose(same, z, atol = 2e-2, rtol = 2e-2), (row, (same - z).abs().max(), same, z)
+        fp32 = ours[row, : len(z)].float()
+        assert torch.allclose(fp32, z, atol = 0.1), (row, (fp32 - z).abs().max(), fp32, z)
 
     items, report = FastDecisionModel.build_dataset(_clef_rows(64), processor, model)
     assert report["skipped"] == 0 and len(items) == 64 and len(items[0]["targets"]) == 4
@@ -1077,7 +1079,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     )
     trainer.train()
     after = FastDecisionModel.evaluate(model, processor, holdout)
-    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
+    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"], (losses, before, after)
     calibration = FastDecisionModel.calibrate(model, processor, holdout)
     assert "accuracy" in calibration
     # Fitted to the gold labels, so the calibrated confidence tracks being right.
@@ -1105,15 +1107,15 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
-    # Saved in bf16, so the reload rounds the trained weights.
-    # Compared as served probabilities: the folded head is trained / folded, and a small folded
-    # temperature would magnify bf16 rounding if the logits were compared directly.
+    # bf16 reload rounding grows with the per-run logit scale, so the bound is relative (10 B200 runs
+    # peaked at 1.6%); a fold left out or doubled is off by >= 20%.
     mask = trained > -1e3
-    served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
-    reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
-    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    expected = (trained / folded).float()[mask]
+    error = (again.float()[mask] - expected).abs().max().item()
+    scale = expected.abs().max().item()
+    assert error <= 0.03 * scale + 0.05, (error, scale, folded)
     for row, z in enumerate(theirs):
-        assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+        assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
@@ -1425,6 +1427,22 @@ def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypat
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
     assert decision._clef_amp_dtype(model, cuda) is None
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, forced):
+    # A previous trainer leaves fp16 in ACCELERATE_MIXED_PRECISION, which transformers 4.x reads.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.bfloat16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = forced
+    args = _args(tmp_path)
+    assert not args.bf16 and not args.fp16
+    decision._clef_mixed_precision(model, args)
+    expected = "no" if forced else "bf16"
+    assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
+    assert getattr(args, "mixed_precision", expected) == expected
 
 
 def test_clef_calibration_with_every_holdout_decision_from_one_row():
