@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import os
 import re
 import secrets
 import subprocess
@@ -42,6 +43,8 @@ _OVERFLOW = (
         r"increase the batch size \(current batch size: (\d+)\)"
     ),
 )
+# server-common.cpp: an image mtmd cannot decode, answered as HTTP 500 by a healthy server.
+_UNDECODABLE_MEDIA = "Failed to load image or audio file"
 _SERVER_LOG_LINES = 40
 
 
@@ -200,7 +203,7 @@ def map_error(status: int, detail: str) -> NativeError:
         for pattern in _OVERFLOW:
             if match := pattern.search(detail):
                 return NativeContextOverflow(int(match.group(1)), int(match.group(2)))
-        if 400 <= status < 500:
+        if 400 <= status < 500 or _UNDECODABLE_MEDIA in detail:
             return NativeInputError(detail)
     return NativeError(f"llama.cpp answered HTTP {status}: {detail}")
 
@@ -220,6 +223,19 @@ def _pick_device(binary: str, env: dict[str, str]) -> str:
         if len(free) == len(devices):
             return devices[max(range(len(free)), key = lambda i: free[i][1])]
     return devices[0]
+
+
+def _write_key(key: str) -> Path:
+    """The server's API key, readable only by this user, under Studio's auth directory."""
+    from utils.paths.storage_roots import auth_root
+
+    directory = auth_root()
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / f"decision_llama_api_key_{secrets.token_hex(8)}"
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(key)
+    return path
 
 
 class NativeClefAgent:
@@ -270,6 +286,11 @@ class NativeClefAgent:
                 placement.append("--no-mmproj-offload")
         self.port = LlamaCppBackend._find_free_port()
         self._key = secrets.token_urlsafe(32)
+        self._key_file: Path | None = None
+        self._log_path: Path | None = None
+        if is_process_shutting_down():
+            raise NativeError("Studio is shutting down; llama.cpp was not started.")
+        self._key_file = _write_key(self._key)
         self.command = [
             binary,
             "-m",
@@ -281,8 +302,9 @@ class NativeClefAgent:
             "127.0.0.1",
             "--port",
             str(self.port),
-            "--api-key",
-            self._key,
+            # Through a file, not argv: a command line is readable by every process of this user.
+            "--api-key-file",
+            str(self._key_file),
             "--parallel",
             "1",
             # A decision reads every token in one ubatch: -ub bounds the longest state served.
@@ -294,10 +316,12 @@ class NativeClefAgent:
             str(self.ctx),
             *placement,
         ]
-        if is_process_shutting_down():
-            raise NativeError("Studio is shutting down; llama.cpp was not started.")
-        self._log_path = self._server_log()
-        log = open(self._log_path, "wb")
+        try:
+            self._log_path = self._server_log(self.port)
+            log = open(self._log_path, "wb")
+        except BaseException:
+            self._remove_files()
+            raise
         try:
             self._process = spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
@@ -310,6 +334,9 @@ class NativeClefAgent:
                     **child_popen_kwargs(),
                 )
             )
+        except BaseException:
+            self._remove_files()
+            raise
         finally:
             log.close()
         adopt_pid(self._process.pid)
@@ -322,7 +349,7 @@ class NativeClefAgent:
             raise
 
     @staticmethod
-    def _server_log() -> Path:
+    def _server_log(port: int) -> Path:
         import tempfile
 
         try:
@@ -331,9 +358,20 @@ class NativeClefAgent:
         except Exception:
             root = Path(tempfile.gettempdir())
         root.mkdir(parents = True, exist_ok = True)
-        return root / "decision-llama-server.log"
+        # Per server: a retired one still exiting must not write into its successor's log.
+        return root / f"decision-llama-server-{os.getpid()}-{port}.log"
+
+    def _remove_files(self, keep_log: bool = False) -> None:
+        for path in (self._key_file, None if keep_log else self._log_path):
+            if path is not None:
+                try:
+                    path.unlink(missing_ok = True)
+                except OSError:
+                    pass
 
     def _log_tail(self) -> str:
+        if self._log_path is None:
+            return ""
         try:
             lines = self._log_path.read_text(encoding = "utf-8", errors = "replace").splitlines()
         except OSError:
@@ -444,7 +482,10 @@ class NativeClefAgent:
             client.close()
         process = self._process
         if process is None:
+            self._remove_files()
             return
+        # A server that exited by itself keeps its log for diagnosis.
+        crashed = process.poll() is not None
         try:
             if process.poll() is None:
                 process.terminate()
@@ -457,3 +498,4 @@ class NativeClefAgent:
             pass
         if process.poll() is not None:
             forget_pid(process.pid)
+            self._remove_files(keep_log = crashed)

@@ -19147,11 +19147,18 @@ async def _load_model_impl(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        from core.inference.gpu_arbiter import GpuOwnerBusyError
+        from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, account_access.GpuBusyForAnotherAccountError):
             raise account_access.gpu_busy_error() from e
+        if isinstance(e, GpuOwnerBusyError) and e.owner == DECISIONS:
+            # A llama.cpp decision server loading or deciding refuses eviction until it is idle.
+            raise HTTPException(
+                status_code = 409,
+                detail = "The Decision API is using the GPU; retry shortly.",
+                headers = {"Retry-After": "5"},
+            ) from e
         if isinstance(e, GpuOwnerBusyError):
             raise
         if isinstance(e, SidecarSwapInProgress):

@@ -40,7 +40,8 @@ MAX_QUESTION_CHARS = 20_000
 MAX_IMAGES = 4
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGES_BYTES = 8 * 1024 * 1024
-_IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
+# What llama.cpp's mtmd decodes in-process (stb_image); WebP needs an ffmpeg it may not have.
+_IMAGE_TYPES = {"image/png": "PNG", "image/jpeg": "JPEG"}
 _TYPES = ("noul", "choice", "score")
 MCP_PATH = "/mcp/decisions"
 LISTED_MODELS_TTL = 300.0
@@ -187,23 +188,43 @@ def _validate_images(images: list[str]) -> None:
             raise _error(
                 422,
                 "invalid_request_error",
-                f"images[{index}] must be a PNG, JPEG or WebP base64 data URL; remote URLs are not fetched",
+                f"images[{index}] must be a PNG or JPEG base64 data URL; remote URLs are not fetched",
             )
         if len(data) > 4 * ((MAX_IMAGE_BYTES + 2) // 3):
             raise _error(422, "invalid_request_error", f"images[{index}] is larger than 4 MiB")
         try:
-            size = len(base64.b64decode(data, validate = True))
+            raw = base64.b64decode(data, validate = True)
         except (binascii.Error, ValueError):
             raise _error(
                 422, "invalid_request_error", f"images[{index}] is not valid base64"
             ) from None
-        total += size
-        if not size or size > MAX_IMAGE_BYTES or total > MAX_IMAGES_BYTES:
+        total += len(raw)
+        if not raw or len(raw) > MAX_IMAGE_BYTES or total > MAX_IMAGES_BYTES:
             raise _error(
                 422,
                 "invalid_request_error",
                 "Each image must be at most 4 MiB, and all images together at most 8 MiB",
             )
+        if not _decodes(raw):
+            raise _error(
+                422, "invalid_request_error", f"images[{index}] is not a readable PNG or JPEG image"
+            )
+
+
+def _decodes(raw: bytes) -> bool:
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            # By content, as stb_image reads it: a mislabelled JPEG still decodes.
+            if image.format not in _IMAGE_TYPES.values():
+                return False
+            image.verify()
+    except Exception:
+        return False
+    return True
 
 
 async def _decide(

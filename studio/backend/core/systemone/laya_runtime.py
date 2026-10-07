@@ -36,6 +36,8 @@ _loaded: Checkpoint | None = None
 _device_name: str | None = None
 _loader: threading.Thread | None = None
 _loading: Checkpoint | None = None
+# A llama.cpp load that holds (or is taking) the GPU claim, until its agent is published or dropped.
+_gpu_load = False
 _failure: tuple[Checkpoint, str, float] | None = None
 _import_lock = threading.Lock()
 # Bumped whenever the resident agent changes, so a stale idle timer never acts on a newer one.
@@ -231,8 +233,11 @@ def select(
         if reason is None:
             # Auto keeps a resident PyTorch Clef for text rather than reloading the model.
             resident = _loaded == checkpoint and _agent is not None
-            if preference == "auto" and resident and not images:
-                return checkpoint, None
+            if preference == "auto" and not images:
+                if resident:
+                    return checkpoint, None
+                if (why := _auto_keeps_pytorch(checkpoint, native)) is not None:
+                    return checkpoint, why
             return native, None
         if preference == LLAMA_CPP or images:
             raise Unavailable(422, "invalid_request_error", reason)
@@ -246,6 +251,23 @@ def select(
     if images:
         raise Unavailable(400, "api_usage_error", f"Images are served only by llama.cpp: {reason}")
     return checkpoint, reason
+
+
+def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
+    """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
+    from core.inference.gpu_arbiter import DECISIONS, current_owner
+
+    from .catalog import clef_unsupported_reason
+
+    if _loaded == native and _agent is not None:
+        return None
+    if clef_unsupported_reason(wait = False) is not None:
+        return None
+    if _native_gpu() and current_owner() not in (None, DECISIONS):
+        return "Another model is using the GPU."
+    if not native.is_local and not is_cached(native) and is_cached(checkpoint):
+        return "The GGUF is not downloaded; the cached PyTorch checkpoint serves."
+    return None
 
 
 def effective_backend(checkpoint) -> tuple[str | None, str | None]:
@@ -508,7 +530,12 @@ def _close(agent, release_gpu: bool = True) -> None:
         agent.close()
     if release_gpu and _is_native(agent) and getattr(agent, "gpu", False):
         from core.inference import gpu_arbiter
-        gpu_arbiter.release(gpu_arbiter.DECISIONS)
+        def unclaimed() -> bool:
+            # A newer server loading or resident while this one closed keeps the claim.
+            with _state_lock:
+                return not _gpu_load and not (_is_native(_loaded) and getattr(_agent, "gpu", False))
+
+        gpu_arbiter.release_if(gpu_arbiter.DECISIONS, unclaimed)
 
 
 def _evict(external: bool = False) -> None:
@@ -604,6 +631,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
 
 
 def _load_native(checkpoint: Checkpoint):
+    global _gpu_load
     from core.inference import gpu_arbiter
     from utils.systemone_settings import get_native_ctx
 
@@ -614,6 +642,8 @@ def _load_native(checkpoint: Checkpoint):
     _evict()
     gpu = _native_gpu()
     if gpu:
+        with _state_lock:
+            _gpu_load = True
         try:
             gpu_arbiter.acquire_for(gpu_arbiter.DECISIONS, allow_evict = False)
         except gpu_arbiter.GpuOwnerBusyError:
@@ -865,7 +895,7 @@ def loading_repo_ids() -> tuple[str, ...]:
 
 
 def _load(checkpoint: Checkpoint) -> None:
-    global _agent, _loaded, _device_name, _loading, _failure, _generation, _last_used
+    global _agent, _loaded, _device_name, _loading, _failure, _generation, _last_used, _gpu_load
     started = time.monotonic()
     unloads = _unloads
     try:
@@ -876,12 +906,14 @@ def _load(checkpoint: Checkpoint) -> None:
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None
+            _gpu_load = False
         return
     with _state_lock:
         stale = _unloads != unloads
         if not stale:
             _agent, _loaded, _device_name = agent, checkpoint, str(getattr(agent, "device", device))
         _failure = _loading = None
+        _gpu_load = False
         _generation += 1
         _last_used = time.monotonic()
         generation = _generation
@@ -1643,7 +1675,14 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
         return _decide(target, state, questions, images)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
-        if get_backend() != "auto" or images or exc.limit >= MAX_LENGTH:
+        from .catalog import clef_unsupported_reason
+
+        if (
+            get_backend() != "auto"
+            or images
+            or exc.limit >= MAX_LENGTH
+            or clef_unsupported_reason() is not None
+        ):
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         _fallback_reason = "The request is longer than the llama.cpp context."
         return _decide(checkpoint, state, questions, None)
