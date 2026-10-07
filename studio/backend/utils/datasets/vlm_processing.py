@@ -18,27 +18,10 @@ def generate_smart_vlm_instruction(
     image_column = "image",
     dataset_name = None,
 ):
-    """
-    Generate a smart, context-aware instruction for VLM datasets via heuristics.
-
-    Strategy:
-    1. Explicit question/instruction column → use that
-    2. Infer from text column name + sample content
-    3. Analyze dataset name for task hints
-    4. Generic fallback
-
-    Returns:
-        dict: {
-            "instruction": str or None,  # None means use column content
-            "instruction_type": "explicit" | "inferred" | "generic",
-            "uses_dynamic_instruction": bool,  # True if it varies per sample
-            "confidence": float,  # 0.0 to 1.0
-        }
-    """
+    """selects a VLM instruction from explicit columns, heuristics, an LLM, or the default."""
     column_names = set(next(iter(dataset)).keys())
     sample = next(iter(dataset))
 
-    # Columns that hold per-sample instructions
     question_columns = [
         "question",
         "query",
@@ -54,7 +37,6 @@ def generate_smart_vlm_instruction(
     for name in question_columns:
         col = name if name in columns else next((c for c in columns if c.lower() == name), None)
         if col is not None:
-            # Use it only if it has non-empty content
             sample_content = sample[col]
             if isinstance(sample_content, str) and sample_content.strip():
                 return {
