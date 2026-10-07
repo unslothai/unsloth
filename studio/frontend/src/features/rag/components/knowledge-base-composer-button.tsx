@@ -27,7 +27,7 @@ import {
   subscribeKnowledgeBasesChanged,
 } from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
-import { EmbeddingModelMenuPicker } from "./embedding-model-menu-picker";
+import { EmbeddingModelMenuChip, EmbeddingModelMenuList } from "./embedding-model-menu-picker";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
 // Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
@@ -48,6 +48,8 @@ export function KnowledgeBaseComposerButton({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [kbsLoaded, setKbsLoaded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The embedding list replaces the source list in the same menu.
+  const [view, setView] = useState<"source" | "embedding">("source");
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Refreshes overlap; an older answer landing last would restore a deleted KB.
@@ -92,6 +94,7 @@ export function KnowledgeBaseComposerButton({
         onOpenChange={(open) => {
           setMenuOpen(open);
           if (open) void refresh();
+          else setView("source");
         }}
       >
         <DropdownMenuTrigger asChild={true}>
@@ -143,59 +146,65 @@ export function KnowledgeBaseComposerButton({
               : "unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
           }
         >
-          <DropdownMenuLabel className="flex items-center justify-between gap-3">
-            <span className="shrink-0">Retrieve from</span>
-            {isOwner ? <EmbeddingModelMenuPicker /> : null}
-          </DropdownMenuLabel>
-          <DropdownMenuItem
-            onSelect={() => setRagSource({ type: "thread" })}
-            className={
-              ragSource.type === "thread"
-                ? "relative text-primary font-medium"
-                : "relative"
-            }
-          >
-            <span className="truncate">This thread's documents</span>
-            {ragSource.type === "thread" ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2}
-                className="ml-auto"
-              />
-            ) : null}
-          </DropdownMenuItem>
-          {kbs.length > 0 ? <DropdownMenuSeparator /> : null}
-          {kbs.map((kb) => {
-            const selected =
-              ragSource.type === "kb" && ragSource.kbId === kb.id;
-            return (
-              <DropdownMenuItem
-                key={kb.id}
-                onSelect={() => setRagSource({ type: "kb", kbId: kb.id })}
-                className={
-                  selected ? "relative text-primary font-medium" : "relative"
-                }
-              >
-                <span className="truncate">{kb.name}</span>
-                {selected ? (
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className="ml-auto"
-                  />
-                ) : null}
-              </DropdownMenuItem>
-            );
-          })}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={() => {
-              setMenuOpen(false);
-              setDialogOpen(true);
-            }}
-          >
-            Manage knowledge bases…
-          </DropdownMenuItem>
+          {isOwner && view === "embedding" ? (
+            <EmbeddingModelMenuList onBack={() => setView("source")} />
+          ) : (
+            <>
+            <DropdownMenuLabel className="flex items-center justify-between gap-3">
+              <span className="shrink-0">Retrieve from</span>
+              {isOwner ? <EmbeddingModelMenuChip onOpen={() => setView("embedding")} /> : null}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={() => setRagSource({ type: "thread" })}
+              className={
+                ragSource.type === "thread"
+                  ? "relative text-primary font-medium"
+                  : "relative"
+              }
+            >
+              <span className="truncate">This thread's documents</span>
+              {ragSource.type === "thread" ? (
+                <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                  className="ml-auto"
+                />
+              ) : null}
+            </DropdownMenuItem>
+            {kbs.length > 0 ? <DropdownMenuSeparator /> : null}
+            {kbs.map((kb) => {
+              const selected =
+                ragSource.type === "kb" && ragSource.kbId === kb.id;
+              return (
+                <DropdownMenuItem
+                  key={kb.id}
+                  onSelect={() => setRagSource({ type: "kb", kbId: kb.id })}
+                  className={
+                    selected ? "relative text-primary font-medium" : "relative"
+                  }
+                >
+                  <span className="truncate">{kb.name}</span>
+                  {selected ? (
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
+                  ) : null}
+                </DropdownMenuItem>
+              );
+            })}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => {
+                setMenuOpen(false);
+                setDialogOpen(true);
+              }}
+            >
+              Manage knowledge bases…
+            </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       <KnowledgeBaseDialog

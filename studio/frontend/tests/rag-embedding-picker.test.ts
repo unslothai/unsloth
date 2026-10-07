@@ -135,10 +135,13 @@ test("the menu lists current, default, then pinned models, each once", () => {
   );
 });
 
-test("the chip shows for the owner only and opens on click, not hover", () => {
-  assert.match(KB_BUTTON, /\{isOwner \? <EmbeddingModelMenuPicker \/> : null\}/);
-  assert.match(MENU_PICKER, /onPointerMove=\{\(event\) => event\.preventDefault\(\)\}/);
-  assert.match(MENU_PICKER, /<DropdownMenuPrimitive\.Sub\s+open=\{open\}/);
+test("the chip shows for the owner only and swaps the menu to the model list", () => {
+  assert.match(KB_BUTTON, /\{isOwner \? <EmbeddingModelMenuChip onOpen=\{\(\) => setView\("embedding"\)\} \/> : null\}/);
+  assert.match(KB_BUTTON, /isOwner && view === "embedding" \? \(\s*<EmbeddingModelMenuList onBack=\{\(\) => setView\("source"\)\} \/>/);
+  // Closing resets it, so the menu reopens on the source list.
+  assert.match(KB_BUTTON, /else setView\("source"\);/);
+  // No side submenu any more.
+  assert.doesNotMatch(MENU_PICKER, /DropdownMenuPrimitive\.Sub\b|SubContent/);
 });
 
 test("Change model and the needs-download toast open the embedding row in Settings", () => {
@@ -154,4 +157,61 @@ test("Settings rows pin and unpin, and pinned models stay listed", () => {
   assert.match(PICKER, /onClick=\{\(\) => onTogglePin\(item\.id\)\}/);
   assert.match(PICKER, /for \(const pin of pinnedModels \?\? \[\]\)/);
   assert.match(SECTION, /pinnedModels=\{pinnedModels\}\s*onTogglePin=\{togglePin\}/);
+});
+
+test("pins are grey with the Recents unpin glyph, and tooltips are the app's own", () => {
+  for (const source of [MENU_PICKER, PICKER]) {
+    assert.match(source, /icon=\{(isPinned|pinned) \? PinOffIcon : PinIcon\}/);
+    assert.doesNotMatch(source, /text-primary hover:text-primary|\? "text-primary"/);
+    assert.doesNotMatch(source, /title=\{/);
+    assert.match(source, /<TooltipContent side="top">/);
+  }
+});
+
+test("in the composer list the pin shows on row hover only, pinned or not", () => {
+  assert.match(MENU_PICKER, /text-muted-foreground opacity-0 transition-colors group-hover\/row:opacity-100/);
+  assert.doesNotMatch(MENU_PICKER, /!isPinned &&/);
+});
+
+test("Settings keeps the long text in the info hint and the status on the row", () => {
+  assert.match(SECTION, /hint=\{`\$\{t\("settings\.general\.rag\.embeddingModelDescription"/);
+  assert.match(SECTION, /settings\.general\.rag\.embeddingModelShort[\s\S]*?\{statusText \? \(/);
+  // The row's `below` slot carries errors only.
+  assert.match(SECTION, /below=\{\s*embeddingModelError \|\| notLoaded \?/);
+});
+
+test("Eject sits on the picker and in the RAG menu, only while a model is resident", () => {
+  assert.match(SECTION, /onEject=\{embeddingModel\?\.backendLoaded \?/);
+  assert.match(PICKER, /\{onEject \? \([\s\S]*?onEject\(\);[\s\S]*?group-hover\/trigger:block/);
+  assert.match(MENU_PICKER, /\{settings\.backendLoaded \? \([\s\S]*?void eject\(\)/);
+  assert.match(MENU_PICKER, /settings\.general\.rag\.ejectModel/);
+});
+
+test("On device explains itself and says when the model is not loaded", () => {
+  assert.match(SECTION, /settings\.general\.rag\.onDeviceHint/);
+  assert.match(SECTION, /const notLoaded = onDevice && !embeddingModel\?\.loaded && !downloading;/);
+  // Under the picker, a filled dot, with its own hint.
+  assert.match(SECTION, /below=\{\s*embeddingModelError \|\| notLoaded \?[\s\S]*?rounded-full bg-muted-foreground[\s\S]*?settings\.general\.rag\.notLoadedHint/);
+});
+
+test("ejecting frees the model through the shared residency path", async () => {
+  const calls: unknown[] = [];
+  const unload = async () => ({ loaded: false });
+  const mod = loadWithStubs<{ ejectEmbeddingModel: () => Promise<void> }>(
+    new URL("../src/features/settings/lib/switch-embedding-model.ts", import.meta.url),
+    {
+      "../api/embedding-model": {
+        resolveEmbeddingModel: async () => null,
+        unloadEmbeddingModel: unload,
+        updateEmbeddingModelSettings: async () => null,
+      },
+      "../stores/embedding-model-store": {
+        useEmbeddingModelStore: {
+          getState: () => ({ applyResidency: async (request: unknown) => calls.push(request) }),
+        },
+      },
+    },
+  );
+  await mod.ejectEmbeddingModel();
+  assert.deepEqual(calls, [unload]);
 });

@@ -87,7 +87,10 @@ function harness() {
         },
       },
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
-      "./embedding-model-menu-picker": { EmbeddingModelMenuPicker: "EmbeddingModelMenuPicker" },
+      "./embedding-model-menu-picker": {
+        EmbeddingModelMenuChip: "EmbeddingModelMenuChip",
+        EmbeddingModelMenuList: "EmbeddingModelMenuList",
+      },
       "@/features/auth": { useIsAccountOwner: () => true },
     },
   );

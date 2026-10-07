@@ -71,6 +71,7 @@ export { useEmbeddingModelStore } from "./stores/embedding-model-store";
 export { useEmbeddingPinsStore } from "./stores/embedding-pins-store";
 export {
   type EmbeddingSwitchResult,
+  ejectEmbeddingModel,
   embeddingModelName,
   embeddingModelOwner,
   switchEmbeddingModel,

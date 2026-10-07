@@ -4,6 +4,7 @@
 import {
   type EmbeddingModelResolution,
   resolveEmbeddingModel,
+  unloadEmbeddingModel,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
@@ -49,6 +50,11 @@ export async function switchEmbeddingModel(
   } catch (error) {
     return { status: "failed", message: error instanceof Error ? error.message : "" };
   }
+}
+
+/** Free the resident embedding model. It reloads on the next index or search. */
+export async function ejectEmbeddingModel(): Promise<void> {
+  await useEmbeddingModelStore.getState().applyResidency(unloadEmbeddingModel);
 }
 
 /** "unsloth/bge-small-en-v1.5" -> "bge-small-en-v1.5"; local paths keep their last segment. */

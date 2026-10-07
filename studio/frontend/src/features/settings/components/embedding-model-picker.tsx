@@ -8,11 +8,18 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBytes, useHubModelSearch } from "@/features/hub";
 import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { PinIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  CheckmarkCircle02Icon,
+  PinIcon,
+  PinOffIcon,
+  RemoveCircleIcon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PipelineType } from "@huggingface/hub";
 import { type ReactElement, useMemo, useState } from "react";
@@ -41,6 +48,10 @@ type EmbeddingModelPickerProps = {
   disabled?: boolean;
   /** Held open with a spinner while the pick is resolved and saved. */
   busy?: boolean;
+  /** The selected model is in memory: green tick on the trigger. */
+  loaded?: boolean;
+  /** Something is resident; set to offer eject on trigger hover, as the chat model picker does. */
+  onEject?: () => void;
   className?: string;
 };
 
@@ -94,6 +105,8 @@ export function EmbeddingModelPicker({
   accessToken,
   disabled,
   busy,
+  loaded,
+  onEject,
   className,
 }: EmbeddingModelPickerProps): ReactElement {
   const t = useT();
@@ -158,9 +171,39 @@ export function EmbeddingModelPicker({
           data-testid="embedding-model-trigger"
           aria-label={t("settings.general.rag.embeddingModel")}
           disabled={disabled || busy}
-          className={`border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ""}`}
+          className={`group/trigger border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border pr-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${onEject ? "pl-2.5" : "pl-3.5"} ${className ?? ""}`}
         >
-          <span className="truncate">{value}</span>
+          {onEject ? (
+            // As on the chat model picker: tick at rest, eject on hover. Keyboard users eject
+            // from the RAG menu; a nested button is not valid inside the trigger.
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <span
+                  aria-hidden={true}
+                  data-eject-hit={true}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEject();
+                  }}
+                  className="-my-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                >
+                  <HugeiconsIcon
+                    icon={loaded ? CheckmarkCircle02Icon : RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className={`size-3.5 group-hover/trigger:hidden ${loaded ? "text-emerald-500" : "text-muted-foreground"}`}
+                  />
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="hidden size-3.5 text-red-500 group-hover/trigger:block"
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">{t("settings.general.rag.ejectModel")}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-left">{value}</span>
           {busy ? (
             <Spinner className="size-3.5 shrink-0" />
           ) : (
@@ -258,25 +301,31 @@ export function EmbeddingModelPicker({
                     ) : null}
                   </button>
                   {onTogglePin ? (
-                    <button
-                      type="button"
-                      onClick={() => onTogglePin(item.id)}
-                      aria-pressed={pinned}
-                      aria-label={t(
-                        pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin",
-                      )}
-                      title={t(pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin")}
-                      // Shown on hover or focus; always once pinned.
-                      className={`mr-1 ml-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-                        pinned ? "text-primary hover:text-primary" : "opacity-0 group-hover/row:opacity-100"
-                      }`}
-                    >
-                      <HugeiconsIcon
-                        icon={PinIcon}
-                        strokeWidth={1.75}
-                        className="size-3.5"
-                      />
-                    </button>
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          onClick={() => onTogglePin(item.id)}
+                          aria-pressed={pinned}
+                          aria-label={t(
+                            pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin",
+                          )}
+                          // As on Recents: grey, unpin glyph once pinned. Hover only until then.
+                          className={`mr-1 ml-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                            pinned ? "" : "opacity-0 group-hover/row:opacity-100"
+                          }`}
+                        >
+                          <HugeiconsIcon
+                            icon={pinned ? PinOffIcon : PinIcon}
+                            strokeWidth={1.75}
+                            className="size-3.5"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {t(pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin")}
+                      </TooltipContent>
+                    </Tooltip>
                   ) : (
                     <span className="w-2.5 shrink-0" />
                   )}
