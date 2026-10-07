@@ -165,6 +165,7 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
     )
     image = argv.index("unsloth/unsloth:latest")
     assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
+    assert ["--user", f"{os.getuid()}:{os.getgid()}"] in [argv[i : i + 2] for i in range(image)]
     assert f"{tmp_path}:/workspace/host" in argv[:image]
 
 
@@ -177,7 +178,9 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
 )
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
     argv = _run_sh_argv(tmp_path, *command)
-    assert "-w" not in argv[: argv.index("unsloth/unsloth:latest")]
+    flags = argv[: argv.index("unsloth/unsloth:latest")]
+    assert "-w" not in flags
+    assert "--user" not in flags
 
 
 if __name__ == "__main__":
