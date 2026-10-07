@@ -112,6 +112,33 @@ def read_existing_export(folder) -> Optional[dict]:
         return None
 
 
+def current_export(folder, layout: str) -> Optional[dict]:
+    """export.json when it was made from the folder as it is now, listing only quantizations
+    whose files exist; None for a missing, stale or empty export."""
+    try:
+        from core.systemone.gguf_export_contract import EXPORT_DIR, fingerprint
+    except Exception:
+        return None
+    data = read_existing_export(folder)
+    if data is None or data["layout"] != layout:
+        return None
+    try:
+        if data["source_fingerprint"] != fingerprint(folder, layout):
+            return None
+    except Exception:
+        return None
+    directory = Path(folder) / EXPORT_DIR
+    present = {}
+    for quant in data["quantizations"]:
+        entry = data["files"][quant]
+        names = [entry["model"]] + ([entry["mmproj"]] if entry.get("mmproj") else [])
+        if quant not in present and all((directory / name).is_file() for name in names):
+            present[quant] = entry
+    if not present:
+        return None
+    return {**data, "quantizations": list(present), "files": present}
+
+
 def decision_preview(checkpoint_path) -> Optional[dict]:
     """The Export page's decision block for a local folder, or None for a non-decision model."""
     kind = decision_kind(checkpoint_path)
@@ -129,7 +156,7 @@ def decision_preview(checkpoint_path) -> Optional[dict]:
         "quantizations": list(DECISION_GGUF_QUANTIZATIONS),
         "default_quantization": DECISION_GGUF_QUANTIZATIONS[0],
         "output_dir": str(folder / "gguf"),
-        "existing_export": read_existing_export(folder),
+        "existing_export": current_export(folder, layout),
     }
 
 
@@ -158,7 +185,7 @@ def check_decision_eligibility(checkpoint_path) -> dict:
     """gguf_eligibility from the library; raises DecisionExportError with its reason when ineligible."""
     from unsloth.models.decision_gguf import gguf_eligibility
 
-    eligibility = gguf_eligibility(str(checkpoint_path))
+    eligibility = gguf_eligibility(str(Path(str(checkpoint_path)).expanduser()))
     if not eligibility.get("eligible"):
         raise DecisionExportError(
             eligibility.get("reason") or "This decision model cannot be exported to GGUF."
@@ -173,7 +200,7 @@ def run_decision_gguf_export(
     print_output: bool = False,
 ) -> dict:
     """Writes <checkpoint_path>/gguf/ and returns its export.json content."""
-    folder = Path(str(checkpoint_path))
+    folder = Path(str(checkpoint_path)).expanduser()
     quants = normalize_decision_quants(quantization_method)
     kind = decision_kind(folder)
     if kind is None:

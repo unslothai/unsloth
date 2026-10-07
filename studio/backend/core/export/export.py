@@ -776,7 +776,9 @@ class ExportBackend:
 
             decision = decision_kind(checkpoint_path)
             if decision is not None:
-                return self._load_decision_checkpoint(checkpoint_path, *decision)
+                return self._load_decision_checkpoint(
+                    str(Path(checkpoint_path).expanduser()), *decision
+                )
 
             checkpoint_path_obj = Path(checkpoint_path)
 

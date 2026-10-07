@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
+from core.systemone.gguf_export_contract import fingerprint
 from routes import export as export_routes
 
 _QWEN35 = {"architectures": ["Qwen3_5ForConditionalGeneration"]}
@@ -99,18 +100,46 @@ def test_decision_info_for_laya(monkeypatch, tmp_path):
     assert info["layout"] == "laya" and info["eligible"] is True
 
 
-def test_decision_info_reports_an_existing_export(monkeypatch, tmp_path):
-    folder = _clef(tmp_path / "run")
+def _export(folder: Path, quants, fingerprint: str) -> dict:
     export = {
         "format": "unsloth-decision-gguf",
         "version": 1,
         "layout": "clef",
-        "quantizations": ["Q8_0"],
-        "files": {"Q8_0": {"model": "model-Q8_0.gguf", "mmproj": None}},
-        "source_fingerprint": "abc",
+        "quantizations": list(quants),
+        "files": {q: {"model": f"model-{q}.gguf", "mmproj": f"mmproj-{q}.gguf"} for q in quants},
+        "source_fingerprint": fingerprint,
     }
     _write(folder / "gguf", {"export.json": export})
-    assert _info(_client(monkeypatch), folder)["existing_export"] == export
+    return export
+
+
+def test_decision_info_reports_a_current_export_with_only_the_files_on_disk(monkeypatch, tmp_path):
+    folder = _clef(tmp_path / "run")
+    export = _export(folder, ["Q8_0", "Q4_K_M"], fingerprint(folder, "clef"))
+    for name in ("model-Q8_0.gguf", "mmproj-Q8_0.gguf", "model-Q4_K_M.gguf"):
+        (folder / "gguf" / name).write_bytes(b"gguf")
+    client = _client(monkeypatch)
+    assert _info(client, folder)["existing_export"] == {
+        **export,
+        "quantizations": ["Q8_0"],
+        "files": {"Q8_0": export["files"]["Q8_0"]},
+    }
+    (folder / "gguf" / "model-Q8_0.gguf").unlink()
+    assert _info(client, folder)["existing_export"] is None
+
+
+def test_decision_info_ignores_a_stale_export(monkeypatch, tmp_path):
+    folder = _clef(tmp_path / "run")
+    _export(folder, ["Q8_0"], fingerprint(folder, "clef"))
+    for name in ("model-Q8_0.gguf", "mmproj-Q8_0.gguf"):
+        (folder / "gguf" / name).write_bytes(b"gguf")
+    client = _client(monkeypatch)
+    assert _info(client, folder)["existing_export"]["quantizations"] == ["Q8_0"]
+    # Retrained since the export.
+    (folder / "joint_head.safetensors").write_bytes(b"retrained")
+    assert _info(client, folder)["existing_export"] is None
+    _export(folder, ["Q8_0"], "abc")
+    assert _info(client, folder)["existing_export"] is None
 
 
 def test_decision_info_is_null_for_other_models(monkeypatch, tmp_path):
