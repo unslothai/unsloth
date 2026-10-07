@@ -604,7 +604,9 @@ async function sendModelOverride(
   };
 }
 
-const syncGenerations = new Map<string, number>();
+// Last write per folded key: a forget's cleanup spares any alias saved after it was sent.
+let syncSeq = 0;
+const lastWriteSeq = new Map<string, number>();
 
 /**
  * Mirror a per-model config save to the backend without blocking the UI. Best-effort: the
@@ -619,16 +621,15 @@ export function syncModelOverride(
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
 ): void {
-  const key = foldOverrideKey(modelOverrideKey(modelId, ggufVariant));
-  const generation = (syncGenerations.get(key) ?? 0) + 1;
-  syncGenerations.set(key, generation);
+  const seq = ++syncSeq;
+  lastWriteSeq.set(foldOverrideKey(modelOverrideKey(modelId, ggufVariant)), seq);
   void putModelOverride(modelId, ggufVariant, config, options)
     .then(({ removedKeys }) => {
-      // A later save (an undo, say) already rewrote the local record this forget would clear.
-      if (syncGenerations.get(key) !== generation) {
-        return;
-      }
-      if (!deletePerModelConfigsForOverrideKeys(removedKeys)) {
+      // An undo, or a save under another alias, already rewrote what this forget reports.
+      const stale = removedKeys.filter(
+        (key) => (lastWriteSeq.get(foldOverrideKey(key)) ?? 0) <= seq,
+      );
+      if (!deletePerModelConfigsForOverrideKeys(stale)) {
         console.warn(
           "Forgot model settings on the server, but this browser kept its own copy.",
         );

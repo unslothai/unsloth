@@ -195,3 +195,45 @@ test("an undo before the forget's response keeps the restored record", async () 
     setAuthFetchHandler(null);
   }
 });
+
+test("a save under another alias before the forget's response keeps that record", async () => {
+  store.clear();
+  const { syncModelOverride } = await import(
+    "../src/features/model-picker/api/model-overrides.ts"
+  );
+  // The loaded sidebar keys a cached GGUF by its snapshot path; the forget clears both spellings.
+  const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
+  let releaseForget: (() => void) | null = null;
+  setAuthFetchHandler((_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const response = () =>
+      new Response(
+        JSON.stringify({
+          overrides: {},
+          // biome-ignore lint/style/useNamingConvention: API schema
+          removed_keys: body.remove ? [`${REPO}:${QUANT}`, `${SNAPSHOT}:${QUANT}`] : [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    if (!body.remove) {
+      return response();
+    }
+    return new Promise<Response>((resolve) => {
+      releaseForget = () => resolve(response());
+    });
+  });
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    assert.ok(forgetRunSettings(ggufTarget()));
+    assert.ok(savePerModelConfig(SNAPSHOT, QUANT, tuned()));
+    syncModelOverride(SNAPSHOT, QUANT, tuned());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(releaseForget, "the forget is still in flight");
+    releaseForget();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, true);
+    assert.equal(resolveInitialConfig(REPO, QUANT).remembered, false);
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});
