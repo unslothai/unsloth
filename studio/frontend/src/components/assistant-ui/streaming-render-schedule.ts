@@ -347,7 +347,8 @@ function inlineLinkRegions(text: string): [number, number][] {
   let coveredEnd = -1;
   for (let at = text.indexOf("]("); at >= 0; at = text.indexOf("](", at + 1)) {
     if (at < coveredEnd || isEscaped(text, at)) continue;
-    const paragraphStart = text.lastIndexOf("\n\n", at) + 2;
+    const blankLine = text.lastIndexOf("\n\n", at);
+    const paragraphStart = blankLine < 0 ? 0 : blankLine + 2;
     let opener = text.lastIndexOf("[", at - 1);
     while (opener >= paragraphStart && isEscaped(text, opener)) {
       opener = text.lastIndexOf("[", opener - 1);

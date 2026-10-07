@@ -334,6 +334,10 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       "[1]: https://x.test/one",
     ],
     [
+      "[site](foo`bar\\ ) [1] `",
+      "[1]: https://x.test/one",
+    ],
+    [
       'Read <span title="`"> [1] ` first.',
       "[1]: https://x.test/one",
     ],
