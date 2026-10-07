@@ -1020,7 +1020,6 @@ def hf_hub_download_with_xet_fallback(
         # instead of re-downloaded. Its sha256 matches the Hub's, so it already is the newer blob a forced fetch wants.
         try:
             from hub.utils.gguf_header_delta import prepare_media_gguf
-
             if prepare_media_gguf(
                 repo_id,
                 filename,

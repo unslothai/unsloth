@@ -26,7 +26,12 @@ def _s(text: str) -> bytes:
     return struct.pack("<Q", len(raw)) + raw
 
 
-def make_gguf(kvs: dict, tensors: list, *, alignment: int = 32) -> bytes:
+def make_gguf(
+    kvs: dict,
+    tensors: list,
+    *,
+    alignment: int = 32,
+) -> bytes:
     """``tensors``: (name, dims, ggml type, payload bytes). String KVs only, plus an optional alignment KV."""
     head = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", len(tensors), len(kvs))
     for key, value in kvs.items():
@@ -36,7 +41,9 @@ def make_gguf(kvs: dict, tensors: list, *, alignment: int = 32) -> bytes:
             head += _s(key) + struct.pack("<I", 8) + _s(value)
     offset, blobs = 0, b""
     for name, dims, ggml_type, payload in tensors:
-        head += _s(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", d) for d in dims)
+        head += (
+            _s(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", d) for d in dims)
+        )
         head += struct.pack("<I", ggml_type) + struct.pack("<Q", offset)
         pad = -len(payload) % alignment
         blobs += payload + b"\0" * pad
@@ -60,7 +67,12 @@ def sha(data: bytes) -> str:
 
 
 class Fetcher:
-    def __init__(self, data: bytes, *, fail: bool = False):
+    def __init__(
+        self,
+        data: bytes,
+        *,
+        fail: bool = False,
+    ):
         self.data, self.fail, self.calls = data, fail, []
 
     def __call__(self, start: int, end: int) -> bytes:
@@ -70,7 +82,12 @@ class Fetcher:
         return self.data[start : end + 1]
 
 
-def cache_with_old(tmp_path: Path, *, symlinks: bool, data: bytes = OLD) -> Path:
+def cache_with_old(
+    tmp_path: Path,
+    *,
+    symlinks: bool,
+    data: bytes = OLD,
+) -> Path:
     repo_dir = tmp_path / "models--unsloth--Model-GGUF"
     snap = repo_dir / "snapshots" / COMMIT_OLD
     snap.mkdir(parents = True)
@@ -98,7 +115,12 @@ def _small_ranges(monkeypatch, tmp_path):
     delta.reset_for_tests()
 
 
-def rebuild(repo_dir: Path, new: bytes = NEW, fetch = None, **kw):
+def rebuild(
+    repo_dir: Path,
+    new: bytes = NEW,
+    fetch = None,
+    **kw,
+):
     return delta.rebuild_from_older_snapshot(
         repo_dir, COMMIT_NEW, NAME, len(new), sha(new), fetch or Fetcher(new), **kw
     )
@@ -404,9 +426,7 @@ def test_wrapper_without_opt_in_never_calls_the_delta(tmp_path, monkeypatch):
 def test_wrapper_opt_in_skips_force_after_a_rebuild(tmp_path, monkeypatch):
     seen = {}
     fallback = _fake_shared(monkeypatch, seen)
-    monkeypatch.setattr(
-        delta, "prepare_media_gguf", lambda *a, **k: delta.DeltaResult(placed = True)
-    )
+    monkeypatch.setattr(delta, "prepare_media_gguf", lambda *a, **k: delta.DeltaResult(placed = True))
     fallback.hf_hub_download_with_xet_fallback(
         "unsloth/Model-GGUF",
         NAME,
@@ -558,7 +578,12 @@ def test_the_image_gguf_prefetch_opts_in(monkeypatch):
     monkeypatch.setattr(hf_xet_fallback, "hf_hub_download_with_xet_fallback", fake)
     stub = SimpleNamespace(_cancel_event = _threading.Event())
     DiffusionBackend._prefetch_files(
-        stub, "unsloth/Qwen-Image-2.1-GGUF", "qwen-image-2.1-Q4_K_M.gguf", "base/x", [], None,
+        stub,
+        "unsloth/Qwen-Image-2.1-GGUF",
+        "qwen-image-2.1-Q4_K_M.gguf",
+        "base/x",
+        [],
+        None,
         fetch_base = "base/x",
     )
     assert calls and calls[0][0] == "qwen-image-2.1-Q4_K_M.gguf"
