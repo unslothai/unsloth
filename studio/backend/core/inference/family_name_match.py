@@ -7,21 +7,30 @@ the image and video family tables. Path separators stay boundaries."""
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+from typing import Optional
 
 _SEPARATOR_RUN = re.compile(r"[-_.\s]+")
 
 
+# Cached: the family / defaults tables normalise the same names once per token on every lookup.
+@lru_cache(maxsize = 4096)
 def normalize_family_name(text: str) -> str:
     return _SEPARATOR_RUN.sub("-", (text or "").lower())
 
 
-def token_in_name(token: str, needle: str) -> bool:
-    """Whole-segment match after normalising: ``kontext`` never matches ``kontextual``."""
+@lru_cache(maxsize = 1024)
+def _token_pattern(token: str) -> Optional[re.Pattern]:
     tok = normalize_family_name(token).strip("-")
     if not tok:
-        return False
-    hay = normalize_family_name(needle)
-    return re.search(r"(?:^|[-/\\])" + re.escape(tok) + r"(?:$|[-/\\])", hay) is not None
+        return None
+    return re.compile(r"(?:^|[-/\\])" + re.escape(tok) + r"(?:$|[-/\\])")
+
+
+def token_in_name(token: str, needle: str) -> bool:
+    """Whole-segment match after normalising: ``kontext`` never matches ``kontextual``."""
+    pattern = _token_pattern(token)
+    return pattern is not None and pattern.search(normalize_family_name(needle)) is not None
 
 
 def token_length(token: str) -> int:
