@@ -97,12 +97,25 @@ export function DecisionApiSection(): ReactElement | null {
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [tryOpen, setTryOpen] = useState(false);
+  const [tryModel, setTryModel] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const decisionTryRequested = useSettingsDialogStore(
+    (s) => s.decisionTryRequested,
+  );
 
   const enabled = settings?.enabled ?? false;
   if (tryOpen && !enabled) setTryOpen(false);
+
+  useEffect(() => {
+    if (!decisionTryRequested || !settings) return;
+    useSettingsDialogStore.getState().consumeDecisionTryRequest();
+    if (settings.enabled && settings.model === decisionTryRequested) {
+      setTryModel(decisionTryRequested);
+      setTryOpen(true);
+    }
+  }, [decisionTryRequested, settings]);
   const model = settings?.model ?? null;
   const backend = settings?.backend ?? "auto";
   // llama.cpp serves a GGUF, PyTorch the safetensors: the download follows the runtime.
@@ -712,6 +725,7 @@ export function DecisionApiSection(): ReactElement | null {
       <DecisionTryDialog
         open={tryOpen && enabled}
         onOpenChange={setTryOpen}
+        initialModel={tryModel}
         settings={settings}
         connections={connections ?? []}
         onRun={() => {

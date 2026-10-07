@@ -36,9 +36,9 @@ import {
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
-  EyeIcon,
   PlayIcon,
   SlidersHorizontalIcon,
+  ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
@@ -802,12 +802,14 @@ function ModelPicker({
 export function DecisionTryDialog({
   open,
   onOpenChange,
+  initialModel,
   settings,
   connections,
   onRun,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialModel?: string;
   settings: SystemOneSettings;
   connections: SystemOneConnection[];
   onRun: () => void;
@@ -817,7 +819,7 @@ export function DecisionTryDialog({
   const [type, setType] = useState<DecisionType>("noul");
   const [drafts, setDrafts] =
     useState<Record<DecisionType, DecisionDraft>>(initialDrafts);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
   const [inputView, setInputView] = useState<InputView>("form");
   const [outputView, setOutputView] = useState<OutputView>("preview");
   const [jsonText, setJsonText] = useState("");
@@ -841,6 +843,10 @@ export function DecisionTryDialog({
   useEffect(() => {
     if (open) return stop;
   }, [open, stop]);
+
+  useEffect(() => {
+    if (open && initialModel) setModel(initialModel);
+  }, [open, initialModel]);
 
   const request = useMemo(
     () => buildRequest(type, draft, model),
@@ -1250,7 +1256,7 @@ export function DecisionTryDialog({
                   {
                     id: "preview",
                     label: t("decisions.preview"),
-                    icon: EyeIcon,
+                    icon: ViewIcon,
                   },
                   { id: "json", label: t("decisions.json"), icon: CodeIcon },
                 ]}
