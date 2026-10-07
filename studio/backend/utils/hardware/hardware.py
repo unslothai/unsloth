@@ -4708,11 +4708,10 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             "supports_explicit_gpu_ids": True,
         }
 
-    tokens = [value.strip() for value in cuda_visible.split(",") if value.strip()]
     # Parsed as the CUDA runtime does (torch's _parse_visible_devices): strtoul-style, so "1gpu2" is 1, a
-    # negative or non-numeric index ends the list ("0,2,-1,1" exposes 0 and 2), a repeat empties it.
+    # negative, empty or non-numeric index ends the list ("0,2,-1,1" exposes 0 and 2), a repeat empties it.
     numeric_ids = []
-    for value in tokens:
+    for value in (token.strip() for token in cuda_visible.split(",")):
         prefix = re.match(r"[+-]?\d+", value)
         if prefix is None:
             # A UUID/MIG id, or a mask not starting with a number, keeps the UUID path below.

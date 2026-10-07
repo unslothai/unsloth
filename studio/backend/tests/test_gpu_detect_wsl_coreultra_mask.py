@@ -131,6 +131,9 @@ def test_a_core_ultra_record_establishes_a_mismatch(monkeypatch, tmp_path):
         ("0,abc", [0]),
         ("0,1gpu2,2", [0, 1, 2]),  # strtoul prefix, as torch parses it
         ("1,0,1", []),  # a repeated ordinal empties the set
+        ("0,,1", [0]),  # an empty index ends the list
+        ("1,,1", [1]),  # ...before a later repeat is seen
+        ("0,1,", [0, 1]),
         # Unchanged:
         ("-1", []),
         ("", []),
