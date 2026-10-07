@@ -6538,7 +6538,9 @@ def legacy_offload_layers(kwargs, offload_layers = None):
     if offload_layers is None:
         offload_layers = 0 if legacy is None else legacy
     if offload_layers != "auto" and (
-        isinstance(offload_layers, bool) or not isinstance(offload_layers, int) or offload_layers < 0
+        isinstance(offload_layers, bool)
+        or not isinstance(offload_layers, int)
+        or offload_layers < 0
     ):
         raise ValueError(
             f"Unsloth: offload_layers must be a layer count (0 = off) or 'auto', not {offload_layers!r}."
@@ -6838,7 +6840,9 @@ def install_block_swap(
             _check_block_swap(model)
         # An adaptive pool starts at one slot ahead and only grows into room it finds free.
         model._unsloth_offload_layers_auto = prefetch_depth
-        offload_layers = _auto_block_swap_indices(model, 1 if prefetch_depth == "auto" else prefetch_depth)
+        offload_layers = _auto_block_swap_indices(
+            model, 1 if prefetch_depth == "auto" else prefetch_depth
+        )
         if not offload_layers:
             return None
     _check_block_swap(model)
@@ -6948,7 +6952,9 @@ def replan_auto_offload_for_trainer(trainer):
                 f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
             )
             return swapper
-    elif not auto_swap_indices(layers, reserve, 1 if prefetch_depth == "auto" else prefetch_depth)[0]:
+    elif not auto_swap_indices(layers, reserve, 1 if prefetch_depth == "auto" else prefetch_depth)[
+        0
+    ]:
         return swapper
     if swapper is not None:
         swapper.remove()
@@ -6956,7 +6962,10 @@ def replan_auto_offload_for_trainer(trainer):
         model._unsloth_block_swap = None
     try:
         indices = _auto_block_swap_indices(
-            model, 1 if prefetch_depth == "auto" else prefetch_depth, batch_size = rows, seq_len = seq_len
+            model,
+            1 if prefetch_depth == "auto" else prefetch_depth,
+            batch_size = rows,
+            seq_len = seq_len,
         )
         # Union: old layers stay swapped (checkpoint_skip_layers chose among the rest), new picks kept.
         indices = sorted(set(old) | set(indices))

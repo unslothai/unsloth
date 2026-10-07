@@ -80,7 +80,11 @@ def test_budget_fraction_holds_the_run_to_its_gib():
     assert _training_vram_budget_fraction(8, 0) is None
 
 
-def _trainer(offload_layers = 0, prefetch_depth = 2, model = None):
+def _trainer(
+    offload_layers = 0,
+    prefetch_depth = 2,
+    model = None,
+):
     from core.training.trainer import UnslothTrainer
 
     t = UnslothTrainer.__new__(UnslothTrainer)
@@ -147,7 +151,6 @@ def test_offload_route_reports_inactive_until_a_step_carries_stats(monkeypatch):
 def test_worker_progress_events_carry_the_snapshot():
     import inspect
     from core.training import worker
-
     assert '"offload": getattr(progress, "offload", None)' in inspect.getsource(
         worker._create_trainer_progress_callback
     )
