@@ -2621,6 +2621,53 @@ def test_wan_a14b_gguf_pair_loads_high_as_transformer_and_low_as_transformer_2(
     assert last["transformer_2"] == f"dit:{low.name}"
 
 
+def test_wan_a14b_comfy_pair_offloaded_reprices_both_experts(fake_runtime, tmp_path, monkeypatch):
+    # An offloaded ComfyUI-quantized pair reprices both experts at their offload size before the build.
+    import core.inference.video as vid
+    from core.inference.diffusion_comfy_quant import ComfyQuantScan
+
+    names = [
+        "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+        "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"weights")
+    priced = []
+
+    def _resident_mib(
+        fam,
+        base,
+        target,
+        path,
+        scan,
+        *,
+        keep = True,
+        keep_key = None,
+        offload = False,
+    ):
+        priced.append((Path(path).name, offload))
+        return 2 if offload else 1
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(*args, **kwargs):
+        raise _Stop
+
+    monkeypatch.setattr(vid, "refuse_comfy_quant", lambda path: ComfyQuantScan())
+    monkeypatch.setattr(vid, "_video_comfy_resident", lambda *args: False)
+    monkeypatch.setattr(vid, "_video_comfy_resident_mib", _resident_mib)
+    monkeypatch.setattr(vid, "raise_on_unified_memory_shortfall", _stop)
+    with pytest.raises(_Stop):
+        VideoBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = names[1],
+            base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            family_override = "wan2.2-t2v-a14b",
+        )
+    assert sorted(name for name, offload in priced if offload) == sorted(names)
+
+
 def test_base_download_files_scopes_pipeline_pull():
     # A pipeline load skips the packaged root checkpoint, duplicate encoder shards and non-weight assets.
     info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)

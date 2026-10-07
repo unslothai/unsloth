@@ -5858,6 +5858,7 @@ class VideoBackend:
         # The LTX-2.3 variant its weights carry ("ltx-2.3-22b-distilled" / "-dev"), ahead of every name in the recipe
         # lookups: a distilled file named without "distilled" must not get the dev recipe. None: the name decides.
         variant_id: Optional[str] = None
+        ltx_keys = None
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
@@ -5869,6 +5870,10 @@ class VideoBackend:
                     logger.info(
                         "video.ltx23_variant: %s (from the checkpoint's weights)", variant_id
                     )
+
+            if fam.name == "ltx-2":
+                # The file also bundles VAE / audio VAE / vocoder, priced as companions; connectors stay in.
+                from .video_ltx2 import ltx23_is_dit_or_connector_key as ltx_keys
 
             def _price_checkpoint(path: Any) -> tuple[Optional[int], Any]:
                 """Resident MiB of one checkpoint file's DiT and its ComfyUI quant scan (None: a plain file)."""
@@ -5884,10 +5889,6 @@ class VideoBackend:
                 if kind == "gguf":
                     mib = estimate_gguf_resident_mib(size_mib)
                 elif scan is not None:
-                    ltx_keys = None
-                    if fam.name == "ltx-2":
-                        # The file also bundles VAE / audio VAE / vocoder, priced as companions; connectors stay in.
-                        from .video_ltx2 import ltx23_is_dit_or_connector_key as ltx_keys
                     mib = _video_comfy_resident_mib(
                         fam,
                         base,
@@ -6152,6 +6153,21 @@ class VideoBackend:
                 keep_key = ltx_keys,
                 offload = True,
             )
+            if offload_mib is not None and partner_path is not None and partner_scan is not None:
+                # transformer_mib prices the pair: reprice both experts.
+                partner_offload_mib = _video_comfy_resident_mib(
+                    fam,
+                    base,
+                    target,
+                    partner_path,
+                    partner_scan,
+                    keep = comfy_keep,
+                    keep_key = ltx_keys,
+                    offload = True,
+                )
+                offload_mib = (
+                    offload_mib + partner_offload_mib if partner_offload_mib is not None else None
+                )
             if offload_mib is not None and transformer_mib is not None:
                 offload_mib = int(offload_mib * dtype_scale)
                 if offload_mib > transformer_mib:
