@@ -234,7 +234,7 @@ function isAsciiPunctuation(char: string): boolean {
   );
 }
 
-type InlineLinkScan = {
+type InlineScan = {
   readonly blankLines: number[];
   readonly angleOpeners: number[];
   readonly angleClosers: number[];
@@ -242,11 +242,15 @@ type InlineLinkScan = {
   readonly singleQuoteClosers: number[];
   readonly parenthesisClosers: number[];
   readonly lineEndings: number[];
+  readonly htmlCommentClosers: number[];
+  readonly htmlProcessingClosers: number[];
+  readonly htmlCdataClosers: number[];
+  readonly htmlTagClosers: number[];
   readonly whitespaceEnds: Map<number, number>;
 };
 
-function inlineLinkScan(text: string): InlineLinkScan {
-  const scan: InlineLinkScan = {
+function createInlineScan(text: string): InlineScan {
+  const scan: InlineScan = {
     blankLines: Array.from(
       text.matchAll(BLANK_LINE_RE),
       (match) => match.index,
@@ -257,10 +261,18 @@ function inlineLinkScan(text: string): InlineLinkScan {
     singleQuoteClosers: [],
     parenthesisClosers: [],
     lineEndings: [],
+    htmlCommentClosers: [],
+    htmlProcessingClosers: [],
+    htmlCdataClosers: [],
+    htmlTagClosers: [],
     whitespaceEnds: new Map(),
   };
   for (let at = 0; at < text.length; at += 1) {
     const char = text[at];
+    if (text.startsWith("-->", at)) scan.htmlCommentClosers.push(at);
+    if (text.startsWith("?>", at)) scan.htmlProcessingClosers.push(at);
+    if (text.startsWith("]]>", at)) scan.htmlCdataClosers.push(at);
+    if (char === ">") scan.htmlTagClosers.push(at);
     if (char === "\n") {
       scan.lineEndings.push(at);
     }
@@ -295,7 +307,7 @@ function nextOffset(offsets: readonly number[], from: number): number {
 function skipInlineWhitespace(
   text: string,
   from: number,
-  scan: InlineLinkScan,
+  scan: InlineScan,
 ): number {
   const cached = scan.whitespaceEnds.get(from);
   if (cached !== undefined) return cached;
@@ -316,7 +328,7 @@ function skipInlineWhitespace(
   return end;
 }
 
-function angleDestinationEnd(from: number, scan: InlineLinkScan): number {
+function angleDestinationEnd(from: number, scan: InlineScan): number {
   const opener = nextOffset(scan.angleOpeners, from + 1);
   const closer = nextOffset(scan.angleClosers, from + 1);
   const lineEnding = nextOffset(scan.lineEndings, from + 1);
@@ -355,7 +367,7 @@ function bareDestinationEnd(text: string, from: number): [number, number] {
 function inlineTitleEnd(
   text: string,
   from: number,
-  scan: InlineLinkScan,
+  scan: InlineScan,
 ): number {
   const opener = text[from];
   const closer = opener === "(" ? ")" : opener;
@@ -378,7 +390,7 @@ function inlineTitleEnd(
 function inlineLinkEnd(
   text: string,
   from: number,
-  scan: InlineLinkScan,
+  scan: InlineScan,
 ): number {
   if (text[from] !== "(") {
     return -1;
@@ -411,7 +423,7 @@ function inlineLinkEnd(
 
 function inlineLinkRegions(
   text: string,
-  scan: InlineLinkScan,
+  scan: InlineScan,
 ): [number, number][] {
   const regions: [number, number][] = [];
   let opener = -1;
@@ -480,29 +492,46 @@ function htmlDelimitedEnd(
   text: string,
   from: number,
   opener: string,
-  closer: string,
+  closers: readonly number[],
+  closerWidth: number,
 ): number {
   if (!text.startsWith(opener, from)) return -1;
-  const end = text.indexOf(closer, from + opener.length);
-  return end < 0 ? -1 : end + closer.length;
+  const end = nextOffset(closers, from + opener.length);
+  return Number.isFinite(end) ? end + closerWidth : -1;
 }
 
-function inlineHtmlEnd(text: string, from: number): number {
-  let end = htmlDelimitedEnd(text, from, "<!--", "-->");
+function inlineHtmlEnd(text: string, from: number, scan: InlineScan): number {
+  let end = htmlDelimitedEnd(
+    text,
+    from,
+    "<!--",
+    scan.htmlCommentClosers,
+    3,
+  );
   if (end >= 0) return end;
-  end = htmlDelimitedEnd(text, from, "<?", "?>");
+  end = htmlDelimitedEnd(
+    text,
+    from,
+    "<?",
+    scan.htmlProcessingClosers,
+    2,
+  );
   if (end >= 0) return end;
-  end = htmlDelimitedEnd(text, from, "<![CDATA[", "]]>");
+  end = htmlDelimitedEnd(
+    text,
+    from,
+    "<![CDATA[",
+    scan.htmlCdataClosers,
+    3,
+  );
   if (end >= 0) return end;
 
   let at = from + 1;
   if (text[at] === "!") {
     at += 1;
-    const nameStart = at;
-    while (/[A-Za-z]/u.test(text[at] ?? "")) at += 1;
-    if (at === nameStart || !isHtmlWhitespace(text[at])) return -1;
-    const close = text.indexOf(">", at + 1);
-    return close < 0 ? -1 : close + 1;
+    if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
+    const close = nextOffset(scan.htmlTagClosers, at + 1);
+    return Number.isFinite(close) ? close + 1 : -1;
   }
 
   if (text[at] === "/") {
@@ -554,11 +583,11 @@ function inlineHtmlEnd(text: string, from: number): number {
   }
 }
 
-function inlineHtmlRegions(text: string): [number, number][] {
+function inlineHtmlRegions(text: string, scan: InlineScan): [number, number][] {
   const regions: [number, number][] = [];
   for (let at = text.indexOf("<"); at >= 0; at = text.indexOf("<", at + 1)) {
     if (isEscaped(text, at)) continue;
-    const end = inlineHtmlEnd(text, at);
+    const end = inlineHtmlEnd(text, at, scan);
     if (end >= 0) {
       regions.push([at, end]);
       at = end - 1;
@@ -610,15 +639,12 @@ function inlineMathRegions(text: string): [number, number][] {
   return regions;
 }
 
-function opaqueInlineRegions(
-  text: string,
-  scan: InlineLinkScan,
-): [number, number][] {
+function opaqueInlineRegions(text: string, scan: InlineScan): [number, number][] {
   if (!text.includes("`")) return [];
   const candidates = [
     ...inlineLinkRegions(text, scan),
     ...autolinkRegions(text),
-    ...inlineHtmlRegions(text),
+    ...inlineHtmlRegions(text, scan),
     ...inlineMathRegions(text),
   ].sort((left, right) => left[0] - right[0]);
   return candidates;
@@ -649,9 +675,9 @@ function hasShortcutReference(
     return false;
   }
   const uses = references;
-  const linkScan = exact ? inlineLinkScan(uses) : null;
+  const inlineScan = exact ? createInlineScan(uses) : null;
   const code = exact
-    ? codeSpanRegions(uses, opaqueInlineRegions(uses, linkScan!))
+    ? codeSpanRegions(uses, opaqueInlineRegions(uses, inlineScan!))
     : [];
   let codeIndex = 0;
   let inlineEnd = -1;
@@ -671,7 +697,11 @@ function hasShortcutReference(
       labels.has(normalizeLabel(match[1]))
     ) {
       if (!exact) return true;
-      inlineEnd = inlineLinkEnd(uses, match.index + match[0].length, linkScan!);
+      inlineEnd = inlineLinkEnd(
+        uses,
+        match.index + match[0].length,
+        inlineScan!,
+      );
       if (inlineEnd >= 0) continue;
       return true;
     }

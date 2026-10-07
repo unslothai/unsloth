@@ -630,6 +630,17 @@ test("malformed inline-link titles do not rescan the remaining reply", () => {
   );
 });
 
+test("unterminated HTML delimiters do not rescan the remaining reply", () => {
+  const reply = `${"<!--".repeat(20_000)}\` [1]\n\n[1]: /one\n`;
+  const started = performance.now();
+  assert.equal(markdownRenderScope(reply), "document");
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k unterminated HTML comments took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
 // Scope decides what is committed, so it cannot follow the reply's line ending.
 // This label is 999 normalised, 1000 raw under CRLF.
 test("the render scope does not depend on the reply's line ending", () => {
