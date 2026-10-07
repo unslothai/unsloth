@@ -214,8 +214,7 @@ export function AudioApiExamples({
       }),
     [base, example, key, lang, model, os],
   );
-  // Separation models are not in /v1/models, so an unpicked one says nothing about the disk.
-  const placeholder = models !== null && !picked && example !== "separate";
+  const placeholder = models !== null && !picked;
   const needsLoad =
     !placeholder &&
     autoSwitch === false &&

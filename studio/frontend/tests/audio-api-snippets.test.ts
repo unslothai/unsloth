@@ -241,7 +241,7 @@ test("a page's model is used only where it can run the example", () => {
     tts(cpp("Kokoro-82M-GGUF")),
     tts("unsloth/orpheus-3b-0.1-ft"),
   ];
-  assert.ok(S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "separate"));
+  assert.ok(!S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "separate"));
   assert.ok(!S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "speak"));
   assert.ok(!S.audioApiModelFits(listed, cpp("Kokoro-82M-GGUF"), "clone"));
   assert.ok(S.audioApiModelFits(listed, "unsloth/orpheus-3b-0.1-ft", "speak"));
@@ -378,5 +378,6 @@ test("the workflows a row advertises win over the name hints", () => {
   assert.equal(S.pickAudioApiModel([music], "music"), music.id);
   assert.equal(S.pickAudioApiModel([separator], "separate"), separator.id);
   assert.ok(!S.audioApiModelFits([music], music.id, "speak"));
-  assert.ok(S.audioApiModelFits([], cpp("HTDemucs-GGUF"), "separate"));
+  assert.ok(S.audioApiModelFits([separator], separator.id, "separate"));
+  assert.ok(!S.audioApiModelFits([], cpp("HTDemucs-GGUF"), "separate"));
 });

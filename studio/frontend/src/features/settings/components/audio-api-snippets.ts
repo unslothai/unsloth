@@ -113,10 +113,7 @@ export function audioApiModelFits(
     return !!known && audioCppWorkflowsFor(known).includes(example);
   }
   const listed = models.find((model) => model.id === id);
-  if (listed) return canRun(listed, example);
-  // Only a resident separator is listed, so a downloaded one falls back to the catalog.
-  const known = example === "separate" ? audioCppModelFor(id) : null;
-  return !!known && audioCppWorkflowsFor(known).includes(example);
+  return !!listed && canRun(listed, example);
 }
 
 // /v1/models gives a task, not workflows: the audio.cpp catalog decides, family hints for unknown repos.
@@ -125,7 +122,7 @@ function canRun(model: AudioApiModel, example: AudioApiExample): boolean {
   if (example === "transcribe") {
     return model.task === "automatic-speech-recognition";
   }
-  if (model.task !== "text-to-speech" || example === "separate") return false;
+  if (model.task !== "text-to-speech") return false;
   const known = audioCppModelFor(model.id);
   if (known) return audioCppWorkflowsFor(known).includes(example);
   switch (example) {
