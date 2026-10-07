@@ -716,6 +716,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         cfg_kwarg = "distilled_guidance_scale",
         aliases = ("hunyuanimage-2.1-diffusers", "hunyuanimage2.1"),
         fp16_incompatible = True,
+        # Distilled MeanFlow files: two extra embedders, shift 4. The catch-all row marks the base as another variant.
+        transformer_config_variants = (
+            ("distilled", (("guidance_embeds", True), ("use_meanflow", True))),
+            ("hunyuanimage", ()),
+        ),
+        comfy_flow_shift_variants = (("distilled", 4.0),),
     ),
     DiffusionFamily(
         name = "hidream-i1",
