@@ -20,6 +20,7 @@ import type {
   KeylessApiAccessScope,
 } from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
+import { AudioApiExamples } from "../components/audio-api-examples";
 import { CreateKeyForm } from "../components/create-key-form";
 import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
@@ -28,7 +29,10 @@ import { LanAccessSection } from "../components/lan-access-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
 import { RemoteAccessSection } from "../components/remote-access-section";
-import { UsageExamples } from "../components/usage-examples";
+import {
+  UsageExamples,
+  useApiTunnelPref,
+} from "../components/usage-examples";
 
 export function ApiKeysTab() {
   const t = useT();
@@ -39,6 +43,7 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [useTunnel, setUseTunnel] = useApiTunnelPref();
   const [keyless, setKeyless] = useState<{
     scope: KeylessApiAccessScope;
     tools: boolean;
@@ -200,8 +205,17 @@ export function ApiKeysTab() {
 
       <UsageExamples
         apiKey={revealed}
+        useTunnel={useTunnel}
+        onUseTunnelChange={setUseTunnel}
         keylessScope={keyless.scope}
         keylessTools={keyless.tools}
+        keylessExposure={keyless.exposure}
+      />
+
+      <AudioApiExamples
+        apiKey={revealed}
+        useTunnel={useTunnel}
+        keylessScope={keyless.scope}
         keylessExposure={keyless.exposure}
       />
 

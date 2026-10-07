@@ -32,6 +32,9 @@ export interface SettingsPanelPrefsState {
   setApiExampleLang: (lang: string) => void;
   setApiExampleOs: (os: ExampleOs) => void;
   setApiExampleAgent: (agent: string | null) => void;
+  // the Audio API card's tab (speak, clone, transcribe, workflows).
+  apiAudioExample: string | null;
+  setApiAudioExample: (tab: string) => void;
 
   resourcesLiveUpdates: boolean;
   setResourcesLiveUpdates: (enabled: boolean) => void;
@@ -85,6 +88,7 @@ function sanitize(
         ? (raw.apiExampleOs as ExampleOs)
         : null,
     apiExampleAgent: text(raw.apiExampleAgent),
+    apiAudioExample: text(raw.apiAudioExample),
     resourcesLiveUpdates:
       typeof raw.resourcesLiveUpdates === "boolean"
         ? raw.resourcesLiveUpdates
@@ -115,6 +119,8 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       setApiExampleLang: (apiExampleLang) => set({ apiExampleLang }),
       setApiExampleOs: (apiExampleOs) => set({ apiExampleOs }),
       setApiExampleAgent: (apiExampleAgent) => set({ apiExampleAgent }),
+      apiAudioExample: null,
+      setApiAudioExample: (apiAudioExample) => set({ apiAudioExample }),
 
       resourcesLiveUpdates: true,
       setResourcesLiveUpdates: (resourcesLiveUpdates) =>

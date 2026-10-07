@@ -2704,6 +2704,22 @@ export const zhCN = {
         "使用此 token 的应用会立即失去访问权限。此操作无法撤销。",
       revokeAction: "撤销“{name}”",
       revoking: "撤销中...",
+      audioApi: {
+        title: "音频 API",
+        description: "语音合成、声音克隆、转写以及音频页面的工作流。",
+        speak: "朗读",
+        clone: "克隆",
+        transcribe: "转写",
+        workflows: "工作流",
+        separate: "分离",
+        convert: "转换",
+        music: "音乐",
+        edit: "编辑",
+        placeholderModel: "还没有能运行此示例的已下载模型，因此显示的模型只是示意。请先在音频页面下载一个模型。",
+        autoSwitchOff:
+          "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
+        useViaApi: "通过 API 使用",
+      },
       decisionApi: {
         title: "决策 API",
         description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",

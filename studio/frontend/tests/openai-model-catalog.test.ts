@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chatModelsFromCatalog } from "../src/features/settings/api/openai-model-catalog.ts";
+import {
+  audioModelsFromCatalog,
+  chatModelsFromCatalog,
+} from "../src/features/settings/api/openai-model-catalog.ts";
 
 test("non-chat entries never reach the chat example picker", () => {
   const models = chatModelsFromCatalog({
@@ -35,4 +38,34 @@ test("malformed bodies yield no models", () => {
   assert.deepEqual(chatModelsFromCatalog(null), []);
   assert.deepEqual(chatModelsFromCatalog({}), []);
   assert.deepEqual(chatModelsFromCatalog({ data: [{ id: 3 }, { id: "" }, {}] }), []);
+});
+
+test("the audio examples see only speech and transcription models", () => {
+  const models = audioModelsFromCatalog({
+    data: [
+      { id: "unsloth/Qwen3-8B-GGUF", loaded: true, quant: "Q4_K_M" },
+      { id: "unsloth/Z-Image-Turbo-GGUF", loaded: true, task: "text-to-image" },
+      { id: "tiny", loaded: true, task: "automatic-speech-recognition" },
+      { id: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", loaded: false, task: "text-to-speech" },
+      { id: "", task: "text-to-speech" },
+    ],
+  });
+  assert.deepEqual(models, [
+    { id: "tiny", loaded: true, task: "automatic-speech-recognition" },
+    { id: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", loaded: false, task: "text-to-speech" },
+  ]);
+  assert.deepEqual(audioModelsFromCatalog(null), []);
+});
+
+test("the audio examples keep the workflows a row advertises, separators included", () => {
+  const models = audioModelsFromCatalog({
+    data: [
+      { id: "MiniMaxAI/MiniMax-Music3", loaded: true, task: "text-to-speech", audio_workflows: ["music"] },
+      { id: "audio-cpp/audio.cpp-gguf/BS-RoFormer-GGUF", loaded: true, task: "audio-to-audio", audio_workflows: ["separate", 3] },
+    ],
+  });
+  assert.deepEqual(models, [
+    { id: "MiniMaxAI/MiniMax-Music3", loaded: true, task: "text-to-speech", workflows: ["music"] },
+    { id: "audio-cpp/audio.cpp-gguf/BS-RoFormer-GGUF", loaded: true, task: "audio-to-audio", workflows: ["separate"] },
+  ]);
 });

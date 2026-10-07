@@ -2745,6 +2745,22 @@ export const ko = {
         "이 토큰을 사용하는 앱은 즉시 접근 권한을 잃습니다. 이 작업은 되돌릴 수 없습니다.",
       revokeAction: '"{name}" 폐기',
       revoking: "폐기 중...",
+      audioApi: {
+        title: "오디오 API",
+        description: "음성 합성, 음성 복제, 받아쓰기, 오디오 페이지 워크플로.",
+        speak: "말하기",
+        clone: "복제",
+        transcribe: "받아쓰기",
+        workflows: "워크플로",
+        separate: "분리",
+        convert: "변환",
+        music: "음악",
+        edit: "편집",
+        placeholderModel: "아직 이 예제를 실행할 수 있는 다운로드한 모델이 없어 표시된 모델은 임시 예시입니다. 먼저 오디오 페이지에서 모델을 다운로드하세요.",
+        autoSwitchOff:
+          "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
+        useViaApi: "API로 사용",
+      },
       decisionApi: {
         title: "판단 API",
         description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",

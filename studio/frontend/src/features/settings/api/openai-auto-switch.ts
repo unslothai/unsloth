@@ -88,9 +88,25 @@ async function fetchOpenAIAutoSwitchSettings(): Promise<OpenAIAutoSwitchSettings
 // must not refill it, or the pre-toggle value would be served indefinitely.
 let cacheGeneration = 0;
 
+const settingsListeners = new Set<
+  (settings: OpenAIAutoSwitchSettings) => void
+>();
+
+export function subscribeOpenAIAutoSwitchSettings(
+  listener: (settings: OpenAIAutoSwitchSettings) => void,
+): () => void {
+  settingsListeners.add(listener);
+  return () => {
+    settingsListeners.delete(listener);
+  };
+}
+
 function cacheSettings(settings: OpenAIAutoSwitchSettings, generation: number) {
   if (generation === cacheGeneration) {
     cachedSettings = settings;
+    for (const listener of settingsListeners) {
+      listener(settings);
+    }
   }
   return settings;
 }

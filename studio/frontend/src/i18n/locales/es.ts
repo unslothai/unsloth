@@ -2792,6 +2792,22 @@ export const es = {
         "Las apps que usan este token pierden el acceso de inmediato. Esto no se puede deshacer.",
       revokeAction: 'Revocar "{name}"',
       revoking: "Revocando...",
+      audioApi: {
+        title: "API de audio",
+        description: "Voz, clonación de voz, transcripción y los flujos de la página Audio.",
+        speak: "Hablar",
+        clone: "Clonar",
+        transcribe: "Transcribir",
+        workflows: "Flujos",
+        separate: "Separar",
+        convert: "Convertir",
+        music: "Música",
+        edit: "Editar",
+        placeholderModel: "Aún no hay ningún modelo descargado que pueda ejecutar este ejemplo, así que el modelo que aparece es provisional. Descarga uno primero en la página Audio.",
+        autoSwitchOff:
+          "El modelo solo se carga por su nombre con el cambio automático de modelo activado. Actívalo o carga antes el modelo en su página de Audio.",
+        useViaApi: "Usar por API",
+      },
       decisionApi: {
         title: "API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",

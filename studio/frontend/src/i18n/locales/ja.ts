@@ -2725,6 +2725,22 @@ export const ja = {
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",
       revokeAction: '"{name}" を失効',
       revoking: "失効中...",
+      audioApi: {
+        title: "オーディオ API",
+        description: "音声合成、ボイスクローン、文字起こし、オーディオページのワークフロー。",
+        speak: "読み上げ",
+        clone: "クローン",
+        transcribe: "文字起こし",
+        workflows: "ワークフロー",
+        separate: "分離",
+        convert: "変換",
+        music: "音楽",
+        edit: "編集",
+        placeholderModel: "この例を実行できるダウンロード済みモデルがまだないため、表示中のモデルは仮のものです。先にオーディオページでモデルをダウンロードしてください。",
+        autoSwitchOff:
+          "モデルの自動切り替えがオンのときだけ、名前でモデルが読み込まれます。オンにするか、先にそのモデルをオーディオページで読み込んでください。",
+        useViaApi: "API で使う",
+      },
       decisionApi: {
         title: "判定 API",
         description: "このマシン上のモデル、または接続の判定モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
