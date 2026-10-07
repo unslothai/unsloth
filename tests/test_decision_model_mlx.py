@@ -172,38 +172,23 @@ def test_transformers_callbacks_read_the_training_arguments(checkpoint, tmp_path
     assert trainer.state.global_step == 2 and trainer.args.eval_strategy == args.eval_strategy
 
 
-SHARED = (
-    "is_decision_checkpoint is_clef_checkpoint _is_clef_adapter _is_clef_repo _is_plain_lm "
-    "_checkpoint_folder _lm_subfolder _parsed _internal _option_keys _label _target _target_for "
-    "_clef_question _predicted _metrics _fit_temperature _fit_temperatures _served_temperatures "
-    "_calibrate_clef _served_lengths"
-).split()
+def test_decision_helpers_are_one_torch_free_module_for_both_backends():
+    import sys
 
-
-def test_copied_decision_code_matches_the_torch_module():
-    def functions(body):
-        found = {}
-        for node in body:
-            if isinstance(node, ast.FunctionDef):
-                # The copy imports torch inside the functions that need it.
-                for inner in ast.walk(node):
-                    if hasattr(inner, "body") and isinstance(inner.body, list):
-                        inner.body = [
-                            line
-                            for line in inner.body
-                            if not (isinstance(line, ast.Import) and line.names[0].name == "torch")
-                        ]
-                found[node.name] = ast.dump(node)
-        return found
-
-    root = Path(unsloth.__file__).parent
-    package = ast.parse((root / "__init__.py").read_text()).body
-    mlx_branch = next(
-        n for n in package if isinstance(n, ast.If) and ast.unparse(n.test) == "_IS_MLX"
-    )
-    copied = functions(mlx_branch.body)
-    original = functions(ast.parse((root / "models" / "decision.py").read_text()).body)
-    assert [name for name in SHARED if copied[name] != original[name]] == []
+    common = sys.modules["unsloth._decision_common"]
+    assert [
+        name for name in common.__all__ if getattr(unsloth, name) is not getattr(common, name)
+    ] == []
+    root = Path(unsloth.__file__).parent / "models"
+    shared = ast.parse((root / "_decision_common.py").read_text()).body
+    # Loaded by path on MLX, where unsloth.models and its torch imports are never imported.
+    modules = [a.name for n in shared if isinstance(n, ast.Import) for a in n.names]
+    modules += [n.module for n in shared if isinstance(n, ast.ImportFrom)]
+    assert {name.split(".")[0] for name in modules}.isdisjoint({"torch", "transformers"})
+    torch_module = ast.parse((root / "decision.py").read_text()).body
+    assert {n.name for n in torch_module if hasattr(n, "name")}.isdisjoint(common.__all__)
+    taken = [n for n in torch_module if getattr(n, "module", None) == "_decision_common"]
+    assert {a.name for n in taken for a in n.names} == set(common.__all__)
 
 
 @pytest.fixture
