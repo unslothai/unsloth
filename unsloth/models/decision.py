@@ -1763,6 +1763,21 @@ def push_to_hub_merged(
 
 
 # Decision models in Laya's rl_agent_config.json layout: any encoder plus a typed decision head.
+def _lm_subfolder(model_name, subfolder, token, revision, local_files_only) -> str:
+    if Path(model_name).expanduser().is_dir():
+        return str(Path(model_name).expanduser() / subfolder)
+    from huggingface_hub import snapshot_download
+
+    root = snapshot_download(
+        model_name,
+        allow_patterns = [f"{subfolder}/*"],
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+    )
+    return str(Path(root) / subfolder)
+
+
 class FastDecisionModel:
     @staticmethod
     def from_pretrained(
@@ -1789,6 +1804,8 @@ class FastDecisionModel:
         if kwargs.get("decision_head") is not None:
             # A plain language model plus a fresh (or given) decision head: see decision_from_lm.py.
             from .decision_from_lm import load_lm_as_decision_model
+            if subfolder:
+                model_name = _lm_subfolder(model_name, subfolder, token, revision, local_files_only)
             return load_lm_as_decision_model(
                 model_name,
                 max_seq_length = max_seq_length,

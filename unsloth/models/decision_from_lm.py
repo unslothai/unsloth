@@ -95,7 +95,7 @@ def _load_backbone(model_name, max_len, dtype, load_in_4bit, full_finetuning, to
         from .loader import FastModel
 
         # Same rules as decision._load_clef: dynamic 4-bit config, float16 puts Qwen3.5 on the float32 path.
-        if load_in_4bit and kwargs.get("quantization_config") is None:
+        if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         _pin_device_map(kwargs)
         backbone, processor = FastModel.from_pretrained(
@@ -113,14 +113,19 @@ def _load_backbone(model_name, max_len, dtype, load_in_4bit, full_finetuning, to
         raise NotImplementedError("Unsloth: load_in_4bit needs a GPU.")
     from transformers import AutoConfig, AutoTokenizer
 
-    config = AutoConfig.from_pretrained(str(model_name), token = token)
+    hub = {
+        "token": token,
+        "revision": kwargs.get("revision"),
+        "local_files_only": kwargs.get("local_files_only", False),
+    }
+    config = AutoConfig.from_pretrained(str(model_name), **hub)
     if getattr(config, "vision_config", None) is not None:
         from transformers import AutoModelForImageTextToText as AutoClass, AutoProcessor
-        processor = AutoProcessor.from_pretrained(str(model_name), token = token)
+        processor = AutoProcessor.from_pretrained(str(model_name), **hub)
     else:
         from transformers import AutoModelForCausalLM as AutoClass
-        processor = AutoTokenizer.from_pretrained(str(model_name), token = token)
-    backbone = AutoClass.from_pretrained(str(model_name), dtype = dtype or torch.float32, token = token)
+        processor = AutoTokenizer.from_pretrained(str(model_name), **hub)
+    backbone = AutoClass.from_pretrained(str(model_name), dtype = dtype or torch.float32, **hub)
     if not full_finetuning:
         backbone.requires_grad_(False)
     return backbone, processor, False
@@ -158,6 +163,8 @@ def load_lm_as_decision_model(
     max_len = int(max_seq_length or CLEF_MAX_LEN)
     if revision is not None:
         kwargs["revision"] = revision
+    if local_files_only:
+        kwargs["local_files_only"] = True
     backbone, processor, fast = _load_backbone(
         model_name,
         max_len,

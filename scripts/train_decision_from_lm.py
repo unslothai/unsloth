@@ -99,12 +99,16 @@ def main():
 
     pools = {}
     sources = [] if args.sources == "none" else args.sources.split(",")
-    per_source = max(1, args.rows // max(1, len(sources)))
     for name in sources:
         try:
-            pools[name] = dd.load_source(name, "train", limit = per_source, seed = args.seed)
+            # Gated sources fail first, so the survivors' share is known before the full load.
+            pools[name] = dd.load_source(name, "train", limit = 1, seed = args.seed)
         except Exception as exc:  # gated or unavailable sources are reported and skipped
             print(f"skipping {name}: {type(exc).__name__}: {str(exc)[:160]}")
+    per_source = max(1, -(-args.rows // max(1, len(pools))))
+    pools = {
+        name: dd.load_source(name, "train", limit = per_source, seed = args.seed) for name in pools
+    }
     rows = (
         dd.build_decision_mixture(
             pools, n_rows = args.rows, seed = args.seed, decontaminate_against = eval_texts
@@ -114,7 +118,12 @@ def main():
     )
     if args.typed_decisions:
         rng = random.Random(args.seed)
-        rows += [dd.augment_row(r, rng) for r in dd.load_source("typed_decisions", "train")]
+        cleaner = dd.Decontaminator(eval_texts)
+        rows += [
+            dd.augment_row(r, rng)
+            for r in dd.load_source("typed_decisions", "train")
+            if not cleaner.contaminated(r)
+        ]
         random.Random(args.seed).shuffle(rows)
 
     items, report = FastDecisionModel.build_dataset(rows, processor, model)
@@ -155,7 +164,8 @@ def main():
             ),
         )
 
-    torch.cuda.reset_peak_memory_stats()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     warmup = None
     if args.head_warmup_steps:
         FastDecisionModel.freeze_backbone(model)

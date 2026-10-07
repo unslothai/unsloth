@@ -542,7 +542,7 @@ def _derived(qid, question, gold, rng):
             },
             option == str(label),
         )
-    if kind == "score" and isinstance(label, int):
+    if kind == "score" and isinstance(label, int) and len(question["criteria"]) > 1:
         levels = question["criteria"]
         threshold = rng.randint(1, len(levels) - 1)
         return (
@@ -594,8 +594,10 @@ def augment_row(
                 pool += list(GENERIC_IDS)
             if pool:
                 new_id = rng.choice(pool)
-        if new_id in questions:
+        if new_id in questions or (new_id != qid and new_id in row["questions"]):
             new_id = qid
+        while new_id in questions:
+            new_id = f"{new_id}_"
         questions[new_id], gold[new_id] = question, answer
         if rng.random() < config.derived_questions:
             extra = _derived(new_id, question, answer, rng)
@@ -623,6 +625,7 @@ def canonical_row(
     """The row as converted, for evaluation: no augmentation, option subsampling only if asked."""
     out = {k: v for k, v in row.items() if k != "_variants"}
     if max_options is not None:
+        out["questions"], out["gold"] = dict(out["questions"]), dict(out["gold"])
         rng = random.Random(seed)
         for qid, question in list(out["questions"].items()):
             if question["type"] == "choice" and isinstance(question.get("criteria"), dict):
@@ -707,12 +710,17 @@ def build_decision_mixture(
         pools = {
             name: [r for r in rows if not cleaner.contaminated(r)] for name, rows in pools.items()
         }
-    total = sum(weights[name] for name in pools if pools[name])
+    live = [name for name in pools if pools[name]]
+    total = sum(weights[name] for name in live)
+    exact = {name: n_rows * weights[name] / total for name in live}
+    shares = {name: max(1, int(exact[name])) for name in live}
+    for name in sorted(live, key = lambda n: int(exact[n]) - exact[n])[
+        : max(0, n_rows - sum(shares.values()))
+    ]:
+        shares[name] += 1
     rows = []
-    for name, pool in pools.items():
-        if not pool:
-            continue
-        share = max(1, round(n_rows * weights[name] / total))
+    for name in live:
+        pool, share = pools[name], shares[name]
         picks = (
             rng.sample(pool, share)
             if share <= len(pool)
