@@ -170,7 +170,7 @@ test("pins are grey with the Recents unpin glyph, and tooltips are the app's own
 });
 
 test("in the composer list the pin shows on row hover only, pinned or not", () => {
-  assert.match(MENU_PICKER, /text-muted-foreground opacity-0 transition-colors group-hover\/row:opacity-100/);
+  assert.match(MENU_PICKER, /text-muted-foreground opacity-0 outline-hidden transition-colors group-hover\/row:opacity-100/);
   assert.doesNotMatch(MENU_PICKER, /!isPinned &&/);
 });
 
@@ -236,4 +236,13 @@ test("Reset all preferences clears embedding pins", () => {
     read("../src/features/settings/stores/embedding-pins-store.ts"),
     /\{ name: EMBEDDING_PINS_STORAGE_KEY \}/,
   );
+});
+
+test("composer pins are their own menu items, so the keyboard reaches them", () => {
+  assert.match(
+    MENU_PICKER,
+    /<DropdownMenuPrimitive\.CheckboxItem\s+checked=\{isPinned\}[\s\S]*?data-row-action=\{true\}[\s\S]*?togglePin\(model\);/,
+  );
+  assert.doesNotMatch(MENU_PICKER, /tabIndex=\{-1\}/);
+  assert.match(read("../src/index.css"), /\.menu-row-with-action:has\(\[data-row-action\]:is\(:hover, \[data-highlighted\]\)\)/);
 });

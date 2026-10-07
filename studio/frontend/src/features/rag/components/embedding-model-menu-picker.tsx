@@ -33,6 +33,10 @@ import { embeddingMenuModels } from "../lib/embedding-menu-models";
 const HEADING_LINK_CLASS =
   "my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60";
 
+// Fixed width, so the pin sits in the same place on every row, ticked or not.
+const TRAILING_SLOT_CLASS =
+  "flex w-[calc(var(--ui-icon-size)+2px)] shrink-0 items-center justify-center";
+
 /** "Model <name> ›" chip in the RAG menu heading. Swaps the menu to the model list. */
 export function EmbeddingModelMenuChip({ onOpen }: { onOpen: () => void }) {
   const t = useT();
@@ -187,63 +191,66 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
             ? [t(settings.loaded ? "settings.general.rag.loaded" : "settings.general.rag.notLoaded")]
             : []),
         ].join(" · ");
+        const pinLabel = t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin");
         return (
-          <DropdownMenuItem
-            key={model}
-            disabled={switching !== null && switching !== model}
-            onSelect={(event) => {
-              // Stay open while it switches; the list goes back once it lands.
-              event.preventDefault();
-              void pick(model);
-            }}
-            className={cn("group/row items-start gap-2 py-2", model === current && "font-medium")}
-          >
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="truncate text-ui-13 leading-tight">{embeddingModelName(model)}</span>
-              <span className="truncate text-xs font-normal leading-snug text-muted-foreground">
-                {details}
+          // The pin is its own menu item, so arrow keys reach it; it is laid over the row's spacer.
+          <div key={model} className="menu-row-with-action group/row relative">
+            <DropdownMenuItem
+              disabled={switching !== null && switching !== model}
+              onSelect={(event) => {
+                // Stay open while it switches; the list goes back once it lands.
+                event.preventDefault();
+                void pick(model);
+              }}
+              className={cn("items-start gap-2 py-2", model === current && "font-medium")}
+            >
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate text-ui-13 leading-tight">{embeddingModelName(model)}</span>
+                <span className="truncate text-xs font-normal leading-snug text-muted-foreground">
+                  {details}
+                </span>
               </span>
+              <span className="flex shrink-0 items-center gap-2 self-center">
+                <span className="size-6" />
+                <span className={TRAILING_SLOT_CLASS}>
+                  {switching === model ? (
+                    <Spinner className="size-4" />
+                  ) : model === current ? (
+                    <HugeiconsIcon
+                      icon={MenuTickIcon}
+                      strokeWidth={2}
+                      className="permission-mode-tick"
+                    />
+                  ) : null}
+                </span>
+              </span>
+            </DropdownMenuItem>
+            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center gap-2">
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <DropdownMenuPrimitive.CheckboxItem
+                    checked={isPinned}
+                    aria-label={pinLabel}
+                    data-row-action={true}
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      togglePin(model);
+                    }}
+                    // As on Recents: grey, unpin glyph once pinned, shown on row hover or focus.
+                    className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-hidden transition-colors group-hover/row:opacity-100 group-has-[[data-highlighted]]/row:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                  >
+                    <HugeiconsIcon
+                      icon={isPinned ? PinOffIcon : PinIcon}
+                      strokeWidth={1.75}
+                      className="size-3.5!"
+                    />
+                  </DropdownMenuPrimitive.CheckboxItem>
+                </TooltipTrigger>
+                <TooltipContent side="top">{pinLabel}</TooltipContent>
+              </Tooltip>
+              <span className={TRAILING_SLOT_CLASS} />
             </span>
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-pressed={isPinned}
-                  aria-label={t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin")}
-                  // Own the whole press, or the row selects on pointerup.
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onPointerUp={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    togglePin(model);
-                  }}
-                  // As on Recents: grey, unpin glyph once pinned, shown on row hover only.
-                  className="flex size-6 shrink-0 cursor-pointer items-center justify-center self-center rounded-full text-muted-foreground opacity-0 transition-colors group-hover/row:opacity-100 group-data-[highlighted]/row:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-                >
-                  <HugeiconsIcon
-                    icon={isPinned ? PinOffIcon : PinIcon}
-                    strokeWidth={1.75}
-                    className="size-3.5!"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                {t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin")}
-              </TooltipContent>
-            </Tooltip>
-            {switching === model ? (
-              <Spinner className="size-4 shrink-0 self-center" />
-            ) : model === current ? (
-              <HugeiconsIcon
-                icon={MenuTickIcon}
-                strokeWidth={2}
-                className="permission-mode-tick size-4 shrink-0 self-center"
-              />
-            ) : (
-              <span className="size-4 shrink-0" />
-            )}
-          </DropdownMenuItem>
+          </div>
         );
       })}
       {pinned.length === 0 ? (
