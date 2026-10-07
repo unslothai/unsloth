@@ -7551,13 +7551,7 @@ exit 0
         } else {
             substep "installing uv package manager..."
         }
-        # Pinned release first, same order as studio/setup.ps1: it lands in uv's own user
-        # dir, while winget registers a system package that no Unsloth uninstall removes.
-        $uvFromRelease = @(Install-UvFromRelease)[-1] -eq $true
-        if (-not $uvFromRelease -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) {
-            $uvFromRelease = @(Install-UvFromRelease)[-1] -eq $true
-        }
-        if (-not $uvFromRelease -and $script:WingetAvailable) {
+        if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
@@ -7565,8 +7559,14 @@ exit 0
                 try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             }
             $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
         }
-        Refresh-SessionPath
+        # winget unavailable or it didn't put uv on PATH: install the pinned
+        # release directly (ARM64 runners, machines without the Store).
+        if (-not (Test-UvVersionOk)) {
+            if (@(Install-UvFromRelease)[-1] -ne $true -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) { Install-UvFromRelease | Out-Null }
+            Refresh-SessionPath
+        }
     }
 
     # A freshly installed uv can sit behind an older one on PATH; prefer known install locations.
