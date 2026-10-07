@@ -90,6 +90,7 @@ def cache_with_old(tmp_path: Path, *, symlinks: bool, data: bytes = OLD) -> Path
 def _small_ranges(monkeypatch):
     monkeypatch.delenv(delta.DELTA_ENV, raising = False)
     monkeypatch.setattr(delta, "_FIRST_RANGE", 64)
+    monkeypatch.setattr(delta, "_HEADER_SLACK", 64)
     delta.reset_for_tests()
 
 
@@ -290,98 +291,181 @@ def _meta(data: bytes, commit: str = COMMIT_NEW):
     return SimpleNamespace(commit_hash = commit, etag = sha(data), size = len(data))
 
 
-def test_hub_entry_rebuilds_and_remembers_up_to_date(tmp_path):
+def test_first_range_is_sized_from_the_cached_header(tmp_path):
     repo_dir = cache_with_old(tmp_path, symlinks = True)
-    calls = []
+    small_change = make_gguf({"general.architecture": "llama", "x": "y"}, TENSORS)
+    fetch = Fetcher(small_change)
+    assert rebuild(repo_dir, new = small_change, fetch = fetch).placed
+    assert len(fetch.calls) == 1
 
-    def metadata():
-        calls.append(1)
-        return _meta(NEW)
 
-    kw = dict(
+def test_refused_verdict_is_not_retried(tmp_path):
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    other = make_gguf({"general.architecture": "llama"}, [TENSORS[1], TENSORS[0]])
+    first = Fetcher(other)
+    assert rebuild(repo_dir, new = other, fetch = first).reason == "tensor table differs"
+    again = Fetcher(other)
+    assert rebuild(repo_dir, new = other, fetch = again).reason == "refused before"
+    assert again.calls == []
+
+
+def test_media_gate_refuses_before_any_fetch(tmp_path):
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    fetch = Fetcher(NEW)
+    result = rebuild(repo_dir, fetch = fetch, media_gate = lambda old: False)
+    assert result.reason == "not an image / video GGUF" and fetch.calls == []
+
+
+def _prepare(tmp_path, metadata, **kw):
+    return delta.prepare_media_gguf(
+        "unsloth/Model-GGUF",
+        NAME,
+        None,
         cache_dir = str(tmp_path),
         metadata_fn = metadata,
-        fetcher_fn = lambda *a, **k: Fetcher(NEW),
-    )
-    first = delta.reuse_for_hub_download("unsloth/Model-GGUF", NAME, None, **kw)
-    assert first.placed, first.reason
-    assert (repo_dir / "snapshots" / COMMIT_NEW / NAME).read_bytes() == NEW
-    second = delta.reuse_for_hub_download("unsloth/Model-GGUF", NAME, None, **kw)
-    assert second.reason == "already cached"
-    third = delta.reuse_for_hub_download("unsloth/Model-GGUF", NAME, None, **kw)
-    assert third.reason == "recently up to date" and len(calls) == 2
-
-
-def test_hub_entry_skips_without_older_copy_or_for_non_gguf(tmp_path):
-    def boom():
-        raise AssertionError("no HEAD expected")
-
-    kw = dict(cache_dir = str(tmp_path), metadata_fn = boom)
-    assert delta.reuse_for_hub_download("u/m", NAME, None, **kw).reason == "no older copy"
-    assert (
-        delta.reuse_for_hub_download("u/m", "model.safetensors", None, **kw).reason
-        == "not applicable"
+        fetcher_fn = kw.pop("fetcher_fn", lambda *a, **k: Fetcher(NEW)),
+        **kw,
     )
 
 
-def test_hub_entry_never_raises(tmp_path):
+def _no_head():
+    raise AssertionError("no HEAD expected")
+
+
+def test_prepare_needs_no_network_when_the_ref_has_the_file(tmp_path):
     cache_with_old(tmp_path, symlinks = True)
+    assert _prepare(tmp_path, _no_head).reason == "already cached"
+
+
+def test_prepare_needs_no_network_without_an_older_copy(tmp_path):
+    assert _prepare(tmp_path, _no_head).reason == "no older copy"
+    assert delta.prepare_media_gguf("u/m", "m.safetensors", None, metadata_fn = _no_head).reason == (
+        "not applicable"
+    )
+
+
+def test_prepare_rebuilds_after_the_ref_moved(tmp_path):
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    # Another file of the repo was fetched at the new commit, so refs/main moved and this GGUF is missing there.
+    (repo_dir / "snapshots" / COMMIT_NEW).mkdir()
+    (repo_dir / "refs" / "main").write_text(COMMIT_NEW)
+    result = _prepare(tmp_path, lambda: _meta(NEW))
+    assert result.placed, result.reason
+    from huggingface_hub import try_to_load_from_cache
+
+    got = try_to_load_from_cache("unsloth/Model-GGUF", NAME, cache_dir = str(tmp_path))
+    assert Path(got).read_bytes() == NEW
+
+
+def test_prepare_moves_the_ref_to_the_rebuilt_commit(tmp_path):
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    (repo_dir / "refs" / "main").write_text("c" * 40)
+    result = _prepare(tmp_path, lambda: _meta(NEW))
+    assert result.placed, result.reason
+    assert (repo_dir / "refs" / "main").read_text() == COMMIT_NEW
+
+
+def test_prepare_never_raises(tmp_path):
+    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    (repo_dir / "refs" / "main").write_text(COMMIT_NEW)
 
     def boom():
         raise OSError("network down")
 
-    result = delta.reuse_for_hub_download(
-        "unsloth/Model-GGUF", NAME, None, cache_dir = str(tmp_path), metadata_fn = boom
-    )
+    result = _prepare(tmp_path, boom)
     assert not result.placed and result.reason.startswith("error")
 
 
-def test_download_wrapper_skips_force_after_a_rebuild(tmp_path, monkeypatch):
+def _fake_shared(monkeypatch, seen):
     from utils import hf_xet_fallback as fallback
-
-    seen = {}
-    monkeypatch.setattr(
-        delta, "reuse_for_hub_download", lambda *a, **k: delta.DeltaResult(placed = True)
-    )
 
     def fake_download(repo_id, filename, token, **kwargs):
         seen.update(kwargs)
         return "path"
 
     monkeypatch.setattr(fallback, "_shared_hf_hub_download_with_xet_fallback", fake_download)
-    assert (
-        fallback.hf_hub_download_with_xet_fallback(
-            "unsloth/Model-GGUF", NAME, None, force_download = True, cache_dir = str(tmp_path)
-        )
-        == "path"
-    )
-    assert seen["force_download"] is False
+    return fallback
 
 
-def test_download_wrapper_keeps_force_without_a_rebuild(tmp_path, monkeypatch):
-    from utils import hf_xet_fallback as fallback
-
+def test_wrapper_without_opt_in_never_calls_the_delta(tmp_path, monkeypatch):
     seen = {}
-    monkeypatch.setattr(delta, "reuse_for_hub_download", lambda *a, **k: delta.DeltaResult())
-
-    def fake_download(repo_id, filename, token, **kwargs):
-        seen.update(kwargs)
-        return "path"
-
-    monkeypatch.setattr(fallback, "_shared_hf_hub_download_with_xet_fallback", fake_download)
+    fallback = _fake_shared(monkeypatch, seen)
+    monkeypatch.setattr(delta, "prepare_media_gguf", lambda *a, **k: _no_head())
     fallback.hf_hub_download_with_xet_fallback(
         "unsloth/Model-GGUF", NAME, None, force_download = True, cache_dir = str(tmp_path)
     )
     assert seen["force_download"] is True
 
 
-def test_download_worker_rebuilds_pending_ggufs(tmp_path, monkeypatch):
+def test_wrapper_opt_in_skips_force_after_a_rebuild(tmp_path, monkeypatch):
+    seen = {}
+    fallback = _fake_shared(monkeypatch, seen)
+    monkeypatch.setattr(
+        delta, "prepare_media_gguf", lambda *a, **k: delta.DeltaResult(placed = True)
+    )
+    fallback.hf_hub_download_with_xet_fallback(
+        "unsloth/Model-GGUF",
+        NAME,
+        None,
+        force_download = True,
+        cache_dir = str(tmp_path),
+        gguf_header_delta = True,
+    )
+    assert seen["force_download"] is False
+
+
+def test_wrapper_opt_in_keeps_force_without_a_rebuild(tmp_path, monkeypatch):
+    seen = {}
+    fallback = _fake_shared(monkeypatch, seen)
+    monkeypatch.setattr(delta, "prepare_media_gguf", lambda *a, **k: delta.DeltaResult())
+    fallback.hf_hub_download_with_xet_fallback(
+        "unsloth/Model-GGUF",
+        NAME,
+        None,
+        force_download = True,
+        cache_dir = str(tmp_path),
+        gguf_header_delta = True,
+    )
+    assert seen["force_download"] is True
+
+
+H3_REPO, H3_NAME = "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va_pruned-Q4_K.gguf"
+
+
+def _worker_cache(tmp_path, repo: str, name: str, data: bytes) -> Path:
+    from huggingface_hub.file_download import repo_folder_name
+
+    repo_dir = tmp_path / repo_folder_name(repo_id = repo, repo_type = "model")
+    snap = repo_dir / "snapshots" / COMMIT_OLD
+    snap.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "blobs" / sha(data)).write_bytes(data)
+    os.symlink(f"../../blobs/{sha(data)}", snap / name)
+    return repo_dir
+
+
+def test_download_worker_rebuilds_a_video_gguf(tmp_path, monkeypatch):
     from hub.workers import hf_download
 
-    repo_dir = cache_with_old(tmp_path, symlinks = True)
+    repo_dir = _worker_cache(tmp_path, H3_REPO, H3_NAME, OLD)
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(delta, "hub_range_fetcher", lambda *a, **k: Fetcher(NEW))
-    files = [SimpleNamespace(path = NAME, size = len(NEW), sha256 = sha(NEW))]
-    left = hf_download._reuse_unchanged_files("model", "unsloth/Model-GGUF", COMMIT_NEW, files, None)
+    files = [SimpleNamespace(path = H3_NAME, size = len(NEW), sha256 = sha(NEW))]
+    left = hf_download._reuse_unchanged_files("model", H3_REPO, COMMIT_NEW, files, None)
     assert left == []
-    assert (repo_dir / "snapshots" / COMMIT_NEW / NAME).read_bytes() == NEW
+    assert (repo_dir / "snapshots" / COMMIT_NEW / H3_NAME).read_bytes() == NEW
+
+
+def test_download_worker_leaves_chat_ggufs_alone(tmp_path, monkeypatch):
+    from hub.workers import hf_download
+
+    repo, name = "unsloth/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+    repo_dir = _worker_cache(tmp_path, repo, name, OLD)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+    fetch = Fetcher(NEW)
+    monkeypatch.setattr(delta, "hub_range_fetcher", lambda *a, **k: fetch)
+    files = [SimpleNamespace(path = name, size = len(NEW), sha256 = sha(NEW))]
+    left = hf_download._reuse_unchanged_files("model", repo, COMMIT_NEW, files, None)
+    assert [f.path for f in left] == [name]
+    assert fetch.calls == []
+    assert not (repo_dir / "snapshots" / COMMIT_NEW).exists()

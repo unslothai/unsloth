@@ -952,6 +952,7 @@ def hf_hub_download_with_xet_fallback(
     cache_dir: Optional[str] = None,
     reuse_other_cache_root: bool = False,
     local_files_only: bool = False,
+    gguf_header_delta: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
@@ -971,7 +972,11 @@ def hf_hub_download_with_xet_fallback(
     already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
     resolves and a republished file is picked up; the blob is reused, and offline/401
     hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
-    ``force_download``, whose point is to re-fetch."""
+    ``force_download``, whose point is to re-fetch.
+
+    ``gguf_header_delta`` (opt-in, Images / Video GGUF loads only) rebuilds a GGUF whose new revision changed only its
+    header from the cached older copy (``hub.utils.gguf_header_delta``); no network unless that file is missing for
+    the target commit and an older snapshot holds it."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -1010,13 +1015,13 @@ def hf_hub_download_with_xet_fallback(
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Cancelled")
         return path
-    if str(filename).lower().endswith(".gguf"):
-        # A republished GGUF whose tensors did not change is rebuilt from the cached older copy instead of
-        # re-downloaded. Its sha256 matches the Hub's, so it already is the newer blob ``force_download`` asks for.
+    if gguf_header_delta and str(filename).lower().endswith(".gguf"):
+        # Images / Video opt-in: a republished GGUF whose tensors did not change is rebuilt from the cached older copy
+        # instead of re-downloaded. Its sha256 matches the Hub's, so it already is the newer blob a forced fetch wants.
         try:
-            from hub.utils.gguf_header_delta import reuse_for_hub_download
+            from hub.utils.gguf_header_delta import prepare_media_gguf
 
-            if reuse_for_hub_download(
+            if prepare_media_gguf(
                 repo_id,
                 filename,
                 token,

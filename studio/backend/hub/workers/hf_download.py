@@ -242,10 +242,12 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
 def _rebuild_header_only_ggufs(
     repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
 ) -> None:
-    """Rebuild each pending GGUF whose new revision changed only its header from the older snapshot's copy."""
+    """Rebuild each pending image / video GGUF whose new revision changed only its header from the older snapshot's
+    copy. Chat, audio and other GGUFs keep the plain download; the gate is read only when a rebuild is possible."""
     try:
         from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
         from hub.utils.gguf_header_delta import (
+            _is_media_gguf,
             delta_enabled,
             hub_range_fetcher,
             rebuild_from_older_snapshot,
@@ -271,6 +273,7 @@ def _rebuild_header_only_ggufs(
                 digest or "",
                 hub_range_fetcher(repo_id, path, hf_token, repo_type = repo_type, revision = commit),
                 protected_blob_hashes = protected,
+                media_gate = lambda old, path = path: _is_media_gguf(old, repo_id, path),
             )
             if result.placed:
                 print(

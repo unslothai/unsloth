@@ -2895,6 +2895,7 @@ class DiffusionBackend:
                 cancel_event = cancel,
                 reuse_other_cache_root = True,
                 local_files_only = local_files_only,
+                gguf_header_delta = True,
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
