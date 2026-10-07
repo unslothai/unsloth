@@ -83,6 +83,10 @@ class VideoFamily:
     # Opt-in to the CUDA-graph capture of the denoiser forward (diffusion_cuda_graph.py): only for a family that runs
     # ONE forward per step with no CFG and no step cache, so a capture has one stable input tree to replay.
     supports_cuda_graph: bool = False
+    # Opt-in to the capture when the denoiser is offloaded: the replay then records the onloads too (set from an A/B).
+    offload_cuda_graph: bool = False
+    # Status text when the family declines the capture (the measured reason), instead of "family opts out".
+    cuda_graph_decline: Optional[str] = None
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
     # "native" = measured accurate in plain float16 on fp16-only cards; None = promote (unmeasured).
@@ -207,6 +211,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # capture peak, on a family already needing 87.5 GB, and 31.1 s on the first render (break-even ~530 videos).
         # This is the CHEAPEST grid H3 ships, so the larger presets can only be more GPU-bound.
         supports_cuda_graph = False,
+        # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
+        # capture cannot hold them (arm_after_placement refuses it by name when the family is forced).
+        cuda_graph_decline = (
+            "measured GPU-bound: 1.0018x resident for 3.93 GB held; streamed, its group onloads wait on the host "
+            "(27 per step at 16 GB), which a graph cannot record"
+        ),
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through its own
         # from_pretrained, so there is no dense module to quantise in place: these are the ONLY way to run the 66.3 GB
@@ -301,6 +311,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
+        # Streamed: faster than eager with bit-identical latents; two replays per step (CFG), one graph per shape.
+        offload_cuda_graph = True,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
@@ -377,6 +389,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (16.6, 14.8, 2.4),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
+        offload_cuda_graph = True,
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.

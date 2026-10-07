@@ -1191,6 +1191,9 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_eligibility",
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
+            "mlx_int8_prefill",
+            "mlx_int8_prefill_requested",
+            "mlx_int8_prefill_reason",
             "mlx_context_budget",
             "chat_template_override_reason",
             # Constant True: llama.cpp allocates the window it reports.

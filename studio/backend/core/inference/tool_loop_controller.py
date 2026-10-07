@@ -1161,7 +1161,11 @@ class ToolLoopController:
         auto_heal_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
+        session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
+        self._session_id = session_id
+        self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
@@ -1263,6 +1267,7 @@ class ToolLoopController:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
                 key = decision.key,
@@ -1301,6 +1306,25 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
+
+    def _cap_result(self, text: str, tool_name: str | None) -> str:
+        """The card and the model get the same capped body; the frontend envelope stays whole."""
+        from core.inference.tools import (  # noqa: PLC0415 -- import cycle
+            _hard_cap_chars,
+            _split_frontend_suffix,
+            cap_tool_text,
+        )
+
+        if len(text) <= _hard_cap_chars():
+            return text
+        body, suffix = _split_frontend_suffix(text, tool_name)
+        capped = cap_tool_text(
+            body,
+            session_id = self._session_id,
+            thread_id = self._thread_id,
+            readers = frozenset(self._allowed_tool_names),
+        )
+        return text if capped is body else capped + suffix
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
         """Record a controller no-op without creating visible tool output."""

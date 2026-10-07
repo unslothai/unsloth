@@ -12,7 +12,17 @@ Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >=
 ``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
 
 Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
+
+ConvRot (Z-Image int8 default): w1 and w3 rotate the same input, so the SwiGLU's fused in-projection is a ConvRotLinear
+(one rotation + one activation quant for both halves). A rotated w2 needs its input rotated BEFORE the quant, which the
+kernel's fused quant cannot do, so that MLP computes the bf16 SiLU product with the stock epilogue ops and hands it to
+w2's own (rotating) forward. Same ops on the same values as the three stock rotated Linears.
+
+``int8_linear`` (also used by Z-Image's fused attention) runs a plain or rotated Int8Tensor Linear as torchao's act
+quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
+Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
+quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
+Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
 """
 
 from __future__ import annotations
@@ -31,16 +41,25 @@ _MIN_ROWS = 17
 _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_dq_gelu_quant"
 _OP_NAME_SWIGLU = "int8_dq_swiglu_quant"
+_OP_NAME_ACTQ = "int8_act_quant_rows"
 _SWIGLU_ATTR = "_unsloth_i8_swiglu"
 
 _LOCK = threading.Lock()
 # Read by the traced forwards: dynamo must not trace into the lru_cache'd registration.
 _OP_HANDLE: Any = None
+# set once the act quant kernel matched torchao bit for bit on a device; None = torchao's quant
+_ACTQ_HANDLE: Any = None
+# device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
+_ACTQ_DEVICES: frozenset = frozenset()
+# UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
+_LINEAR_OFF = False
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
 _MARK = "_unsloth_i8_fused_prev"
 _NO_PREV = object()
+# diffusion_int8_gemm's marker: int8_linear leaves those Linears to their fused-dequant GEMM forward
+_I8_GEMM_MARK = "_unsloth_i8_gemm_prev"
 
 
 def int8_fused_disabled() -> bool:
@@ -407,6 +426,57 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             tl.store(qrow + offs, qi.to(tl.int8), mask = m)
 
     @triton.jit
+    def act_quant_rows(
+        x_ptr,
+        q_ptr,
+        s_ptr,
+        K,
+        stride_x,
+        stride_q,
+        BLOCK: tl.constexpr,
+        ONE_PASS: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
+    ):
+        # torchao Int8Tensor.from_hp(x, PerRow()), symmetric: s = bf16(max(bf16(amax / 127.5), fp32 eps)); torchao
+        # <= 0.17 keeps s in bf16 and rounds 1 / s and x * (1 / s) to bf16, >= 0.18 stores s as fp32 and keeps both
+        # in fp32 (FP32_SCALE). q = clamp(rint(x * (1 / s)), -128, 127).
+        row = tl.program_id(0).to(tl.int64)
+        offs = tl.arange(0, BLOCK)
+        xrow = x_ptr + row * stride_x
+        qrow = q_ptr + row * stride_q
+        if ONE_PASS:
+            m = offs < K
+            x = tl.load(xrow + offs, mask = m, other = 0.0).to(tl.float32)
+            amax = tl.max(tl.abs(x), axis = 0)
+        else:
+            acc = tl.zeros((BLOCK,), dtype = tl.float32)
+            for k in range(0, K, BLOCK):
+                m = k + offs < K
+                x = tl.load(xrow + k + offs, mask = m, other = 0.0).to(tl.float32)
+                acc = tl.maximum(acc, tl.abs(x))
+            amax = tl.max(acc, axis = 0)
+        scale = _rbf16(tl.maximum(_rbf16(tl.math.div_rn(amax, 127.5)), 1.1920928955078125e-07))
+        inv = tl.math.div_rn(1.0, scale)
+        if not FP32_SCALE:
+            inv = _rbf16(inv)
+        tl.store(s_ptr + row, scale.to(s_ptr.dtype.element_ty))
+        if ONE_PASS:
+            p = x * inv
+            if not FP32_SCALE:
+                p = _rbf16(p)
+            p = tl.minimum(tl.maximum(tl.extra.cuda.libdevice.rint(p), -128.0), 127.0)
+            tl.store(qrow + offs, p.to(tl.int8), mask = m)
+        else:
+            for k in range(0, K, BLOCK):
+                m = k + offs < K
+                x = tl.load(xrow + k + offs, mask = m, other = 0.0).to(tl.float32)
+                p = x * inv
+                if not FP32_SCALE:
+                    p = _rbf16(p)
+                p = tl.minimum(tl.maximum(tl.extra.cuda.libdevice.rint(p), -128.0), 127.0)
+                tl.store(qrow + k + offs, p.to(tl.int8), mask = m)
+
+    @triton.jit
     def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
@@ -452,6 +522,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     return types.SimpleNamespace(
         dq_gelu_quant = dq_gelu_quant,
         dq_swiglu_quant = dq_swiglu_quant,
+        act_quant_rows = act_quant_rows,
         gelu_bf16 = gelu_bf16,
         dq_bf16 = dq_bf16,
         triton = triton,
@@ -638,6 +709,141 @@ def _op() -> Any:
         return None
     ns = getattr(torch.ops, _OP_NAMESPACE)
     return types.SimpleNamespace(gelu = getattr(ns, _OP_NAME), swiglu = getattr(ns, _OP_NAME_SWIGLU))
+
+
+@lru_cache(maxsize = 1)
+def _act_scale_fp32() -> bool:
+    """Whether this torchao's ``Int8Tensor.from_hp`` returns an fp32 activation scale (0.18+) or the input's bf16."""
+    try:
+        import torch
+        from torchao.quantization.granularity import PerRow
+        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+        x = torch.ones(1, 16, dtype = torch.bfloat16)
+        return Int8Tensor.from_hp(x, PerRow()).scale.dtype == torch.float32
+    except Exception:  # noqa: BLE001 - the device probe still has to match torchao bit for bit
+        return False
+
+
+def _launch_act_quant(x2d: Any) -> tuple:
+    """(int8 [M, K], scale [M] in torchao's dtype) for a contiguous-row bf16 ``x2d``."""
+    import torch
+
+    k = _kernels()
+    m, kk = x2d.shape
+    if x2d.stride(-1) != 1:
+        x2d = x2d.contiguous()
+    fp32 = _act_scale_fp32()
+    q = torch.empty((m, kk), device = x2d.device, dtype = torch.int8)
+    s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32 else x2d.dtype)
+    if m == 0:
+        return q, s
+    one_pass = kk <= 4096
+    block = k.triton.next_power_of_2(kk) if one_pass else 2048
+    with torch.cuda.device(x2d.device):
+        k.act_quant_rows[(m,)](
+            x2d,
+            q,
+            s,
+            kk,
+            x2d.stride(0),
+            q.stride(0),
+            BLOCK = block,
+            ONE_PASS = one_pass,
+            FP32_SCALE = fp32,
+            num_warps = 8,
+            enable_fp_fusion = False,
+        )
+    return q, s
+
+
+def reference_act_quant(x2d: Any) -> tuple:
+    """torchao's own dynamic symmetric per-row quant of ``x2d``: (int8, scale [M])."""
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    t = Int8Tensor.from_hp(x2d, PerRow())
+    return t.qdata, t.scale.reshape(-1)
+
+
+@lru_cache(maxsize = 1)
+def _act_quant_op() -> Any:
+    """``unsloth_studio::int8_act_quant_rows`` (opaque to Inductor, allocation only), or None."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _OP_NAME_ACTQ):
+        return getattr(ns, _OP_NAME_ACTQ)
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_OP_NAME_ACTQ}",
+            mutates_args = (),
+            schema = "(Tensor x) -> (Tensor, Tensor)",
+        )
+        def _int8_act_quant_rows(x):
+            return _launch_act_quant(x)
+
+        @_int8_act_quant_rows.register_fake
+        def _(x):
+            return (
+                x.new_empty((x.shape[0], x.shape[1]), dtype = torch.int8),
+                x.new_empty((x.shape[0],), dtype = torch.float32 if _act_scale_fp32() else x.dtype),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return getattr(getattr(torch.ops, _OP_NAMESPACE), _OP_NAME_ACTQ)
+
+
+@lru_cache(maxsize = 8)
+def _act_quant_device_ok(index: int) -> bool:
+    """The per-row act quant kernel must equal torchao's quant bit for bit on this device and torchao: outlier
+    channels, a zero row, huge values, one-pass and looped widths, ragged M."""
+    try:
+        import torch
+
+        if _kernels() is None or _act_quant_op() is None:
+            return False
+        dev = torch.device("cuda", index)
+        g = torch.Generator(device = "cpu").manual_seed(4)
+        for m, k in ((33, 3840), (257, 10240), (17, 2560), (130, 256 * 7), (19, 4096), (5, 4097)):
+            x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
+            x[:, :5] *= 60
+            x[1] = 0
+            x[2, 3] = 3e4
+            x = x.to(torch.bfloat16).to(dev)
+            q, s = _launch_act_quant(x)
+            rq, rs = reference_act_quant(x)
+            if not (torch.equal(q, rq) and s.dtype == rs.dtype and torch.equal(s, rs)):
+                return False
+        torch.cuda.synchronize(dev)
+        return True
+    except Exception:  # noqa: BLE001 - any failure keeps torchao's quant
+        return False
+
+
+def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
+    """``_act_quant`` for a plain per-row Int8Tensor weight: the probed kernel when it matched torchao on this
+    device (one pass over the row at bandwidth, where Inductor's codegen of the same quant ran 2-3x slower on B200),
+    else torchao's own."""
+    import torch
+
+    if (
+        _ACTQ_HANDLE is not None
+        and x2d.is_cuda
+        and x2d.device.index in _ACTQ_DEVICES
+        and x2d.dtype == torch.bfloat16
+        and x2d.dim() == 2
+        and x2d.shape[0] > 0
+    ):
+        q, s = _ACTQ_HANDLE(x2d)
+        return q, s.reshape(-1, 1)
+    return _act_quant(x2d, weight)
 
 
 @lru_cache(maxsize = 8)
@@ -1025,8 +1231,73 @@ def _get(module: Any, dotted: str) -> Any:
     return module
 
 
+def _torchao_epilogue(c: Any, xs: Any, ws: Any, bias: Any, out_dtype: Any) -> Any:
+    """torchao's Int8Tensor linear after ``_int_mm``, op for op: ``int_scaled_matmul``'s ``c * x_scale`` in the scale's
+    dtype (fp32 for an fp16 scale), cast, ``* w_scale``, ``+ bias``, cast."""
+    import torch
+
+    inter = torch.float if xs.dtype == torch.half else xs.dtype
+    y = (c * xs.reshape(-1, 1).to(inter)).to(out_dtype)
+    y = y * ws.flatten()
+    if bias is not None:
+        y = y + bias
+    return y.to(out_dtype)
+
+
+def int8_linear(module: Any, x: Any) -> Any:
+    """``module(x)`` for a plain ``nn.Linear`` or ``ConvRotLinear`` holding a plain per-row ``Int8Tensor``: the module's
+    own input rotation, torchao's act quant, ``_int_mm`` and torchao's epilogue, minus one term. torchao 0.17 applies
+    the ASYMMETRIC zero-point correction whenever the activation carries a zero point, which its symmetric quant always
+    does (zeros): a row sum of the int8 weight and a full-output ``- 0`` on every call (~4 ms per Z-Image 1024px step
+    on B200). 0.18 skips it for symmetric activations, as this does; the values are the same (``y - 0 == y``).
+    Anything else (LoRA wrappers, legacy tensors, small M, CPU, a Linear running diffusion_int8_gemm's fused GEMM) is
+    ``module(x)``."""
+    import torch
+    from torch import nn
+
+    from .diffusion_convrot import is_rotated_linear
+
+    rotated = is_rotated_linear(module)
+    # an instance-level forward is an offload hook (accelerate / diffusers) or another wrapper: only it may run
+    if (
+        _LINEAR_OFF
+        or not (type(module) is nn.Linear or rotated)
+        or _I8_GEMM_MARK in module.__dict__
+        or "forward" in module.__dict__
+    ):
+        return module(x)
+    weight = module.weight
+    lead = x.shape[:-1]
+    x2d = x.reshape(-1, x.shape[-1])
+    if (
+        x2d.shape[0] < _MIN_ROWS
+        or not x.is_cuda
+        or x.dtype != torch.bfloat16
+        or not _plain_int8_weight(weight)
+        or getattr(weight, "act_pre_scale", None) is not None
+        or weight.device != x.device
+    ):
+        return module(x)
+    if rotated:
+        x2d = _rotate(x2d, module.convrot_groupsize)
+    xq, xs = _fast_act_quant(x2d, weight)
+    y = _torchao_epilogue(
+        _int_mm(xq.reshape(-1, xq.shape[-1]), weight), xs, weight.scale, module.bias, x.dtype
+    )
+    return y.reshape(*lead, y.shape[-1])
+
+
+def _rotate(x2d: Any, group: int) -> Any:
+    """``ConvRotLinear.forward``'s input rotation, same ops and dtype."""
+    from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+    return rotate_convrot_activation(
+        x2d, build_convrot_hadamard(group, device = x2d.device, dtype = x2d.dtype), group
+    )
+
+
 def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any:
-    """SwiGLU MLP with plain int8 weights: one act quant, one GEMM over [gate | value], fused SiLU-product quant."""
+    """SwiGLU MLP with plain int8 weights: one act quant, one GEMM over [gate | value], fused SiLU-product quant.
+    ConvRot parts: the shared input rotates once; a rotated down projection gets the bf16 product (see module doc)."""
     import torch
 
     rec = self.__dict__.get(_SWIGLU_ATTR)
@@ -1041,13 +1312,36 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     )
     ok = ok and hidden_states.dtype == torch.bfloat16
     if ok:
-        fused_in, parts, down_name, n, gate_col, value_col = rec
+        fused_in, parts, down_name, n, gate_col, value_col, in_group, down_group = rec
         ok = all(_get(self, nm) is mod for nm, mod in parts)
     if not ok:
         return type(self).forward(self, hidden_states, *args, **kwargs)
     down = _get(self, down_name)
-    xq, xs = _act_quant(x2d, fused_in.weight)
+    if in_group:
+        x2d = _rotate(x2d, in_group)
+        xq, xs = _fast_act_quant(x2d, fused_in.weight)
+    else:
+        xq, xs = _act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
+    if down_group:
+        ws = fused_in.weight.scale.flatten()
+        bias = fused_in.bias
+        dtype = hidden_states.dtype
+
+        def half(col):
+            return _torchao_epilogue(
+                c[:, col : col + n],
+                xs,
+                ws[col : col + n],
+                None if bias is None else bias[col : col + n],
+                dtype,
+            )
+
+        gating = getattr(self, "_forward_silu_gating", None)
+        g, v = half(gate_col), half(value_col)
+        h = gating(g, v) if callable(gating) else torch.nn.functional.silu(g) * v
+        y = int8_linear(down, h)
+        return y.reshape(*lead, y.shape[-1])
     q, s = _OP_HANDLE.swiglu(
         c, xs.reshape(-1), fused_in.weight.scale.flatten(), fused_in.bias, gate_col, value_col, n
     )
@@ -1076,6 +1370,8 @@ def _prepare_swiglu(module: Any) -> bool:
             n,
             gate_col,
             value_col,
+            0,
+            0,
         )
         return True
     split = _split_spec(module)
@@ -1083,7 +1379,8 @@ def _prepare_swiglu(module: Any) -> bool:
         return False
     gate_name, value_name, down_name = split
     gate, value, down = _get(module, gate_name), _get(module, value_name), _get(module, down_name)
-    if any(type(m) is not nn.Linear for m in (gate, value, down)):
+    groups = _split_rotation_groups(gate, value, down)
+    if groups is None:
         return False
     if not all(_plain_int8_weight(m.weight) for m in (gate, value, down)):
         return False
@@ -1094,8 +1391,20 @@ def _prepare_swiglu(module: Any) -> bool:
         return False
     n = gate.weight.shape[0]
     parts = ((gate_name, gate), (value_name, value), (down_name, down))
-    module.__dict__[_SWIGLU_ATTR] = (fused, parts, down_name, n, 0, n)
+    module.__dict__[_SWIGLU_ATTR] = (fused, parts, down_name, n, 0, n, *groups)
     return True
+
+
+def _split_rotation_groups(gate: Any, value: Any, down: Any) -> Optional[tuple]:
+    """(in-projection ConvRot group, down ConvRot group), 0 = plain, for a split SwiGLU; None when the parts are
+    neither plain Linears nor ConvRotLinears the forward reproduces (gate and value must agree: one input)."""
+    from .diffusion_zimage_fused import _rotation_group
+
+    in_group = _rotation_group([gate, value])
+    down_group = _rotation_group([down])
+    if in_group is None or down_group is None:
+        return None
+    return in_group, down_group
 
 
 def _exact_linear(*modules: Any) -> bool:
@@ -1209,7 +1518,15 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    if int8_fused_disabled() or transformer is None or offload_active:
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _LINEAR_OFF
+    if int8_fused_disabled():
+        # process-global: a previous load's probe must not outlive the kill switch
+        _ACTQ_HANDLE = None
+        _ACTQ_DEVICES = frozenset()
+        _LINEAR_OFF = True
+        return 0
+    _LINEAR_OFF = False
+    if transformer is None or offload_active:
         return 0
     if resident_cuda_device(transformer) is not None:
         return _finalize(transformer, logger)
@@ -1239,12 +1556,14 @@ def _swiglu_eligible(module: Any) -> bool:
         spec = _swiglu_spec(module)
         if spec is not None:
             parts = (_get(module, spec[0]), _get(module, spec[2]))
-        else:
-            split = _split_spec(module)
-            if split is None:
-                return False
-            parts = tuple(_get(module, name) for name in split)
-        return all(type(m) is nn.Linear and _plain_int8_weight(m.weight) for m in parts)
+            return all(type(m) is nn.Linear and _plain_int8_weight(m.weight) for m in parts)
+        split = _split_spec(module)
+        if split is None:
+            return False
+        parts = tuple(_get(module, name) for name in split)
+        if _split_rotation_groups(*parts) is None:
+            return False
+        return all(_plain_int8_weight(m.weight) for m in parts)
     except Exception:  # noqa: BLE001
         return False
 
@@ -1257,7 +1576,7 @@ def _has_eligible(transformer: Any) -> bool:
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
-    global _OP_HANDLE, _INTMM_MODULE
+    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE
     dev = resident_cuda_device(transformer)
     if dev is None:
         return 0
@@ -1276,8 +1595,15 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
         return 0
     count = 0
     rearm = False
+    index = dev.index if dev.index is not None else torch.cuda.current_device()
+    actq = _act_quant_op() if _act_quant_device_ok(index) else None
     with _LOCK:
         _OP_HANDLE = _op()
+        if actq is not None:
+            _ACTQ_HANDLE = actq
+            _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+        else:
+            _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
         for _name, module in transformer.named_modules():
             if _MARK in module.__dict__:
                 count += 1

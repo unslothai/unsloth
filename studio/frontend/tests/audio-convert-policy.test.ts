@@ -285,7 +285,7 @@ test("only the expired-upload 404 expires uploads, and a re-upload clears it", (
   const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
   assert.match(
     hook,
-    /error\.status === 404 &&\s*error\.message === REFERENCE_EXPIRED_MESSAGE/,
+    /error instanceof AudioApiError && error\.status === 404\s*\?\s*error\.message === CONVERT_EXPIRED_MESSAGE\.source/,
   );
   assert.match(
     hook,
@@ -344,16 +344,35 @@ test("the Convert source card states Convert's own length cap", () => {
 
 test("Use again re-uploads a conversion's kept source instead of its expiring upload id", () => {
   const page = readSrc("features/audio/audio-page.tsx");
-  assert.match(page, /if \(!clip\.source_clip_id && clip\.source_saved\) \{/);
+  assert.match(page, /if \(!clip\.source_clip_id && clip\.source_saved && sourceId\) \{/);
   assert.match(
     page,
     /\/source\/file`,\s*\)\s*\.then\(\(blob\) => uploadAudioInput\(blob, name\)\)/,
   );
+  assert.match(page, /store\.setSource\(null\);\s*void fetchAudioBlob\(/);
+  assert.match(
+    page,
+    /if \(!untouched\(\) \|\| !kept\) return;\s*void audioInputAlive\(kept\.id\)\.then\(\(alive\) => \{\s*if \(untouched\(\)\)\s*store\.setSource\(alive \? kept : \{ \.\.\.kept, expiresAt: EXPIRED_AT \}\);/,
+  );
+  assert.match(
+    page,
+    /if \(target\?\.kind === "input"\) \{[\s\S]{0,400}?store\.setTarget\(null\);/,
+  );
+  assert.match(
+    page,
+    /audioInputAlive\(target\.id\)\.then\(\(alive\) => \{[\s\S]{0,200}?store\.setTarget\(alive \? named : \{ \.\.\.named, expiresAt: EXPIRED_AT \}\);/,
+  );
+  const api = readSrc("features/audio/api.ts");
+  assert.match(
+    api,
+    /export async function audioInputAlive\(inputId: string\)[\s\S]{0,300}?headers: \{ Range: "bytes=0-0" \} \}[\s\S]{0,160}?return response\.status !== 404;/,
+  );
+  assert.doesNotMatch(api, /method: "HEAD"/);
 });
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
 const SEND_TO_CLONE_KEEPS_LABELS_OUT =
-  /adoptReference\(clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\)\)/;
+  /const reference = \(\) =>\s*clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\);\s*const handlers: ClipSendHandlers = \{\s*clone: \(\) => \{\s*if \(transitionWorkflow\("clone"\)\) adoptReference\(reference\(\)\);/;
 const WORKSPACE_FOCUSES_A_FRESH_CUSTOM_PLAYER =
   /renderPlayer\(\s*selectedClip,\s*selectedClipSrc,\s*selectedClip\.id === freshClipId \? focusFreshClip : undefined,?\s*\)/;
 
@@ -368,4 +387,14 @@ test("a fresh Convert clip focuses its player, not the Source tab", () => {
   assert.match(workspace, WORKSPACE_FOCUSES_A_FRESH_CUSTOM_PLAYER);
   const page = readSrc("features/audio/pages/convert-page.tsx");
   assert.match(page, /playerRef=\{focusRef\}/);
+});
+
+test("an expired upload marks only its own side, the result opens on Converted, and Source plays the recording", () => {
+  const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
+  assert.match(hook, /error\.message === CONVERT_EXPIRED_MESSAGE\.source\s*\?\s*"source"/);
+  assert.match(hook, /error\.message === CONVERT_EXPIRED_MESSAGE\.target\s*\?\s*"target"/);
+  assert.match(hook, /error\.message === REFERENCE_EXPIRED_MESSAGE\s*\?\s*"both"/);
+  assert.match(hook, /setCompareSide\("converted"\);\s*await showRunResult\(/);
+  const page = readSrc("features/audio/pages/convert-page.tsx");
+  assert.match(page, /fetchAudioBlob\(original\)\.catch\([\s\S]*return fetchAudioBlob\(savedUrl\)/);
 });

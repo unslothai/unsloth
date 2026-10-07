@@ -315,7 +315,8 @@ def guest_command(
         if item.split("/")[0] not in secrets and item.split("/")[0].upper() not in withhold
     ]
     windows_env["WSLENV"] = ":".join([*shared, *(f"{key}/u" for key in secrets)])
-    command = [exe, "-d", distro_name(), "-u", "root", "--cd", "/root", "--", "/usr/bin/env"]
+    # Bypass the default shell so it cannot expand $0/$1 in scripts such as put().
+    command = [exe, "-d", distro_name(), "-u", "root", "--cd", "/root", "--exec", "/usr/bin/env"]
     command += [f"{key}={value}" for key, value in (env or {}).items()]
     return command + list(argv), windows_env
 
@@ -396,6 +397,36 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def ensure_build_tools(run_guest, progress = None) -> None:
+    """Use the installer's cancellable runner for every prerequisite command."""
+    # A successful shell reports absent tools explicitly. Transport/shell failures
+    # propagate through run_guest rather than being mistaken for missing packages.
+    state = (
+        run_guest(
+            [
+                "sh",
+                "-c",
+                "if command -v cc >/dev/null && command -v c++ >/dev/null "
+                "&& command -v make >/dev/null && test -f /usr/include/stdio.h; "
+                "then echo UNSLOTH_BUILD_TOOLS_READY; else echo UNSLOTH_BUILD_TOOLS_MISSING; fi",
+            ]
+        )
+        .strip()
+        .splitlines()
+    )
+    if state and state[-1] == "UNSLOTH_BUILD_TOOLS_READY":
+        return
+    if not state or state[-1] != "UNSLOTH_BUILD_TOOLS_MISSING":
+        raise RuntimeError("Could not check WSL build tools. Retry the installation.")
+    if progress:
+        progress("Installing WSL build tools")
+    # Cancellation can leave a package unpacked but unconfigured. Repair it before
+    # retrying the same signed Ubuntu packages in this Studio-owned distro.
+    run_guest(["dpkg", "--configure", "-a"])
+    run_guest(["apt-get", "update"])
+    run_guest(["apt-get", "install", "-y", "--no-install-recommends", "build-essential"])
 
 
 def ensure_distro(progress = None, cancel = None) -> None:

@@ -34,6 +34,7 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from models.providers import ProviderReasoningConfig
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -174,6 +175,16 @@ class LoadRequest(BaseModel):
             self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
         return self
 
+    mlx_int8_prefill: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: run quantized projections with int8 activations on Apple "
+            "neural accelerators for faster prompt processing. Lossy: outputs change and "
+            "accuracy drops. Applied only when the model supports it; the status reports the "
+            "reason otherwise."
+        ),
+    )
+
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -183,7 +194,7 @@ class LoadRequest(BaseModel):
             "supported on XPU, and physical IDs are unsupported when the parent "
             "visibility mask uses "
             "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
-            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "with MIG or unresolvable UUID entries and ZE_AFFINITY_MASK with subdevice tokens "
             "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
             "models the fitter may pin the smallest subset of this pool that fits."
         ),
@@ -1036,6 +1047,27 @@ class EstimateMemoryRequest(BaseModel):
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
+class Int8PrefillAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX int8 prefill."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class Int8PrefillAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX int8 prefill, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', or unsloth_zoo's own reason ('nax_unavailable', "
+        "'no_eligible_projections', 'probe_failed').",
+    )
+
+
 class EstimateMemoryResponse(BaseModel):
     """Itemized memory an inference load would occupy, or why it could not be sized."""
 
@@ -1582,6 +1614,17 @@ class _InferenceRuntimeFields(BaseModel):
     )
     mlx_kv_quant_note: Optional[str] = Field(
         None, description = "Caveat that applies when KV quantization is active"
+    )
+    mlx_int8_prefill: Optional[bool] = Field(
+        None, description = "Whether MLX int8 prefill is active for the loaded model"
+    )
+    mlx_int8_prefill_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX int8 prefill"
+    )
+    mlx_int8_prefill_reason: Optional[str] = Field(
+        None,
+        description = "Why requested int8 prefill is not active, as unsloth_zoo reports it "
+        "(for example nax_unavailable or no_eligible_projections)",
     )
     chat_template: Optional[str] = Field(
         None,
@@ -2200,18 +2243,16 @@ class ImageGenerationCallContentPart(BaseModel):
 
 
 class CompactionContentPart(BaseModel):
-    """Anthropic server-side compaction state, round-tripped on the next turn.
-
-    Anthropic returns a ``compaction`` block on the assistant message; the next
-    request must forward it back so Anthropic reuses the compaction state instead
-    of re-summarising. See ``external_provider._stream_anthropic`` and
-    https://platform.claude.com/docs/en/build-with-claude/compaction
-    """
+    """round-trip Anthropic summaries and opaque OpenAI Responses compaction state."""
 
     type: Literal["compaction"]
-    content: str = Field(
-        ...,
+    content: Optional[str] = Field(
+        None,
         description = "Anthropic-produced summary of the compacted-away conversation prefix.",
+    )
+    encrypted_content: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses compaction item, opaque.",
     )
 
 
@@ -2425,6 +2466,25 @@ def _normalize_permission_mode(value: Any) -> Any:
     return value
 
 
+def _normalize_sandbox_level(value: Any) -> Any:
+    # Unlike permission_mode, an unknown level is a 422: degrading it either way would guess at
+    # the isolation the user picked. Absent or null is "high", today's behaviour.
+    if value is None:
+        return "high"
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
+
+
+_SANDBOX_LEVEL_DESCRIPTION = (
+    "[x-unsloth] Sandbox level for the Python and Terminal tools. 'high' (default) runs them "
+    "in the OS sandbox when it works and on software safeguards otherwise. 'low' runs them on "
+    "software safeguards only, so on a streaming UI chat 'off' still asks before their "
+    "high-risk calls; elsewhere 'off' never prompts, as before. Full access overrides both. "
+    "Case-insensitive; any other value is rejected."
+)
+
+
 class SandboxAttachment(BaseModel):
     sha256: str = Field(..., pattern = r"^[0-9a-f]{64}$")
     name: str = Field(..., max_length = 1024)
@@ -2439,6 +2499,8 @@ class ChatCompletionRequest(BaseModel):
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
+    # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
+    _off_confirm_opt_out: bool = PrivateAttr(default = False)
 
     model: str = Field(
         "default",
@@ -2686,6 +2748,10 @@ class ChatCompletionRequest(BaseModel):
             "newer client) is treated as 'ask'."
         ),
     )
+    sandbox_level: Literal["high", "low"] = Field(
+        "high",
+        description = _SANDBOX_LEVEL_DESCRIPTION,
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
@@ -2707,16 +2773,19 @@ class ChatCompletionRequest(BaseModel):
             "limited to client-tool or response_format passthrough and retries after "
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
             "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
-            "Both truncation policies preserve system messages and tool-call groups."
+            "Both truncation policies preserve system messages and tool-call groups. "
+            "MLX models honor 'truncate_oldest' only, as do external providers "
+            "given a compaction_threshold."
         ),
     )
     context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
         None,
         description = (
-            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "[x-unsloth] How a local GGUF or MLX chat compacts once context_overflow is "
             "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
             "instructions (Unsloth default). 'rolling' drops oldest complete turns. "
-            "Unset uses UNSLOTH_CONTEXT_POLICY."
+            "Unset uses UNSLOTH_CONTEXT_POLICY. On MLX only Unsloth-tool chats start a "
+            "reset."
         ),
     )
     compaction_headroom_ratio: Optional[float] = Field(
@@ -2795,6 +2864,10 @@ class ChatCompletionRequest(BaseModel):
         description = "[x-unsloth] Saved provider config ID. Its stored key is used when encrypted_api_key is omitted.",
     )
     provider_api_type: Literal["chat_completions", "responses"] = "chat_completions"
+    provider_reasoning_config: Optional[ProviderReasoningConfig] = Field(
+        None,
+        description = "[x-unsloth] Explicit Custom reasoning dialect; saved provider configuration takes precedence.",
+    )
     provider_type: Optional[str] = Field(
         None,
         description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",
@@ -2871,14 +2944,23 @@ class ChatCompletionRequest(BaseModel):
             "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
             "(*.openai.azure.com, *.services.ai.azure.com): attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
-            "to /v1/responses. Effective floor is around 200k (OpenAI's "
-            "canonical example); values below it surface "
-            "`compact_threshold is not enabled` 400s upstream.\n"
-            "Schema floor stays at ge=1 (any positive int) so the field is a "
-            "silent no-op on non-cloud OpenAI-compatible bases (ollama / "
-            "llama.cpp / vLLM) and every non-compaction-capable provider "
-            "rather than returning 422 at request validation time. Per-"
-            "provider floors are enforced in the corresponding stream helpers."
+            "to /v1/responses. A deployment that answers `compact_threshold "
+            "is not enabled` is retried without it.\n"
+            "Both cap the trigger at 200k.\n"
+            "Every other provider and model ignores it unless context_overflow "
+            "is truncate_oldest, in which case Unsloth drops the oldest turns "
+            "so the prompt and the reply fit within it before forwarding. "
+            "Per-provider floors are enforced in the corresponding stream helpers."
+        ),
+    )
+    context_window: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = (
+            "[x-unsloth] The external model's context window, in tokens. When "
+            "Unsloth drops the oldest turns for a compaction_threshold, the prompt "
+            "also leaves room for max_tokens within it, and max_tokens is lowered "
+            "if it would leave the prompt less than half of the window."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
@@ -3039,6 +3121,11 @@ class ChatCompletionRequest(BaseModel):
     def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
         return resolve_thinking_onto_enable_thinking(self)
 
+    @field_validator("sandbox_level", mode = "before")
+    @classmethod
+    def _coerce_sandbox_level(cls, value: Any) -> Any:
+        return _normalize_sandbox_level(value)
+
     @field_validator("permission_mode", mode = "before")
     @classmethod
     def _coerce_permission_mode(cls, value: Any) -> Any:
@@ -3057,6 +3144,9 @@ class ChatCompletionRequest(BaseModel):
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
         elif self.permission_mode == "off":
+            self._off_confirm_opt_out = (
+                "confirm_tool_calls" in self.model_fields_set and self.confirm_tool_calls is False
+            )
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
@@ -3159,6 +3249,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         "a pending turn under a retrieval scope is countable. A count that omits this prices a "
         "prompt the completion will not send, or declines one it could have priced.",
     )
+    sandbox_level: Literal["high", "low"] = Field(
+        "high",
+        description = _SANDBOX_LEVEL_DESCRIPTION,
+    )
     bypass_permissions: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
@@ -3176,6 +3270,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         description = "[x-unsloth] Tool-call budget the completion would send. Zero suppresses the "
         "tool loop, so a count that never sees it prices a catalog the relay does not render.",
     )
+
+    @field_validator("sandbox_level", mode = "before")
+    @classmethod
+    def _coerce_sandbox_level(cls, value: Any) -> Any:
+        return _normalize_sandbox_level(value)
 
     @field_validator("permission_mode", mode = "before")
     @classmethod
@@ -3976,7 +4075,11 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' ('Run automatically') never pauses while Python and Terminal run in the OS sandbox and otherwise pauses their high-risk calls in a streaming UI chat, 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+    )
+    sandbox_level: Literal["high", "low"] = Field(
+        "high",
+        description = _SANDBOX_LEVEL_DESCRIPTION,
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -4042,6 +4145,11 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @field_validator("sandbox_level", mode = "before")
+    @classmethod
+    def _coerce_sandbox_level(cls, value: Any) -> Any:
+        return _normalize_sandbox_level(value)
 
     @field_validator("permission_mode", mode = "before")
     @classmethod
@@ -4496,6 +4604,11 @@ class DiffusionGenerateRequest(BaseModel):
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the image while it denoises (generate-progress "
+        "'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     allow_oversized: bool = Field(
         False,
         description = "Run even when the generate-time memory check estimates this size will not "
@@ -4771,8 +4884,13 @@ class DiffusionGenerateProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
-        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+        None,
+        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
     )
+    preview: Optional[str] = Field(
+        None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -4983,7 +5101,13 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    # Additive per-control provenance {control: {value, source, reason}}; null when nothing is loaded. Declared explicitly so pydantic extra='ignore' keeps it.
+    supports_negative_prompt: bool = Field(
+        True,
+        description = "Whether the loaded model applies a negative prompt on this engine "
+        "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
+        "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
@@ -4992,11 +5116,7 @@ class DiffusionStatusResponse(BaseModel):
 
 
 class DiffusionInferenceInfo(BaseModel):
-    """One family's bf16 component sizes + estimated resident footprint per quant scheme.
-
-    Mirrors the dicts ``family_inference_infos()`` returns: the bf16-resident transformer /
-    text-encoder / VAE sizes, and the estimated resident GB under bf16 and each dense
-    transformer-quant scheme (transformer * factor + companions), rounded to 1 decimal."""
+    """bf16 component sizes and 0.1 GB resident estimates by transformer quantization scheme."""
 
     family: str = Field(..., description = "Diffusion family name (auto-policy table key).")
     transformer_bf16_gb: float = Field(..., description = "bf16-resident transformer size in GB.")
@@ -5079,8 +5199,8 @@ class ImageGenerationResponse(BaseModel):
 class AudioSpeechRequest(BaseModel):
     """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
 
-    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
-    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
+    ``voice`` picks a saved voice or a built-in speaker; OpenAI's own voice names are accepted
+    and ignored. ``reference`` clones from uploaded audio, a history clip or a saved voice."""
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(
@@ -5090,11 +5210,31 @@ class AudioSpeechRequest(BaseModel):
             "model auto-switch is on; otherwise the loaded audio model is used."
         ),
     )
-    voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
-    response_format: Optional[str] = Field(
-        "wav", description = "Output container. Only 'wav' is supported."
+    voice: Optional[Union[str, "AudioSpeechVoice"]] = Field(
+        None,
+        description = (
+            'A saved voice\'s id (or {"id": ...}), else a built-in speaker of the model. Other '
+            "names, such as OpenAI's, are ignored."
+        ),
     )
-    speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    reference: Optional["AudioSourceRef"] = Field(
+        None,
+        description = "[x-unsloth] Audio to clone: an uploaded input, a history clip or a saved voice.",
+    )
+    reference_text: Optional[str] = Field(
+        None,
+        max_length = 4000,
+        description = "[x-unsloth] What is said in the reference, for models that use it.",
+    )
+    response_format: Optional[str] = Field(
+        "wav", description = "Output format: wav, mp3, flac, opus, aac or pcm."
+    )
+    stream_format: Optional[Literal["audio", "sse"]] = Field(
+        None, description = "Only 'audio' (the whole file in one response) is supported."
+    )
+    speed: Optional[float] = Field(
+        None, ge = 0.25, le = 4.0, description = "Speech rate, applied where the model supports it."
+    )
     instructions: Optional[str] = Field(
         None,
         description = "Scene or music-description instructions for compatible audio models.",
@@ -5227,6 +5367,28 @@ class AudioSourceRef(BaseModel):
         return self
 
 
+class AudioSpeechVoice(BaseModel):
+    """OpenAI's custom-voice object: here a saved voice's id."""
+
+    id: str = Field(..., pattern = _AUDIO_ID_PATTERN)
+
+
+class AudioGenerateRequest(ChatCompletionRequest):
+    """``POST /audio/generate``: speak the last user message, as chat's read aloud does."""
+
+    voice_id: Optional[str] = Field(
+        None,
+        pattern = _AUDIO_ID_PATTERN,
+        description = (
+            "[x-unsloth] A saved voice to speak in, as the Audio page's Speak does; the loaded "
+            "model must clone. Language, instructions, options, seed and the token cap apply."
+        ),
+    )
+    persist: bool = Field(
+        True, description = "[x-unsloth] Keep the clip in Audio history. Read aloud sends false."
+    )
+
+
 class AudioRunInputs(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -5292,6 +5454,12 @@ class AudioRunRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"]
+    model: Optional[str] = Field(
+        None,
+        max_length = 512,
+        description = "A downloaded audio model to load first when model auto-switch is on; "
+        "otherwise the loaded model runs it",
+    )
     # Required except for a conversion or a separation (the routes answer those given text with a 400).
     text: Optional[str] = None
     language: Optional[str] = Field(None, max_length = 64)
@@ -5751,6 +5919,11 @@ class VideoGenerateRequest(BaseModel):
         "where a downloaded model that is not the resident one is loaded first; omit to use "
         "whatever is loaded. The Video page never sends it.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the first frame while the clip denoises "
+        "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
     # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
@@ -6000,7 +6173,7 @@ class VideoGenerateProgressResponse(BaseModel):
     active: bool = Field(False, description = "Whether a generation is running")
     phase: Optional[str] = Field(
         None,
-        description = "Current phase: queued | denoise | export | completed | failed | null",
+        description = "Current phase: queued | encode | denoise | decode | export | completed | failed | null",
     )
     step: int = Field(0, description = "Denoising steps completed so far")
     total: int = Field(0, description = "Total denoising steps for this run")
@@ -6008,6 +6181,11 @@ class VideoGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps (alias of total)")
     fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    preview: Optional[str] = Field(
+        None,
+        description = "Live latent preview of the first frame being denoised, as a JPEG data URL",
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
     video: Optional[GalleryVideo] = Field(
         None, description = "Saved gallery record when phase is 'completed'"
     )

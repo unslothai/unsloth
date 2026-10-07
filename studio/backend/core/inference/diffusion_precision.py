@@ -59,6 +59,7 @@ _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
     "qwen-image": (6, 6),
     "qwen-image-edit": (6, 6),
+    "qwen-image-layered": (6, 6),
     "flux.2-dev": (3, 0),
 }
 
@@ -263,6 +264,15 @@ def quantize_text_encoders(
     mode = normalize_te_quant(mode)
     if mode is None:
         return TEQuantOutcome(None)
+    # A hosted int8 ConvRot encoder is already quantized (plain tensors, offload-safe): report it, never re-cast it.
+    present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
+    hosted_int8 = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == TE_QUANT_INT8]
+    if mode == TE_QUANT_INT8 and hosted_int8 and len(hosted_int8) == len(present):
+        return TEQuantOutcome(
+            TE_QUANT_INT8,
+            "hosted int8 ConvRot weight-only text encoder",
+            RESOLVED_APPLIED,
+        )
     downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
@@ -274,6 +284,15 @@ def quantize_text_encoders(
                 f"int8 has no measured keep-bf16 schedule for family '{family}' "
                 "(it degrades large encoders without one), so fp8 was used instead"
             )
+            if _family_hosts_te_int8(family):
+                from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
+                downgrade_reason = (
+                    f"{KEEP_LM_HEAD_ENV} keeps lm_head, which the int8 ConvRot text encoder does not carry, "
+                    "so fp8 was used instead"
+                    if not family_trims_lm_head(family)
+                    else "the hosted int8 ConvRot text encoder is not available (not published yet, offline, "
+                    "or refused, see the server log), so fp8 was used instead"
+                )
     # torchao modes produce subclasses that reject Module.to(), which an offload placement uses. Layerwise fp8 streams
     # fine.
     if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
@@ -313,6 +332,8 @@ def quantize_text_encoders(
         encoder = getattr(pipe, attr, None)
         if encoder is None:
             continue
+        if attr in hosted_int8:
+            continue
         try:
             caster(encoder, target)
             cast.append(attr)
@@ -339,6 +360,22 @@ def quantize_text_encoders(
     if downgrade_reason:
         return TEQuantOutcome(mode, downgrade_reason, RESOLVED_FELL_BACK)
     return TEQuantOutcome(mode, "dense text encoder(s) quantised in place", RESOLVED_APPLIED)
+
+
+def _hosted_te_scheme(encoder: Any) -> Optional[str]:
+    """The scheme of the hosted artifact ``encoder`` was loaded from ("fp8" / "int8"), or None for a dense load."""
+    from .diffusion_te_prequant import TE_PREQUANT_SCHEME_ATTR
+
+    value = getattr(encoder, TE_PREQUANT_SCHEME_ATTR, None)
+    return value if isinstance(value, str) else None
+
+
+def _family_hosts_te_int8(family: Optional[str]) -> bool:
+    try:
+        from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
+        return (family or "").strip().lower() in TE_INT8_CONVROT_FILES
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:

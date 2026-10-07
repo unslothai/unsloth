@@ -24,6 +24,7 @@ import re
 import struct
 from loggers import get_logger
 from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
+from utils import host_memory as _host_memory
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import shutil
 import signal
@@ -1936,6 +1937,11 @@ def _sticky_compaction_state(
                 return 0, False
             # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
+                return 0, False
+            # A provider-generated summary boundary is display metadata, not a local-fit epoch. On a provider/model
+            # switch the opaque summary is deliberately withheld, so replaying its boundary here would discard the
+            # original turns without retaining their summary.
+            if truncation.get("summarized") is True:
                 return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
             # directions fail differently.
@@ -4474,8 +4480,11 @@ def _auto_mode_drops_mtp(
 # MLA archs whose MTP context covers only the NextN block instead of duplicating the
 # trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
 # twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
-# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
-_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+# reserve the copy (_estimate_mtp_overhead_bytes). "glm5-next" = upstream name
+# (ggml-org/llama.cpp#27773); builds lacking its NextN graph retry without speculation.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
+# Smallest context Auto shrinks to so a fast MLA head still launches.
+_FAST_MTP_MIN_CTX = 65536
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -10687,7 +10696,14 @@ class LlamaCppBackend:
         try:
             return [int(x.strip()) for x in cvd.split(",") if x.strip()]
         except ValueError:
+            pass
+        # A resolvable CUDA UUID mask, else the GPU auto-pick escapes the mask onto hidden cards (#8873).
+        try:
+            from utils.hardware.hardware import _get_parent_visible_gpu_spec
+            spec = _get_parent_visible_gpu_spec()
+        except Exception:
             return None
+        return spec["numeric_ids"] if spec.get("raw") == cvd.strip() else None
 
     @staticmethod
     def _visibility_mask_is_unmappable() -> bool:
@@ -12445,7 +12461,15 @@ class LlamaCppBackend:
         try:
             return set(int(x.strip()) for x in raw.split(",") if x.strip())
         except ValueError:
-            return None
+            if (
+                env_name != "CUDA_VISIBLE_DEVICES"
+                or os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+            ):
+                return None
+        from utils.hardware import nvidia
+
+        ids = nvidia.resolve_uuid_mask(raw.strip())
+        return set(ids) if ids is not None else None
 
     @staticmethod
     def _vulkan_pin_args(gpu_indices: Optional[Iterable[int]]) -> list[str]:
@@ -14302,123 +14326,14 @@ class LlamaCppBackend:
     def _cgroup_memory_budgets() -> list[tuple[int, int]]:
         """Memory this process can still charge to an enforcing cgroup.
 
-        ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
-        containers. Walk the process's cgroup plus its ancestors and pair each
-        limit with that same directory's usage; an ancestor slice can be the
-        binding limit and includes sibling usage that a leaf does not see.
-        Supports cgroup v2 and the legacy v1 memory controller. ``None`` means
-        no finite readable limit, so callers retain their host reading.
+        Delegates to ``utils.host_memory``; empty = no finite limit.
         """
-
-        def _first_line(path: str) -> Optional[str]:
-            try:
-                with open(path, "r", encoding = "utf-8") as f:
-                    return f.readline().strip()
-            except OSError:
-                return None
-
-        def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
-            if not raw or raw == "max":
-                return None
-            try:
-                value = int(raw)
-            except ValueError:
-                return None
-            # cgroup v1 spells unlimited as a near-2^63 sentinel.
-            if value < 0 or (limit and value >= 1 << 60):
-                return None
-            return value
-
-        def _stat_integer(path: str, *keys: str) -> int:
-            """Read the first requested byte counter present in memory.stat."""
-            try:
-                with open(path, "r", encoding = "utf-8") as f:
-                    values = {}
-                    for line in f:
-                        parts = line.split()
-                        if len(parts) == 2 and parts[0] in keys:
-                            value = _integer(parts[1])
-                            if value is not None:
-                                values[parts[0]] = value
-            except OSError:
-                return 0
-            return next((values[key] for key in keys if key in values), 0)
-
-        def _directories(root: str, relative: Optional[str]) -> list[str]:
-            root = os.path.abspath(root)
-            current = os.path.normpath(os.path.join(root, (relative or "/").lstrip("/")))
-            try:
-                if os.path.commonpath((root, current)) != root:
-                    return [root]
-            except ValueError:
-                return [root]
-            out = []
-            while True:
-                out.append(current)
-                if current == root:
-                    return out
-                current = os.path.dirname(current)
-
-        try:
-            with open(_PROC_SELF_CGROUP, "r", encoding = "utf-8") as f:
-                lines = [line.strip() for line in f if line.strip()]
-        except OSError:
-            lines = []
-
-        budgets: list[tuple[int, int]] = []
-        v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
-        for directory in _directories(_CGROUP_ROOT, v2_relative):
-            limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
-            if limit is None:
-                continue
-            used = _integer(_first_line(os.path.join(directory, "memory.current")))
-            if used is not None:
-                # memory.current includes file-backed cache. Inactive file pages
-                # are reclaimable under pressure, so price the launch against the
-                # cgroup working set rather than charging cached GGUF pages twice.
-                used = max(
-                    0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
-                )
-            budgets.append((limit if used is None else limit - used, limit))
-
-        v1_root = os.path.join(_CGROUP_ROOT, "memory")
-        v1_relative = None
-        for line in lines:
-            parts = line.split(":", 2)
-            if len(parts) == 3 and "memory" in parts[1].split(","):
-                v1_relative = parts[2]
-                break
-        for directory in _directories(v1_root, v1_relative):
-            limit = _integer(
-                _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
-            )
-            if limit is None:
-                continue
-            used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
-            if used is not None:
-                # v1 usage is hierarchical when use_hierarchy is enabled, so its
-                # matching counter is total_inactive_file. Fall back to the local
-                # counter for non-hierarchical controllers.
-                used = max(
-                    0,
-                    used
-                    - _stat_integer(
-                        os.path.join(directory, "memory.stat"),
-                        "total_inactive_file",
-                        "inactive_file",
-                    ),
-                )
-            budgets.append((limit if used is None else limit - used, limit))
-
-        return budgets
+        return _host_memory.cgroup_memory_budgets(_CGROUP_ROOT, _PROC_SELF_CGROUP)
 
     @staticmethod
     def _cgroup_available_memory_mib() -> Optional[int]:
         """What this process can still charge, i.e. the tightest REMAINDER."""
-        budgets = LlamaCppBackend._cgroup_memory_budgets()
-        if not budgets:
-            return None
-        return max(min(remaining for remaining, _limit in budgets), 0) // (1024 * 1024)
+        return _host_memory.cgroup_headroom_mib(LlamaCppBackend._cgroup_memory_budgets())
 
     @staticmethod
     def _cgroup_memory_limit_mib() -> Optional[int]:
@@ -14426,10 +14341,7 @@ class LlamaCppBackend:
 
         Not interchangeable with the remainder above, which shrinks as the container
         fills and would price against memory that is merely busy rather than absent."""
-        budgets = LlamaCppBackend._cgroup_memory_budgets()
-        if not budgets:
-            return None
-        return min(limit for _remaining, limit in budgets) // (1024 * 1024)
+        return _host_memory.cgroup_limit_mib(LlamaCppBackend._cgroup_memory_budgets())
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
@@ -14437,25 +14349,9 @@ class LlamaCppBackend:
         neither is readable, capped by this process's cgroup remainder. On a
         unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling:
         the weights load into shared system RAM."""
-        available = None
-        try:
-            import psutil
-            available = int(psutil.virtual_memory().available // (1024 * 1024))
-        except Exception:
-            pass
-        if available is None:
-            try:
-                with open("/proc/meminfo", encoding = "utf-8") as f:
-                    for line in f:
-                        if line.startswith("MemAvailable:"):
-                            available = int(line.split()[1]) // 1024  # kB -> MiB
-                            break
-            except Exception:
-                pass
-        cgroup_available = LlamaCppBackend._cgroup_available_memory_mib()
-        if available is None:
-            return cgroup_available
-        return min(available, cgroup_available) if cgroup_available is not None else available
+        return _host_memory.usable_mib(
+            _host_memory.system_available_mib(), LlamaCppBackend._cgroup_available_memory_mib()
+        )
 
     @staticmethod
     def _total_system_memory_mib() -> Optional[int]:
@@ -14463,19 +14359,7 @@ class LlamaCppBackend:
         readable. The ceiling on what ``MemAvailable`` can ever become, so a preflight that
         runs before the resident model and pipeline are torn down can price against it
         without charging for host memory that is about to come back."""
-        try:
-            import psutil
-            return int(psutil.virtual_memory().total // (1024 * 1024))
-        except Exception:
-            pass
-        try:
-            with open("/proc/meminfo", encoding = "utf-8") as f:
-                for line in f:
-                    if line.startswith("MemTotal:"):
-                        return int(line.split()[1]) // 1024  # kB -> MiB
-        except Exception:
-            pass
-        return None
+        return _host_memory.system_total_mib()
 
     @staticmethod
     def _host_memory_capacity_mib() -> Optional[int]:
@@ -14485,11 +14369,9 @@ class LlamaCppBackend:
         /proc/meminfo does not show. The LIMIT, never the remainder, which shrinks as
         the container fills and would price against memory that is merely busy.
         """
-        total = LlamaCppBackend._total_system_memory_mib()
-        limit = LlamaCppBackend._cgroup_memory_limit_mib()
-        if total is None:
-            return limit
-        return min(total, limit) if limit is not None else total
+        return _host_memory.usable_mib(
+            LlamaCppBackend._total_system_memory_mib(), LlamaCppBackend._cgroup_memory_limit_mib()
+        )
 
     _ARGV_MODEL = frozenset({"-m", "--model"})
     _ARGV_RPC = frozenset({"--rpc"})
@@ -26072,6 +25954,22 @@ class LlamaCppBackend:
                                     / (1024 * 1024)
                                     <= _budget_w
                                 ):
+                                    # A NextN-only head is the main decode speedup: pay context.
+                                    if (
+                                        _engaged_is_mtp
+                                        and _arch_has_fast_mla_mtp(
+                                            getattr(self, "_architecture", None)
+                                        )
+                                        and _ctx_w >= min(_ctx_wo, _FAST_MTP_MIN_CTX)
+                                    ):
+                                        _both_fit_somewhere = True
+                                        logger.info(
+                                            "Auto: keeping the embedded MTP head; context %d -> %d "
+                                            "so it fits (%.1f GB budget).",
+                                            _ctx_wo,
+                                            _ctx_w,
+                                            _budget_w / 1024,
+                                        )
                                     break
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
@@ -27078,6 +26976,10 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
+                    # The Manual launch branch below emits --fit off; decide it before the
+                    # decision line so the log matches the argv (#10821).
+                    if gpu_memory_mode == "manual" and gpu_layers >= 0:
+                        use_fit = False
                     # Everything the spill planner needs, snapshotted as plain ints
                     # where it is already evaluated.
                     _spill_inputs = {
@@ -27171,7 +27073,10 @@ class LlamaCppBackend:
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
                         # --fit flag state, not "does it fit": off means this subset provably fits.
-                        f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
+                        # Manual modes empty gpus on purpose; say so, not a failed probe.
+                        f"GPUs free: {gpus}"
+                        f"{' (manual mode)' if not gpus and gpu_memory_mode == 'manual' else ''}, "
+                        f"selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
@@ -31387,6 +31292,7 @@ class LlamaCppBackend:
                         _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
+                        or "failed to create mtp context" in _lo
                         or "failed to create llama_context" in _lo
                     ):
                         _retry_reason = (
@@ -36288,6 +36194,7 @@ class LlamaCppBackend:
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
         instruction_anchor_ids = None,
+        sandbox_level: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36312,7 +36219,6 @@ class LlamaCppBackend:
             build_rag_autoinject,
             execute_tool,
             has_text_only_provisional_card,
-            is_always_safe_tool,
             is_high_risk_tool_call,
             mcp_image_share,
             never_needs_approval,
@@ -36323,11 +36229,20 @@ class LlamaCppBackend:
         # "auto"; unknown falls back to the stricter "ask". An explicit
         # confirm_tool_calls=True with no mode is already resolved to "ask" at the
         # request layer, so it never arrives here as an ambiguous unset.
-        from state.tool_policy import account_tool_stream, normalize_tool_permissions
+        from state.tool_policy import (
+            account_tool_stream,
+            needs_tool_confirmation,
+            normalize_sandbox_level,
+            normalize_tool_permissions,
+            requires_os_isolation,
+            runs_without_os_sandbox,
+            tool_call_may_prompt,
+        )
 
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
         )
+        sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 
         if not self.is_loaded:
@@ -36596,6 +36511,8 @@ class LlamaCppBackend:
         tool_controller = ToolLoopController(
             tools = controller_tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            session_id = session_id,
+            thread_id = thread_id,
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
@@ -37430,11 +37347,12 @@ class LlamaCppBackend:
                                         # prompts, so it must stream its early card too; mirror
                                         # that here instead of gating on the raw confirm flag.
                                         _confirm_gated = (
-                                            confirm_tool_calls
-                                            and not bypass_permissions
-                                            and not (
-                                                permission_mode == "auto"
-                                                and is_always_safe_tool(current_name)
+                                            tool_call_may_prompt(
+                                                confirm_tool_calls = bool(confirm_tool_calls),
+                                                bypass_permissions = bypass_permissions,
+                                                permission_mode = permission_mode,
+                                                name = current_name,
+                                                sandbox_level = sandbox_level,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -37577,6 +37495,16 @@ class LlamaCppBackend:
                                                     _sniffed
                                                     and not (
                                                         _confirm_gated_iteration
+                                                        and (
+                                                            permission_mode != "off"
+                                                            or tool_call_may_prompt(
+                                                                confirm_tool_calls = True,
+                                                                bypass_permissions = False,
+                                                                permission_mode = "off",
+                                                                name = _sniffed,
+                                                                sandbox_level = sandbox_level,
+                                                            )
+                                                        )
                                                         and not has_text_only_provisional_card(
                                                             _sniffed
                                                         )
@@ -38563,21 +38491,31 @@ class LlamaCppBackend:
                         )
 
                     # Bypass wins here too, so a direct internal caller with both
-                    # flags never prompts. "auto" pauses only high-risk calls;
-                    # "off" never prompts (sandbox stays on).
-                    needs_confirm = (
-                        bool(confirm_tool_calls)
-                        and not bypass_permissions
-                        and permission_mode != "off"
-                        and not never_needs_approval(decision.tool_name)
+                    # flags never prompts. "auto" pauses only high-risk calls; "off"
+                    # pauses only a high-risk python/terminal call without OS isolation.
+                    needs_confirm = needs_tool_confirmation(
+                        confirm_tool_calls = bool(confirm_tool_calls),
+                        bypass_permissions = bypass_permissions,
+                        permission_mode = permission_mode,
+                        name = decision.tool_name,
+                        arguments = decision.arguments,
+                        is_high_risk = is_high_risk_tool_call,
+                        never_needs = never_needs_approval,
+                        sandbox_level = sandbox_level,
                     )
-                    if needs_confirm and permission_mode == "auto":
-                        needs_confirm = is_high_risk_tool_call(
-                            decision.tool_name, decision.arguments
-                        )
                     # Sending the user's image always asks, whatever the permission mode.
                     image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
                     needs_confirm = needs_confirm or image_share is not None
+                    strict_isolation = requires_os_isolation(
+                        confirm_tool_calls = bool(confirm_tool_calls),
+                        bypass_permissions = bypass_permissions,
+                        permission_mode = permission_mode,
+                        name = decision.tool_name,
+                        arguments = decision.arguments,
+                        prompted = needs_confirm,
+                        is_high_risk = is_high_risk_tool_call,
+                        sandbox_level = sandbox_level,
+                    )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -38931,6 +38869,7 @@ class LlamaCppBackend:
                             _output_callback,
                             _decision = decision,
                             _approved = _host_access_approved,
+                            _strict = strict_isolation,
                         ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
@@ -38942,6 +38881,13 @@ class LlamaCppBackend:
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )
+                            # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                            if _strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                                kwargs["tool_execution_mode"] = "required"
+                            elif runs_without_os_sandbox(
+                                _decision.tool_name, sandbox_level
+                            ) and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                                kwargs["tool_execution_mode"] = "software"
                             # Same branch the forced recall is filtered against, so a
                             # model-initiated search cannot reach a sibling response the
                             # forced recall correctly refused.

@@ -18,11 +18,13 @@ use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
     WebviewBuilder, WebviewUrl,
 };
+use tokio::sync::watch;
 
 const LABEL_PREFIX: &str = "unsloth-browser-";
 const EVENT: &str = "unsloth-browser";
 /// The app's own webview, the only caller these commands answer.
 const MAIN_WEBVIEW: &str = "main";
+const MAIN_WINDOW: &str = "main";
 const URL_POLL: Duration = Duration::from_millis(800);
 /// macOS 14+ data store for pages (fixed, so it persists).
 #[cfg(target_os = "macos")]
@@ -101,9 +103,45 @@ const STATE_SCRIPT: &str = r#"(() => {
   } catch { return ""; }
 })()"#;
 
-#[derive(Default)]
 pub struct BrowserViews {
     inner: Mutex<ViewsState>,
+    /// Whether the address poll has anything to watch; it sleeps on this rather than a timer.
+    gate: watch::Sender<PollGate>,
+}
+
+impl Default for BrowserViews {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::default(),
+            gate: watch::channel(PollGate::default()).0,
+        }
+    }
+}
+
+/// A view is shown, and the window it sits in is in use (focused, visible, not minimised).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PollGate {
+    shown: bool,
+    window_active: bool,
+    /// Bumped when the shown tab changes, so a switch between two shown tabs reads at once too.
+    switches: u64,
+}
+
+impl Default for PollGate {
+    fn default() -> Self {
+        // An unknown window state polls, as it always did.
+        Self {
+            shown: false,
+            window_active: true,
+            switches: 0,
+        }
+    }
+}
+
+impl PollGate {
+    fn polls(self) -> bool {
+        self.shown && self.window_active
+    }
 }
 
 #[derive(Default)]
@@ -120,6 +158,35 @@ struct ViewsState {
 
 pub fn new_browser_views() -> BrowserViews {
     BrowserViews::default()
+}
+
+fn set_shown(views: &BrowserViews, inner: &mut ViewsState, shown: Option<String>) {
+    if inner.shown == shown {
+        return;
+    }
+    let visible = shown.is_some();
+    inner.shown = shown;
+    views.gate.send_modify(|gate| {
+        gate.shown = visible;
+        gate.switches = gate.switches.wrapping_add(1);
+    });
+}
+
+/// Re-read the main window's state after its focus, size or visibility changed.
+pub fn window_changed<R: Runtime>(app: &AppHandle<R>, focused: Option<bool>) {
+    let (Some(views), Some(window)) =
+        (app.try_state::<BrowserViews>(), app.get_window(MAIN_WINDOW))
+    else {
+        return;
+    };
+    // Windows reports keyboard focus moving into a child webview as the window losing focus, so
+    // there only a minimised or hidden window pauses the poll; macOS and GTK report activation.
+    let focused = cfg!(windows) || focused == Some(true) || window.is_focused().unwrap_or(true);
+    let active =
+        focused && window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
+    views
+        .gate
+        .send_if_modified(|gate| std::mem::replace(&mut gate.window_active, active) != active);
 }
 
 #[derive(Clone, Serialize)]
@@ -166,6 +233,8 @@ enum BrowserEvent {
         size: Option<u64>,
         done: bool,
         success: bool,
+        /// A finished download's handle for Download history (browser_downloads.rs).
+        download_id: Option<String>,
     },
 }
 
@@ -709,7 +778,8 @@ async fn page_url<R: Runtime>(webview: &Webview<R>) -> Option<String> {
     webview.url().ok().map(|url| url.to_string())
 }
 
-/// Poll the shown tab's address, which pushState changes without a load. Started once.
+/// Poll the shown tab's address, which pushState changes without a load. Started once; it only
+/// runs while a view is shown in a window in use.
 fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<BrowserViews>();
     {
@@ -719,31 +789,62 @@ fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
         }
         inner.polling = true;
     }
+    window_changed(app, None);
+    let gate = state.gate.subscribe();
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(URL_POLL).await;
-            let state = app.state::<BrowserViews>();
-            let Some(tab_id) = state.inner.lock().unwrap().shown.clone() else {
-                continue;
-            };
-            let Ok(webview) = view(&app, &tab_id) else {
-                continue;
-            };
-            let Some(url) = page_url(&webview).await.filter(|url| reportable(url)) else {
-                continue;
-            };
-            let changed = {
-                let mut inner = state.inner.lock().unwrap();
-                let last = inner.urls.insert(tab_id.clone(), url.clone());
-                last.as_deref() != Some(url.as_str())
-            };
-            if changed {
-                emit(&app, BrowserEvent::Url { tab_id, url });
-                refresh_history(&webview);
+    tauri::async_runtime::spawn(run_url_poll(gate, move || poll_url(app.clone())));
+}
+
+/// Read now and every `URL_POLL` while the gate is open; while it is shut, wait on it with no
+/// timer armed. A change while open reads at once (a tab switch or the window coming back).
+async fn run_url_poll<F, Fut>(mut gate: watch::Receiver<PollGate>, mut poll: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    loop {
+        if !gate.borrow_and_update().polls() {
+            if gate.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        poll().await;
+        tokio::select! {
+            _ = tokio::time::sleep(URL_POLL) => {}
+            changed = gate.changed() => {
+                if changed.is_err() {
+                    return;
+                }
             }
         }
-    });
+    }
+}
+
+async fn poll_url<R: Runtime>(app: AppHandle<R>) {
+    let state = app.state::<BrowserViews>();
+    let Some(tab_id) = state.inner.lock().unwrap().shown.clone() else {
+        return;
+    };
+    let Ok(webview) = view(&app, &tab_id) else {
+        return;
+    };
+    let Some(url) = page_url(&webview).await.filter(|url| reportable(url)) else {
+        return;
+    };
+    let changed = {
+        let mut inner = state.inner.lock().unwrap();
+        // Switched or closed while the address was read: it belongs to a view no longer shown.
+        if inner.shown.as_deref() != Some(tab_id.as_str()) {
+            return;
+        }
+        let last = inner.urls.insert(tab_id.clone(), url.clone());
+        last.as_deref() != Some(url.as_str())
+    };
+    if changed {
+        emit(&app, BrowserEvent::Url { tab_id, url });
+        refresh_history(&webview);
+    }
 }
 
 fn create_view<R: Runtime>(
@@ -894,6 +995,7 @@ fn create_view<R: Runtime>(
                                     size: None,
                                     done: true,
                                     success: false,
+                                    download_id: None,
                                 },
                             );
                             return false;
@@ -929,6 +1031,7 @@ fn create_view<R: Runtime>(
                             size: None,
                             done: false,
                             success: false,
+                            download_id: None,
                         },
                     );
                     true
@@ -949,9 +1052,13 @@ fn create_view<R: Runtime>(
                         recorded
                     };
                     let path = path.or(recorded);
-                    if let (true, Some(path)) = (success, path.as_deref()) {
-                        mark_downloaded(path, &url);
-                    }
+                    let download_id = match (success, path.as_deref()) {
+                        (true, Some(saved)) => {
+                            mark_downloaded(saved, &url);
+                            Some(crate::browser_downloads::record(app, saved.to_path_buf()))
+                        }
+                        _ => None,
+                    };
                     emit(
                         app,
                         BrowserEvent::Download {
@@ -969,6 +1076,7 @@ fn create_view<R: Runtime>(
                             path: path.map(|p| p.to_string_lossy().into_owned()),
                             done: true,
                             success,
+                            download_id,
                         },
                     );
                     true
@@ -1176,7 +1284,7 @@ pub async fn browser_view_show<R: Runtime>(
             let _ = view.hide();
         }
     }
-    state.inner.lock().unwrap().shown = shown;
+    set_shown(&state, &mut state.inner.lock().unwrap(), shown);
     Ok(())
 }
 
@@ -1324,7 +1432,7 @@ pub fn browser_view_close<R: Runtime>(
         inner.download_starts.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
-            inner.shown = None;
+            set_shown(&state, &mut inner, None);
         }
     }
     if let Ok(page) = view(webview.app_handle(), &tab_id) {
@@ -1347,7 +1455,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
         {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
-            inner.shown = None;
+            set_shown(&state, &mut inner, None);
         }
         for page in browser_views(&app) {
             let _ = page.close();
@@ -1469,6 +1577,118 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod url_poll {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        const TEN_MINUTES: Duration = Duration::from_secs(600);
+
+        /// Runs the poll for `span` from `start`, returning the reads it made.
+        async fn reads(
+            start: PollGate,
+            span: Duration,
+        ) -> (watch::Sender<PollGate>, Arc<AtomicUsize>) {
+            let (gate, receiver) = watch::channel(start);
+            let count = Arc::new(AtomicUsize::new(0));
+            let counter = count.clone();
+            tokio::spawn(run_url_poll(receiver, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }));
+            tokio::time::sleep(span).await;
+            (gate, count)
+        }
+
+        fn gate(shown: bool, window_active: bool) -> PollGate {
+            PollGate {
+                shown,
+                window_active,
+                switches: 0,
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn polls_every_800_ms_only_while_a_view_shows_in_a_window_in_use() {
+            // One at once, then 600 s / 0.8 s = 750 (just past the last one, so no tie with it).
+            let span = TEN_MINUTES + Duration::from_millis(1);
+            assert_eq!(
+                reads(gate(true, true), span).await.1.load(Ordering::SeqCst),
+                751
+            );
+            for idle in [gate(true, false), gate(false, true), gate(false, false)] {
+                assert_eq!(
+                    reads(idle, TEN_MINUTES).await.1.load(Ordering::SeqCst),
+                    0,
+                    "{idle:?}"
+                );
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn coming_back_reads_at_once_then_resumes_the_interval() {
+            let (gate_tx, count) = reads(gate(true, false), TEN_MINUTES).await;
+            gate_tx.send_modify(|gate| gate.window_active = true);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            tokio::time::sleep(URL_POLL * 10).await;
+            assert_eq!(count.load(Ordering::SeqCst), 11);
+            gate_tx.send_modify(|gate| gate.window_active = false);
+            tokio::time::sleep(TEN_MINUTES).await;
+            assert_eq!(count.load(Ordering::SeqCst), 11);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn rapid_flips_read_once_per_opening_and_dropping_the_gate_ends_the_poll() {
+            let (gate_tx, count) = reads(gate(false, true), Duration::from_millis(1)).await;
+            for _ in 0..5 {
+                gate_tx.send_modify(|gate| gate.shown = true);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                gate_tx.send_modify(|gate| gate.shown = false);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            assert_eq!(count.load(Ordering::SeqCst), 5);
+            gate_tx.send_modify(|gate| gate.shown = true);
+            drop(gate_tx);
+            tokio::time::sleep(TEN_MINUTES).await;
+            // The read made as it opened, then nothing: the poll ended with its gate.
+            assert_eq!(count.load(Ordering::SeqCst), 6);
+        }
+
+        #[test]
+        fn shown_is_tracked_with_the_gate() {
+            let views = BrowserViews::default();
+            let mut inner = ViewsState::default();
+            set_shown(&views, &mut inner, Some("a".into()));
+            assert!(views.gate.borrow().polls());
+            set_shown(&views, &mut inner, None);
+            assert!(!views.gate.borrow().polls());
+            assert_eq!(inner.shown, None);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn switching_between_shown_tabs_reads_at_once() {
+            let views = BrowserViews::default();
+            let mut inner = ViewsState::default();
+            set_shown(&views, &mut inner, Some("a".into()));
+            let count = Arc::new(AtomicUsize::new(0));
+            let counter = count.clone();
+            tokio::spawn(run_url_poll(views.gate.subscribe(), move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            set_shown(&views, &mut inner, Some("b".into()));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+            // Showing the same tab again is not a switch.
+            set_shown(&views, &mut inner, Some("b".into()));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+        }
+    }
 
     fn allowed(url: &str) -> bool {
         navigation_allowed(&Url::parse(url).unwrap())

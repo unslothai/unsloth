@@ -168,7 +168,7 @@ export function OffloadPanel({ isTrainingRunning }: { isTrainingRunning: boolean
                 />
                 {budget != null && (
                   <div
-                    className="absolute inset-y-0 w-0.5 bg-foreground/70"
+                    className="absolute inset-y-0 w-0.5 bg-[color-mix(in_oklab,var(--foreground)_calc(70%*var(--contrast-wash-gain,1)),transparent)]"
                     style={{ left: `${(100 * budget) / vramTotal}%` }}
                   />
                 )}

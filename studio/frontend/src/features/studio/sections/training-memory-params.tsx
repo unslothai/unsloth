@@ -126,6 +126,7 @@ export function TrainingMemoryParams(): ReactElement {
       gradientCheckpointing: state.gradientCheckpointing,
       isVisionModel: state.isVisionModel,
       isEmbeddingModel: state.isEmbeddingModel,
+      isDecision: state.modelType === "decision",
       isDatasetImage: state.isDatasetImage,
       visionImageSize: state.visionImageSize,
       setVisionImageSize: state.setVisionImageSize,
@@ -142,9 +143,14 @@ export function TrainingMemoryParams(): ReactElement {
       selectedModelLower.includes("deepseek") &&
       selectedModelLower.includes("ocr")
     );
-  const showPacking = !(showVisionLora || store.isEmbeddingModel);
+  const showPacking = !(
+    showVisionLora ||
+    store.isEmbeddingModel ||
+    store.isDecision
+  );
   const showTrainOnCompletions = !(
     store.isEmbeddingModel ||
+    store.isDecision ||
     store.trainingMethod === "cpt" ||
     isRawTextDatasetFormat(store.datasetFormat)
   );

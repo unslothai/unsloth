@@ -600,6 +600,14 @@ class TrainingStartRequest(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
+    is_decision: bool = Field(False, description = "Whether model is a decision model (Laya or Clef)")
+    model_subfolder: Optional[str] = Field(
+        None, description = "Checkpoint subfolder of a decision model repo"
+    )
+    decision_layout: Optional[Literal["laya", "clef"]] = Field(
+        None,
+        description = "Set by the server from the checkpoint files; a caller's value is replaced",
+    )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")
@@ -620,8 +628,8 @@ class TrainingStartRequest(BaseModel):
             "Physical GPU indices to use, for example [0, 1]. Omit or pass "
             "[] to use automatic selection. Explicit gpu_ids are unsupported "
             "when the parent visibility mask uses non-numeric or subdevice "
-            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
-            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
+            "entries -- this includes CUDA_VISIBLE_DEVICES with MIG or "
+            "unresolvable UUID entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
             "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
             "Intel XPU."
         ),

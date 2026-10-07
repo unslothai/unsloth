@@ -37,6 +37,8 @@ export interface AudioRouteSearch {
   task?: string;
   audioType?: string;
   loadId?: string;
+  /** The pick is a GGUF: an id without a GGUF suffix otherwise reads as a Transformers checkpoint. */
+  gguf?: boolean;
   item?: string;
   workflow?: AudioWorkflowId;
 }
@@ -60,6 +62,7 @@ export function validateAudioSearch(
     ...(typeof search.loadId === "string" && search.loadId.trim()
       ? { loadId: search.loadId }
       : {}),
+    ...(search.gguf === true || search.gguf === "true" ? { gguf: true } : {}),
     ...(typeof search.item === "string" ? { item: search.item } : {}),
     ...(isAudioWorkflowId(search.workflow)
       ? { workflow: search.workflow }
@@ -82,6 +85,8 @@ export function audioWorkflowForPick(pick: {
   task?: string | null;
   audioType?: string | null;
 }): AudioWorkflowId | null {
+  // Only a separation row's audio-to-audio pick is routed here.
+  if (pick.task === "audio-to-audio") return "separate";
   const workflow = audioWorkflowForTask(pick.task);
   if (workflow !== null && workflow !== "speak") {
     return workflow;
@@ -97,4 +102,36 @@ export function audioWorkflowForPick(pick: {
       : (catalog.workflows[0] ?? workflow);
   }
   return workflow === "speak" && isCloneOnlyFamilyId(pick.id) ? "clone" : workflow;
+}
+
+/** The /audio search for a model picked elsewhere (the chat picker, the Hub), opening the page
+ *  that runs it. */
+export function audioPickSearch(
+  id: string,
+  pick: {
+    ggufFilename?: string | null;
+    ggufVariant?: string | null;
+    task?: string | null;
+    audioType?: string | null;
+    loadId?: string | null;
+    isGguf?: boolean | null;
+  },
+): AudioRouteSearch {
+  return {
+    model: id,
+    // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant; both
+    // go along, since the dictation sidecar picks its quant by label alone.
+    quant: pick.ggufFilename ?? undefined,
+    ggufQuant: pick.ggufVariant ?? undefined,
+    task: pick.task ?? undefined,
+    audioType: pick.audioType ?? undefined,
+    loadId: pick.loadId ?? undefined,
+    gguf: pick.isGguf ? true : undefined,
+    workflow:
+      audioWorkflowForPick({
+        id,
+        task: pick.task,
+        audioType: pick.audioType,
+      }) ?? undefined,
+  };
 }

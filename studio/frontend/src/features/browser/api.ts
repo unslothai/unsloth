@@ -22,6 +22,22 @@ export type BrowserRequest = {
   maxBytes?: number;
 };
 
+let annotateCode: Promise<string> | null = null;
+
+/** The page's annotate code (`_ANNOTATE_JS`), fetched on first use and kept; a failure tries again next time. */
+export function annotateScript(): Promise<string> {
+  annotateCode ??= authFetch("/api/browser/annotate.js")
+    .then((response) => {
+      if (!response.ok) throw new Error(`annotate code: ${response.status}`);
+      return response.text();
+    })
+    .catch((error: unknown) => {
+      annotateCode = null;
+      throw error;
+    });
+  return annotateCode;
+}
+
 export class BrowserFetchError extends Error {
   readonly botCheck: boolean;
 

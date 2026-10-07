@@ -131,6 +131,11 @@ export function detailsFrom(
       else segments.push({ start, end, text: item.text });
     }
   }
+  // Records saved before the server sorted spans can carry diarized rows grouped per speaker.
+  const byTime = (a: { start: number; end: number }, b: typeof a) =>
+    a.start - b.start || a.end - b.end;
+  segments.sort(byTime);
+  words.sort(byTime);
   const speakers: TranscriptSpeaker[] = (
     Array.isArray(value.speakers) ? value.speakers : []
   )

@@ -130,6 +130,7 @@ const WORKSPACES: {
     id: "switchToAudio",
     icon: AudioWave01Icon,
     labelKey: "shell.navigation.audio",
+    aliases: ["speech", "tts", "voice", "music", "transcribe"],
   },
   {
     id: "switchToExport",
@@ -150,6 +151,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   connections: "settings.tabs.connections",
   library: "shell.navigation.library",
   data: "settings.tabs.data",
+  sandbox: "settings.tabs.sandbox",
   "api-keys": "settings.tabs.apiKeys",
   "remote-lan": "settings.tabs.remoteLan",
   agents: "settings.tabs.agents",

@@ -1088,7 +1088,7 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # Both GGUF responses report it: the status poll and the already_loaded
     # dedup reply. Either one re-deriving it reintroduces the flip.
     assert route.count("is_local_model = _loaded_is_local_model(") >= 2
-    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
+    assert "is_local_model = bool(_active and is_local_path(_active))" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():

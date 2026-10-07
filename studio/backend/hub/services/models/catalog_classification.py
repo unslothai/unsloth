@@ -528,8 +528,14 @@ def _local_model_task(model) -> Optional[str]:
         pass
     try:
         from core.inference.diffusion_engine_router import family_buildable_here
-        from core.inference.diffusion_families import detect_family, detect_family_by_pipeline_index
+        from core.inference.diffusion_families import (
+            detect_family,
+            detect_family_by_pipeline_index,
+            pipeline_index_contradicts_name,
+        )
 
+        if pipeline_index_contradicts_name(path):
+            return None
         families = (
             detect_family_by_pipeline_index(path),
             *(detect_family(needle) for needle in _local_family_needles(model)),

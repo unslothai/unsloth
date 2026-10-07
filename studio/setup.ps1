@@ -3097,6 +3097,28 @@ function substep {
     }
 }
 
+# Matched on npm's error code line, not anywhere in the log: Windows cleanup warnings
+# carry EPERM after a network failure too. FetchError names registry.npmjs.org even
+# on a local errno, so this runs before the network check (#8725).
+$script:NpmLocalFailureRe = 'npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
+# Keep in sync with _suggest_npm_registry in studio/setup.sh.
+$script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
+
+function Show-NpmLocalFailureHint {
+    # -Socket: FetchError with no "npm error path" line, i.e. the OS refused node.exe's
+    # socket (per-program firewall / antivirus rule). A cache write failure has a path.
+    param([switch]$Socket)
+    Write-StudioLine ""
+    if ($Socket) {
+        $nodePath = try { (Get-Command node -ErrorAction Stop).Source } catch { "node.exe" }
+        step "frontend" "the OS refused node's connection to the npm registry" "Yellow"
+        substep "Allow $nodePath in your firewall/antivirus, or use another Node install."
+        return
+    }
+    step "frontend" "npm hit a local file error (permission, lock or disk full)" "Yellow"
+    substep "Try: npm cache clean --force, or exclude the npm cache from your antivirus."
+}
+
 function Invoke-NpmMirrorRetry {
     if (-not $env:_UNSLOTH_MIRROR_SPARE) { return $false }
     if ((Get-MirrorFailedHost -Output $script:SetupCommandOutput -Ran npm) -ne 'npm') { return $false }
@@ -3111,6 +3133,13 @@ function Invoke-NpmMirrorRetry {
 }
 
 function Show-NpmRegistryHint {
+    # Empty output (verbose runs stream npm) keeps the unconditional registry hint.
+    param([string]$FailureOutput = "")
+    if ($FailureOutput) {
+        $FailureOutput = $FailureOutput -replace "$([char]27)\[[0-9;]*m", ''
+        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError' -and $FailureOutput -cnotmatch 'npm (error|ERR!) path '); return }
+        if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) { return }
+    }
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
     $mirror = $env:NPM_CONFIG_REGISTRY
     if (-not $mirror) {
@@ -5834,7 +5863,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
             Write-StudioLine "[ERROR] npm $NpmInstallVerb failed (exit code $npmExit)" -ForegroundColor Red
             Write-StudioLine "   Try running 'npm $NpmInstallVerb' manually in frontend/ to see errors" -ForegroundColor Yellow
-            Show-NpmRegistryHint
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
             Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
     }
@@ -5877,7 +5906,7 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
         Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint
+        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
         Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
     Pop-Location

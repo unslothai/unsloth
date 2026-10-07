@@ -106,11 +106,13 @@ def _span_index(item: dict) -> Optional[int]:
 
 
 def safe_stem_id(raw: Any, taken: set[str]) -> str:
-    """A file-safe id (``[A-Za-z0-9_-]{1,64}``), unique among ``taken`` by a ``_2`` style suffix."""
+    """A file-safe id (``[A-Za-z0-9_-]{1,64}``), unique among ``taken`` by a ``_2`` style suffix,
+    ignoring case (Windows and macOS read ``Vocals.wav`` as ``vocals.wav``)."""
     base = _ID_UNSAFE_RE.sub("_", str(raw or "").strip())[:64] or "stem"
+    seen = {item.casefold() for item in taken}
     stem_id = base
     n = 2
-    while stem_id in taken:
+    while stem_id.casefold() in seen:
         suffix = f"_{n}"
         stem_id = base[: 64 - len(suffix)] + suffix
         n += 1

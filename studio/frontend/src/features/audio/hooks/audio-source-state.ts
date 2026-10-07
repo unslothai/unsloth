@@ -60,6 +60,11 @@ export const INITIAL_AUDIO_SOURCE_STATE: AudioSourceState = {
   preview: EMPTY_PREVIEW,
 };
 
+/** Mirrors `CONVERT_EXPIRED_DETAIL` on the server: which Convert side's upload expired. */
+export const CONVERT_EXPIRED_MESSAGE = {
+  source: "This recording expired. Add it again.",
+  target: "This target voice expired. Add it again.",
+} as const;
 export const REFERENCE_EXPIRED_MESSAGE =
   "This reference expired. Add it again.";
 
@@ -160,4 +165,34 @@ export function audioFileProblem(file: {
     return "This is not an audio file. Pick a WAV, MP3, FLAC, OGG or M4A file.";
   }
   return null;
+}
+
+/** The Settings → Voice microphone, like dictation; "default" leaves the choice to the browser. */
+export function micAudioConstraints(
+  deviceId: string | null | undefined,
+): MediaTrackConstraints {
+  const base = { echoCancellation: true, noiseSuppression: true };
+  return deviceId && deviceId !== "default"
+    ? { ...base, deviceId: { exact: deviceId } }
+    : base;
+}
+
+export function micErrorMessage(error: unknown, desktop: boolean): string {
+  const name =
+    error && typeof error === "object" && "name" in error
+      ? (error as { name?: unknown }).name
+      : undefined;
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    // The desktop WebView has no site-permission UI, so Settings is the only way back.
+    return desktop
+      ? "Microphone access is blocked. Open Settings > Voice and click Allow microphone, or upload a file instead."
+      : "Microphone access is blocked. Allow it for this page, or upload a file instead.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "No microphone was found. Connect one, or upload a file instead.";
+  }
+  if (name === "NotReadableError" || name === "AbortError") {
+    return "The microphone is in use or unavailable. Try again, or upload a file instead.";
+  }
+  return "Could not use the microphone. Allow access, or upload a file instead.";
 }

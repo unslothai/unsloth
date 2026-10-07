@@ -58,6 +58,7 @@ from hub.utils.hf_tokens import (
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
+from utils.happy_eyeballs import inline_activation_source
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -1528,6 +1529,7 @@ _TRUSTSTORE_VENDOR = """
     + repr(vendor_dir())
     + "\n"
     + inline_gate_source()
+    + inline_activation_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend

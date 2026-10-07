@@ -146,3 +146,44 @@ test("a duplicated form result asks before posting again; a duplicated page just
   assert.equal(sentPosts.has(postCopy), true);
   assert.equal(sentPosts.has(currentEntry(pageTab)), false);
 });
+
+test("a form result pushed out of the cache still asks before posting again", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://example.com/pay", { method: "POST", body: "card=1" });
+  const posted = useBrowserStore.getState().tabs.at(-1);
+  assert.ok(posted);
+  const entry = currentEntry(posted);
+  sentPosts.add(entry);
+  cachePage(entry, { kind: "html", url: "https://example.com/pay", base: "https://example.com/pay", refresh: null, html: "paid" });
+  for (let i = 0; i < 12; i++) {
+    store.openUrl(`https://example.com/${i}`, { newTab: true });
+    const tab = useBrowserStore.getState().tabs.at(-1);
+    assert.ok(tab);
+    cachePage(currentEntry(tab), { kind: "html", url: `https://example.com/${i}`, base: `https://example.com/${i}`, refresh: null, html: "x" });
+  }
+  // What the page view checks: no cached copy, already sent, so it asks rather than resending.
+  assert.equal(cachedPage(entry), undefined);
+  assert.equal(sentPosts.has(entry), true);
+});
+
+test("going Back to a keyed file restores its key, so its card finds the tab again", () => {
+  const store = useBrowserStore.getState();
+  store.openFile({ blob: new Blob(["<p>hi</p>"]), name: "page.html", contentType: "text/html", key: "html:back" });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  assert.equal(tab()?.openKey, "file:html:back");
+  store.navigate(tabId, { url: "https://example.com/" });
+  assert.equal(tab()?.openKey, null);
+  store.goBack(tabId);
+  assert.equal(tab()?.openKey, "file:html:back");
+  store.goForward(tabId);
+  assert.equal(tab()?.openKey, null);
+  // A copy going Back does not claim the original's key.
+  store.goBack(tabId);
+  store.duplicateTab(tabId);
+  const copy = useBrowserStore.getState().tabs.find((candidate) => candidate.id !== tabId && candidate.history.some((entry) => entry.kind === "file" && entry.name === "page.html"));
+  assert.equal(copy?.openKey, null);
+  store.navigate(copy?.id ?? "", { url: "https://example.com/" });
+  store.goBack(copy?.id ?? "");
+  assert.equal(useBrowserStore.getState().tabs.find((candidate) => candidate.id === copy?.id)?.openKey, null);
+});

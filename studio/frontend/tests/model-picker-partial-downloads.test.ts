@@ -126,8 +126,8 @@ test("the mark promises a resume only when the transport can give one", () => {
   );
   assert.equal(
     PICKERS.split("<PartialBadge resumable={partialResumable} />").length - 1,
-    2,
-    "aligned and unaligned branches alike",
+    3,
+    "On Device, the Hub and unaligned rows alike",
   );
   // On Device reads its own row; Hub rows read the same cached rows partialSet is built from.
   assert.equal(
@@ -158,9 +158,12 @@ test("complete and partial are alternatives, never both dots on one row", () => 
     PICKERS.split(
       "{partial ? <PartialBadge resumable={partialResumable} /> : null}",
     ).length - 1,
-    2,
-    "drawn in the aligned and unaligned branches alike",
+    1,
+    "drawn in the unaligned branch",
   );
+  // The aligned lists draw it too: On Device beside the name, the Hub in its badge slot.
+  assert.ok(PICKERS.includes('{alignMeta === "device" && partial ? ('));
+  assert.ok(PICKERS.includes('{partial && alignMeta !== "device" ? ('));
   assert.equal(
     PICKERS.split(
       "{downloaded && !partial && !loaded ? <DownloadedBadge /> : null}",
@@ -453,7 +456,11 @@ test("a partial pick carries no load identity", () => {
     "a routed loadId is still read as downloaded",
   );
   // And the route still forwards whatever the pick gives it.
-  assert.ok(PICKERS.includes("loadId: meta.loadId ?? undefined,"));
+  assert.ok(PICKERS.includes("audioPickSearch(id, { ...meta, task: pickedTask })"));
+  assert.match(
+    read("../src/features/audio/route-search.ts"),
+    /loadId: pick\.loadId \?\? undefined,/,
+  );
 });
 
 test("configure carries the same rule, because Run replays its metadata", () => {

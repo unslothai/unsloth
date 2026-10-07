@@ -35,6 +35,7 @@ import {
   Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ShieldCogIcon } from "@/lib/shield-cog-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -77,6 +78,8 @@ const TAB_LOADERS = {
   resources: () =>
     import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
   chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  sandbox: () =>
+    import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
   browser: () =>
     import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
   voice: () =>
@@ -210,6 +213,11 @@ const TABS: TabDef[] = [
     icon: MessageCircleIcon,
   },
   {
+    id: "sandbox",
+    labelKey: "settings.tabs.sandbox",
+    icon: ShieldCogIcon,
+  },
+  {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
     icon: ApiIcon,
@@ -240,15 +248,10 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
   },
   {
-    id: "library",
-    labelKey: "shell.navigation.library",
-    icon: LibrariesIcon,
+    id: "browser",
+    labelKey: "browser.settingsTitle",
+    icon: InternetIcon,
     badgeKey: "common.new",
-  },
-  {
-    id: "data",
-    labelKey: "settings.tabs.data",
-    icon: DatabaseSettingIcon,
   },
   {
     id: "keyboard-shortcuts",
@@ -256,9 +259,14 @@ const TABS: TabDef[] = [
     icon: EnergyRectangleIcon,
   },
   {
-    id: "browser",
-    labelKey: "browser.settingsTitle",
-    icon: InternetIcon,
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
   },
   {
     id: "debugging",
@@ -333,7 +341,7 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource)
+      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -350,7 +358,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs, hubSource]);
+  }, [query, t, visibleTabs, hubSource, isOwner]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
@@ -431,6 +439,7 @@ export function SettingsDialog() {
     appearance: null,
     resources: null,
     chat: null,
+    sandbox: null,
     browser: null,
     voice: null,
     connections: null,
