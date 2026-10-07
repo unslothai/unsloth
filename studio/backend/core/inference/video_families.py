@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
+from .family_name_match import normalize_family_name, token_in_name, token_length
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
 # refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
@@ -334,7 +335,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
-        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
+        # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
+        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
         # guidance.
@@ -356,7 +358,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         vae_force_fp32 = True,
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
-        # no gguf_repo: community GGUFs split the experts, and a single-file load covers only one
+        # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
+        # (video_moe_pair)
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
     # on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no upstream model_index.json,
@@ -425,7 +428,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 def _token_in_needle(token: str, needle: str) -> bool:
     """Whole path/name segment match, as in diffusion_families (a short alias like
     'ltx' must not match inside an unrelated word)."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    return token_in_name(token, needle)
 
 
 def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optional[VideoFamily]:
@@ -440,13 +443,17 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
         for fam in _FAMILIES:
             if key == fam.name or key in fam.aliases:
                 return fam
+        norm = normalize_family_name(key)
+        for fam in _FAMILIES:
+            if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
+                return fam
         return None
     needle = repo_id.lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
-                best = (fam, len(token))
+            if _token_in_needle(token, needle) and (best is None or token_length(token) > best[1]):
+                best = (fam, token_length(token))
     if best is None:
         return None
     fam = best[0]
@@ -874,6 +881,8 @@ def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
-            if re.search(r"(?<![a-z])" + re.escape(key), needle):
+            if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
+                r"(?<![a-z])" + re.escape(normalize_family_name(key)), normalize_family_name(needle)
+            ):
                 return key
     return None

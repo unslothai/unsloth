@@ -37,6 +37,7 @@ export type SettingsScrollTarget =
   | "chat-composer"
   | "browser-html-network"
   | "general-hub"
+  | "general-rag-embedding"
   /** Old name of sandbox-permissions, from when Permissions lived in General. */
   | "general-permissions"
   | "library-storage"
@@ -142,6 +143,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "appearance-sidebar-nav": "appearance",
   "browser-html-network": "browser",
   "general-hub": "general",
+  "general-rag-embedding": "general",
   "general-permissions": "sandbox",
   "library-storage": "library",
   "resources-caches": "resources",

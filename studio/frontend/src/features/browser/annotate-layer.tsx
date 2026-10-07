@@ -21,11 +21,14 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { annotateScript } from "./api";
 import { canScreenshot } from "./screenshot-support";
 import { screenshotPage } from "./capture";
 import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
-import { frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
+import { startNativeAnnotate } from "./native-annotate";
+import { focusPanel, nativeViewBounds } from "./native-view";
+import { type FrameCommand, frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { useBrowserStore } from "./store";
 
@@ -206,11 +209,12 @@ const sameRanges = (a: Range[] | null, b: Range[] | null) =>
       range.endOffset === b[index]?.endOffset,
   );
 
-/** Request edits on a file: click marks a block, drag marks an area; Send posts all as one message. */
+/** Request edits on a file or a Studio page: click marks a block, drag marks an area; Send posts all as one message. */
 export function AnnotateLayer({
   page,
   fileName,
-}: { page: HTMLElement; fileName: string }) {
+  url,
+}: { page: HTMLElement; fileName: string; url?: string }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const cursorRef = useRef<HTMLDivElement | null>(null);
@@ -256,7 +260,7 @@ export function AnnotateLayer({
     setSending(true);
     const files = await annotationScreenshot(page);
     const sent = await sendAnnotations(
-      { file: fileName, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      { file: fileName, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
       files,
     ).finally(() => setSending(false));
     if (sent) exit();
@@ -619,6 +623,7 @@ function CommentForm({
     <form
       data-annotate-ui=""
       data-annotate-chrome=""
+      data-native-cover=""
       onSubmit={(event) => {
         event.preventDefault();
         onSave();
@@ -675,12 +680,15 @@ function AnnotateBar({
   sendDisabled,
   onSend,
   onExit,
+  besidePage = false,
 }: {
   count: number;
   canSend: boolean;
   sendDisabled: boolean;
   onSend: () => void;
   onExit: () => void;
+  /** Over a native view: the page ends above the bar, so it only slides sideways. */
+  besidePage?: boolean;
 }) {
   const t = useT();
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -704,7 +712,7 @@ function AnnotateBar({
     const minY = -(bounds.height - height - 20 - 8);
     setOffset({
       x: Math.min(maxX, Math.max(-maxX, event.clientX - start.x)),
-      y: Math.min(12, Math.max(minY, event.clientY - start.y)),
+      y: besidePage ? 0 : Math.min(12, Math.max(minY, event.clientY - start.y)),
     });
   };
   const endDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -715,6 +723,7 @@ function AnnotateBar({
       ref={barRef}
       data-annotate-ui=""
       data-annotate-chrome=""
+      data-native-inset={besidePage ? "" : undefined}
       className={cn(
         "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl pr-1.5 pl-2.5 text-ui-15",
         SURFACE,
@@ -777,13 +786,15 @@ function accentColor(): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-/** Ask about a web page: the page's own script tracks the pointer and draws marks (`annotation` in routes/browser.py); this layer holds the comments and the bar. */
+/** Ask about a web page: the page's own script tracks the pointer and draws marks (`annotation` in routes/browser.py); this layer holds the comments and the bar.
+ *  Framed pages are driven through their shell, native views through `startNativeAnnotate`. */
 export function WebAnnotateLayer({
   tabId,
   title,
   url,
   page,
-}: { tabId: string; title: string; url: string; page: HTMLElement | null }) {
+  native = false,
+}: { tabId: string; title: string; url: string; page: HTMLElement | null; native?: boolean }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -795,17 +806,21 @@ export function WebAnnotateLayer({
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [, setLayout] = useState(0);
+  const zoom = useBrowserStore((state) => state.tabs.find((tab) => tab.id === tabId)?.zoom ?? 1);
   const { setAnnotating, sendAnnotations } = useBrowserStore.getState();
+  const nativeSend = useRef<((command: FrameCommand) => void) | null>(null);
 
   const exit = () => setAnnotating(null);
-  const forget = (id: number) => sendFrameCommand(tabId, { command: "annotateForget", id });
+  const command = (next: FrameCommand) =>
+    native ? nativeSend.current?.(next) : sendFrameCommand(tabId, next);
+  const forget = (id: number) => command({ command: "annotateForget", id });
   // The page gets the annotate code only now (each document once; repeats are ignored there).
   const start = () =>
     void annotateScript().then(
       (code) => {
         if (liveTab.current !== tabId) return;
-        sendFrameCommand(tabId, { command: "annotateInstall", code });
-        sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
+        command({ command: "annotateInstall", code });
+        command({ command: "annotate", on: true, color: accentColor() });
       },
       () => liveTab.current === tabId && exit(),
     );
@@ -842,6 +857,10 @@ export function WebAnnotateLayer({
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
     // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
+    // Keep the open comment and close its form, so a native view shows again for the screenshot.
+    setItems(outgoing);
+    setPending(null);
+    setDraft("");
     const files = await annotationScreenshot(page);
     const sent = await sendAnnotations(
       { file: title || url, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
@@ -850,10 +869,20 @@ export function WebAnnotateLayer({
     if (sent) exit();
   };
 
+  // A press in a native view keeps key focus there: move it back to the comment.
+  const takeKeys = () => {
+    if (native) void focusPanel(tabId).then(() => inputRef.current?.focus());
+  };
+
   // Read on each report, so one always sees this render's state.
   const handle = (event: AnnotateEvent) => {
     switch (event.kind) {
       case "ready":
+        // New document (a native view navigated in place): drop the old marks.
+        setItems([]);
+        setPending(null);
+        setDraft("");
+        setRects(new Map());
         start();
         break;
       case "up":
@@ -868,6 +897,7 @@ export function WebAnnotateLayer({
         if (!item) break;
         setPending({ id: item.id, quote: item.quote, saved: true });
         setDraft(item.request);
+        takeKeys();
         break;
       }
       case "mark": {
@@ -887,6 +917,7 @@ export function WebAnnotateLayer({
         setRects((current) => new Map(current).set(event.id, event.rect));
         setPending({ id: event.id, quote, saved: false });
         setDraft("");
+        takeKeys();
         break;
       }
       case "rects":
@@ -900,16 +931,31 @@ export function WebAnnotateLayer({
   startRef.current = start;
 
   useEffect(() => {
-    const stop = onFrameAnnotate(tabId, (event) => handleRef.current(event));
+    const listener = (event: AnnotateEvent) => handleRef.current(event);
+    let stop: () => void;
+    if (native) {
+      // One poll can carry several reports: render between them so each sees the last one's state.
+      const channel = startNativeAnnotate(tabId, (event) => flushSync(() => listener(event)));
+      nativeSend.current = channel.send;
+      stop = () => {
+        nativeSend.current = null;
+        channel.stop();
+      };
+    } else {
+      const unlisten = onFrameAnnotate(tabId, listener);
+      stop = () => {
+        unlisten();
+        sendFrameCommand(tabId, { command: "annotate", on: false });
+      };
+    }
     liveTab.current = tabId;
     // Now, for a page already loaded; a page still loading asks with "ready".
     startRef.current();
     return () => {
       liveTab.current = null;
       stop();
-      sendFrameCommand(tabId, { command: "annotate", on: false });
     };
-  }, [tabId]);
+  }, [tabId, native]);
 
   useEffect(() => {
     const layer = layerRef.current;
@@ -937,18 +983,21 @@ export function WebAnnotateLayer({
   useEffect(() => {
     const numbers: Array<[number, number]> = items.map((item, index) => [item.id, index + 1]);
     if (pending && !pending.saved) numbers.push([pending.id, items.length + 1]);
-    sendFrameCommand(tabId, { command: "annotateNumbers", numbers });
+    command({ command: "annotateNumbers", numbers });
   }, [tabId, items, pending]);
 
   const origin = layerRef.current?.getBoundingClientRect() ?? new DOMRect();
-  const frame = frameRect(tabId) ?? origin;
+  // Native views report CSS pixels; scale by their zoom.
+  const bounds = native ? nativeViewBounds(tabId) : null;
+  const frame = bounds ? { left: bounds.x, top: bounds.y } : (frameRect(tabId) ?? origin);
+  const scale = bounds ? zoom : 1;
   const rect = pending ? rects.get(pending.id) : null;
   const pendingBox: Box | null = rect
     ? {
-        left: rect.left + frame.left - origin.left,
-        top: rect.top + frame.top - origin.top,
-        width: rect.width,
-        height: rect.height,
+        left: rect.left * scale + frame.left - origin.left,
+        top: rect.top * scale + frame.top - origin.top,
+        width: rect.width * scale,
+        height: rect.height * scale,
       }
     : null;
   const count = items.length;
@@ -957,6 +1006,16 @@ export function WebAnnotateLayer({
 
   return (
     <div ref={layerRef} className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
+      {native && pending ? (
+        // The page is a snapshot while commenting; a press on it saves, as on a live page.
+        <div
+          data-annotate-ui=""
+          data-native-cover=""
+          aria-hidden={true}
+          className="pointer-events-auto absolute inset-0"
+          onPointerDown={save}
+        />
+      ) : null}
       {pending && pendingBox ? (
         <CommentForm
           key={pending.id}
@@ -976,6 +1035,7 @@ export function WebAnnotateLayer({
           sendDisabled={!sendAnnotations || sending}
           onSend={send}
           onExit={exit}
+          besidePage={native}
         />
       ) : null}
     </div>

@@ -52,6 +52,7 @@ from core.inference.sd_cpp_args import SdCppModelFiles, build_sd_cpp_server_comm
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
     SdCppCancelled,
+    _diagnostic_tail,
     _sd_cpp_command_for_log,
     _sd_cpp_command_summary,
     _verbose_native_logs,
@@ -93,40 +94,6 @@ _TOTAL_PARAMS_VRAM_RE = re.compile(
 _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
-
-# Lines worth keeping from a dead server's output whatever their position.
-_DIAGNOSTIC_MARKERS = (
-    "error",
-    "abort",
-    "assert",
-    "unsupported",
-    "not implemented",
-    "out of memory",
-    "failed",
-    "exception",
-)
-
-
-def _diagnostic_tail(
-    lines,
-    *,
-    keep: int = 20,
-    limit: int = 1500,
-) -> str:
-    """The most useful part of the captured output, not merely its last lines.
-
-    A native abort prints its REASON first and then a long backtrace, so taking the last N lines
-    reported nothing but stack frames: a Metal host that died on an unimplemented op showed twenty
-    addresses and no cause. Marked lines come first (in order), then the last few lines for
-    context, deduplicated."""
-    captured = list(lines)
-    marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
-    chosen: list[str] = []
-    for line in marked[-keep:] + captured[-max(keep // 2, 4) :]:
-        if line not in chosen:
-            chosen.append(line)
-    return "\n".join(chosen)[:limit]
-
 
 # Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
 # lock until the job ends.

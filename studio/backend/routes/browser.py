@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import codecs
 import hashlib
+import hmac
 import html as _html
 import json
 import re
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
 from urllib.parse import quote, urljoin, urlsplit
@@ -66,6 +69,60 @@ _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
 _META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
+
+# The sandbox's opaque origin fails CORS module loads: self-contained modules are inlined, ones with imports keep src.
+_MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
+# One start-tag attribute; quoted values are skipped whole so a name inside a value isn't matched.
+_TAG_ATTR_RE = re.compile(r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?|/""")
+_FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
+# Imports resolve against the module URL. "/" after import may start a comment; after from it may be division (keeping the tag is the safe side).
+_MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
+_MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
+_SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
+# Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
+_INERT_START_RE = re.compile(
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
+    + _TAG_BODY
+    + r"|<[a-z][^\s/>]*"
+    + _TAG_BODY,
+    re.IGNORECASE,
+)
+_TEMPLATE_TAG_RE = re.compile(r"<(/)?template(?=[\s/>])", re.IGNORECASE)
+_CLOSING_TAG_RES = {
+    name: re.compile(rf"</{name}(?=[\s/>])", re.IGNORECASE)
+    for name in (
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+        "noscript",
+    )
+}
+# The JavaScript MIME types a module script may be served as (WHATWG MIME Sniffing).
+_JS_TYPES = frozenset(
+    "application/ecmascript application/javascript application/x-ecmascript "
+    "application/x-javascript text/ecmascript text/javascript text/javascript1.0 "
+    "text/javascript1.1 text/javascript1.2 text/javascript1.3 text/javascript1.4 "
+    "text/javascript1.5 text/jscript text/livescript text/x-ecmascript text/x-javascript".split()
+)
+# Strongest last, for Subresource Integrity's "strongest algorithm wins".
+_SRI_ALGORITHMS = ("sha256", "sha384", "sha512")
+_MAX_INLINED_MODULES = 6
+_MAX_MODULE_BYTES = 2 * 1024 * 1024
+_MODULE_TIMEOUT_S = 8
+# Separate from _FETCH_POOL, whose workers wait on these.
+_MODULE_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-module")
+# (url, integrity, credentials) -> (expiry, code or None); kept only while the response says fresh, failures never.
+_MODULE_CACHE: "OrderedDict[tuple[str, str, bool], tuple[float, Optional[str]]]" = OrderedDict()
+_MODULE_CACHE_LOCK = threading.Lock()
+_MODULE_CACHE_TTL_S = 600
+_MODULE_CACHE_ENTRIES = 128
+_MODULE_CACHE_CHARS = 16 * 1024 * 1024
+_module_cache_chars = 0
 
 # https only (http could hit local services; WebKit lacks local network protection). The sandbox
 # (no allow-same-origin) isolates pages; the injected script submits forms.
@@ -1144,6 +1201,217 @@ def _studio_headers(host: str) -> dict:
     return _STUDIO_HEADERS if host == "unsloth.ai" or host.endswith(".unsloth.ai") else {}
 
 
+def _integrity_ok(body: bytes, integrity: str) -> bool:
+    """Whether ``body`` matches the tag's SRI ``integrity``; inlining drops the attribute, so check here."""
+    hashes: dict[str, list[str]] = {}
+    for token in integrity.split():
+        algorithm, _, value = token.partition("-")
+        algorithm = algorithm.lower()
+        if algorithm in _SRI_ALGORITHMS and value:
+            hashes.setdefault(algorithm, []).append(value.split("?", 1)[0])
+    if not hashes:
+        # No metadata the browser understands: it loads the script unchecked.
+        return True
+    algorithm = max(hashes, key = _SRI_ALGORITHMS.index)
+    digest = base64.b64encode(hashlib.new(algorithm, body).digest()).decode("ascii")
+    return any(hmac.compare_digest(digest, value) for value in hashes[algorithm])
+
+
+def _fresh_for(cache_control: Optional[str], age: Optional[str]) -> float:
+    """Seconds a response may be reused by this shared cache; ``private``/``no-cache`` rule it out."""
+    directives = (cache_control or "").lower()
+    if any(word in directives for word in ("no-store", "no-cache", "private")):
+        return 0
+    lifetimes = dict((name.lower(), int(value)) for name, value in _MAX_AGE_RE.findall(directives))
+    lifetime = lifetimes.get("s-maxage", lifetimes.get("max-age", 0))
+    try:
+        lifetime -= max(int(age or 0), 0)
+    except ValueError:
+        pass
+    return float(min(max(lifetime, 0), _MODULE_CACHE_TTL_S))
+
+
+def _module_cached(key: tuple[str, str, bool]) -> tuple[bool, Optional[str]]:
+    with _MODULE_CACHE_LOCK:
+        hit = _MODULE_CACHE.get(key)
+        if hit is None or time.monotonic() >= hit[0]:
+            return False, None
+        _MODULE_CACHE.move_to_end(key)
+        return True, hit[1]
+
+
+def _cache_module(key: tuple[str, str, bool], code: Optional[str], fresh_for: float) -> None:
+    global _module_cache_chars
+    size = len(code or "")
+    if fresh_for <= 0 or size > _MODULE_CACHE_CHARS // 4:
+        return
+    with _MODULE_CACHE_LOCK:
+        old = _MODULE_CACHE.pop(key, None)
+        if old is not None:
+            _module_cache_chars -= len(old[1] or "")
+        _MODULE_CACHE[key] = (time.monotonic() + fresh_for, code)
+        _module_cache_chars += size
+        while (
+            len(_MODULE_CACHE) > _MODULE_CACHE_ENTRIES or _module_cache_chars > _MODULE_CACHE_CHARS
+        ):
+            _, (_, dropped) = _MODULE_CACHE.popitem(last = False)
+            _module_cache_chars -= len(dropped or "")
+
+
+def _fetch_module(
+    url: str,
+    integrity: str,
+    credentials: bool,
+    deadline: float,
+    cancel_event: Optional[threading.Event],
+) -> Optional[str]:
+    """A self-contained module's code, safe to inline; None to leave its tag alone."""
+    key = (url, integrity, credentials)
+    found, code = _module_cached(key)
+    if found:
+        return code
+    meta: dict = {}
+    try:
+        error, body, content_type = _fetch_url_raw(
+            url,
+            timeout = _MODULE_TIMEOUT_S,
+            extra_headers = {"User-Agent": _BROWSER_UA, "Accept": "*/*"},
+            deadline = deadline,
+            raw_bytes_max = _MAX_MODULE_BYTES,
+            meta_out = meta,
+            cancel_event = cancel_event,
+            host_headers = _studio_headers,
+        )
+    except Exception as exc:
+        logger.warning("browser_module_fetch_failed", error = type(exc).__name__)
+        return None
+    if error is not None or not isinstance(body, bytes):
+        return None
+    # Redirected to http: tamperable, and the frame's upgrade-insecure-requests wouldn't run it either.
+    if not str(meta.get("url") or url).lower().startswith("https://"):
+        return None
+    code = None
+    allow_origin = (meta.get("allow_origin") or "").strip()
+    # ACAO * or null already loads from the sandbox (where SRI is enforced too).
+    loads_itself = allow_origin in ("*", "null") and not credentials
+    if content_type in _JS_TYPES and not loads_itself and _integrity_ok(body, integrity):
+        # Browsers decode module scripts as UTF-8 whatever the header says.
+        text = body.decode("utf-8", errors = "replace")
+        # Imports would resolve against the page; "<!--" then "<script" keeps an inline tag open.
+        if not _MODULE_IMPORT_RE.search(text) and not (
+            "<!--" in text and _SCRIPT_OPEN_RE.search(text)
+        ):
+            code = re.sub(r"</(script)", r"<\\/\1", text, flags = re.IGNORECASE)
+    # Only the final hop's headers are known, so a redirected answer isn't cached.
+    redirected = str(meta.get("url") or url) != url
+    fresh_for = 0 if redirected else _fresh_for(meta.get("cache_control"), meta.get("age"))
+    _cache_module(key, code, fresh_for)
+    return code
+
+
+def _inert_spans(page: str) -> list[tuple[int, int]]:
+    """Spans of ``page`` that are text, not markup, in order, read front to back as the parser does."""
+    spans: list[tuple[int, int]] = []
+    at = 0
+    while match := _INERT_START_RE.search(page, at):
+        if match.group(0).startswith("<!--"):
+            close = page.find("-->", match.end())
+            end = len(page) if close < 0 else close + 3
+            spans.append((match.start(), end))
+        elif match.group(1) is None:
+            end = match.end()
+            spans.append((match.start(), end))
+        elif match.group(1).lower() == "template":
+            depth, close = 1, None
+            for tag in _TEMPLATE_TAG_RE.finditer(page, match.end()):
+                depth += -1 if tag.group(1) else 1
+                if depth == 0:
+                    close = tag
+                    break
+            end = close.end() if close else len(page)
+            spans.append((match.end(), close.start() if close else len(page)))
+        else:
+            name = match.group(1).lower()
+            close = (
+                None if name == "plaintext" else _CLOSING_TAG_RES[name].search(page, match.end())
+            )
+            end = close.end() if close else len(page)
+            spans.append((match.end(), close.start() if close else len(page)))
+        at = max(end, match.end())
+    return spans
+
+
+def _open_tag(script: str) -> str:
+    """A script element's start tag, from a match of _MODULE_SCRIPT_RE."""
+    return script[: script.lower().rindex("</script")].rstrip()
+
+
+def _script_attrs(open_tag: str) -> list[tuple[str, str, str]]:
+    """A ``<script ...>`` start tag's attributes as ``(lowercase name, value, source text)``."""
+    attrs = []
+    for match in _TAG_ATTR_RE.finditer(open_tag, len("<script"), len(open_tag) - 1):
+        if match.group(1) is None:
+            continue
+        value = next((group for group in match.groups()[1:] if group is not None), "")
+        attrs.append((match.group(1).lower(), _html.unescape(value), match.group(0)))
+    return attrs
+
+
+def _inline_module_scripts(
+    page: str,
+    base_url: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
+    """Inline the page's self-contained module scripts, which the sandbox can't load itself."""
+    tags: list[tuple[re.Match[str], str, str, bool]] = []
+    inert: Optional[list[tuple[int, int]]] = None
+    for match in _MODULE_SCRIPT_RE.finditer(page):
+        attrs: dict[str, str] = {}
+        for name, value, _text in _script_attrs(_open_tag(match.group(0))):
+            # The first of a repeated attribute is the one that counts.
+            attrs.setdefault(name, value)
+        if attrs.get("type", "").strip().lower() != "module":
+            continue
+        src = attrs.get("src")
+        url = _join(base_url, src) if src else None
+        if not url or not url.lower().startswith("https://"):
+            continue
+        # A tag inside text (comment, textarea, style...) stays; inlined code could end that element.
+        if inert is None:
+            inert = _inert_spans(page)
+        at = bisect.bisect_right(inert, (match.start(), len(page))) - 1
+        if at >= 0 and inert[at][0] <= match.start() < inert[at][1]:
+            continue
+        credentials = attrs.get("crossorigin", "").strip().lower() == "use-credentials"
+        tags.append((match, url, attrs.get("integrity", ""), credentials))
+        if len(tags) == _MAX_INLINED_MODULES:
+            break
+    if not tags:
+        return page
+    deadline = time.monotonic() + _MODULE_TIMEOUT_S
+    codes = list(
+        _MODULE_POOL.map(lambda tag: _fetch_module(*tag[1:], deadline, cancel_event), tags)
+    )
+    parts: list[str] = []
+    end = 0
+    room = _MAX_BROWSER_HTML_BYTES - len(page.encode("utf-8"))
+    for (match, *_), code in zip(tags, codes):
+        size = len(code.encode("utf-8")) if code is not None else 0
+        if code is None or size > room:
+            continue
+        room -= size
+        kept = (
+            text
+            for name, _value, text in _script_attrs(_open_tag(match.group(0)))
+            if name not in _FETCH_ATTRS
+        )
+        open_tag = "".join(["<script", *(" " + text for text in kept), ">"])
+        parts += [page[end : match.start()], open_tag, code, "</script>"]
+        end = match.end()
+    parts.append(page[end:])
+    return "".join(parts)
+
+
 def _fetch(
     request: BrowserFetchRequest, cancel_event: threading.Event
 ) -> tuple[Optional[str], bytes, str, dict]:
@@ -1176,7 +1444,12 @@ def _attachment_name(meta: dict) -> Optional[str]:
 
 
 def _build_response(
-    url: str, error: Optional[str], body: bytes, content_type: str, meta: dict
+    url: str,
+    error: Optional[str],
+    body: bytes,
+    content_type: str,
+    meta: dict,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Response:
     """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
     if error is not None:
@@ -1201,6 +1474,7 @@ def _build_response(
                 detail = f"(page exceeds the {_MAX_BROWSER_HTML_BYTES} byte limit for the panel)",
             )
         page, base_url, refresh = _prepare_page(_decode_html(body, meta.get("charset")), final_url)
+        page = _inline_module_scripts(page, base_url, cancel_event)
         payload = {"url": final_url, "base": base_url, "refresh": refresh, "html": page}
         return Response(
             content = json.dumps(payload, ensure_ascii = False).encode("utf-8"),
@@ -1232,7 +1506,7 @@ def _build_response(
 
 def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
     error, body, content_type, meta = _fetch(request, cancel_event)
-    return _build_response(request.url, error, body, content_type, meta)
+    return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
 @router.post("/fetch")

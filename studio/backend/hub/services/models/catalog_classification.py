@@ -138,11 +138,12 @@ def _name_hint_media_task(
     an unrecognised name means, hence *unmatched*.
     """
     from core.inference.video_families import detect_video_family
+    from core.inference.video_moe_pair import moe_pick_pairs
 
     for hint in name_hints:
         family = detect_video_family(hint) if hint else None
         if family is not None:
-            if not getattr(family, "is_moe", False) and _video_family_buildable(family):
+            if moe_pick_pairs(family, *name_hints) and _video_family_buildable(family):
                 return _VIDEO_GEN_TASK
             return _UNSUPPORTED_DIFFUSION_TASK
     from core.inference.diffusion_families import detect_family_for_pick
@@ -281,6 +282,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
+        from core.inference.video_moe_pair import moe_pick_pairs
 
         family = detect_video_family("", override = normalized)
         if family is None:
@@ -291,7 +293,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                         break
         if (
             family is not None
-            and not getattr(family, "is_moe", False)
+            and moe_pick_pairs(family, *name_hints)
             and _video_family_buildable(family)
         ):
             return _VIDEO_GEN_TASK
@@ -493,6 +495,14 @@ def _local_family_needles(model) -> tuple[str, ...]:
         single = resolve_local_single_file(model.path)
         if single:
             needles.append(single)
+    except Exception:
+        pass
+    try:
+        # A renamed loose checkpoint: its header still names the family.
+        path = Path(model.path)
+        if path.suffix.lower() == ".safetensors" and path.is_file():
+            from core.inference.diffusion_content import inspect_checkpoint
+            needles.append(inspect_checkpoint(str(path)).family)
     except Exception:
         pass
     return tuple(needle for needle in needles if needle)

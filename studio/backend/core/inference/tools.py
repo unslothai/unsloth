@@ -15805,8 +15805,9 @@ def _fetch_url_raw(
     redirect to another site does not carry them.
 
     ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
-    ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
-    successful binary-mode fetch, and
+    ``meta_out`` receives the final ``url``, ``charset``, ``filename`` (Content-Disposition),
+    ``allow_origin`` (Access-Control-Allow-Origin), ``cache_control`` and ``age`` of a successful
+    binary-mode fetch, and
     ``bot_check`` on HTTP errors.
 
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
@@ -15963,6 +15964,9 @@ def _fetch_url_raw(
                     meta_out["url"] = current_url
                     meta_out["charset"] = resp.headers.get_content_charset()
                     meta_out["filename"] = resp.headers.get_filename()
+                    meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
+                    meta_out["cache_control"] = resp.headers.get("Cache-Control")
+                    meta_out["age"] = resp.headers.get("Age")
                 return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
@@ -16915,6 +16919,57 @@ def _empty_result_with_requested_images(
     return empty_text + "\n\n---\n\n" + found
 
 
+def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
+    """search English Wikipedia independently of ddgs through the guarded HTTP fetcher."""
+    # ddgs uses a one-result Wikipedia lookup, so full-text search recovers misses and failures.
+    from html import unescape
+
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": min(max_results, 50),
+            "srnamespace": 0,
+        }
+    )
+    error, body, _ = _fetch_url_raw(
+        "https://en.wikipedia.org/w/api.php?" + params,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        website_policy = website_policy,
+        raw_bytes_max = 1024 * 1024,
+        extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
+    )
+    if error:
+        raise RuntimeError(error)
+    payload = json.loads(body)
+    if "error" in payload:
+        raise RuntimeError("Wikipedia search API returned an error")
+    return [
+        {
+            "title": item["title"],
+            "href": "https://en.wikipedia.org/wiki/"
+            + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
+        }
+        for item in payload["query"]["search"]
+        if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"].strip()
+    ]
+
+
+def _usable_search_results(results, website_policy):
+    from .web_access_policy import check_url_access
+    return [
+        r
+        for r in results
+        if isinstance(r, dict)
+        and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+    ]
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16925,11 +16980,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
-    fetches that page directly instead of searching. ``include_images`` adds image results registered
-    server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
-    envelope appended: one picture per ``image_queries`` subject when the model named them, else
-    a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
+    """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
@@ -16944,8 +16995,7 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        # Ahead of the try below, so this one has to carry its own guard: execute_tool returns a string for every
-        # input, and a raise here would escape _web_search.
+        # guard here because execute_tool requires a string result and this is outside the try.
         found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
         if found is None:
             return "No images found for: " + ", ".join(subjects)
@@ -16953,57 +17003,88 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be interrupted mid-flight, so gate on either
-    # side: skip an already-cancelled request, and discard results that land after the client has gone.
+    # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
         from .web_access_policy import check_url_access, scope_search_query
 
-        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
-        if not engine_tiers:
-            return "Search failed: no approved search engine is available."
-
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
-        # all disallowed otherwise yields nothing even when valid results rank just under them. Test the domain lists,
-        # not the dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
-        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
-        client = DDGS(timeout = timeout)
-        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
-        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
-        results, last_error = [], None
-        for backend in engine_tiers:
-            if cancel_event is not None and cancel_event.is_set():
-                return "Search cancelled."
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        client, results, last_error = None, [], None
+        rejected_results = False
+        wikipedia_fallback = False
+        try:
+            from ddgs import DDGS
+            from ddgs.engines import ENGINES
+
+            engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+            if not engine_tiers:
+                raise RuntimeError("no approved search engine is available.")
+            # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
+            deadline = time.monotonic() + timeout if timeout else None
+            client = DDGS(timeout = timeout)
+            # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
+            for backend in engine_tiers:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Search cancelled."
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    client = DDGS(timeout = remaining)
+                try:
+                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    results = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not results)
+                except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
+                    last_error = exc
+                    continue
+                if results:
                     break
-                client = DDGS(timeout = remaining)
-            try:
-                results = client.text(effective_query, max_results = wanted, backend = backend)
-            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
-                last_error = exc
-                continue
-            if results:
-                break
-        if not results and last_error is not None:
-            raise last_error
+        except Exception as exc:
+            last_error = exc
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
+            remaining = deadline - time.monotonic() if deadline else 5.0
+            allowed, _, _ = check_url_access("https://en.wikipedia.org/w/api.php", website_policy)
+            if allowed and remaining > 0:
+                try:
+                    fallback_timeout = min(remaining, 5.0)
+                    fallback_deadline = time.monotonic() + fallback_timeout
+                    if deadline is not None:
+                        fallback_deadline = min(fallback_deadline, deadline)
+                    results = _usable_search_results(
+                        _wikipedia_search(
+                            query,
+                            wanted,
+                            fallback_timeout,
+                            fallback_deadline,
+                            cancel_event,
+                            website_policy,
+                        ),
+                        website_policy,
+                    )
+                    wikipedia_fallback = bool(results)
+                except Exception:
+                    logger.debug("Independent Wikipedia search failed", exc_info = True)
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+        # blocked results take precedence over earlier tier exceptions.
+        if not results and last_error is not None and not rejected_results:
+            raise last_error
+        if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1]
+                if rejected_results and restricted
+                else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -17018,7 +17099,7 @@ def _web_search(
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
                 continue
-            title = " ".join(str(r.get("title") or "").split())
+            title = " ".join(str(r.get("title") or href).split())
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
@@ -17031,17 +17112,23 @@ def _web_search(
                 website_policy,
             )
         text = "\n\n---\n\n".join(parts)
+        if wikipedia_fallback:
+            text = (
+                "General web search was unavailable or returned no usable results. "
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n"
+                + text
+            )
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
         if include_images and subjects:
-            # The model named what it will show: one picture per subject, no generic pile.
+            # named subjects require one image each rather than a generic image batch.
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
-        elif include_images:
+        elif include_images and not wikipedia_fallback:
             text += _web_search_images_suffix(
                 client,
                 effective_query,
@@ -17050,13 +17137,12 @@ def _web_search(
                 website_policy,
             )
         elif subjects:
-            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            # replayed history must retain the disabled-search reminder.
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         failure = _search_failure_message(e, timeout)
-        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too and owes the named subjects
-        # their pictures. A genuine failure keeps its message alone: pictures under an error read as a partial answer.
+        # ddgs raises on an empty sweep; attach requested images only to empty results, not genuine errors.
         if failure == EMPTY_SEARCH_RESULTS[0]:
             return _empty_result_with_requested_images(
                 failure,

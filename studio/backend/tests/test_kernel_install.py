@@ -336,14 +336,30 @@ def test_flash_attn_resolution(env, expected):
     assert kernel_install.resolve_wheel_url("flash_attn", env) == expected
 
 
+@pytest.mark.parametrize("name", ["flash_attn", "mamba_ssm"])
 @pytest.mark.parametrize("capability", ["7 5", "None"])
-def test_flash_attn_is_skipped_below_sm80(capability, capsys):
+def test_sm80_kernels_are_skipped_below_sm80(name, capability, capsys):
     run = _Runner([], capability = capability)
-    assert (
-        kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
-    )
+    assert kernel_install.install_kernel(name, _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls == []
-    assert "skipping flash_attn" in capsys.readouterr().out
+    assert f"skipping {name}, which needs sm80 or newer" in capsys.readouterr().out
+
+
+def test_causal_conv1d_still_installs_below_sm80(uv):
+    uv(False)
+    run = _Runner([False, True], capability = "7 5")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
+
+
+def test_the_gpu_is_probed_once_for_every_sm80_kernel(capsys):
+    run = _Runner([], capability = "7 5")
+    for name in ("flash_attn", "mamba_ssm"):
+        kernel_install.install_kernel(name, _COLAB, run = run, exists = lambda url: True)
+    assert sum("get_device_capability" in " ".join(c) for c in run.calls) == 1
 
 
 def test_flash_attn_installs_on_sm80_and_newer(uv):

@@ -313,40 +313,25 @@ def help_text_supports_minimax_h3(help_text: str) -> bool:
 
 
 def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
-    """Both of ``ensure_h3_sd_cpp_binary``'s questions against a live binary, on ONE ``--help``. The
-    capability marker cannot stand alone here: ``--ref-video`` is a plain option name that
-    unrelated reference-video tools expose too, so a caller re-checking only capability would
-    accept a program the gate itself would have refused on identity -- the difference between "an
-    sd.cpp build too old for H3" and "not sd.cpp at all" (#8507). Same conservative default as
-    ``sd_cpp_supports_minimax_h3``: an unreadable ``--help`` is "could not tell", and the
-    caller's own ``version()`` gate already refuses a binary that will not run."""
+    """rejects unrelated --ref-video tools; version() rejects binaries an unreadable probe keeps."""
     text = _sd_cpp_probe_output(binary, "--help")
     if text is None:
         return True
     return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
 
 
-# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does
-# nothing without --max-vram.
-_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
-
-
-def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
-    """True only when ``binary``'s ``--help`` advertises the graph-cut executor. The opposite
-    default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe: that gate
-    refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and sd-cli exits
-    non-zero on an option it does not know. Guessing yes from an unreadable ``--help`` would
-    break every generation on an older build instead of merely leaving it as slow as it is today."""
+def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
+    """returns advertised graph-cut flags; missing help emits none because sd-cli rejects them."""
     if not binary:
-        return False
+        return frozenset()
     text = _sd_cpp_probe_output(binary, "--help")
-    if text is None:
-        return False
-    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+    if text is None or "--max-vram" not in text:
+        return frozenset()
+    return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
-    """Fails closed: sd-cli exits non-zero on an unknown option (u13b9d92 predates --sage-attn)."""
+    """fails closed because sd-cli rejects unknown flags (u13b9d92 predates --sage-attn)."""
     if not binary:
         return False
     text = _sd_cpp_probe_output(binary, "--help")
@@ -2291,12 +2276,15 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+_EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
+
+
 def _map_guidance(
     fam: DiffusionFamily, guidance: Optional[float]
 ) -> tuple[Optional[float], Optional[float]]:
     """(cfg_scale, guidance) for sd-cli. Guidance-distilled FLUX runs cfg 1.0 plus the embedded guidance; the rest
     (FLUX.2-klein included: no guidance embedder) use real CFG, 1.0 when <= 1. Always explicit: sd.cpp defaults to 7.0."""
-    if fam.name in ("flux.1", "flux.1-kontext", "flux.2-dev"):
+    if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return 1.0, (float(guidance) if guidance is not None else None)
     if fam.name == "z-image":
         # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
@@ -3554,6 +3542,7 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 except _local_entry_not_found_error() as exc:
                     # Raised by huggingface_hub for exactly "not cached and outgoing traffic is disabled", so it can
@@ -3840,6 +3829,8 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
+                if cfg_scale <= 1.0:
+                    negative_prompt = None
                 # Resolve selected LoRAs up front (a bad id gives a clear 400). Drop weight-0 rows BEFORE the support
                 # gate so an only-disabled request stays a no-op.
                 lora_resolved: list = []
@@ -3925,6 +3916,7 @@ class SdCppDiffusionBackend:
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
+                    "negative_prompt": negative_prompt or None,
                     "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants
                     # make different pixels.
@@ -4494,6 +4486,7 @@ class SdCppDiffusionBackend:
                 transformer_quant = None,
             ),
             "supports_controlnet": False,
+            "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
             # txt2img always; reference and edit only where this build and its loaded assets run them.
