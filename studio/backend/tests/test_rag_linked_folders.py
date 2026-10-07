@@ -445,9 +445,7 @@ def test_scan_does_not_enter_dot_directories(tmp_path, monkeypatch, relative):
 
 @requires_sqlite_vec
 @pytest.mark.parametrize("already_indexed", [False, True])
-def test_sync_removes_documents_in_a_dot_directory(
-    rag_home, stub_embeddings, already_indexed
-):
+def test_sync_removes_documents_in_a_dot_directory(rag_home, stub_embeddings, already_indexed):
     source, folder = _folder(rag_home)
     notes = source / "notes"
     notes.mkdir()
