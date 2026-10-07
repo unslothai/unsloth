@@ -11,7 +11,7 @@ Enable **Settings → API → Decision API** and select a model. Laya multilingu
 
 **Auto** selects native text decisions when the installed executable supports `/v1/systemone`; otherwise it reports its PyTorch selection. The latest Unsloth llama.cpp release verified here, `b11443-mix-d65395f` (source `4021fda1a7d2699904843d45e3267a66e4c3af2b`), includes that endpoint and Clef image-projector conversion. This integration's pinned Q8 download plan does not yet include a projector, so images still select PyTorch. Empty instructions and single-level scores also select PyTorch in Auto; forced native mode rejects them. Startup and inference errors never trigger a retry on another backend.
 
-Settings displays the selected runtime and reason. Responses identify the runtime in `x-unsloth-decision-backend`. Older installed binaries may need updating; the installer defaults to the latest usable Unsloth release.
+Settings displays the selected runtime and reason. In Auto, download the native weights first, then use the same download button to fetch missing PyTorch fallback assets if PyTorch is installed. Each download requires confirmation; Auto is fully cached only when both are ready. Responses identify the runtime in `x-unsloth-decision-backend`. Older installed binaries may need updating; the installer defaults to the latest usable Unsloth release.
 
 ## Resources and lifecycle
 

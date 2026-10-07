@@ -155,8 +155,21 @@ def shutdown() -> None:
 
 def download_plan(checkpoint: catalog.Checkpoint, *, preference = None) -> dict:
     if isinstance(checkpoint, catalog.ClefCheckpoint):
+        from utils.systemone_settings import get_backend, runtime_unavailable_reason
+
+        preference = preference or get_backend()
         selected, _ = select_checkpoint(checkpoint, preference = preference)
-        return _clef().download_plan(selected)
+        plan = _clef().download_plan(selected)
+        if (
+            preference == "auto"
+            and _clef().is_native(selected)
+            and plan["cached"]
+            and runtime_unavailable_reason() is None
+        ):
+            fallback = _clef().download_plan(checkpoint)
+            if not fallback["cached"]:
+                return fallback
+        return plan
     return laya_runtime.download_plan(checkpoint)
 
 
