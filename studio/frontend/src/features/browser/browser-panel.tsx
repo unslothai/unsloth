@@ -1360,16 +1360,28 @@ function nativePage(tab: BrowserTab | undefined): boolean {
   return Boolean(tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
 }
 
-/** Ask about the page, as with a file's Request edits. Native views can't be drawn over. */
+/** How a tab is annotated: a framed page, a native view, or Studio's own markup (new tab,
+ *  internal pages, documents, errors). Null while loading. Files use Request edits. */
+function annotateMode(tab: BrowserTab | undefined, native: boolean): "frame" | "native" | "dom" | null {
+  if (!tab) return null;
+  const entry = currentEntry(tab);
+  if (entry.kind === "newtab" || entry.kind === "internal") return "dom";
+  if (entry.kind !== "web" || tab.loading) return null;
+  if (native) return tab.nativeError ? "dom" : "native";
+  return tab.documentType ? "dom" : "frame";
+}
+
+/** Ask about the page, as with a file's Request edits. */
 function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
   const annotating = useBrowserStore((state) => tab !== undefined && state.annotateTabId === tab.id);
-  if (!canAnnotate || nativePage(tab)) return null;
+  const native = useNativeBrowser((state) => state.enabled);
+  if (!canAnnotate) return null;
   return (
     <IconButton
       label={t("browser.annotate.page")}
-      disabled={!tab || !showsWebPage(tab)}
+      disabled={annotateMode(tab, native) === null}
       onClick={() => tab && useBrowserStore.getState().setAnnotating(annotating ? null : tab.id)}
       className={cn(
         ANNOTATE_BUTTON,
@@ -2117,6 +2129,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
+  const tabTitle = useTabTitle();
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
   // Zoom keys, Ctrl+wheel and the View menu zoom the page, not the interface, while focus or the pointer is here.
@@ -2159,6 +2172,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     device !== "off" && activeEntry?.kind === "web"
       ? DEVICE_WIDTHS[device]
       : null;
+  const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
 
   return (
     <section
@@ -2257,17 +2271,23 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               fileName={activeEntry.name}
             />
           ) : null}
-          {activeTab &&
-          annotateTabId === activeTab.id &&
-          showsWebPage(activeTab) &&
-          !nativePage(activeTab) ? (
+          {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
             // A new page, a reload or a replacement starts over: its marks were the last page's.
             <WebAnnotateLayer
-              key={`${activeTab.id}:${entryKey(currentEntry(activeTab))}:${activeTab.reloadKey}`}
+              key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}:${pageAnnotating}`}
               tabId={activeTab.id}
               title={activeTab.title}
               url={webAddress(activeTab) ?? ""}
               page={pageElement}
+              native={pageAnnotating === "native"}
+            />
+          ) : null}
+          {activeTab && activeEntry && pageAnnotating === "dom" && pageElement ? (
+            <AnnotateLayer
+              key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}`}
+              page={pageElement}
+              fileName={tabTitle(activeTab, activeEntry)}
+              url={webAddress(activeTab) ?? undefined}
             />
           ) : null}
         </div>
