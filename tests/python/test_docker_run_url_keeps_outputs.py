@@ -220,6 +220,7 @@ def test_root_shim_restores_root_before_executing_system_tools(monkeypatch):
     shim = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shim)
     calls = []
+    monkeypatch.setenv("UNSLOTH_NB_ROOT_INSTALL", "1")
     monkeypatch.setattr(shim.os, "setgid", lambda gid: calls.append(("gid", gid)))
     monkeypatch.setattr(shim.os, "setuid", lambda uid: calls.append(("uid", uid)))
     monkeypatch.setattr(
@@ -245,6 +246,7 @@ def test_root_shim_emulates_common_sudo_flags(monkeypatch):
     shim = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shim)
     calls = []
+    monkeypatch.setenv("UNSLOTH_NB_ROOT_INSTALL", "1")
     monkeypatch.setattr(shim.os, "setgid", lambda gid: None)
     monkeypatch.setattr(shim.os, "setuid", lambda uid: None)
     monkeypatch.setattr(
@@ -257,6 +259,36 @@ def test_root_shim_emulates_common_sudo_flags(monkeypatch):
     shim.main()
 
     assert calls == [("apt-get", ["apt-get", "update"], shim.os.environ)]
+
+
+def test_root_shim_does_not_elevate_an_unprivileged_container(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "unsloth_root_shim_unprivileged_under_test", ROOT_SHIM_PATH
+    )
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+    calls = []
+    monkeypatch.delenv("UNSLOTH_NB_ROOT_INSTALL", raising = False)
+    monkeypatch.setattr(
+        shim.os,
+        "setuid",
+        lambda uid: pytest.fail(f"unexpected privilege restoration to UID {uid}"),
+    )
+    monkeypatch.setattr(
+        shim.os,
+        "setgid",
+        lambda gid: pytest.fail(f"unexpected privilege restoration to GID {gid}"),
+    )
+    monkeypatch.setattr(
+        shim.os,
+        "execv",
+        lambda path, argv: calls.append((path, argv)),
+    )
+    monkeypatch.setattr(shim.sys, "argv", ["dpkg", "--print-architecture"])
+
+    shim.main()
+
+    assert calls == [("/usr/bin/dpkg", ["/usr/bin/dpkg", "--print-architecture"])]
 
 
 def _run_sh_argv(tmp_path, *command):

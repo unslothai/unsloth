@@ -11,6 +11,7 @@ _TOOLS = {
     "apt": "/usr/bin/apt",
     "apt-get": "/usr/bin/apt-get",
     "dpkg": "/usr/bin/dpkg",
+    "sudo": "/usr/bin/sudo",
 }
 _SUDO_FLAGS = {
     "-b",
@@ -58,8 +59,10 @@ def _sudo_command(argv):
 
 def main():
     tool = os.path.basename(sys.argv[0])
-    _become_root()
-    if tool == "sudo":
+    privileged_run = os.environ.get("UNSLOTH_NB_ROOT_INSTALL") == "1"
+    if privileged_run:
+        _become_root()
+    if tool == "sudo" and privileged_run:
         command = _sudo_command(sys.argv[1:])
         os.execvpe(command[0], command, os.environ)
         return
