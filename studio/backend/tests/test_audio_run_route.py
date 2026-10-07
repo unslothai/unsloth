@@ -1416,6 +1416,80 @@ def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
     assert meta["voice_id"] == voice["id"] and meta["workflow"] == "speak"
 
 
+def _history(tmp_path, account):
+    return sorted((tmp_path / "accounts" / account.account_id / "audio").glob("*.wav"))
+
+
+def _generate(client, **body):
+    payload = {"messages": [{"role": "user", "content": "Read me aloud."}], **body}
+    return client.post("/api/inference/audio/generate", json = payload)
+
+
+@pytest.mark.parametrize("persist", [True, False])
+def test_read_aloud_keeps_nothing_in_history_and_generate_still_does(stub, tmp_path, persist):
+    stub["use"](*_KOKORO)
+    with _client(ALICE) as client:
+        response = _generate(client, **({} if persist else {"persist": False}))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert base64.b64decode(body["audio"]["data"])[:4] == b"RIFF"
+    assert (body["clip_id"] is not None) is persist
+    assert len(_history(tmp_path, ALICE)) == (1 if persist else 0)
+
+
+@pytest.mark.parametrize("persist", [True, False])
+def test_read_aloud_speaks_in_a_saved_voice(stub, tmp_path, persist):
+    backend = stub["use"](
+        "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+        _clone_info(workflows = ("speak", "clone"), reference_text = "optional"),
+    )
+    voice = _voice(ALICE, _input(ALICE), transcript = "Okay, I'm Cemo.")
+    with _client(ALICE) as client:
+        response = _generate(client, voice_id = voice["id"], persist = persist)
+    assert response.status_code == 200, response.text
+    (call,) = backend.calls
+    assert call["workflow"] == "speak" and call["reference_text"] == "Okay, I'm Cemo."
+    reference = Path(call["audio_inputs"]["reference"])
+    assert reference.parent == _inputs_root(tmp_path)
+    assert reference.name.startswith(f"v-{voice['id']}.")
+    assert base64.b64decode(response.json()["audio"]["data"])[:4] == b"RIFF"
+    assert len(_history(tmp_path, ALICE)) == (1 if persist else 0)
+
+
+def test_a_saved_voice_keeps_the_request_settings(stub):
+    backend = stub["use"](
+        "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+        _clone_info(workflows = ("speak", "clone"), reference_text = "optional"),
+    )
+    voice = _voice(ALICE, _input(ALICE))
+    with _client(ALICE) as client:
+        response = _generate(
+            client, voice_id = voice["id"], seed = 7, audio_language = "English", max_tokens = 50
+        )
+        empty = client.post(
+            "/api/inference/audio/generate",
+            json = {"messages": [{"role": "user", "content": ""}], "voice_id": voice["id"]},
+        )
+    assert response.status_code == 200, response.text
+    (call,) = backend.calls
+    assert (call["seed"], call["language"]) == (7, "English")
+    assert call["max_new_tokens"] <= 50
+    assert empty.status_code == 422, empty.text
+
+
+def test_read_aloud_voice_refusals(stub):
+    voice = _voice(ALICE, _input(ALICE))
+    with _client(BOB) as client:
+        assert _generate(client, voice_id = voice["id"]).status_code == 404
+    stub["use"](*_KOKORO)
+    with _client(ALICE) as client:
+        refused = _generate(client, voice_id = voice["id"])
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == "Load a model that can clone a voice."
+        assert _generate(client, voice_id = "../voice").status_code == 422
+    assert stub["backend"].calls == []
+
+
 def _wav_params(path):
     import wave
     with wave.open(str(path)) as w:
@@ -1842,7 +1916,6 @@ def test_a_named_model_is_switched_to_with_the_workflow_it_must_run(stub, switch
         )
         unnamed = _run(client, inputs = {"reference": {"voice_id": voice["id"]}})
     assert [r.status_code for r in (clone, speak, unnamed)] == [200, 200, 200]
-    # Speaking in a saved voice is a clone, so the target must clone.
     assert switches == [
         (QWEN3_BASE, "clone"),
         (QWEN3_BASE, "clone"),
@@ -1882,6 +1955,20 @@ def test_a_v1_run_is_monitored_and_its_clips_are_served_under_v1(stub):
         "completed",
         QWEN3_BASE,
     )
+
+
+def test_a_bad_v1_generate_in_a_saved_voice_opens_no_monitor_row(stub):
+    from core.inference.api_monitor import api_monitor
+
+    voice = _voice(ALICE, _input(ALICE))
+    api_monitor.clear()
+    with _v1(ALICE) as client:
+        response = client.post(
+            "/v1/audio/generate",
+            json = {"messages": [{"role": "user", "content": ""}], "voice_id": voice["id"]},
+        )
+    assert 400 <= response.status_code < 500, response.text
+    assert api_monitor.snapshot(include_details = False) == []
 
 
 @pytest.mark.parametrize("as_object", [False, True])

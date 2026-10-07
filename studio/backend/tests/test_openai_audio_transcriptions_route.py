@@ -1008,7 +1008,6 @@ def test_audio_cpp_diarized_json_names_speakers(monkeypatch, tmp_path):
             "speaker": "Speaker 2",
         },
     ]
-    # Plain segments need no aligner.
     assert calls[0]["timestamps"] is False
 
 
@@ -1028,6 +1027,14 @@ def test_audio_cpp_refuses_what_the_model_cannot_add(monkeypatch, tmp_path, caps
     resp = _post(cli, data = data)
     assert resp.status_code == 422
     assert detail in resp.json()["error"]["message"]
+    assert calls == [] and prepared == []
+
+
+@pytest.mark.parametrize("fmt", ["json", "text", "diarized_json"])
+def test_audio_cpp_granularities_need_verbose_json(monkeypatch, tmp_path, fmt):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    resp = _post(cli, data = {"response_format": fmt, "timestamp_granularities[]": "word"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "timestamp_granularities")
     assert calls == [] and prepared == []
 
 

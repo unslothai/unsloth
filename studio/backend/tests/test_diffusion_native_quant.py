@@ -318,6 +318,28 @@ def test_int_mm_matches_the_dense_layer():
     assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA torch._int_mm")
+@pytest.mark.parametrize("compiled", [False, True])
+def test_int_mm_takes_a_transposed_activation_without_rotation(compiled):
+    # cuBLASLt runs int8 GEMMs only on a row-major activation. A patch-embed style [B, C, S] -> [B, S, C] view is
+    # column-major, and Inductor keeps that layout for the int8 codes even through an explicit .contiguous().
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 128).to("cuda", torch.bfloat16)
+    layer = nq.native_linear_class()(lin, "int8", act_int8 = True)
+
+    def run(x):
+        return layer(x.flatten(2).transpose(1, 2).contiguous())
+
+    x = torch.randn(1, 256, 5, 7, 31, device = "cuda", dtype = torch.bfloat16)  # 1085 tokens, odd
+    ref = lin(x.flatten(2).transpose(1, 2)).float()
+    if compiled:
+        torch._dynamo.reset()
+        run = torch.compile(run)
+    got = run(x) if compiled else layer(x.flatten(2).transpose(1, 2))
+    assert got.shape == ref.shape and got.dtype == torch.bfloat16
+    assert ((got.float() - ref).norm() / ref.norm()).item() < 0.03
+
+
 def test_rotation_only_applies_to_w8a8_and_divisible_inputs():
     cls = nq.native_linear_class()
     lin = torch.nn.Linear(512, 64).to(torch.bfloat16)

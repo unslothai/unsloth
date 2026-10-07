@@ -260,6 +260,8 @@ try:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        decision_layout,
+        is_decision_model,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -292,6 +294,8 @@ except ImportError:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        decision_layout,
+        is_decision_model,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -321,6 +325,7 @@ from models.models import (
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
+    LocalModelSource,
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
@@ -345,7 +350,10 @@ def derive_model_type(
     is_vision: bool,
     audio_type: Optional[str],
     is_embedding: bool = False,
+    is_decision: bool = False,
 ) -> ModelType:
+    if is_decision:
+        return "decision"
     if is_embedding:
         return "embeddings"
     if audio_type is not None:
@@ -645,9 +653,10 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory: ``publisher/model-name`` folders of GGUF files, or
-    standalone GGUFs at the top level."""
+def _scan_lmstudio_dir(
+    lm_dir: Path, *, source: LocalModelSource = "lmstudio"
+) -> List[LocalModelInfo]:
+    """Scan a host-app model root; ``source`` names which app it belongs to."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -662,7 +671,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 id = str(lm_dir),
                 display_name = lm_dir.name,
                 path = str(lm_dir),
-                source = "lmstudio",
+                source = source,
                 model_format = _dir_model_format(lm_dir),
                 updated_at = updated_at,
             ),
@@ -686,7 +695,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             id = str(child),
                             display_name = child.stem,
                             path = str(child),
-                            source = "lmstudio",
+                            source = source,
                             model_format = "gguf",
                             updated_at = updated_at,
                         ),
@@ -704,7 +713,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         id = str(child),
                         display_name = child.name,
                         path = str(child),
-                        source = "lmstudio",
+                        source = source,
                         model_format = _dir_model_format(child),
                         updated_at = updated_at,
                     ),
@@ -735,7 +744,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 model_id = model_id,
                                 display_name = model_dir.name,
                                 path = str(model_dir),
-                                source = "lmstudio",
+                                source = source,
                                 model_format = _dir_model_format(model_dir),
                                 updated_at = updated_at,
                             ),
@@ -755,7 +764,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 model_id = f"{child.name}/{model_dir.stem}",
                                 display_name = model_dir.stem,
                                 path = str(model_dir),
-                                source = "lmstudio",
+                                source = source,
                                 model_format = "gguf",
                                 updated_at = updated_at,
                             ),
@@ -804,6 +813,7 @@ class _CompatLocalInventorySources(NamedTuple):
     known_hf_caches: tuple[Path, ...]
     hermes_dirs: tuple[Path, ...] = ()
     ollama_dirs: tuple[Path, ...] = ()
+    omlx_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
@@ -813,6 +823,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         hf_default_cache_dir,
         legacy_hf_cache_dir,
         lmstudio_model_dirs,
+        omlx_model_dirs,
     )
     from utils.hf_cache_settings import known_hf_hub_caches
     return _CompatLocalInventorySources(
@@ -823,6 +834,7 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         tuple(known_hf_hub_caches()),
         tuple(hermes_model_dirs()),
         tuple(ollama_model_dirs()),
+        tuple(omlx_model_dirs()),
     )
 
 
@@ -900,6 +912,8 @@ def collect_local_models(
         *sources.known_hf_caches,
         legacy_hf,
         hf_default,
+        # oMLX also serves models--* repos kept under its own roots.
+        *sources.omlx_dirs,
     ):
         cache_real = _safe_resolve(cache_dir)
         if cache_real is None:
@@ -957,9 +971,18 @@ def collect_local_models(
         except Exception as e:
             logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
 
+    for omlx_dir in sources.omlx_dirs:
+        try:
+            local_models += _scan_lmstudio_dir(omlx_dir, source = "omlx")
+        except Exception as e:
+            logger.warning("Error scanning oMLX directory %s: %s", omlx_dir, e)
+
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
+    from hub.services.models.local_inventory import _local_model_path_is_symlink
+
+    custom_identities: set[str] = set()
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1034,6 +1057,16 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
+        # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
+        for m in custom_models:
+            try:
+                below_root = os.path.join(
+                    os.path.realpath(folder_path), os.path.relpath(m.path, folder_path)
+                )
+            except (OSError, ValueError):
+                continue
+            if not _local_model_path_is_symlink(below_root):
+                custom_identities.add(_compat_inventory_path_identity(m.path))
         # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
         # cache) must not re-stamp its rows as generic custom entries.
         local_models += [
@@ -1042,6 +1075,14 @@ def collect_local_models(
             else m.model_copy(update = {"source": "custom"})
             for m in custom_models
         ]
+
+    # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
+    # those (the train picker refuses oMLX rows).
+    local_models = [
+        m
+        for m in local_models
+        if m.source != "omlx" or _compat_inventory_path_identity(m.path) not in custom_identities
+    ]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
     # "Custom Folders" UI section even when the model is also in the HF cache.
@@ -2256,6 +2297,9 @@ def _model_config_inspection_target(
         with_load_subdirs(model_name, ("config.json", "adapter_config.json")),
     )
     if snapshot is None:
+        # A cached Laya checkpoint has no config.json; the probes read it by repo id.
+        if is_decision_model(model_name, hf_token, local_files_only = True):
+            return model_name
         raise HTTPException(
             status_code = 404,
             detail = "Selected cached model is no longer available.",
@@ -2387,6 +2431,25 @@ async def get_model_config(
                 local_files_only = probe_local_only,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
+            layout = decision_layout(
+                model_name, hf_token = hf_token, local_files_only = probe_local_only
+            )
+            is_decision = layout is not None
+            decision_checkpoints = None
+            if layout == "clef":
+                from core.systemone.catalog import CLEF_DEFAULTS_REPO
+
+                # Local Clef folders and Studio fine-tunes start from Clef-flash's recipe.
+                if config_dict == load_model_defaults("default"):
+                    config_dict = load_model_defaults(CLEF_DEFAULTS_REPO)
+            elif is_decision:
+                from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
+                config_dict = load_model_defaults(LAYA_REPO)
+                decision_checkpoints = [
+                    {"name": c.name, "subfolder": c.subfolder, "description": c.description}
+                    for c in CHECKPOINTS.values()
+                    if c.source == model_name
+                ] or None
             audio_type, audio_type_definitive = detect_audio_type_checked(
                 _audio_probe_target(inspection_target),
                 hf_token = hf_token,
@@ -2434,12 +2497,15 @@ async def get_model_config(
                 config = config_dict,
                 is_vision = is_vision,
                 is_embedding = is_embedding,
+                is_decision = is_decision,
+                decision_layout = layout,
+                decision_checkpoints = decision_checkpoints,
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
                 audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
-                model_type = derive_model_type(is_vision, audio_type, is_embedding),
+                model_type = derive_model_type(is_vision, audio_type, is_embedding, is_decision),
                 base_model = base_model,
                 max_position_embeddings = max_position_embeddings,
                 # Keyed on the target, not the flag: the bare repo id an anonymous caller

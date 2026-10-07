@@ -36,11 +36,13 @@ export type SettingsScrollTarget =
   | "api-keys-decision-api"
   | "appearance-sidebar-nav"
   | "chat-composer"
-  | "chat-canvas-network"
+  | "browser-html-network"
   | "general-hub"
+  /** Old name of sandbox-permissions, from when Permissions lived in General. */
   | "general-permissions"
   | "library-storage"
-  | "resources-caches";
+  | "resources-caches"
+  | "sandbox-permissions";
 
 /** An Audio page asking the API keys tab to show its workflow, with its model when it has one. */
 export interface AudioApiRequest {
@@ -159,12 +161,24 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "api-keys-audio-api": "api-keys",
   "api-keys-decision-api": "api-keys",
   "appearance-sidebar-nav": "appearance",
-  "chat-canvas-network": "chat",
+  "browser-html-network": "browser",
   "general-hub": "general",
-  "general-permissions": "general",
+  "general-permissions": "sandbox",
   "library-storage": "library",
   "resources-caches": "resources",
+  "sandbox-permissions": "sandbox",
 };
+
+/** Permissions moved from General to the top of Sandbox; an old link still lands there. */
+export function resolveScrollRequest(
+  tab: SettingsTab | undefined,
+  target: SettingsScrollTarget | undefined,
+): { tab: SettingsTab | undefined; target: SettingsScrollTarget | undefined } {
+  if (target === "general-permissions" || target === "sandbox-permissions") {
+    return { tab: "sandbox", target: "sandbox-permissions" };
+  }
+  return { tab, target };
+}
 
 /**
  * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
@@ -216,15 +230,16 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   logRequestSeq: 0,
   connectionRequested: null,
   audioApiRequested: null,
-  openDialog: (tab, options) =>
+  openDialog: (requestedTab, options) =>
     set((state) => {
+      const { tab, target } = resolveScrollRequest(requestedTab, options?.scrollTarget);
       const next = tab ?? state.activeTab;
       const pending = requestsFor(state, next);
       return {
         open: true,
         activeTab: next,
         // A caller that names a target replaces whatever was still pending.
-        scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
+        scrollTarget: target ?? pending.scrollTarget,
         archivedRequested: pending.archivedRequested,
         logFamilyRequested: pending.logFamilyRequested,
         logSourcePathRequested: pending.logSourcePathRequested,

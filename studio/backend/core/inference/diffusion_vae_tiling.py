@@ -25,7 +25,7 @@ OVERLAP_LATENTS = 16
 # Blend: a tile gets no weight within MARGIN latents of an edge it shares, then ramps to full over RAMP latents.
 MARGIN_LATENTS = 4
 RAMP_LATENTS = 8
-# Encode: a 1024 px reference image (Studio's default) is one tile, bit-identical to the untiled encode.
+# Encode: a 1024 px reference is one tile (bit-identical); the encoder attends over the whole tile.
 ENCODE_TILE_LATENTS = 64
 ENCODE_OVERLAP_LATENTS = 32
 ENCODE_MARGIN_LATENTS = 8
@@ -93,11 +93,58 @@ def _decode_tile(vae: Any, z: Any) -> Any:
         vae.use_tiling = prev
 
 
-# Unfused bf16 decode peak per latent of tile area at 16x (1,697 MiB at 32x32); other ratios scale by tile pixels.
+# bf16 decode peak MiB per latent of tile area, (unfused, fused): worst measured tile side 8 to 128, real weights.
+# Per class (VAEs of one ratio differ 2x); an unmeasured class takes its ratio's worst.
+DECODE_MIB_PER_LATENT_BY_CLASS = {
+    "AutoencoderKLQwenImage": (0.27, 0.18),
+    "AutoencoderKLQwenImage21": (1.7, 0.43),
+    "AutoencoderKLHunyuanImage": (1.3, 1.3),
+    "AutoencoderKL": (0.17, 0.09),
+    "AutoencoderKLFlux2": (0.17, 0.09),
+}
+DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
 FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
+
+
+def decode_mib_per_latent(
+    ratio: int,
+    fused: bool = False,
+    cls: Optional[str] = None,
+) -> float:
+    """bf16 decode peak MiB per latent: by class, else ratio, else the 16x figure scaled by tile pixels."""
+    known = DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "") or DECODE_MIB_PER_LATENT_BY_RATIO.get(
+        int(ratio)
+    )
+    if known is not None:
+        return known[1] if fused else known[0]
+    return DECODE_MIB_PER_LATENT * (int(ratio) / DECODE_MIB_RATIO) ** 2
+
+
+def _geometry(vae: Any) -> tuple[int, int, int]:
+    """(ratio, floor tile, floor overlap), cached on the VAE at install."""
+    cached = getattr(vae, "__dict__", {}).get("_unsloth_wide_geometry")
+    if cached is not None:
+        return cached
+    ratio = compression_ratio(vae)
+    tile, overlap = floor_tiles(vae)
+    return ratio, tile, overlap
+
+
+def _cached_axis_weights(
+    vae: Any, starts: list[int], tile: int, length: int, ratio: int, torch: Any, device: Any
+):
+    """``axis_weights`` memoised per VAE (a repeat decode syncs no device)."""
+    cache = vae.__dict__.setdefault("_unsloth_wide_weights", {}) if hasattr(vae, "__dict__") else {}
+    key = (tuple(starts), int(tile), int(length), int(ratio), str(device))
+    hit = cache.get(key)
+    if hit is None:
+        if len(cache) >= 64:
+            cache.clear()
+        hit = cache[key] = axis_weights(starts, tile, length, ratio, torch, device)
+    return hit
 
 
 def _axis_tiles(
@@ -113,24 +160,67 @@ def _axis_tiles(
     return side if side < length else None
 
 
+def _stock_span(length: int, tile: int, overlap: int) -> int:
+    """Latents diffusers' stock loop decodes along one side: a tile every ``tile - overlap``, the last cut short."""
+    if length <= tile:
+        return length
+    return sum(min(tile, length - s) for s in range(0, length, tile - overlap))
+
+
+def _large_stock_sides(length: int, tile: int, overlap: int) -> list[int]:
+    """Per tile count, the smallest covering side and the widest decoding no more latents than the stock loop."""
+    if length <= tile:
+        return [length]
+    span = _stock_span(length, tile, overlap)
+    out = {length}
+    for n in range(2, len(tile_starts(length, tile, overlap)) + 1):
+        low = _axis_tiles(length, n, TILE_LATENTS, overlap)
+        if low is None:
+            continue
+        out.add(low)
+        for side in range(min(span // n, length - 1), low, -1):
+            if len(tile_starts(length, side, overlap)) * side <= span:
+                out.add(side)
+                break
+    return sorted(out)
+
+
 def choose_tiles(
     height: int,
     width: int,
     max_area: Optional[int],
     tile: int = TILE_LATENTS,
     overlap: int = OVERLAP_LATENTS,
+    stock_tile: int = 0,
 ) -> tuple[int, int]:
-    """Tile (height, width) in latents decoding the fewest latents (overlaps counted) within ``max_area``; ``tile`` floor."""
+    """Tile (height, width) in latents within ``max_area`` (at least the floor tile). Stock tiles under the floor:
+    fewest decoded latents. Stock tile == floor (AutoencoderKL, FLUX.2 edge sliver): fewest calls, then largest
+    tile, never decoding more latents per side than stock (1600 px: two 120-latent tiles, not 128 + 104 + 8)."""
     floor = (min(tile, height), min(tile, width))
     if max_area is None or max_area <= floor[0] * floor[1]:
-        return floor
+        max_area = floor[0] * floor[1]
+    if stock_tile >= tile > TILE_LATENTS:
+        best, best_key = None, None
+        for th in _large_stock_sides(height, tile, overlap):
+            for tw in _large_stock_sides(width, tile, overlap):
+                if th * tw > max_area:
+                    continue
+                key = (
+                    len(tile_starts(height, th, overlap)) * len(tile_starts(width, tw, overlap)),
+                    -th * tw,
+                )
+                if best_key is None or key < best_key:
+                    best, best_key = (th, tw), key
+        if best is not None:
+            return best
+    side_min = min(tile, TILE_LATENTS)
     best, best_cost = floor, None
     sides_h = [
-        _axis_tiles(height, n, tile, overlap)
+        _axis_tiles(height, n, side_min, overlap)
         for n in range(1, len(tile_starts(height, tile, overlap)) + 1)
     ]
     sides_w = [
-        _axis_tiles(width, n, tile, overlap)
+        _axis_tiles(width, n, side_min, overlap)
         for n in range(1, len(tile_starts(width, tile, overlap)) + 1)
     ]
     for th in sides_h:
@@ -149,28 +239,79 @@ def choose_tiles(
     return best
 
 
+def _free_mib(
+    vae: Any,
+    z: Any,
+    cached: bool = True,
+) -> Optional[tuple[float, float]]:
+    """(free MiB after the fp32 output accumulator, decoder bytes per param / 2); None off CUDA."""
+    import torch
+
+    if getattr(z, "device", None) is None or z.device.type != "cuda":
+        return None
+    free, _ = torch.cuda.mem_get_info(z.device)
+    if cached:
+        free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
+    ratio = _geometry(vae)[0]
+    frames = z.shape[2] if z.dim() == 5 else 1
+    # fp32 accumulator
+    out_bytes = 4 * 4 * z.shape[0] * frames * z.shape[-2] * z.shape[-1] * ratio * ratio
+    elem = next(vae.decoder.parameters()).element_size()
+    return (free - out_bytes) / 2**20, elem / 2
+
+
+def _fused(vae: Any) -> bool:
+    return bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not getattr(
+        vae, "_unsloth_vae_fused_failed", False
+    )
+
+
 def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
     """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
     raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
     try:
-        import torch
-
-        if getattr(z, "device", None) is None or z.device.type != "cuda":
+        _, tile, _ = _geometry(vae)
+        # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on
+        # flushes (FLUX.1 1600 px, 8 GB tier: 0.21 s vs stock 0.08).
+        stock_tile = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
+        large_stock = stock_tile >= tile > TILE_LATENTS
+        free = _free_mib(vae, z, cached = not large_stock)
+        if free is None:
             return None
-        free, _ = torch.cuda.mem_get_info(z.device)
-        free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
-        ratio = compression_ratio(vae)
-        frames = z.shape[2] if z.dim() == 5 else 1
-        # fp32 accumulator
-        out_bytes = 4 * 4 * z.shape[0] * frames * z.shape[-2] * z.shape[-1] * ratio * ratio
-        elem = next(vae.decoder.parameters()).element_size()
-        mib = FREE_FRACTION * (free - out_bytes) / 2**20
-        per_latent = DECODE_MIB_PER_LATENT * (ratio / DECODE_MIB_RATIO) ** 2
-        return max(0, int(mib / (per_latent * elem / 2)))
+        mib, scale = free
+        per_latent = (
+            decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__) * scale
+        )
+        return max(0, int(FREE_FRACTION * mib / per_latent))
     except Exception:  # noqa: BLE001 - unknown budget: the 32-latent tiles the planner budgeted
         return None
+
+
+def floor_shortfall(vae: Any, z: Any) -> Optional[str]:
+    """Why even the floor tile cannot fit the free VRAM now, else None (also for unknown memory or an explicit
+    max tile). Only VAEs whose stock tile is under the floor can fall short."""
+    if (os.environ.get(MAX_TILE_ENV) or "").strip():
+        return None
+    try:
+        free = _free_mib(vae, z)
+        if free is None:
+            return None
+        mib, scale = free
+        ratio, tile, _ = _geometry(vae)
+        stock = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
+        if stock >= tile:
+            return None
+        area = min(tile, z.shape[-2]) * min(tile, z.shape[-1])
+        need = area * decode_mib_per_latent(ratio, _fused(vae), type(vae).__name__) * scale
+    except Exception:  # noqa: BLE001
+        return None
+    if need <= mib:
+        return None
+    return (
+        f"a {tile}-latent floor tile needs about {need:.0f} MiB and {max(0.0, mib):.0f} MiB is free"
+    )
 
 
 def tiled_decode(
@@ -184,19 +325,19 @@ def tiled_decode(
     from diffusers.models.autoencoders.vae import DecoderOutput
 
     height, width = z.shape[-2], z.shape[-1]
-    ratio = compression_ratio(vae)
-    tile, overlap = floor_tiles(vae)
+    ratio, tile, overlap = _geometry(vae)
     if max_area == "auto":
         max_area = decode_tile_budget(vae, z)
-    th, tw = choose_tiles(height, width, max_area, tile, overlap)
+    stock_tile = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
+    th, tw = choose_tiles(height, width, max_area, tile, overlap, stock_tile)
     vae._unsloth_last_decode_tile = (th, tw, max_area)
     hs = tile_starts(height, th, overlap)
     ws = tile_starts(width, tw, overlap)
     if len(hs) == 1 and len(ws) == 1:
         dec = _decode_tile(vae, z)
     else:
-        wy = axis_weights(hs, th, height, ratio, torch, z.device)
-        wx = axis_weights(ws, tw, width, ratio, torch, z.device)
+        wy = _cached_axis_weights(vae, hs, th, height, ratio, torch, z.device)
+        wx = _cached_axis_weights(vae, ws, tw, width, ratio, torch, z.device)
         out, dtype = None, None
         for i, y in enumerate(hs):
             for j, x in enumerate(ws):
@@ -357,6 +498,43 @@ def _wide_encode(vae: Any) -> bool:
     )
 
 
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        import torch
+        oom = getattr(torch, "OutOfMemoryError", None) or getattr(
+            torch.cuda, "OutOfMemoryError", None
+        )
+        if oom is not None and isinstance(exc, oom):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def _release_cache(z: Any) -> None:
+    try:
+        import torch
+        if getattr(z, "device", None) is not None and z.device.type == "cuda":
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_stock_fallback(vae: Any, reason: str) -> None:
+    logger = vae.__dict__.get("_unsloth_wide_logger")
+    seen = vae.__dict__.setdefault("_unsloth_wide_fallback_logged", set())
+    kind = reason.split(" ", 3)[:3]
+    key = " ".join(kind)
+    msg = "diffusion.vae_tiling: %s decodes in its stock tiles (seams possible): %s"
+    if logger is None:
+        return
+    if key in seen:
+        logger.debug(msg, type(vae).__name__, reason)
+    else:
+        seen.add(key)
+        logger.warning(msg, type(vae).__name__, reason)
+
+
 def install(vae: Any, logger: Any = None) -> bool:
     """Route ``vae``'s tiled decode / encode through the wide tiles where stock falls under the floor. Idempotent;
     False when not covered. ``_unsloth_decode_tile_side`` carries the real decode tile side for the memory estimates."""
@@ -371,14 +549,35 @@ def install(vae: Any, logger: Any = None) -> bool:
     geometry = stock_tiles(vae)
     ratio = compression_ratio(vae)
 
+    def _stock(z: Any, return_dict: bool) -> Any:
+        fast = vae.__dict__.get("_unsloth_wide_stock_decode")
+        return (fast or stock)(z, return_dict = return_dict)
+
     def _tiled_decode(
         self: Any,
         z: Any,
         return_dict: bool = True,
     ) -> Any:
         if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
-            return stock(z, return_dict = return_dict)
-        return tiled_decode(self, z, return_dict = return_dict)
+            return _stock(z, return_dict)
+        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles.
+        reason = floor_shortfall(self, z)
+        if reason is None:
+            for max_area in ("auto", 0):
+                try:
+                    return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
+                except Exception as exc:  # noqa: BLE001
+                    if not _is_oom(exc):
+                        raise
+                    reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
+                    tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
+                # outside the except block, so the failed attempt's tensors are freed
+                _release_cache(z)
+                ratio, tile, _ = _geometry(self)
+                if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
+                    break
+        _log_stock_fallback(self, reason)
+        return _stock(z, return_dict)
 
     def _tiled_encode(self: Any, x: Any) -> Any:
         if wide_tiles_disabled() or stock_layout_ok(
@@ -388,6 +587,9 @@ def install(vae: Any, logger: Any = None) -> bool:
         return tiled_encode(self, x)
 
     vae._unsloth_wide_tiles_own = own
+    vae._unsloth_wide_geometry = (ratio, *floor_tiles(vae))
+    vae._unsloth_wide_stock_tile = geometry[0]
+    vae._unsloth_wide_logger = logger
     vae.tiled_decode = types.MethodType(_tiled_decode, vae)
     if _wide_encode(vae):
         vae._unsloth_wide_tiles_own_encode = own_encode
@@ -412,6 +614,7 @@ def install(vae: Any, logger: Any = None) -> bool:
 def uninstall(vae: Any) -> None:
     if not getattr(vae, "_unsloth_wide_tiles", False):
         return
+    fast = vae.__dict__.pop("_unsloth_wide_stock_decode", None)
     for attr, saved in (
         ("tiled_decode", "_unsloth_wide_tiles_own"),
         ("tiled_encode", "_unsloth_wide_tiles_own_encode"),
@@ -427,6 +630,13 @@ def uninstall(vae: Any) -> None:
         "_unsloth_wide_tiles_own",
         "_unsloth_wide_tiles_own_encode",
         "_unsloth_decode_tile_side",
+        "_unsloth_wide_geometry",
+        "_unsloth_wide_weights",
+        "_unsloth_wide_logger",
+        "_unsloth_wide_fallback_logged",
+        "_unsloth_wide_stock_tile",
     ):
         vae.__dict__.pop(name, None)
+    if fast is not None and "tiled_decode" not in vae.__dict__:
+        vae.tiled_decode = fast
     vae._unsloth_wide_tiles = False

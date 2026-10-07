@@ -67,19 +67,28 @@ export interface BackendModelConfig {
   logging?: BackendLoggingDefaults;
 }
 
+export interface DecisionCheckpoint {
+  name: string;
+  subfolder: string | null;
+  description: string;
+}
+
 export interface ModelConfigResponse {
   id: string;
   model_name?: string | null;
   config?: BackendModelConfig | null;
   is_vision: boolean;
   is_embedding?: boolean;
+  is_decision?: boolean;
+  decision_checkpoints?: DecisionCheckpoint[] | null;
+  decision_layout?: "laya" | "clef" | null;
   is_audio: boolean;
   // False when the repo's tokenizer_config.json was unreadable (gated, offline,
   // upstream error), so is_audio false means unknown rather than "not audio".
   audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
-  model_type?: "text" | "vision" | "audio" | "embeddings" | null;
+  model_type?: "text" | "vision" | "audio" | "embeddings" | "decision" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
 }
@@ -93,7 +102,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   updated_at?: number | null;
 }

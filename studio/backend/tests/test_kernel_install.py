@@ -105,12 +105,19 @@ def test_causal_conv1d_has_no_wheel_off_linux_cuda(env):
 
 
 class _Runner:
-    def __init__(self, loads):
+    def __init__(
+        self,
+        loads,
+        capability = "9 0",
+    ):
         self.loads = list(loads)
+        self.capability = capability
         self.calls = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
+        if cmd[1] == "-c" and "get_device_capability" in cmd[2]:
+            return SimpleNamespace(returncode = 0, stdout = self.capability)
         if cmd[1] == "-c":
             return SimpleNamespace(returncode = 0 if self.loads.pop(0) else 1, stdout = "")
         return SimpleNamespace(returncode = 0, stdout = "")
@@ -306,3 +313,249 @@ def test_console_entry_drops_an_unwritable_ssl_keylog_file(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "ignoring SSLKEYLOGFILE" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        (
+            _env("2.11.0+cu130", "13.0"),
+            "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/"
+            "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
+        ),
+        (
+            _env("2.13.0+cu130", "13.0"),
+            "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
+            "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
+        ),
+        (_env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"), None),
+        (_env("2.11.0+cpu", ""), None),
+    ],
+)
+def test_flash_attn_resolution(env, expected):
+    assert kernel_install.resolve_wheel_url("flash_attn", env) == expected
+
+
+@pytest.mark.parametrize("capability", ["7 5", "None"])
+def test_flash_attn_is_skipped_below_sm80(capability, capsys):
+    run = _Runner([], capability = capability)
+    assert (
+        kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
+    )
+    assert run.installer_calls == []
+    assert "skipping flash_attn" in capsys.readouterr().out
+
+
+def test_flash_attn_installs_on_sm80_and_newer(uv):
+    uv(False)
+    run = _Runner([False, True], capability = "8 0")
+    assert (
+        kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
+    )
+    assert run.installer_calls[0][-1].endswith(
+        "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
+
+
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        ([], ["xformers", "flash_attn", "causal_conv1d", "mamba_ssm"]),
+        (["mamba_ssm", "causal_conv1d", "mamba_ssm"], ["causal_conv1d", "mamba_ssm"]),
+    ],
+)
+def test_main_installs_all_by_default_in_dependency_order(monkeypatch, argv, expected):
+    order = []
+    monkeypatch.setattr(kernel_install, "probe_torch_wheel_env", lambda **kwargs: _COLAB)
+    monkeypatch.setattr(
+        kernel_install, "install_kernel", lambda name, env, dry_run = False: order.append(name) or 0
+    )
+    assert kernel_install.main(argv) == 0
+    assert order == expected
+
+
+def test_flash_attn_without_a_wheel_never_probes_the_gpu():
+    run = _Runner([])
+    assert kernel_install.install_kernel("flash_attn", None, run = run, exists = lambda url: True) == 0
+    assert run.calls == []
+
+
+def test_capability_probe_timeout_counts_as_no_gpu():
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    assert kernel_install._gpu_capability(run) is None
+
+
+def test_capability_probe_takes_the_best_visible_gpu():
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["check"], seen["timeout"] = cmd[2], kwargs.get("timeout")
+        return SimpleNamespace(returncode = 0, stdout = "9 0\n")
+
+    assert kernel_install._gpu_capability(run) == (9, 0)
+    assert "max(torch.cuda.get_device_capability(i)" in seen["check"] and seen["timeout"]
+
+
+def test_pinned_kernels_match_the_wheel_utils_pins():
+    from utils import wheel_utils
+
+    cc1d, mamba = kernel_install.CAUSAL_CONV1D, kernel_install.MAMBA_SSM
+    assert (cc1d.package_version, cc1d.release_tag, cc1d.release_base_url) == (
+        wheel_utils.CAUSAL_CONV1D_PACKAGE_VERSION,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_TAG,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_BASE_URL,
+    )
+    assert (mamba.package_version, mamba.release_tag, mamba.release_base_url) == (
+        wheel_utils.MAMBA_SSM_PACKAGE_VERSION,
+        wheel_utils.MAMBA_SSM_RELEASE_TAG,
+        wheel_utils.MAMBA_SSM_RELEASE_BASE_URL,
+    )
+    assert (cc1d.import_name, cc1d.pypi_name, mamba.import_name, mamba.pypi_name) == (
+        "causal_conv1d",
+        "causal-conv1d",
+        "mamba_ssm",
+        "mamba-ssm",
+    )
+    url = cc1d.wheel_url(_env("2.10.0+cu128", "12.8"))
+    assert url.startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu12torch2.10")
+    assert kernel_install.resolve_wheel_url("causal_conv1d", _env("2.10.0+cu128", "12.8")) == url
+
+
+def _ok(code):
+    return SimpleNamespace(returncode = code, stdout = f"out{code}")
+
+
+@pytest.mark.parametrize(
+    "attempts, verified, outcome, failed",
+    [
+        ([("uv", 0)], True, "installed", []),
+        ([("uv", 1), ("pip", 0)], True, "installed", ["uv"]),
+        ([("uv", 0)], False, "rejected", []),
+        ([("uv", 1), ("pip", 1)], True, "failed", ["uv", "pip"]),
+    ],
+)
+def test_install_prebuilt_outcomes(attempts, verified, outcome, failed):
+    seen, failures, verifies = {}, [], []
+
+    def install(url, **kwargs):
+        seen["url"], seen["kwargs"] = url, kwargs
+        return [(installer, _ok(code)) for installer, code in attempts]
+
+    result = kernel_install.install_prebuilt(
+        "https://example.invalid/k.whl",
+        install = install,
+        verify = lambda: verifies.append(1) or verified,
+        on_failed = lambda installer, result: failures.append(installer),
+        use_uv = True,
+    )
+    assert result == outcome
+    assert failures == failed
+    assert len(verifies) == (outcome != "failed")
+    # Only what the caller passed is forwarded, so each caller's installer flags stay its own.
+    assert seen == {
+        "url": "https://example.invalid/k.whl",
+        "kwargs": {"python_executable": sys.executable, "use_uv": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "use_uv, is_hip, reinstall, expected",
+    [
+        (
+            True,
+            False,
+            False,
+            ["uv", "pip", "install", "--python", "PY", "--no-build-isolation", "--no-deps", "k==1"],
+        ),
+        (
+            True,
+            True,
+            True,
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                "PY",
+                "--no-build-isolation",
+                "--no-deps",
+                "--reinstall",
+                "--no-cache",
+                "k==1",
+            ],
+        ),
+        (
+            False,
+            False,
+            False,
+            [
+                "PY",
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                "k==1",
+            ],
+        ),
+        (
+            False,
+            True,
+            True,
+            [
+                "PY",
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                "--force-reinstall",
+                "k==1",
+            ],
+        ),
+    ],
+)
+def test_source_build_command(use_uv, is_hip, reinstall, expected):
+    cmd = kernel_install.source_build_command(
+        "k==1", use_uv = use_uv, is_hip = is_hip, reinstall = reinstall
+    )
+    assert cmd == [sys.executable if part == "PY" else part for part in expected]
+
+
+def test_source_build_run_kwargs(monkeypatch):
+    monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = False, gcc_install_dir = lambda: pytest.fail("non-HIP never looks for gcc")
+    )
+    assert gcc is None and "timeout" not in kwargs
+    assert kwargs["encoding"] == "utf-8" and kwargs["stderr"] == subprocess.STDOUT
+
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = True, gcc_install_dir = lambda: "/usr/lib/gcc/x86_64-linux-gnu/13"
+    )
+    assert gcc == "/usr/lib/gcc/x86_64-linux-gnu/13" and kwargs["timeout"] == 1800
+    assert kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == f"--gcc-install-dir={gcc}"
+    assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+
+    monkeypatch.setenv("HIPCC_COMPILE_FLAGS_APPEND", "--gcc-install-dir=/mine")
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = True, gcc_install_dir = lambda: pytest.fail("an explicit dir is respected")
+    )
+    assert gcc is None and kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/mine"
+
+
+@pytest.mark.parametrize(
+    "use_uv, system, expected",
+    [
+        (True, False, ["uv", "pip", "uninstall", "--python", "PY", "k"]),
+        (True, True, ["uv", "pip", "uninstall", "--system", "--python", "PY", "k"]),
+        (False, True, ["PY", "-m", "pip", "uninstall", "-y", "k"]),
+    ],
+)
+def test_uninstall_command(use_uv, system, expected):
+    cmd = kernel_install.uninstall_command("k", use_uv = use_uv, uv_needs_system = system)
+    assert cmd == [sys.executable if part == "PY" else part for part in expected]

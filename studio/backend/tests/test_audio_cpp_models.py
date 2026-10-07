@@ -4,6 +4,7 @@
 """audio.cpp GGUFs: recognising them by header, resolving ids and variants, their files in the HF
 cache, and the worker backend's request shaping."""
 
+import asyncio
 import base64
 import io
 import json
@@ -523,6 +524,15 @@ _CLONE_TABLE = {
     "firered_audio": ("tts", False, "optional"),
     "vevo2": ("tts", False, "unused"),
     "miotts": ("tts", False, "unused"),
+    "breeze_tts": ("tts", True, "required"),
+    "omnivoice": ("tts", True, "required"),
+    "voxcpm1": ("tts", True, "required"),
+    "dots_tts": ("tts", True, "optional"),
+    "higgs_audio_tts": ("tts", True, "optional"),
+    "moss_tts_local": ("tts", True, "unused"),
+    "moss_tts_nano": ("tts", True, "unused"),
+    "irodori_tts": ("tts", True, "unused"),
+    "pocket_tts": ("tts", True, "unused"),
 }
 
 
@@ -533,6 +543,7 @@ _CONVERT_TABLE = {
     "meanvc2": ("vc", {"speech": "vc"}, "audio", 16000),
     "chatterbox": ("clon", {"speech": "vc"}, "audio", 16000),
     "vevo2": ("tts", {"speech": "vc", "singing": "svc"}, "audio", 24000),
+    "tone_color_vc": ("vc", {"speech": "vc"}, "audio", 22050),
 }
 
 
@@ -612,10 +623,13 @@ def test_edit_families_bind_the_edit_workflow():
     edit_names = ["DotTTS-Edit-GGUF", "dots-tts-edit-q8_0.gguf"]
     dots_edit = acm.family_policy("dots_tts", names = edit_names)
     binding = dots_edit.workflows["edit"]
-    assert list(dots_edit.workflows) == ["speak", "edit"]
+    assert list(dots_edit.workflows) == ["speak", "clone", "edit"]
     assert (binding.server_task, binding.endpoint) == ("tts", "tasks")
     for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
-        assert list(acm.family_policy("dots_tts", names = names).workflows) == ["speak"], names
+        assert list(acm.family_policy("dots_tts", names = names).workflows) == [
+            "speak",
+            "clone",
+        ], names
     vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
     assert list(firered.workflows) == ["clone", "edit"]
     # Vevo2 also converts a voice.
@@ -665,6 +679,94 @@ def test_sub_folders_and_same_quant_files_become_named_variants(hub):
     assert acm.resolve(
         f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF/tiny", network = False
     ).variant.key == ("tiny/Q8_0")
+
+
+def _keys(folder, *names):
+    files = [RepoFile(f"{folder}/{name}", 1) for name in names]
+    return [v.key for v in sorted(acm._single_file_variants(files, folder), key = acm._variant_rank)]
+
+
+def test_umbrella_folders_key_and_rank_their_models_by_the_published_names():
+    # Q8_0_V2 is the Q8_0 export and FP32 is F32: both outrank the bigger or unranked files.
+    assert _keys(
+        "Qwen3-TTS-12Hz-1.7B-Base-GGUF",
+        "qwen3-tts-12hz-1.7b-base-bf16.gguf",
+        "qwen3-tts-12hz-1.7b-base-orig.gguf",
+        "qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",
+    ) == ["Q8_0_V2", "BF16", "orig"]
+    assert _keys(
+        "MeanVC2-GGUF", "meanvc2-120ms-40ms-q4_k.gguf", "meanvc2-120ms-40ms-fp32.gguf"
+    ) == ["FP32", "Q4_K"]
+    # Six models in one folder: an F32 row is named like its F16 sibling.
+    gigaam = [
+        f"gigaam-{name}-f16.gguf"
+        for name in (
+            "multilingual-ctc",
+            "multilingual-large-ctc",
+            "v3-ctc",
+            "v3-e2e-ctc",
+            "v3-e2e-rnnt",
+            "v3-rnnt",
+        )
+    ]
+    assert _keys(
+        "GigaAM-ASR-GGUF",
+        *gigaam,
+        "gigaam-multilingual-ctc-f32.gguf",
+        "gigaam-multilingual-large-ctc-f32.gguf",
+    ) == [
+        "multilingual-ctc/F16",
+        "multilingual-large-ctc/F16",
+        "v3-ctc/F16",
+        "v3-e2e-ctc/F16",
+        "v3-e2e-rnnt/F16",
+        "v3-rnnt/F16",
+        "multilingual-ctc/F32",
+        "multilingual-large-ctc/F32",
+    ]
+    # A dotted version stays one word, and the model with one quant is named too.
+    assert _keys(
+        "Irodori-TTS-v4-Small-GGUF",
+        "irodori-tts-v4-small-f16.gguf",
+        "irodori-tts-v4.1-anime-q8_0.gguf",
+        "irodori-tts-v4-small-q8_0.gguf",
+    ) == ["v4-small/Q8_0", "v4.1-anime/Q8_0", "v4-small/F16"]
+
+
+def test_umbrella_keys_saved_settings_name_stay_the_same():
+    assert _keys(
+        "Moonshine-Streaming-GGUF",
+        "moonshine-streaming-tiny-q8_0.gguf",
+        "moonshine-streaming-medium-q8_0.gguf",
+        "moonshine-streaming-small-q8_0.gguf",
+    ) == ["tiny/Q8_0", "medium/Q8_0", "small/Q8_0"]
+    assert _keys(
+        "Niagara-ASR-GGUF", "niagara-19m-batch.en-f32.gguf", "niagara-38m-batch.en-f32.gguf"
+    ) == ["19m/F32", "38m/F32"]
+    assert _keys(
+        "Samsone-GGUF",
+        *(
+            f"samsone-{size}-{quant}.gguf"
+            for size in ("99m", "134m", "356m")
+            for quant in ("q8_0", "bf16")
+        ),
+    ) == ["134m/Q8_0", "356m/Q8_0", "99m/Q8_0", "134m/BF16", "356m/BF16", "99m/BF16"]
+    assert _keys("UniverSR-GGUF", "universr-audio-orig.gguf", "universr-speech-orig.gguf") == [
+        "audio/orig",
+        "speech/orig",
+    ]
+    assert _keys(
+        "ACE-Step1.5-GGUF",
+        "turbo/ace-step-1.5-turbo-q8_0.gguf",
+        "turbo/ace-step-1.5-turbo-bf16.gguf",
+        "base/ace-step-1.5-base-q8_0.gguf",
+    ) == ["turbo/Q8_0", "turbo/BF16", "base/Q8_0"]
+    assert _keys(
+        "PocketTTS-GGUF",
+        "english/pocket-tts-english-q8_0.gguf",
+        "english/pocket-tts-english-bf16.gguf",
+        "german/pocket-tts-german-q8_0.gguf",
+    ) == ["english/Q8_0", "english/BF16", "german/Q8_0"]
 
 
 def _minimax(root, *, quant = "q4_0"):
@@ -756,6 +858,123 @@ def test_voice_embeddings_ride_with_the_gguf_they_sit_beside():
     english = plan_for_variant(plans, "PocketTTS-GGUF/english/pocket-tts-english-q8_0")
     assert set(english.target_filenames) == set(names[:3])
     assert english.download_size_bytes == 15
+
+
+GIGAAM_FILES = (
+    *(
+        f"gigaam-{name}-f16.gguf"
+        for name in (
+            "multilingual-ctc",
+            "multilingual-large-ctc",
+            "v3-ctc",
+            "v3-e2e-ctc",
+            "v3-e2e-rnnt",
+            "v3-rnnt",
+        )
+    ),
+    "gigaam-multilingual-ctc-f32.gguf",
+    "gigaam-multilingual-large-ctc-f32.gguf",
+)
+GIGAAM_SPEC = {"family": "gigaam_asr", "tasks": ["asr"]}
+
+
+@pytest.mark.parametrize(
+    "folder, spec, published, cached",
+    [
+        ("GigaAM-ASR-GGUF", GIGAAM_SPEC, GIGAAM_FILES, GIGAAM_FILES[2:3]),
+        ("GigaAM-ASR-GGUF", GIGAAM_SPEC, GIGAAM_FILES, (GIGAAM_FILES[0], GIGAAM_FILES[1])),
+        (
+            "Irodori-TTS-v4-Small-GGUF",
+            {"family": "irodori_tts", "tasks": ["tts"]},
+            (
+                "irodori-tts-v4-small-f16.gguf",
+                "irodori-tts-v4.1-anime-q8_0.gguf",
+                "irodori-tts-v4-small-q8_0.gguf",
+            ),
+            ("irodori-tts-v4-small-q8_0.gguf", "irodori-tts-v4.1-anime-q8_0.gguf"),
+        ),
+    ],
+)
+def test_a_hub_variant_key_loads_its_file_from_a_partial_cache(
+    hub, folder, spec, published, cached
+):
+    # STT loads and offline loads list only the cache, where the downloaded files alone name the rows.
+    online = acm._single_file_variants(
+        [RepoFile(f"{folder}/{name}", 1) for name in published], folder
+    )
+    snap = _snapshot(hub)
+    for name in cached:
+        _put(snap, f"{folder}/{name}", _gguf_bytes(family = spec["family"], spec = spec))
+    for name in cached:
+        key = next(v.key for v in online if v.primary == f"{folder}/{name}")
+        acm.forget()
+        model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", key, network = False)
+        assert model.unsupported is None, key
+        assert model.variant.primary == f"{folder}/{name}"
+        assert model.variant.key == key
+
+
+def test_the_folder_name_never_names_a_variant(hub):
+    # Irodori-TTS-v4-Small-GGUF carries the words of v4-small: with only the anime model cached,
+    # v4-small/Q8_0 is missing, not the anime file under that name.
+    folder = "Irodori-TTS-v4-Small-GGUF"
+    spec = {"family": "irodori_tts", "tasks": ["tts"]}
+    _put(
+        _snapshot(hub),
+        f"{folder}/irodori-tts-v4.1-anime-q8_0.gguf",
+        _gguf_bytes(family = "irodori_tts", spec = spec),
+    )
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4-small/Q8_0", network = False)
+    assert "not found" in model.unsupported
+    anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
+    assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
+MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"
+
+
+def test_miotts_downloads_its_codec_with_every_variant():
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    def sib(name):
+        return SimpleNamespace(rfilename = name, size = 5, lfs = {"sha256": name})
+
+    names = [
+        "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf",
+        "MioTTS-1.7B-GGUF/miotts-1.7b-bf16.gguf",
+        MIOCODEC_Q8,
+        "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-f16.gguf",
+        "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
+    ]
+    assert acm.companion_files(names[1], names) == (MIOCODEC_Q8,)
+    assert acm.companion_files(names[4], names) == ()
+    plans = build_gguf_variant_plans([sib(n) for n in names])
+    bf16 = plan_for_variant(plans, "MioTTS-1.7B-GGUF/miotts-1.7b-bf16")
+    assert set(bf16.target_filenames) == {names[1], MIOCODEC_Q8}
+    assert bf16.main_filenames == frozenset({names[1]}) and bf16.download_size_bytes == 10
+    kokoro = plan_for_variant(plans, "Kokoro-82M-GGUF/kokoro-82m-q8_0")
+    assert kokoro.target_filenames == (names[4],)
+
+
+def test_miotts_lists_as_downloaded_only_with_its_codec(hub):
+    from hub.services.models import gguf_variants as gv
+
+    snap = _snapshot(hub)
+    _put(snap, "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf", _gguf_bytes(family = "miotts"))
+
+    def answer():
+        acm.forget()
+        result = asyncio.run(
+            gv._audio_cpp_variants_answer(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF", None, True)
+        )
+        return result.response.variants[0]
+
+    row = answer()
+    assert row.quant == "Q8_0" and not row.downloaded
+    codec = _put(snap, MIOCODEC_Q8, _gguf_bytes(family = "miocodec"))
+    row = answer()
+    assert row.downloaded
+    assert row.download_size_bytes == row.size_bytes + codec.stat().st_size
 
 
 def test_download_target_maps_a_folder_row_onto_the_planner_key(hub):
@@ -1010,7 +1229,7 @@ def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
     assert not victim.exists()
 
 
-def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
+def test_v1_models_lists_speech_and_separation_models_with_their_workflows(hub, monkeypatch):
     from core.inference import audio_cpp_server
     from routes import inference as ri
 
@@ -1021,8 +1240,13 @@ def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
     ] == "sep"
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: "audiocpp_server")
     monkeypatch.setattr(audio_cpp_server, "model_runtime_problem", lambda model, binary = None: None)
-    listed = [o["id"] for o in ri._audio_cpp_speech_model_objects(0)]
-    assert listed == [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    listed = {o["id"]: o for o in ri._audio_cpp_speech_model_objects(0)}
+    kokoro = listed[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    assert kokoro["task"] == "text-to-speech" and "speak" in kokoro["audio_workflows"]
+    # /v1/audio/speech cannot serve it, so it is not text-to-speech; /v1/audio/run loads it by name.
+    demucs = listed[f"{AUDIO_CPP_REPO}/HTDemucs-GGUF"]
+    assert demucs["task"] == "audio-to-audio" and demucs["audio_workflows"] == ["separate"]
+    assert len(listed) == 2
 
 
 def test_downloaded_models_are_found_by_header(hub):

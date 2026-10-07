@@ -109,7 +109,6 @@ import {
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -791,9 +790,6 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
-  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -864,6 +860,7 @@ export function SharedComposer({
               selectedExternalProvider?.isReasoningModel === true,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
             apiType: selectedExternalProvider?.apiType,
+            reasoningConfig: selectedExternalProvider?.reasoningConfig,
           },
         )
       : null;
@@ -989,7 +986,6 @@ export function SharedComposer({
     (showImagePill ? 1 : 0) +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
-    (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
   // Under the count threshold the row still overflows on long labels, wrapping onto a second line
   // inside the action bar, so measuring collapses just enough to keep it beside send.
@@ -2558,19 +2554,6 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    // Hidden by default; enabled from Settings > Chat > Canvas.
-    canvas: showCanvasMenuItem ? (
-      <DropdownMenuItem
-        className={artifactsEnabled ? "text-primary font-medium" : undefined}
-        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-      >
-        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-        Canvas
-        {artifactsEnabled ? (
-          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-        ) : null}
-      </DropdownMenuItem>
-    ) : null,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -3028,25 +3011,6 @@ export function SharedComposer({
               <span>Fetch</span>
             </button>
           )}
-          {artifactsEnabled ? (
-            <button
-              type="button"
-              onClick={() => setArtifactsEnabled(false)}
-              className="composer-pill-btn"
-              data-pill-label="Canvas"
-              data-active="true"
-              aria-label="Disable canvas"
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={PencilRulerIcon}
-                  className="size-[calc(15.5px*var(--ui-space-scale,1))]"
-                  strokeWidth={2}
-                />
-              </PillGlyph>
-              <span>Canvas</span>
-            </button>
-          ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
           <SkillsComposerButton side="top" />
         </div>
@@ -3101,19 +3065,19 @@ export function SharedComposer({
                           setPreserveThinking(false);
                         }}
                       >
-                        <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                          className={cn(
-                            "unsloth-tick size-4",
-                            effectiveReasoningVisualEnabled && "opacity-0",
-                          )}
-                        />
                         {formatReasoningDisabledLabel(
                           effectiveSupportsReasoningOff,
                           isExternalOpenAIReasoning,
                           checkpoint,
                         )}
+                        <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                          className={cn(
+                            "unsloth-tick ms-auto size-4",
+                            effectiveReasoningVisualEnabled && "opacity-0",
+                          )}
+                        />
                       </DropdownMenuItem>
                     )}
                     {effectiveReasoningEffortLevels
@@ -3132,21 +3096,21 @@ export function SharedComposer({
                             }
                           }}
                         >
+                          {formatReasoningEffortLabel(
+                            level,
+                            externalSelection?.modelId,
+                          )}
                           <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                             className={cn(
-                              "unsloth-tick size-4",
+                              "unsloth-tick ms-auto size-4",
                               !(
                                 effectiveReasoningVisualEnabled &&
                                 displayedEffort === level
                               ) && "opacity-0",
                             )}
                           />
-                          {formatReasoningEffortLabel(
-                            level,
-                            externalSelection?.modelId,
-                          )}
                         </DropdownMenuItem>
                       ))}
                   </>
@@ -3166,15 +3130,15 @@ export function SharedComposer({
                         }
                       }}
                     >
+                      Thinking
                       <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                         className={cn(
-                          "unsloth-tick size-4",
+                          "unsloth-tick ms-auto size-4",
                           !effectiveReasoningEnabled && "opacity-0",
                         )}
                       />
-                      Thinking
                     </DropdownMenuItem>
                   )
                 )}
@@ -3192,15 +3156,15 @@ export function SharedComposer({
                       }
                     }}
                   >
+                    Preserve thinking
                     <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                       className={cn(
-                        "unsloth-tick size-4",
+                        "unsloth-tick ms-auto size-4",
                         !preserveThinking && "opacity-0",
                       )}
                     />
-                    Preserve thinking
                   </DropdownMenuItem>
                 )}
               </NonModalDropdownMenu>

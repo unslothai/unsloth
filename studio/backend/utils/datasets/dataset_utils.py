@@ -364,13 +364,16 @@ def format_dataset(
     auto_detect_custom = True,
     custom_format_mapping = None,
     split_name = None,
+    raw_text_column = None,
 ):
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
     multimodal_info = detect_multimodal_dataset(dataset)
 
     if format_type == "raw":
-        raw_result = prepare_raw_text_dataset(dataset, split_name = split_name)
+        raw_result = prepare_raw_text_dataset(
+            dataset, split_name = split_name, text_column = raw_text_column
+        )
         return {
             "dataset": raw_result.dataset,
             "detected_format": "raw_text",
@@ -381,6 +384,12 @@ def format_dataset(
             "is_image": multimodal_info["is_image"],
             "multimodal_info": multimodal_info,
             "warnings": [notice.message for notice in raw_result.notices],
+            "raw_text_column": raw_result.source_column,
+            "run_warnings": [
+                notice.message
+                for notice in raw_result.notices
+                if notice.level == "warning" and notice.update_status
+            ],
         }
 
     if custom_format_mapping:
@@ -797,6 +806,7 @@ def format_and_template_dataset(
     num_proc = None,
     progress_callback = None,
     split_name = None,
+    raw_text_column = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
 
@@ -1039,6 +1049,7 @@ def format_and_template_dataset(
             batch_size = batch_size,
             num_proc = num_proc,
             split_name = split_name,
+            raw_text_column = raw_text_column,
         )
 
         if dataset_info["final_format"] == "raw_text":
@@ -1054,6 +1065,8 @@ def format_and_template_dataset(
                 "warnings": dataset_info.get("warnings", []),
                 "errors": [],
                 "summary": summary,
+                "raw_text_column": dataset_info.get("raw_text_column"),
+                "run_warnings": dataset_info.get("run_warnings", []),
             }
 
         detected = dataset_info.get("detected_format", "unknown")

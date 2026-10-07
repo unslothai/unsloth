@@ -61,6 +61,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -71,7 +72,7 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
-// Deep imports on purpose: the Images index re-exports ImagesPage, which would undo its code split.
+// deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
 /* eslint-disable no-restricted-imports */
 import {
   isWorkflowEnabled,
@@ -240,7 +241,7 @@ import type {
   SidebarNavItemPref,
 } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
-import { resolveNavRowState } from "@/components/nav-row-state";
+import { placeNavRows, resolveNavRowState } from "@/components/nav-row-state";
 import { createNavigationCoalescer } from "@/components/sidebar-navigation";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
@@ -589,19 +590,6 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
-function NavBadge({ label, className }: { label: string; className?: string }) {
-  return (
-    <span
-      className={cn(
-        "nav-badge inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[calc(5px*var(--ui-space-scale,1))] pt-[calc(3px*var(--ui-space-scale,1))] pb-[calc(2px*var(--ui-space-scale,1))] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium uppercase leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_var(--background)]",
-        className,
-      )}
-    >
-      {label}
-    </span>
-  );
-}
-
 function NavItem({
   icon,
   label,
@@ -660,18 +648,16 @@ function NavItem({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {badge && (
-            <NavBadge
-              label={badge}
-              className="ml-auto group-data-[collapsible=icon]:hidden"
-            />
+            <Badge variant="secondary" className="group-data-[collapsible=icon]:hidden">
+              {badge}
+            </Badge>
           )}
           {spinner && (
-            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows' pr-4: one spinner column.
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
             <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
-          // Collapsed (icon-only) rail: small spinner badge over the icon corner.
           <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
         )}
         {overlay}
@@ -936,8 +922,7 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      // Whenever there is one: gated on `disabled` it dropped the tooltip of a row that is
-      // still being measured, which is enabled and has something to say.
+      // keep the tooltip while capability measurement leaves the row enabled.
       title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
@@ -946,7 +931,7 @@ function MoreMenuItem({
     >
       <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && <NavBadge label={badge} />}
+      {badge && <Badge variant="secondary">{badge}</Badge>}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
     </DropdownMenuItem>
   );
@@ -961,6 +946,7 @@ function AudioMoreSubmenu({
   badge,
   spinner,
   onIntent,
+  onOpen,
   onPick,
   contentProps,
 }: {
@@ -972,6 +958,7 @@ function AudioMoreSubmenu({
   badge?: string;
   spinner?: boolean;
   onIntent?: () => void;
+  onOpen: () => void;
   onPick: (id: AudioWorkflowId) => void;
   contentProps: ComponentProps<typeof DropdownMenuSubContent>;
 }) {
@@ -985,16 +972,22 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
+        // click opens Audio; hover and keyboard still open the workflows.
+        onClick={(event) => {
+          if (disabled) return;
+          event.preventDefault();
+          onOpen();
+        }}
         className={cn("gap-2.5", active && "bg-accent/60")}
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {badge && <NavBadge label={badge} />}
+        {badge && <Badge variant="secondary">{badge}</Badge>}
         {spinner && (
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent {...contentProps} className="w-44 p-1">
+      <DropdownMenuSubContent {...contentProps} className="sidebar-more-menu w-44 p-1">
         {AUDIO_WORKFLOWS.map((tab) => (
           <DropdownMenuItem
             key={tab.id}
@@ -2811,6 +2804,7 @@ export function AppSidebar() {
     audio: {
       icon: AudioWave01Icon,
       label: t("shell.navigation.audio"),
+      badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
         navigateFromRow({ to: "/audio" });
@@ -2872,14 +2866,11 @@ export function AppSidebar() {
   // The Projects row repeats the section, so it only earns its place while the section is absent.
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
-  const unpinnedNavIds = sidebarNav
-    .filter((item) => !navRowPinned(item))
-    .map((item) => item.id);
-  // More needs two or more rows to be worth a click; with exactly one unpinned, the menu and that row are both dropped.
-  const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
-  const inlineNavIds = sidebarNav
-    .filter((item) => navRowPinned(item))
-    .map((item) => item.id);
+  // Audio steps out of More while its page is open: a pin for the visit, never saved.
+  const { inline: inlineNavIds, overflow: overflowNavIds } = placeNavRows(
+    sidebarNav.map((item) => ({ id: item.id, pinned: navRowPinned(item) })),
+    navRows.audio.active ? "audio" : null,
+  );
   // The mobile sheet shows labels regardless of the desktop pin state.
   const sidebarRowsLabelled = isMobile || sidebarState !== "collapsed";
   // Mirrors ImagesWorkflowList's own test: it decides which row owns the highlight.
@@ -5293,12 +5284,13 @@ export function AppSidebar() {
                     )}
                   </TooltipContent>
                 </Tooltip>
-                {!isMobile && !usesDesktopTitlebar && (
+                {/* On narrow screens this closes the sidebar sheet. */}
+                {(isMobile || !usesDesktopTitlebar) && (
                   <Tooltip>
                     <TooltipPrimitive.Trigger asChild>
                       <button
                         type="button"
-                        onClick={togglePinned}
+                        onClick={isMobile ? () => setOpenMobile(false) : togglePinned}
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
@@ -5309,6 +5301,7 @@ export function AppSidebar() {
                       side="bottom"
                       sideOffset={6}
                       className="tooltip-compact"
+                      hidden={isMobile}
                     >
                       {t("shell.aria.closeSidebar")}
                     </TooltipContent>
@@ -5568,7 +5561,7 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      className="w-48 p-1"
+                      className="sidebar-more-menu w-48 p-1"
                       {...moreHover.content}
                       // The trigger handles its own presses.
                       onPointerDownOutside={(event) => {
@@ -5604,6 +5597,10 @@ export function AppSidebar() {
                               tooltip={rowState.tooltip}
                               spinner={rowState.spinner}
                               onIntent={row.onIntent}
+                              onOpen={() => {
+                                setMoreOpen(false);
+                                row.onClick();
+                              }}
                               onPick={pickAudioWorkflow}
                               contentProps={{
                                 ...sidebarSubmenuOffsets,
@@ -5951,13 +5948,13 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn app-user-trigger !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
