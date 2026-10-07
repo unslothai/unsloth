@@ -37,8 +37,7 @@ export function openLink(url: string): boolean {
     return true;
   }
 
-  // Protocol-relative ("//host", "/\host") names another site, not an app route: native
-  // navigation would replace the Desktop main window, so open it like any https link.
+  // Protocol-relative ("//host") is another site; native navigation would replace the Desktop window.
   if (PROTOCOL_RELATIVE.test(url)) {
     return openLink(`https://${url.replace(LEADING_SLASHES, "")}`);
   }

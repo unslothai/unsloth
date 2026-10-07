@@ -156,10 +156,7 @@ def _contained_local_path(
     parts: list[str],
     pathmod = os.path,
 ) -> str:
-    """Join S3 key ``parts`` under ``target_dir``, refusing a key that lands outside it.
-
-    On Windows a key segment can carry a drive (``C:evil``), a root or backslash
-    ``..`` components that ``os.path.join`` honours, so check the joined result too."""
+    """Join S3 key ``parts`` under ``target_dir``; refuse absolute, drive or escaping keys (Windows joins honour them)."""
     if any(pathmod.isabs(part) or pathmod.splitdrive(part)[0] for part in parts):
         raise ValueError(
             "S3 key is an absolute path and cannot be downloaded into the dataset directory."
