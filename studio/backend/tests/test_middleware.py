@@ -149,8 +149,13 @@ class TestMaxBodyMiddleware:
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
             == STT_AUDIO_JSON_MAX_BYTES
         )
-        # The OpenAI transcriptions route is multipart, so it gets headroom over the raw cap, on both mounts.
-        for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+        # The OpenAI transcription/translation routes are multipart, so they get headroom over the raw cap.
+        for path in (
+            "/v1/audio/transcriptions",
+            "/api/inference/audio/transcriptions",
+            "/v1/audio/translations",
+            "/api/inference/audio/translations",
+        ):
             assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
                 STT_AUDIO_RAW_MAX_BYTES
             ), path
@@ -160,6 +165,13 @@ class TestMaxBodyMiddleware:
             ), path
             assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
                 upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+        from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+
+        for path in ("/v1/audio/inputs", "/api/inference/audio/inputs"):
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                AUDIO_INPUT_MAX_BYTES
             ), path
         from utils.upload_limits import (
             VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
@@ -284,6 +296,16 @@ class TestMaxBodyMiddleware:
             default_request_body_limit_bytes()
         )
 
+    def test_browser_posts_are_capped_before_auth(self, main_module):
+        from routes.browser import router
+
+        posts = [route.path for route in router.routes if "POST" in route.methods]
+        assert posts
+        for path in posts:
+            assert any(
+                f"/api/browser{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
@@ -356,6 +378,7 @@ class TestMaxBodyMiddleware:
             "/v1/audio/generate",
             "/v1/audio/speech",
             "/v1/audio/transcriptions",
+            "/v1/audio/translations",
             "/v1/embeddings",
             "/v1/responses",
             "/v1/messages",

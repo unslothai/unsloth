@@ -136,6 +136,23 @@
 			transparent
 		);
 	}
+	/* Model picker list: reaches into the panel padding for an overlay scrollbar so rows keep their
+	   18px inset; rows give way only for what is left. --list-room is already clear of row actions. */
+	.model-list-scroll {
+		--list-reach: min(var(--overlay-scrollbar-gutter, 0px), var(--spacing));
+		--list-room: calc(var(--spacing) * 2 + var(--list-reach));
+		margin-right: calc(var(--spacing) - var(--list-reach));
+		padding-right: calc(var(--spacing) * 1.5 + var(--list-reach));
+	}
+	[data-external] .model-list-scroll {
+		--list-reach: min(var(--overlay-scrollbar-gutter, 0px), var(--spacing) * 2);
+		--list-room: calc(var(--spacing) + var(--list-reach));
+		margin-right: calc(0px - var(--list-reach));
+		padding-right: calc(var(--spacing) * 0.5 + var(--list-reach));
+	}
+	.model-list-gutter {
+		padding-right: max(0px, var(--overlay-scrollbar-gutter, 0px) - var(--list-room));
+	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
 	.rag-docs-bottom-fade {
@@ -212,6 +229,9 @@
 	/* Easing curves (Emil Kowalski) */
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
+
+	/* Composer shadow, shared by toasts; palettes may override it. */
+	--composer-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
@@ -426,6 +446,8 @@
 	--background: #181818;
 	--foreground-base: #dfdfdf;
 	--card-base: #272727;
+	/* Page-coloured: sets the composer off the messages behind it. */
+	--composer-shadow: 0 4px 20px 4px var(--background);
 	--card-foreground-base: #dfdfdf;
 	--popover-base: #272727;
 	--popover-foreground-base: #dfdfdf;
@@ -750,10 +772,9 @@
 	--sidebar-surface: var(--background);
 }
 
-/* Neon Cyberpunk light: yellow edge glow on the composer. */
-:root[data-palette="neon-cyberpunk"]:not(.dark)
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
-	box-shadow:
+/* Neon Cyberpunk light: yellow edge glow on the composer and toasts. */
+:root[data-palette="neon-cyberpunk"]:not(.dark) {
+	--composer-shadow:
 		0 0 0 1px rgb(230 210 0 / 0.7),
 		0 0 26px -6px rgb(252 238 10 / 0.8),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
@@ -765,10 +786,9 @@
 		0 0 32px -4px rgb(252 238 10 / 0.9),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
-/* Neon Cyberpunk: cyan edge glow on the dark composer. */
-:root[data-palette="neon-cyberpunk"].dark
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
-	box-shadow:
+/* Neon Cyberpunk: cyan edge glow on the dark composer and toasts. */
+:root[data-palette="neon-cyberpunk"].dark {
+	--composer-shadow:
 		0 0 0 1px rgb(0 240 255 / 0.35),
 		0 0 28px -8px rgb(0 240 255 / 0.45),
 		0 4px 20px 4px var(--background);
@@ -2276,9 +2296,10 @@ html[data-chat-font] .aui-root {
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
-	/* Images: the chevron discloses this row's own list, so the row stays lit while the
+	/* Images and Audio: the chevron discloses this row's own list, so the row stays lit while the
 	   pointer is on it. Scoped to the row's wrapper, clear of the list below it. */
 	.group\/images-item:hover > .relative > .sidebar-nav-btn,
+	.group\/audio-item:hover > .relative > .sidebar-nav-btn,
 	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
 		color: #000 !important;
@@ -2292,6 +2313,7 @@ html[data-chat-font] .aui-root {
 	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/images-item:hover > .relative > .sidebar-nav-btn,
+	.dark .group\/audio-item:hover > .relative > .sidebar-nav-btn,
 	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
 	}
@@ -2386,12 +2408,48 @@ html[data-chat-font] .aui-root {
 		padding-left: 0;
 	}
 
-	/* Branch picker chevron buttons sit beside action bar icon buttons
-	   (size-8, rounded-full). Height + radius match for visual
-	   alignment, but width is tighter so the small chevron glyph reads
-	   as a compact control rather than a full-size icon button. */
+	/* Branch picker chevrons: small glyphs with no hover fill, so they read as part of the count. */
+	/* Lands the › tip where a last action icon's ink would end, inside the bubble's edge. */
+	.aui-user-branch-picker {
+		margin-right: calc(3.4px * var(--ui-space-scale, 1));
+	}
+	.aui-branch-chevron-btn,
+	.aui-branch-chevron-btn + * {
+		--aui-chevron-slot: calc(20px * var(--ui-space-scale, 1));
+		--aui-chevron-hit: max(calc(24px * var(--ui-interface-scale, 1)), var(--aui-chevron-slot));
+		--aui-chevron-extra: calc(var(--aui-chevron-hit) - var(--aui-chevron-slot));
+	}
+	/* The count between the chevrons is at least as wide as both extensions, so they cannot meet over it even
+	   in a narrow custom chat font. Wider counts, the usual case, are untouched. */
+	.aui-branch-chevron-btn + :not(.aui-branch-chevron-btn) {
+		/* 1px of slack: two targets that only touch can still trade a sub-pixel once snapped to device pixels. */
+		min-inline-size: calc(var(--aui-chevron-extra) * 2 + 1px);
+		text-align: center;
+	}
 	.aui-branch-chevron-btn {
-		@apply inline-flex h-8 w-6 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent;
+		/* The visible button stays the 20px slot, scaled, that the layout was tuned to, so the glyph and its focus
+		   ring sit where they always did. The hit target is at least 24px (what #12173 guarantees every footer
+		   control): an invisible ::before extends it toward the count between the chevrons, never toward the action
+		   button on the outer side, which at small font sizes sits closer than the extra. The floor follows the
+		   browser's Interface Scale, as browser zoom would, but not the UI font size. */
+		position: relative;
+		/* Room above and below for the part of the target past the box. In one row with the action buttons this
+		   sits inside the row's height and moves nothing; when the picker wraps onto its own row, the row grows
+		   to hold it instead of the target reaching across the row gap into the actions above. */
+		margin-block: calc(var(--aui-chevron-extra) / 2);
+		@apply inline-flex size-[calc(20px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
+	}
+	.aui-branch-chevron-btn::before {
+		content: "";
+		position: absolute;
+		inset-block: calc(var(--aui-chevron-extra) / -2);
+		inset-inline: 0;
+	}
+	.aui-branch-chevron-btn:first-child::before {
+		inset-inline-end: calc(var(--aui-chevron-extra) * -1);
+	}
+	.aui-branch-chevron-btn:last-child::before {
+		inset-inline-start: calc(var(--aui-chevron-extra) * -1);
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
@@ -2566,8 +2624,8 @@ html[data-chat-font] .aui-root {
 		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
 
-	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
-	   past, rather than being cut off. Same masks as the model picker list. */
+	/* Settings columns on Images, Video and Run settings: content dissolves at whichever
+	   edge it runs past, rather than being cut off. Same masks as the model picker list. */
 	.panel-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
@@ -3043,28 +3101,66 @@ html[data-chat-font] .aui-root {
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
-	/* Dark: keep the chat-box dropdown shadow so menus don't merge into a
-	   same-color surface (e.g. a menu overlapping the composer). The page
-	   colour rather than black, so over the page there is nothing to see and
-	   over the composer it is only the step between the two surfaces. Black
-	   ringed every menu several levels below the page. */
+	/* Dark: glow in the darkest surface the menu touches, set per menu by
+	   lib/dropdown-surround.ts. .dropdown-surface marks bespoke dropdowns. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
+	.dark [data-slot="context-menu-content"],
+	.dark [data-slot="context-menu-sub-content"],
 	.dark [data-slot="select-content"],
 	.dark [data-slot="combobox-content"],
-	.dark [data-slot="popover-content"] {
-		box-shadow: 0 8px 28px -6px var(--background) !important;
+	.dark [data-slot="popover-content"],
+	.dark .dropdown-surface {
+		box-shadow: 0 0 16px 0 var(--dropdown-surround-bg, var(--background)) !important;
+	}
+	/* Sidebar and account menus stay flat in dark. */
+	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot],
+	.dark .app-user-menu.menu-soft-surface-up {
+		box-shadow: none !important;
+	}
+	/* Account button hover/open matches the account menu. */
+	.dark .app-user-trigger:is(:hover, [data-state="open"], [aria-expanded="true"]) {
+		background-color: color-mix(in srgb, var(--card), white 6.5%) !important;
+	}
+	/* More menu and its sub-menus use the sidebar colour. */
+	.dark .sidebar-more-menu[data-slot] {
+		background-color: var(--sidebar) !important;
+	}
+
+	/* Menus that would blend into their surface get the Hub menu tone.
+	   Defined on <html> so --accent can be reassigned without a cycle. */
+	.dark {
+		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
+		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
+	}
+	.dark [data-surround-blend] {
+		--accent: var(--dropdown-lift-accent);
+		background-color: var(--dropdown-lift-surface) !important;
+	}
+
+	/* Browser menus in dark: the toolbar pills' colour, with one shadow colour.
+	   The surface resolves on <html> so --accent can be reassigned below. */
+	.dark {
+		--browser-menu-surface: var(--accent);
+	}
+	.dark .browser-menu[data-slot] {
+		--accent: color-mix(in srgb, var(--browser-menu-surface), white 10%);
+		--accent-foreground: #fff;
+		background-color: var(--browser-menu-surface) !important;
+		box-shadow: 0 0 10px 0 var(--background) !important;
+	}
+	.dark .browser-menu [data-slot$="-separator"] {
+		background-color: color-mix(in srgb, var(--card), white 16%);
 	}
 
 	/* Library menus in dark: the sidebar menus' surface, text, hover, dividers and red. */
 	.dark :is([data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"]):is(.library-actions-menu, .library-menu) {
-		--library-menu-surface: color-mix(in srgb, var(--card), white 7%);
+		--library-menu-surface: color-mix(in srgb, var(--card), white 6.5%);
 		--accent: color-mix(in srgb, var(--library-menu-surface), white 10%);
 		--accent-foreground: #fff;
 		--destructive: #ed716a;
 		background-color: var(--library-menu-surface);
 		color: #fff;
-		box-shadow: 0 4px 14px var(--background) !important;
 	}
 
 	.dark :is(.library-actions-menu, .library-menu) [data-slot="dropdown-menu-separator"] {
@@ -3078,15 +3174,6 @@ html[data-chat-font] .aui-root {
 	}
 	.dark .library-header-row[data-stuck] {
 		box-shadow: 0 2px 10px -2px var(--background);
-	}
-
-	/* Model selector: tighter than the menus above so it lifts off the
-	   composer it overlaps (chatbox geometry). Account menu stays flat. */
-	.dark .unsloth-model-selector-menu {
-		box-shadow: 0 2px 8px -2px var(--background) !important;
-	}
-	.dark .app-user-menu.menu-soft-surface-up {
-		box-shadow: none !important;
 	}
 
 	/* Context menus (chat, run, project): drop the inset edge ring, keep the soft shadow. */
@@ -3109,19 +3196,16 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
-		/* Gemini-style composer shadow. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: var(--composer-shadow);
 		transition: box-shadow 0.1s;
 	}
 
 	.dark .chat-composer-surface {
 		background-color: var(--card);
-		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
-		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3182,28 +3266,27 @@ html[data-chat-font] .aui-root {
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* Attachment target pill: resting fill so it reads as clickable. */
+	.composer-pill-btn.attachment-target-pill:not([data-state="open"]):not(:hover) {
+		background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
+	}
+	/* A pill keeps its hover fill while its menu is open. */
+	.composer-pill-btn[data-state="open"] {
+		@apply bg-primary/10 dark:bg-accent;
+	}
+	/* Dark composer controls: softer hover and open state. */
+	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
+		background-color: color-mix(in srgb, var(--accent) 60%, var(--card));
+	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
-	   Full access keeps the danger yellow below. */
-	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	   Full access looks like every other level. */
+	.composer-pill-btn.composer-pill-permissions {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
-	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	.dark .composer-pill-btn.composer-pill-permissions {
 		/* Full ink, like the rest of the composer's controls. */
 		color: var(--foreground);
-	}
-	/* Bypass permissions badge: bright yellow text, no resting fill; the
-	   rounded hover pill picks up the yellow accent like other toggles. */
-	.composer-pill-btn[data-variant="danger"] {
-		background-color: transparent;
-		color: var(--bypass);
-	}
-	.composer-pill-btn[data-variant="danger"]:hover {
-		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
-	}
-	/* Match the hover-X circle to the yellow accent instead of the green primary. */
-	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
-		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
@@ -3270,19 +3353,12 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
-		/* Gemini-style composer shadow. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: var(--composer-shadow);
 		transition: box-shadow 0.1s;
-	}
-
-	.unsloth-composer-surface:focus-within {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	.dark .unsloth-composer-surface {
 		background-color: var(--card);
-		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
-		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
@@ -3572,6 +3648,11 @@ html[data-chat-font] .aui-root {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft);
 	}
+	/* A menu refocusing its pill after a click is not keyboard focus. */
+	html[data-input-modality="pointer"]
+		:is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):focus-visible {
+		box-shadow: none;
+	}
 
 	/* Clickable controls never show the browser's blue outline (Radix re-focuses
 	   triggers on menu close, which lights them up). Mouse focus also drops the
@@ -3714,10 +3795,11 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Smaller tick for selected Thinking options. */
+	/* Menu selection tick. Raised 1px so it reads level with the label. */
 	.unsloth-tick {
-		width: calc(0.8rem * var(--ui-font-scale, 1)) !important;
-		height: calc(0.8rem * var(--ui-font-scale, 1)) !important;
+		width: calc(1.125rem * var(--ui-font-scale, 1)) !important;
+		height: calc(1.125rem * var(--ui-font-scale, 1)) !important;
+		translate: 0 -1px;
 	}
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
@@ -3750,11 +3832,6 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 4px 14px var(--background);
 	}
 
-	/* Sidebar and account menus in dark mode: flat, no shadow. Light mode keeps the shared menu
-	   shadow, which is what lifts the menu off the light sidebar. Important to beat that shadow. */
-	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
-		box-shadow: none !important;
-	}
 
 	/* System font at 14px, scaled with the UI font size. */
 	:is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
@@ -3788,7 +3865,7 @@ html[data-chat-font] .aui-root {
 	/* Dark: a step above the sidebar, from the palette so other themes keep their hue, with the
 	   rows in full white. Muted labels and shortcuts keep their own color. */
 	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot] {
-		background-color: color-mix(in srgb, var(--card), white 7%);
+		background-color: color-mix(in srgb, var(--card), white 6.5%);
 		color: #fff;
 		--destructive: #ed716a;
 	}
@@ -3979,6 +4056,22 @@ html[data-chat-font] .aui-root {
 		height: var(--ui-icon-size) !important;
 	}
 
+	/* "Sandbox High ›" chip: pill on hover or while open, same wash as menu rows. */
+	.sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	.dark .sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+	}
+
+	/* Permission menu tick, 2px above the icons. Outranks the rule above. */
+	:is([data-slot="dropdown-menu-content"], .unsloth-plus-menu)
+		[data-slot="dropdown-menu-item"]
+		svg.permission-mode-tick:not(.unsloth-tick) {
+		width: calc(var(--ui-icon-size) + 2px) !important;
+		height: calc(var(--ui-icon-size) + 2px) !important;
+	}
+
 	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
 	   never sees the --icon-size the row menu retunes. Same rule, one class deeper. */
 	.unsloth-plus-menu.sidebar-row-menu :is(
@@ -4010,13 +4103,6 @@ html[data-chat-font] .aui-root {
 		@apply gap-1.5 pl-2.5 pr-2.5;
 		white-space: nowrap;
 	}
-	.artifact-panel-shell {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
-	}
-
-	.dark .artifact-panel-shell {
-		box-shadow: none;
-	}
 
 	.chat-artifact-split[data-artifact-layout-animating="true"] > [data-panel] {
 		transition:
@@ -4037,10 +4123,12 @@ html[data-chat-font] .aui-root {
 		will-change: opacity, transform;
 	}
 
+	/* No stacking context once shown, or the desktop titlebar's drag strip eats header clicks. */
 	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
 		pointer-events: auto;
 		opacity: 1;
-		transform: scale(1) translateY(0);
+		transform: none;
+		will-change: auto;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
@@ -4069,69 +4157,6 @@ html[data-chat-font] .aui-root {
 		transform: translate3d(-125%, 0, 0) scaleX(0.78);
 		transform-origin: center center;
 		animation: artifact-loading-line 1.7s linear infinite;
-	}
-
-	.artifact-panel-shell::before,
-	.artifact-panel-shell::after {
-		content: "";
-		position: absolute;
-		z-index: 20;
-		pointer-events: none;
-		transition:
-			border-color 150ms var(--ease-out-cubic),
-			background-color 150ms var(--ease-out-cubic),
-			box-shadow 150ms var(--ease-out-cubic),
-			transform 150ms var(--ease-out-cubic);
-	}
-
-	.artifact-panel-shell::before {
-		inset: 0;
-		border: 2px solid transparent;
-		border-radius: inherit;
-		-webkit-mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
-		mask: linear-gradient(90deg, #000 0 24px, transparent 24px);
-	}
-
-	.artifact-panel-shell::after {
-		top: 50%;
-		left: -2px;
-		height: calc(28px * var(--ui-space-scale, 1));
-		width: 4px;
-		border-radius: 999px;
-		background: transparent;
-		transform: translateY(-50%);
-	}
-
-	[data-slot="resizable-handle"]:hover
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"]:active
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before,
-	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::before {
-		border-color: color-mix(in oklch, var(--primary) 58%, var(--border));
-	}
-
-	[data-slot="resizable-handle"]:hover
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"]:active
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"][data-resize-handle-state="hover"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after,
-	[data-slot="resizable-handle"][data-resize-handle-state="drag"]
-		+ [data-slot="resizable-panel"]
-		.artifact-panel-shell::after {
-		background: color-mix(in oklch, var(--primary) 58%, var(--border));
-		box-shadow: none;
-		transform: translateY(-50%) scaleY(1.06);
 	}
 
 	@keyframes artifact-card-shimmer {
@@ -4271,10 +4296,16 @@ html[data-chat-font] .aui-root {
 		width: 0 !important;
 	}
 
-	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	/* Chat code is 12px at any width (CODE_FONT_SIZE_RANGE.default); the header steps up when wide. */
 	.aui-thread-root [data-streamdown="code-block"] {
-		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
+	}
+
+	/* The body's text-sm would otherwise override the size above. */
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		font-size: inherit;
+		line-height: inherit;
 	}
 
 	.aui-thread-root [data-streamdown="code-block-header"] {
@@ -4282,10 +4313,6 @@ html[data-chat-font] .aui-root {
 	}
 
 	@container (min-width: 36rem) {
-		.aui-thread-root [data-streamdown="code-block"] {
-			font-size: calc(0.875rem * var(--ui-font-scale, 1));
-		}
-
 		.aui-thread-root [data-streamdown="code-block-header"] {
 			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}
@@ -4586,17 +4613,26 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+/* No border line; the composer's shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
+	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	box-shadow: var(--composer-shadow) !important;
 }
 
+/* Icon starts at the first line's cap height, never above the text. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
+	margin: 0.4em 0 0 !important;
+}
+
+/* Single text line: center the icon on it. Title and description line heights are 1.5 and 1.4. */
+[data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -4615,8 +4651,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	column-gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(8px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -4647,12 +4683,15 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
+	padding-right: calc(52px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Toast buttons are pills, matching the dialog actions they stand in for. */
+/* Toast buttons are pills, matching the dialog actions they stand in for.
+   Padding sizes them instead of Sonner's fixed 24px height. */
 [data-sonner-toast] [data-button] {
 	border-radius: 9999px !important;
+	height: auto !important;
+	padding: calc(6px * var(--ui-space-scale, 1)) calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Loading toast keeps its own vertical padding from #7683. */
@@ -4660,8 +4699,8 @@ html[data-chat-font] .aui-root {
 	display: flex !important;
 	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
-	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -4676,14 +4715,12 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Dark toasts share the chatbox surface color (.chat-composer-surface
-   uses var(--card) in dark); the composer shadow lifts them off the page. */
+/* Dark toasts share the composer's surface colour. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 2px 8px -2px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -4774,7 +4811,6 @@ html[data-chat-font] .aui-root {
 	will-change: transform;
 }
 
-/* A carried row or header: faintly frosted, a shade darker than its list, on a hairline. */
 :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
 	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
 	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
@@ -4796,7 +4832,6 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
 .model-picker-row-ghost {
 	--row-ghost-surface: var(--popover);
 	position: fixed;
@@ -4812,8 +4847,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
-   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+/* Margin dropped: the pill was sized without it, so a Connected row's ml-4 would offset the copy. */
 .model-picker-row-ghost > * {
 	width: 100%;
 	height: 100%;
@@ -4925,6 +4959,15 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .aui-composer-attachment-cards[data-layout="strip"]::-webkit-scrollbar {
+	display: none;
+}
+
+/* The browser's tabs scroll sideways once they're at their narrowest, with no bar. */
+.browser-tablist {
+	scrollbar-width: none;
+}
+
+.browser-tablist::-webkit-scrollbar {
 	display: none;
 }
 
@@ -5247,8 +5290,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: calc(8px * var(--ui-space-scale, 1)) !important;
+	top: calc(11px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
+	border-radius: 9999px !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
 	border-color: transparent !important;
@@ -5656,7 +5700,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .dark .find-bar-surface {
-	/* Sidebar menu surface (7%) a step lighter; 8% stays under --border. */
+	/* Sidebar menu surface (6.5%) a step lighter; 8% stays under --border. */
 	background-color: color-mix(in srgb, var(--card), white 8%);
 	box-shadow: 0 4px 20px 6px var(--background);
 }
@@ -5691,4 +5735,139 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	[data-slot="tooltip-content"] {
 		max-width: calc(100vw - 1rem);
 	}
+}
+
+/* Browser full view: chat floats bottom right. Unlayered, so it beats the panel's utilities. */
+.chat-artifact-split[data-browser-full-view] > #chat-thread {
+	position: absolute;
+	right: calc(1rem * var(--ui-space-scale, 1));
+	bottom: calc(1rem * var(--ui-space-scale, 1));
+	z-index: 40;
+	/* Over the panel library's inline width. */
+	width: min(calc(36rem * var(--ui-space-scale, 1)), calc(100% - 2rem)) !important;
+	height: auto;
+}
+
+/* Minimized to its button, it must not cover the page beside it. */
+.chat-artifact-split[data-browser-full-view][data-chat-dock="minimized"] > #chat-thread {
+	width: auto !important;
+}
+
+.chat-full-view-dock {
+	--dock-surface: #ffffff;
+	/* No header or notice above this thread. */
+	--studio-content-top-inset: 0px;
+	--studio-chat-header-height: 0px;
+	--studio-chat-notice-height: 0px;
+	--thread-scrollbar-gutter: 0px;
+	height: auto;
+	border-radius: 28px;
+	background-color: var(--dock-surface);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
+		0 12px 32px -8px rgb(0 0 0 / 0.22);
+}
+
+.dark .chat-full-view-dock {
+	--dock-surface: var(--card);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent),
+		0 16px 40px -8px rgb(0 0 0 / 0.55);
+}
+
+.chat-full-view-dock[data-expanded="true"] {
+	height: min(calc(40rem * var(--ui-space-scale, 1)), calc(100dvh - 7rem));
+}
+
+/* The dock is the composer's surface, so the composer inside it drops its own. */
+.chat-full-view-dock .unsloth-composer-surface {
+	background-color: var(--dock-surface);
+	box-shadow: none;
+}
+
+.chat-full-view-dock :is(.thread-bottom-fade, .composer-footer-note) {
+	display: none;
+}
+
+.chat-full-view-dock .unsloth-composer-dock-inner {
+	padding: 0;
+}
+
+.chat-full-view-dock .aui-thread-composer-dock {
+	background-color: var(--dock-surface);
+	border-bottom-left-radius: 28px;
+	border-bottom-right-radius: 28px;
+}
+
+.chat-full-view-dock .aui-thread-viewport {
+	padding-top: calc(0.75rem * var(--ui-space-scale, 1));
+	padding-left: calc(1rem * var(--ui-space-scale, 1));
+	padding-right: calc(1rem * var(--ui-space-scale, 1));
+}
+
+/* Composer only: the conversation is hidden and the dock takes the composer's height. */
+.chat-full-view-dock[data-expanded="false"] :is(.chat-thread-pane, .aui-thread-root) {
+	flex: none;
+}
+
+.chat-full-view-dock[data-expanded="false"] .aui-thread-viewport {
+	display: none;
+}
+
+.chat-full-view-dock[data-expanded="false"] .aui-thread-composer-dock {
+	position: relative;
+}
+
+.chat-full-view-dock-minimized {
+	align-items: flex-end;
+	height: auto;
+	background: transparent;
+}
+
+.chat-full-view-dock-button {
+	background-color: #ffffff;
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
+		0 8px 24px -6px rgb(0 0 0 / 0.25);
+}
+
+.dark .chat-full-view-dock-button {
+	background-color: var(--card);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent),
+		0 8px 24px -6px rgb(0 0 0 / 0.55);
+}
+
+/* File controls float over the page, so its scroller starts below them (spreadsheets lower, for the sticky header). */
+.browser-file-page {
+	--browser-file-toolbar-inset: calc(3.25rem * var(--ui-space-scale, 1));
+}
+
+.browser-file-page .overflow-auto:not(.overflow-auto .overflow-auto):not(:has(> table)) {
+	padding-top: calc(var(--browser-file-toolbar-inset) + 0.5rem) !important;
+}
+
+.browser-file-page:has(.overflow-auto > table) {
+	padding-top: var(--browser-file-toolbar-inset);
+}
+
+/* Dark mode: the browser's tabs and controls a step lighter than the panel, their text brighter. */
+.dark .browser-chrome {
+	--accent: color-mix(in oklab, var(--accent-base), white 7%);
+	--foreground: color-mix(in oklab, var(--foreground-base), white 55%);
+	--muted-foreground: color-mix(in oklab, var(--foreground-base) 90%, black);
+}
+
+.browser-file-toolbar > :not([aria-hidden]) {
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
+}
+
+.dark .browser-file-toolbar > :not([aria-hidden]) {
+	box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
+}
+
+/* Request edits: the comment bubble is the pointer over the document; its own controls keep theirs. */
+.browser-annotating,
+.browser-annotating *:not([data-annotate-ui], [data-annotate-ui] *) {
+  cursor: none !important;
 }

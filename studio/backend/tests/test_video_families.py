@@ -240,7 +240,6 @@ def test_wan_snap_video_size_16():
 
 
 def test_wan_generation_defaults():
-    # ComfyUI's templates: TI2V-5B 20 steps / CFG 5, T2V-A14B 20 steps / CFG 3.5 (Lightning LoRA off).
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers") == (20, 5.0)
     assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers") == (20, 3.5)
     assert default_video_generation_params("wan2.2-14b") == (20, 3.5)

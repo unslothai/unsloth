@@ -1,20 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Static sigma shift a family samples with in ComfyUI, applied to the loaded scheduler. No
-torch/diffusers imports: it only rebuilds ``pipe.scheduler`` from its own config.
-
-Several shipped schedulers shift sigmas differently from ComfyUI's defaults for the same model:
-Qwen-Image resolves a resolution-dependent exponential shift (about 2.0 at 1024 px) and stretches
-the tail to 0.02 where ComfyUI samples a constant 3.1, Z-Image base ships 6.0 against 3.0, Wan2.2
-ships 5.0 / 3.0 against 8 / 5 and HunyuanVideo-1.5 5.0 / 9.0 against 7. A flow-matching shift ``s``
-maps sigma to ``s * sigma / (1 + (s - 1) * sigma)`` in both, so setting the static shift (and
-dropping the dynamic shift and terminal stretch) reproduces ComfyUI's schedule.
-"""
+"""Rebuild the loaded scheduler at ComfyUI's static sigma shift (shipped schedulers differ, e.g.
+Qwen-Image dynamic ~2.0 + terminal stretch vs 3.1). No torch/diffusers imports."""
 
 from __future__ import annotations
 
+import math
+import os
 from typing import Any, Optional
+
+# "0" keeps every shipped diffusers scheduler instead of ComfyUI's static schedule.
+COMFY_SIGMAS_ENV = "UNSLOTH_DIFFUSION_COMFY_SIGMAS"
+
+
+def comfy_sigmas_enabled() -> bool:
+    return os.environ.get(COMFY_SIGMAS_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def flux_mu_shift(mu: float) -> float:
+    """Static shift equal to ComfyUI's ModelSamplingFlux at a fixed ``mu``:
+    e^mu / (e^mu + 1/t - 1) == s*t / (1 + (s - 1)*t) for s = e^mu, at every resolution."""
+    return math.exp(mu)
 
 
 def flow_shift_overrides(config: Any, shift: float) -> Optional[dict]:
@@ -25,7 +32,6 @@ def flow_shift_overrides(config: Any, shift: float) -> Optional[dict]:
     except Exception:  # noqa: BLE001 - an exotic config just keeps its scheduler
         return None
     if "flow_shift" in keys and config.get("use_flow_sigmas", True):
-        # UniPC / DPM-Solver in flow mode (Wan).
         return {"flow_shift": float(shift)}
     if "shift" in keys and "use_dynamic_shifting" in keys:
         # FlowMatchEulerDiscrete: static shift, no resolution-dependent mu, no terminal stretch.
@@ -42,7 +48,7 @@ def apply_comfy_flow_shift(
     logger: Any = None,
 ) -> bool:
     """Rebuild ``pipe.scheduler`` at ComfyUI's static ``shift``. True when it changed."""
-    if shift is None:
+    if shift is None or not comfy_sigmas_enabled():
         return False
     scheduler = getattr(pipe, "scheduler", None)
     config = getattr(scheduler, "config", None)

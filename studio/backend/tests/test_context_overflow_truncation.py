@@ -1676,35 +1676,6 @@ def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
     assert instruction_pin.pinned_instruction_ids(with_reply, groups = 2, max_tokens = 1024) == set()
 
 
-def test_an_evicted_first_turn_hands_its_date_note_to_the_oldest_kept_turn():
-    from core.inference import llama_cpp
-
-    first = {"role": "user", "content": "[Current date: 2026-10-01]\n\n" + "A" * 400}
-    kept = {"role": "user", "content": "C" * 200}
-    messages = [
-        first,
-        {"role": "assistant", "content": "B" * 400},
-        kept,
-        {"role": "assistant", "content": "D" * 100},
-        {"role": "user", "content": "what is the date?"},
-    ]
-    counter = lambda candidate: sum(  # noqa: E731
-        len(str(message.get("content", ""))) for message in candidate
-    )
-    fitted, info = llama_cpp._fit_with_instruction_pins(
-        messages, context_length = 700, max_tokens = 64, count_tokens = counter
-    )
-
-    assert info is not None and info["dropped_messages"] == 2
-    assert fitted[0] is kept
-    assert kept["content"] == "[Current date: 2026-10-01]\n\n" + "C" * 200
-    assert info["prompt_tokens_after"] == counter(fitted)
-    again, _ = llama_cpp._fit_with_instruction_pins(
-        messages, context_length = 700, max_tokens = 64, count_tokens = counter
-    )
-    assert again[0]["content"].count("[Current date:") == 1
-
-
 def test_a_date_note_that_would_overflow_the_fit_is_not_moved():
     from core.inference import llama_cpp
 

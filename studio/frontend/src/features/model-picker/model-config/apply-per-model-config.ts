@@ -65,13 +65,9 @@ export function applyPerModelConfigToRuntime(
         )
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
-    // Explicit managed on diffusion: an omitted field inherits the stored custom config.
-    llamaCppConfig:
-      options.isDiffusion && config.llamaCppConfig !== undefined
-        ? { version: 1, mode: "managed" }
-        : config.llamaCppConfig,
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
+    mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -134,13 +130,13 @@ export function currentRuntimePerModelConfig(
     engine: s.params.engine ?? "auto",
     enginePrecision: s.params.enginePrecision ?? "auto",
     engineParallelism: s.params.engineParallelism ?? "tensor",
-    llamaCppConfig: s.llamaCppConfig,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
+    mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -172,10 +168,6 @@ export function currentRuntimePerModelConfig(
   };
 }
 
-function customOnly(config: PerModelConfig["llamaCppConfig"]) {
-  return config?.mode === "custom" ? config : undefined;
-}
-
 /** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
  *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
 export function perModelConfigsEqual(
@@ -190,14 +182,12 @@ export function perModelConfigsEqual(
     (a.engine ?? "auto") === (b.engine ?? "auto") &&
     (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
     (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
-    // Unset and managed load the same engine.
-    JSON.stringify(customOnly(a.llamaCppConfig)) ===
-      JSON.stringify(customOnly(b.llamaCppConfig)) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
+    Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&

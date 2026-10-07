@@ -69,6 +69,34 @@ def summarize_resident_chat() -> Dict[str, Any]:
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
+    try:
+        from core.inference import model_slots
+
+        filling_slot = model_slots.loading
+        # A stuck slot's server would not stop, so it may still hold VRAM whatever it reports.
+        stuck = list(model_slots.stuck)
+        for slot in [*model_slots.slots, *stuck]:
+            pending = next(iter(getattr(slot.orchestrator, "loading_models", ()) or ()), None)
+            filling = filling_slot is not None and filling_slot[0] is slot
+            name = (
+                (slot in stuck and (slot.llama.model_identifier or "gguf"))
+                or slot.orchestrator.active_model_name
+                or pending
+                or (
+                    slot.llama.is_active
+                    and getattr(slot.llama, "_gpu_offload_active", None) is not False
+                    and (slot.llama.model_identifier or "gguf")
+                )
+                or (filling and filling_slot[1])
+            )
+            if name:
+                gguf_name = gguf_name or name
+                # Only a still-loading slot is unsizable; a loaded one is in the free VRAM can_keep reads.
+                if pending or filling or (slot.llama.is_active and not slot.llama.is_loaded):
+                    loading = True
+    except Exception as e:
+        logger.warning("Could not inspect models loaded alongside: %s", e)
+
     return {
         "hf": hf_name,
         "gguf": gguf_name,
@@ -480,7 +508,26 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
+    freed += free_kept_models_for_training(reason)
     return freed
+
+
+def free_kept_models_for_training(reason: str) -> List[str]:
+    from core.inference import model_slots
+
+    kept = [
+        slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
+        for slot in [*model_slots.slots, *model_slots.stuck]
+    ]
+    if kept:
+        logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
+        try:
+            model_slots.unload_extra_models(strict = True)
+        except RuntimeError as exc:
+            raise ManagedEngineStillRunning(
+                "A model kept alongside could not be stopped. Retry before starting training."
+            ) from exc
+    return [f"kept:{name}" for name in kept]
 
 
 def _stt_sidecar_holds_no_vram(sidecar) -> bool:
@@ -669,6 +716,16 @@ def coordinate_models_for_training(
         keep, _info = can_keep()
         if keep:
             logger.info("Keeping chat model loaded after freeing STT: %s", resident_chat)
+            return freed
+
+    from core.inference import model_slots
+
+    # Models kept alongside go before the one in use.
+    if model_slots.slots or model_slots.stuck:
+        freed += free_kept_models_for_training(reason = "insufficient training memory")
+        keep, _info = can_keep()
+        if keep:
+            logger.info("Keeping the active chat model loaded after freeing the others")
             return freed
 
     freed += free_chat_models_for_training(

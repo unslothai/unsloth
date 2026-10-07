@@ -258,7 +258,35 @@ def test_thumb_cache_key_distinguishes_same_stem_extensions(client, ds_root):
     client.get("/api/train/diffusion/dataset/d/image/sample.png?thumb=32")
     client.get("/api/train/diffusion/dataset/d/image/sample.jpg?thumb=32")
     thumbs = sorted(p.name for p in (folder / ".thumbs").glob("*.jpg"))
-    assert thumbs == ["sample.jpg_32.jpg", "sample.png_32.jpg"]
+    assert thumbs == ["sample.jpg_32_w.jpg", "sample.png_32_w.jpg"]
+
+
+def test_thumbnail_of_transparent_image_shows_white_background(client, ds_root):
+    folder = ds_root / "d"
+    folder.mkdir()
+    sticker = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    sticker.paste((255, 220, 0, 255), (16, 16, 48, 48))
+    sticker.save(folder / "sticker.png", format = "PNG")
+
+    r = client.get("/api/train/diffusion/dataset/d/image/sticker.png?thumb=64")
+
+    assert r.status_code == 200
+    thumb = Image.open(io.BytesIO(r.content)).convert("RGB")
+    assert min(thumb.getpixel((2, 2))) > 245
+
+
+def test_thumbnail_cached_before_white_flattening_is_not_served(client, ds_root):
+    folder = ds_root / "d"
+    (folder / ".thumbs").mkdir(parents = True)
+    Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(folder / "sticker.png", format = "PNG")
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(
+        folder / ".thumbs" / "sticker.png_64.jpg", format = "JPEG"
+    )
+
+    r = client.get("/api/train/diffusion/dataset/d/image/sticker.png?thumb=64")
+
+    assert r.status_code == 200
+    assert min(Image.open(io.BytesIO(r.content)).convert("RGB").getpixel((2, 2))) > 245
 
 
 # ── traversal / validation ───────────────────────────────────────────────────

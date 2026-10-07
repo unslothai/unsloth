@@ -71,6 +71,7 @@ export interface DiffusionStatus {
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
+  supports_negative_prompt?: boolean;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -98,8 +99,11 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise".
-  phase?: "denoise" | "decode" | null;
+  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts.
+  phase?: "encode" | "denoise" | "decode" | null;
+  // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
+  preview?: string | null;
+  preview_seq?: number;
 }
 
 export interface DiffusionLoadProgress {
@@ -161,6 +165,8 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
+  // Stream a live preview on generate-progress; omitted = the server default (on).
+  live_preview?: boolean;
   negative_prompt?: string;
   width?: number;
   height?: number;

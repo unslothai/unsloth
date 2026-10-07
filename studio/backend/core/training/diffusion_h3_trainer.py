@@ -82,7 +82,7 @@ from core.training.diffusion_train_common import (
     _latent_cache_over_budget,
     _restore_perf_flags,
     h3_train_unsupported_reason,
-    native_bf16_supported,
+    flow_bf16_trainable,
     native_bf16_supported_xpu,
     resolve_train_device,
     resolve_train_steps,
@@ -483,7 +483,7 @@ def run_h3_lora_training(
         return True
 
     device = resolve_train_device()
-    if device == "cuda" and not native_bf16_supported():
+    if device == "cuda" and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."

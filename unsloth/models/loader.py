@@ -41,6 +41,7 @@ from .mistral_format import (
     mistral_format_redirect,
     prepare_mistral_format_checkpoint,
 )
+from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -133,6 +134,7 @@ from ._utils import (
 
 # Source of truth is unsloth_zoo.model_lists, re-exported for callers importing FORCE_FLOAT32 from here. The fallback list is unioned in so a newer unsloth still forces float32 for these archs against an older zoo.
 _FORCE_FLOAT32_FALLBACK = [
+    "embedding_gemma2",  # EmbeddingGemma 2: text-only loads have no gemma4 sub-config to match
     "gemma3,",
     "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
     "gemma3n",
@@ -579,6 +581,43 @@ def _config_has_native_class(auto_class, config):
         return auto_class is not None and type(config) in auto_class._model_mapping
     except Exception:
         return False
+
+
+def _compiled_auto_model(auto_model):
+    """The compiled replacement of a concrete `auto_model` class, else `auto_model` unchanged.
+
+    unsloth_compile_transformers swaps the class in its modeling module, which an Auto class
+    resolves at load time; a class the caller imported earlier (the Whisper notebook passes
+    WhisperForConditionalGeneration) still points at the stock one and skips every compiled forward.
+    """
+    if not isinstance(auto_model, type) or getattr(auto_model, "_model_mapping", None) is not None:
+        return auto_model
+    module = sys.modules.get(getattr(auto_model, "__module__", None) or "")
+    replacement = getattr(module, auto_model.__name__, None) if module is not None else None
+    if (
+        isinstance(replacement, type)
+        and replacement is not auto_model
+        and replacement.__name__ == auto_model.__name__
+        and callable(getattr(replacement, "from_pretrained", None))
+        and _built_by_unsloth_compiler(replacement)
+    ):
+        return replacement
+    return auto_model
+
+
+def _built_by_unsloth_compiler(cls):
+    """True when `cls` is exported by a module the compiler generated (unsloth_compiled_module_*).
+
+    The compiled class keeps the original `__module__`, so check where it actually lives; a same-named
+    class another library rebound in the modeling module is not taken.
+    """
+    for name, module in list(sys.modules.items()):
+        if (
+            name.rsplit(".", 1)[-1].startswith("unsloth_compiled_module_")
+            and getattr(module, cls.__name__, None) is cls
+        ):
+            return True
+    return False
 
 
 def _resolve_omni_auto_model(
@@ -1459,14 +1498,6 @@ class FastLanguageModel(FastLlamaModel):
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
 
-        # The optimized path never carried offload_embedding, so a request for one is dropped rather than honoured; say so instead of leaving the caller to infer it from memory use. "auto" stays quiet: it promises a decision, and off is one.
-        if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
-            print(
-                "Unsloth: Not offloading embeddings; the optimized path for this "
-                "architecture does not support it. Pass `device_map` or use FastModel "
-                "if you need the offload."
-            )
-
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -1491,6 +1522,12 @@ class FastLanguageModel(FastLlamaModel):
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
+            # resize_token_embeddings below replaces the embedding and its hooks: only an explicit request offloads.
+            offload_embedding = (
+                False
+                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                else offload_embedding
+            ),
             *args,
             **kwargs,
         )
@@ -1584,16 +1621,27 @@ class FastLanguageModel(FastLlamaModel):
                     local_files_only = local_files_only,
                     cache_dir = kwargs.get("cache_dir"),
                 )
-            model = PeftModel.from_pretrained(
-                model,
+            # PEFT re-runs PiSSA at load: rebuild the residual with the algorithm that made the adapter.
+            fast_pissa = adapter_used_fast_pissa(
                 old_model_name,
                 token = token,
                 revision = revision,
                 local_files_only = local_files_only,
-                is_trainable = True,
-                trust_remote_code = trust_remote_code,
-                **peft_load_kwargs,
+                cache_dir = kwargs.get("cache_dir"),
             )
+            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                model = PeftModel.from_pretrained(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    is_trainable = True,
+                    trust_remote_code = trust_remote_code,
+                    **peft_load_kwargs,
+                )
+            if fast_pissa:
+                record_fast_pissa(model)
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -1664,8 +1712,10 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_inference(model)
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if getattr(model, "_unsloth_slow_diffusion", False):
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
             return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
@@ -2380,6 +2430,7 @@ class FastModel(FastBaseModel):
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
                 supports_sdpa = False
+        auto_model = _compiled_auto_model(auto_model)
 
         # Keep the local checkpoint dir as tokenizer when self-sufficient; a VLM also needs local processor files, else fall back to the base repo so its cached processor loads.
         _ckpt_arch = getattr(model_config, "architectures", None) or []
@@ -2515,7 +2566,9 @@ class FastModel(FastBaseModel):
                         "Use FastVisionModel for multimodal inputs."
                     )
                     # Remap VLM text weights (tf >= 5) while model_config is still the parent (#5816).
-                    _apply_text_only_key_mapping(kwargs, model_config, text_config)
+                    _text_key_mapping = _apply_text_only_key_mapping(
+                        kwargs, model_config, text_config
+                    )
                     model_config = text_config
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.
@@ -2815,17 +2868,25 @@ class FastModel(FastBaseModel):
                     local_files_only = local_files_only,
                     cache_dir = kwargs.get("cache_dir"),
                 )
+            fast_pissa = adapter_used_fast_pissa(
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
             try:
-                model = PeftModel.from_pretrained(
-                    model,
-                    old_model_name,
-                    token = token,
-                    revision = revision,
-                    local_files_only = local_files_only,
-                    is_trainable = True,
-                    trust_remote_code = trust_remote_code,
-                    **peft_load_kwargs,
-                )
+                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                    model = PeftModel.from_pretrained(
+                        model,
+                        old_model_name,
+                        token = token,
+                        revision = revision,
+                        local_files_only = local_files_only,
+                        is_trainable = True,
+                        trust_remote_code = trust_remote_code,
+                        **peft_load_kwargs,
+                    )
             finally:
                 # Always restore the original PEFT method, even if loading fails.
                 if _clippable_linear_cls is not None:
@@ -2834,6 +2895,8 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            if fast_pissa:
+                record_fast_pissa(model)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)

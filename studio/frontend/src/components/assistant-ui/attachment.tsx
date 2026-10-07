@@ -9,8 +9,10 @@ import {
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
 import { AttachmentPreviewDialog } from "@/components/assistant-ui/attachment-preview";
+import { useT } from "@/i18n";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useAttachmentImageSrc } from "@/components/assistant-ui/use-attachment-source";
 import {
   Dialog,
@@ -28,8 +30,12 @@ import {
   sentAttachmentLayout,
   type AttachmentFileKind,
   type SentAttachmentLayout,
+  type DocumentAnnotations,
+  annotationsOfFile,
+  isAnnotationsContent,
   isPastedTextContent,
   isPastedTextFile,
+  parseAnnotationsContent,
   pastedTextContentBytes,
   pastedTextContentPreview,
   pastedTextPreview,
@@ -47,6 +53,8 @@ import {
 } from "@assistant-ui/react";
 import {
   FileEmpty02Icon,
+  Comment01Icon,
+  InternetIcon,
   TextAlignLeft01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -60,6 +68,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -126,7 +135,7 @@ const FileCardBody: FC<{
     ) : (
       <CardCenter>{center}</CardCenter>
     )}
-    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-1.75", preview && "pt-1.25")}>
+    <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-[calc(var(--spacing)*1.75-0.5px)]", preview && "pt-1.25")}>
       {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
       <span className="min-w-0 truncate text-ui-11p5 leading-ui-15 text-foreground">
         {name}
@@ -200,6 +209,79 @@ const readPastedTextPreview = async (
     return pastedTextContentPreview(attachment.sentText);
   }
   return pastedTextPreview(await readPastedText(attachment));
+};
+
+/** Annotations made on a document in the browser. Read off the File in the composer and off the
+ *  stored text once sent; the text is only parsed when its tag says it is one. */
+const useAnnotationsAttachment = (): DocumentAnnotations | null => {
+  const { file, sentText } = useAuiState(
+    useShallow(({ attachment }) => {
+      if (attachment.type !== "document") return { file: undefined, sentText: undefined };
+      const file = (attachment as { file?: File }).file;
+      const text = attachment.content?.flatMap((part) => (part.type === "text" ? [part.text] : []))[0];
+      return { file, sentText: isAnnotationsContent(text) ? text : undefined };
+    }),
+  );
+  return useMemo(() => annotationsOfFile(file) ?? parseAnnotationsContent(sentText), [file, sentText]);
+};
+
+/** "1 annotation", with what was marked and asked on hover, as ChatGPT shows it. */
+const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer: boolean }> = ({
+  annotations,
+  isComposer,
+}) => {
+  const t = useT();
+  const count = annotations.items.length;
+  const label = count === 1 ? t("browser.annotate.countOne") : t("browser.annotate.countMany", { count });
+  const kind = attachmentFileKind(annotations.file, undefined);
+  return (
+    <AttachmentPrimitive.Root className="aui-attachment-root group/attachment-card relative">
+      <HoverCard openDelay={120} closeDelay={80}>
+        <HoverCardTrigger asChild={true}>
+          <button
+            type="button"
+            aria-label={`${label}: ${annotations.file}`}
+            className={cn(
+              "aui-annotations-chip inline-flex h-9 cursor-default items-center gap-1.5 rounded-full px-3.5 text-sm transition-colors",
+              CARD_EDGE,
+              "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]",
+              isComposer && "pr-7",
+            )}
+          >
+            <HugeiconsIcon icon={Comment01Icon} strokeWidth={1.75} className="size-4 text-muted-foreground" />
+            {label}
+          </button>
+        </HoverCardTrigger>
+        {/* The menus' surface: their soft shadow and radius, no ring, rather than a hover card's lift. */}
+        <HoverCardContent
+          side="top"
+          align="start"
+          className="w-[min(26rem,calc(100vw-2rem))] rounded-[14px] p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
+        >
+          <div className="flex max-h-80 flex-col divide-y divide-border/60 overflow-y-auto">
+            {annotations.items.map((item, index) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: the list is fixed once sent
+              <div key={index} className="flex min-w-0 flex-col gap-1.5 px-4 py-3">
+                <span className="flex min-w-0 items-center gap-2 text-ui-13 text-primary">
+                  {annotations.url ? (
+                    <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4 text-muted-foreground" />
+                  ) : (
+                    <AttachmentKindIcon kind={kind} className={cn("size-4", ATTACHMENT_KIND_ICON_CLASS[kind])} />
+                  )}
+                  <span className="truncate" title={annotations.url}>
+                    {annotations.file}
+                  </span>
+                </span>
+                <span className="truncate text-ui-13 text-muted-foreground">{item.quote}</span>
+                <span className="whitespace-pre-wrap break-words text-ui-14 text-foreground">{item.request}</span>
+              </div>
+            ))}
+          </div>
+        </HoverCardContent>
+      </HoverCard>
+      {isComposer && <AttachmentCardRemove />}
+    </AttachmentPrimitive.Root>
+  );
 };
 
 const PastedTextPreviewDialog: FC<
@@ -419,9 +501,18 @@ const AttachmentCardRemove: FC = () => {
 
 const ComposerAttachmentCard: FC = () => {
   const pastedText = usePastedTextAttachment();
+  const annotations = useAnnotationsAttachment();
   const src = useAttachmentImageSrc();
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const { name, kind } = useAttachmentKind();
+
+  if (annotations) {
+    return (
+      <div className={cn("flex items-end", CARD_SLOT)}>
+        <AnnotationsAttachmentUI key={attachmentId} annotations={annotations} isComposer={true} />
+      </div>
+    );
+  }
 
   if (pastedText) {
     return (
@@ -513,8 +604,13 @@ const SentImageThumb: FC<{ name: string; kind: AttachmentFileKind }> = ({
 const SentFileItem: FC = () => {
   const layout = useContext(SentAttachmentLayoutContext);
   const pastedText = usePastedTextAttachment();
+  const annotations = useAnnotationsAttachment();
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
   const { name, kind } = useAttachmentKind();
+
+  if (annotations) {
+    return <AnnotationsAttachmentUI key={attachmentId} annotations={annotations} isComposer={false} />;
+  }
 
   if (pastedText) {
     return (

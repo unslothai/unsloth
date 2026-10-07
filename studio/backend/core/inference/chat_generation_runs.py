@@ -36,10 +36,8 @@ _SHUTDOWN_CANCEL_SECONDS = 5.0
 # force-kills the backend after five seconds.
 _SWEEP_SHUTDOWN_SECONDS = 0.5
 # A durable run sets cancel_on_disconnect=False, so reaping is keyed on progress rather than on connectedness. The
-# default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S: that path renews on advancing ``prompt_progress``, and this
-# lease renews on the ``: prefill-progress`` stand-in the routes emit when those frames are dropped for the UI. Slow
-# decode is safe at any speed via streamed chunks. A century: clear of any real lease, far below where integer
-# milliseconds overflow.
+# default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S; prefill renews via `: prefill-progress`, decode via chunks.
+# A century: clear of any real lease, far below where integer milliseconds overflow.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
 # The longest admission keep-alive cadence worth deriving a lease from. A day already means the queue never reports,
 # and tripling it stays far inside _MAX_ENV_SECONDS.
@@ -403,8 +401,7 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 _ADMISSION_DONE_MARKER = ": admission-done"
 # A server-side tool still running. Rate limited like the wait marker.
 _TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
-# Prefill still advancing while prompt_progress frames are dropped for the UI. Same lease
-# contract as the tool heartbeat; not a stall keep-alive.
+# Prefill advancing while prompt_progress is dropped; renews the lease like the tool heartbeat.
 _PREFILL_PROGRESS_MARKER = ": prefill-progress"
 
 
@@ -808,14 +805,8 @@ class ChatGenerationSupervisor:
                     break
                 next_raw_task = asyncio.create_task(iterator.__anext__())
                 text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # Admission / tool / prefill comments are progress; plain keep-alives are not. A
-                # queued run only emits `: admission-wait`, which _SSEDecoder drops, so nothing
-                # renewed the lease and a healthy queue reaped its own runs. `: keep-alive` is the
-                # opposite signal, emitted when the generator has produced NOTHING, so renewing on
-                # any byte would keep a wedged run alive forever. Prefill drops ``prompt_progress``
-                # for clients that did not ask for it and stands in with `: prefill-progress`
-                # (same idea as `: tool-heartbeat`). Rate limited because chunk traffic already
-                # renews through append_events.
+                # Admission / tool / prefill comments are progress (_SSEDecoder drops them); `: keep-alive`
+                # means nothing was produced, so renewing on it would keep a wedged run alive forever.
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
