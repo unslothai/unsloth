@@ -155,7 +155,7 @@ export function PromptQueueList({
   }
 
   function saveEditing() {
-    if (!editingItem || !draft.trim()) return;
+    if (!editingItem || (!draft.trim() && !editingItem.attachmentNames?.length)) return;
     if (onEdit(editingItem.id, draft)) {
       setAnnouncement(t("promptQueue.announceUpdated"));
       finishEditing();
@@ -205,7 +205,7 @@ export function PromptQueueList({
                 aria-label={t("promptQueue.itemLabel", {
                   position,
                   total: items.length,
-                  prompt: item.prompt,
+                  prompt: [item.prompt, ...(item.attachmentNames ?? [])].filter(Boolean).join(" · "),
                 })}
                 className={cn(
                   "group relative rounded-lg transition-colors",
@@ -306,7 +306,7 @@ export function PromptQueueList({
                       type="button"
                       size="sm"
                       className="focus-visible:bg-primary/80"
-                      disabled={!draft.trim()}
+                      disabled={!draft.trim() && !item.attachmentNames?.length}
                       onClick={saveEditing}
                     >
                       {t("promptQueue.save")}
@@ -355,6 +355,12 @@ export function PromptQueueList({
                     />
                     <span className="min-w-0 flex-1 truncate px-1.5 text-sm text-foreground/80">
                       {item.prompt}
+                      {item.attachmentNames?.length ? (
+                        <span title={item.attachmentNames.join(", ")}>
+                          {item.prompt ? " · " : ""}
+                          {item.attachmentNames.join(", ")}
+                        </span>
+                      ) : null}
                     </span>
                     {index === 0 && entry.paused && (
                       <span className="hidden shrink-0 px-1 text-xs text-muted-foreground sm:inline">

@@ -1328,6 +1328,11 @@ export async function readTextAttachment(file: File): Promise<string> {
 // Dropped with the File itself, so a removed attachment retains nothing.
 const decodedOnce = new WeakMap<File, string>();
 
+/** Already decoded by the attachment adapter; queueing must not start another read. */
+export function cachedTextAttachment(file: File): string | undefined {
+  return decodedOnce.get(file);
+}
+
 /** Decode once per file. The composer decodes while attaching, to report a bad
  *  encoding there, and sending the same file must not read all of it again. */
 export async function readTextAttachmentOnce(file: File): Promise<string> {

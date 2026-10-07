@@ -222,14 +222,10 @@ import {
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
-  attachmentContentText,
   attachmentsSample,
-  isPastedTextFile,
 } from "./utils/pasted-text";
-import {
-  annotationsContentText,
-  annotationsOfFile,
-} from "./utils/document-annotations";
+import { annotationsOfFile } from "./utils/document-annotations";
+import { completeTextAttachment } from "./utils/queued-text-attachments";
 import {
   adoptPreStreamRunReservation,
   claimPreStreamRunReservation,
@@ -680,28 +676,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const annotations = annotationsOfFile(attachment.file);
     const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "text",
-          // A pasted file gets its own tag and size, the markers that outlive the File once the message is stored.
-          // Annotations carry their own tag, which the chip reads back once the File is gone.
-          text: annotations
-            ? annotationsContentText(annotations)
-            : attachmentContentText(
-                attachment.name,
-                text,
-                isPastedTextFile(attachment.file),
-                attachment.file.size,
-              ),
-        },
-      ],
-      status: { type: "complete" },
-    };
+    return completeTextAttachment(attachment, text);
   }
 
   remove(): Promise<void> {
