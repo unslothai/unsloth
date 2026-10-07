@@ -3350,8 +3350,7 @@ class DiffusionBackend:
             kwargs["_te_prequant_resolved"] = bool(te_prequant_files)
             if dit_prequant is not None:
                 expected += int(dit_prequant[2])
-            # The pre-cast encoder is downloaded inside load_pipeline, so without its bytes here the bar read 100% /
-            # finalizing for the whole multi-GB pull. A mirrored file is read in place and never lands in the cache.
+            # load_pipeline downloads the pre-cast encoder. A mirrored file is read in place, never cached.
             from .diffusion_te_prequant import te_prequant_unmirrored
 
             te_hub_files = [
@@ -3423,9 +3422,8 @@ class DiffusionBackend:
                     self._loading.fetch_repo = fetch_base
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
-                        # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing. The file
-                        # entry goes in first: load_progress reads without this lock, and a repo listed with no file
-                        # entry yet is counted whole, so a cached sibling checkpoint could latch "finalizing".
+                        # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing. File
+                        # entry first: load_progress reads lock-free and counts a repo with no file entry whole.
                         self._loading.asset_files += (
                             (
                                 dit_prequant[0],
@@ -3444,8 +3442,7 @@ class DiffusionBackend:
                     cancel_event = cancel_event,
                 )
             if te_hub_files:
-                # Baselined AFTER the denoiser fetch: both can live in one repo, and a baseline taken before it would
-                # credit the denoiser's bytes to the encoder too. File entries before repos, as for the denoiser above.
+                # Baselined AFTER the denoiser fetch: one repo can hold both, and its bytes are not the encoder's.
                 te_baselines = {
                     repo: self._cache_bytes(repo) for repo in {r for r, _n, _s in te_hub_files}
                 }
@@ -3551,11 +3548,14 @@ class DiffusionBackend:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
                 downloaded += self._cache_bytes(companion)
-        scoped = {entry[0] for entry in loading.asset_files}
-        for asset in loading.asset_repos:
+        # Repos before files, the reverse of the order _run_load stores them: every repo seen here has its file entry.
+        asset_repos = loading.asset_repos
+        asset_files = loading.asset_files
+        scoped = {entry[0] for entry in asset_files}
+        for asset in asset_repos:
             if asset and asset not in (loading.repo_id, companion) and asset not in scoped:
                 downloaded += self._cache_bytes(asset)
-        for repo, filename, size, baseline in loading.asset_files:
+        for repo, filename, size, baseline in asset_files:
             if not repo or repo in (loading.repo_id, companion):
                 continue
             # The finished file plus what this load added since it claimed the repo (in-flight
@@ -10619,8 +10619,7 @@ class DiffusionBackend:
                 loading = self._loading
                 if loading is not None and loading.error is None:
                     # _run_load's finally drops this, so it spans the prefetch too, where nothing
-                    # is registered in _load_accounts. Asset repos too: the pre-cast encoder downloads
-                    # inside load_pipeline without the cancel event, so it writes on after the eject.
+                    # is registered in _load_accounts. Asset repos too: the encoder download ignores the cancel event.
                     self._draining_repos.setdefault(cancelled_token, set()).update(
                         r
                         for r in (

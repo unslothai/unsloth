@@ -4939,9 +4939,8 @@ def _run_te_load(monkeypatch, on_load, **run_kwargs):
 
 
 def test_run_load_reports_the_pre_cast_encoder_download_as_downloading(monkeypatch):
-    # load_pipeline downloads the hosted encoder, and the GGUF + base were cached, so the bar used to
-    # read 100% "Loading to GPU" for the whole multi-GB pull. A cached fp8 sibling in the encoder repo
-    # (the pre-int8 default) must not stand in for the int8 file either.
+    # GGUF + base are cached and load_pipeline downloads the hosted encoder. A cached fp8 sibling in
+    # the encoder repo must not stand in for the int8 file.
     cache = {"unsloth/Qwen-Image-2.1-GGUF": 700, "Qwen/Qwen-Image-2.1": 300, _TE_REPO: 950}
     file_bytes: dict = {}
     _stub_te_run_load(
@@ -5056,9 +5055,8 @@ class _PollOnClaimState(_LoadingState):
 
 @pytest.mark.parametrize("claim", ["encoder", "denoiser"])
 def test_run_load_never_shows_a_claimed_repo_without_its_file(monkeypatch, claim):
-    # A repo claimed with no file entry yet is counted whole, so a poll between the two stores
-    # counted a cached sibling checkpoint (the fp8 file a card used before int8) as this load's
-    # download and latched "finalizing" for the rest of the load.
+    # A repo claimed with no file entry is counted whole, cached sibling checkpoint included, so no
+    # poll between the two stores may see that state.
     dit_repo = "unsloth/Qwen-Image-2.1-DiT"
     cache = {"unsloth/Qwen-Image-2.1": 300}
     cache[_TE_REPO if claim == "encoder" else dit_repo] = 1700
@@ -5084,6 +5082,26 @@ def test_run_load_never_shows_a_claimed_repo_without_its_file(monkeypatch, claim
     backend._run_load(_load_token = 7, repo_id = "unsloth/Qwen-Image-2.1", model_kind = "pipeline")
     assert state.polls and set(state.polls) == {"downloading"}
     assert seen[0]["phase"] == "downloading"
+
+
+def test_load_progress_reads_a_claimed_repo_before_its_file(monkeypatch):
+    # The whole claim can land between the poll's two reads; the repo must still not be seen
+    # without its file entry.
+    class _ClaimLandsMidPoll(_LoadingState):
+        def __getattribute__(self, name):
+            value = super().__getattribute__(name)
+            if name == "asset_files" and not value:
+                self.asset_files = ((_TE_REPO, _TE_FILE, 900, 950),)
+                self.asset_repos = (_TE_REPO,)
+            return value
+
+    monkeypatch.setattr(
+        DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: {_TE_REPO: 950}.get(repo, 0))
+    )
+    monkeypatch.setattr(DiffusionBackend, "_cache_file_bytes", staticmethod(lambda repo, f: 0))
+    backend = DiffusionBackend()
+    backend._loading = _ClaimLandsMidPoll(repo_id = "org/pick", base_repo = None, expected_bytes = 900)
+    assert backend.load_progress()["phase"] == "downloading"
 
 
 def test_the_widening_decision_is_taken_on_the_repo_listing(monkeypatch):
