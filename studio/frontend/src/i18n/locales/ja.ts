@@ -1317,6 +1317,9 @@ export const ja = {
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
+        sttQuantLabel: "量子化",
+        sttQuantDescription:
+          "ローカルで実行する STT モデルを選択または検索し、量子化を選びます。",
         sttDeviceLabel: "読み込み先",
         sttDeviceAuto: "GPU（利用できる場合）",
         sttDeviceCpu: "CPU メモリ",
@@ -1440,8 +1443,7 @@ export const ja = {
         buttonDescription: "アシスタントの応答に表示します",
         engineLabel: "TTS エンジン",
         engineSystemDescription: "デバイス内蔵の音声",
-        engineStudioDescription:
-          "読み込み済みの音声モデルを使用します (例: Orpheus)",
+        engineStudioDescription: "音声で読み込んだ音声合成モデルを使用します",
         engineSystem: "システムの音声",
         engineStudio: "TTS モデルを読み込む",
         engineCustom: "カスタムエンドポイント",
@@ -1455,10 +1457,13 @@ export const ja = {
         customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
         modelDescription:
-          "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
+          "音声で音声合成モデルを読み込んでください。チャットモデルは置き換えられます。",
         openAudioAction: "音声を開く",
         voiceLabel: "音声",
         voiceDescription: "このデバイスで最適な音声",
+        studioVoiceDescription: "音声に保存したボイスにはクローン対応モデルが必要です",
+        studioVoiceDefault: "モデル自身の音声",
+        studioVoiceSaved: "保存したボイス",
         speedLabel: "速度",
         pitchLabel: "ピッチ",
         volumeLabel: "音量",

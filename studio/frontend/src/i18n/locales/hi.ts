@@ -1317,6 +1317,9 @@ export const hi = {
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttQuantLabel: "क्वांटाइज़ेशन",
+        sttQuantDescription:
+          "लोकली चलाने के लिए STT मॉडल चुनें या खोजें, फिर उसका क्वांटाइज़ेशन चुनें।",
         sttDeviceLabel: "इसमें लोड करें",
         sttDeviceAuto: "उपलब्ध होने पर GPU",
         sttDeviceCpu: "CPU RAM",
@@ -1441,8 +1444,7 @@ export const hi = {
         buttonDescription: "असिस्टेंट के जवाबों पर दिखाएँ",
         engineLabel: "TTS इंजन",
         engineSystemDescription: "डिवाइस की अंतर्निहित आवाज़ें",
-        engineStudioDescription:
-          "लोड किए गए ऑडियो मॉडल का उपयोग करता है (जैसे Orpheus)",
+        engineStudioDescription: "ऑडियो में लोड किए गए स्पीच मॉडल का उपयोग करता है",
         engineSystem: "सिस्टम की आवाज़ें",
         engineStudio: "TTS मॉडल लोड करें",
         engineCustom: "कस्टम एंडपॉइंट",
@@ -1456,10 +1458,14 @@ export const hi = {
           "एंडपॉइंट द्वारा अपेक्षित वॉइस नाम; डिफ़ॉल्ट alloy है",
         modelLabel: "TTS मॉडल",
         modelDescription:
-          "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
+          "ऑडियो में एक स्पीच मॉडल लोड करें। यह चैट मॉडल की जगह ले लेता है।",
         openAudioAction: "ऑडियो खोलें",
         voiceLabel: "आवाज़",
         voiceDescription: "इस डिवाइस पर सबसे अच्छी आवाज़ें",
+        studioVoiceDescription:
+          "ऑडियो में सहेजी गई आवाज़ों के लिए क्लोनिंग मॉडल चाहिए",
+        studioVoiceDefault: "मॉडल की अपनी आवाज़",
+        studioVoiceSaved: "सहेजी गई आवाज़",
         speedLabel: "गति",
         pitchLabel: "पिच",
         volumeLabel: "वॉल्यूम",

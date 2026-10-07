@@ -229,7 +229,7 @@ huggingfacenotorch = [
     #
     # 2026.9.9 is the first zoo carrying the ceilings below and the Gemma3 token_type_ids fix
     # (unsloth-zoo#1505) that transformers >= 5.15 needs.
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -297,7 +297,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -969,7 +969,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.9",
+    "unsloth_zoo>=2026.10.1",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

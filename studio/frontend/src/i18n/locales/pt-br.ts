@@ -1317,6 +1317,9 @@ export const ptBR = {
         sttModelLabel: "Modelo de reconhecimento de fala",
         sttModelDescription:
           "Escolha ou busque um modelo STT para executar localmente.",
+        sttQuantLabel: "Quantização",
+        sttQuantDescription:
+          "Escolha ou busque um modelo STT para executar localmente e depois sua quantização.",
         sttDeviceLabel: "Carregar em",
         sttDeviceAuto: "GPU quando disponível",
         sttDeviceCpu: "RAM da CPU",
@@ -1442,8 +1445,7 @@ export const ptBR = {
         buttonDescription: "Exibe o botão nas respostas do assistente",
         engineLabel: "Mecanismo de TTS",
         engineSystemDescription: "Vozes nativas do dispositivo",
-        engineStudioDescription:
-          "Usa o modelo de áudio carregado (por exemplo, Orpheus)",
+        engineStudioDescription: "Usa o modelo de fala carregado em Áudio",
         engineSystem: "Vozes do sistema",
         engineStudio: "Carregar modelo de TTS",
         engineCustom: "Endpoint personalizado",
@@ -1458,10 +1460,14 @@ export const ptBR = {
           "Nome da voz esperado pelo endpoint; o padrão é alloy",
         modelLabel: "Modelo de TTS",
         modelDescription:
-          "Carregue um modelo de áudio pelo seletor de modelos (por exemplo, Orpheus TTS)",
+          "Carregue um modelo de fala em Áudio. Ele substitui o modelo do chat.",
         openAudioAction: "Abrir Áudio",
         voiceLabel: "Voz",
         voiceDescription: "As melhores vozes deste dispositivo",
+        studioVoiceDescription:
+          "Vozes salvas em Áudio exigem um modelo de clonagem",
+        studioVoiceDefault: "Voz própria do modelo",
+        studioVoiceSaved: "Voz salva",
         speedLabel: "Velocidade",
         pitchLabel: "Tom",
         volumeLabel: "Volume",

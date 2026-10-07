@@ -1319,6 +1319,9 @@ export const fr = {
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
+        sttQuantLabel: "Quantification",
+        sttQuantDescription:
+          "Choisissez ou recherchez un modèle STT à exécuter en local, puis sa quantification.",
         sttDeviceLabel: "Charger dans",
         sttDeviceAuto: "GPU si disponible",
         sttDeviceCpu: "RAM du CPU",
@@ -1446,8 +1449,7 @@ export const fr = {
         buttonDescription: "Afficher dans les réponses de l’assistant",
         engineLabel: "Moteur TTS",
         engineSystemDescription: "Voix intégrées à l'appareil",
-        engineStudioDescription:
-          "Utilise le modèle audio chargé (par exemple Orpheus)",
+        engineStudioDescription: "Utilise le modèle vocal chargé dans Audio",
         engineSystem: "Voix du système",
         engineStudio: "Charger un modèle TTS",
         engineCustom: "Endpoint personnalisé",
@@ -1462,10 +1464,14 @@ export const fr = {
           "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
         modelDescription:
-          "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
+          "Chargez un modèle vocal dans Audio. Il remplace le modèle de chat.",
         openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
+        studioVoiceDescription:
+          "Les voix enregistrées dans Audio nécessitent un modèle de clonage",
+        studioVoiceDefault: "Voix propre du modèle",
+        studioVoiceSaved: "Voix enregistrée",
         speedLabel: "Vitesse",
         pitchLabel: "Hauteur",
         volumeLabel: "Volume",

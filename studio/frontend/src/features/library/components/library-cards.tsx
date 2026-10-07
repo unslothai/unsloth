@@ -8,7 +8,7 @@ import { Folder01Icon, PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
-import { audioSummary, audioWorkflow } from "../audio-items";
+import { audioSummary } from "../audio-items";
 import { toggleLibraryAudio, useLibraryAudioPlaying } from "../audio-playback";
 import {
   KIND_ICONS,
@@ -41,7 +41,7 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   const kind = fileKind(item);
   return (
     <HugeiconsIcon
-      icon={audioWorkflow(item)?.icon ?? KIND_ICONS[kind]}
+      icon={KIND_ICONS[kind]}
       strokeWidth={1.5}
       className={cn(KIND_ICON_CLASS[kind], className, kind === "model" && "scale-95")}
     />

@@ -1313,6 +1313,9 @@ export const ar = {
         customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
+        sttQuantLabel: "التكميم",
+        sttQuantDescription:
+          "اختر نموذج STT أو ابحث عنه لتشغيله محليًا، ثم اختر التكميم.",
         sttDeviceLabel: "التحميل إلى",
         sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
         sttDeviceCpu: "ذاكرة المعالج",
@@ -1435,8 +1438,7 @@ export const ar = {
         buttonDescription: "إظهاره في ردود المساعد",
         engineLabel: "محرك TTS",
         engineSystemDescription: "الأصوات المدمجة في الجهاز",
-        engineStudioDescription:
-          "يستخدم النموذج الصوتي المُحمَّل (مثل Orpheus)",
+        engineStudioDescription: "يستخدم النموذج الصوتي المُحمَّل في قسم الصوت",
         engineSystem: "أصوات النظام",
         engineStudio: "تحميل نموذج TTS",
         engineCustom: "نقطة نهاية مخصصة",
@@ -1451,10 +1453,14 @@ export const ar = {
           "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
         modelDescription:
-          "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
+          "حمّل نموذجًا صوتيًا في قسم الصوت. سيحلّ محل نموذج الدردشة.",
         openAudioAction: "فتح الصوت",
         voiceLabel: "الصوت",
         voiceDescription: "أفضل الأصوات على هذا الجهاز",
+        studioVoiceDescription:
+          "الأصوات المحفوظة في قسم الصوت تحتاج إلى نموذج استنساخ",
+        studioVoiceDefault: "صوت النموذج نفسه",
+        studioVoiceSaved: "صوت محفوظ",
         speedLabel: "السرعة",
         pitchLabel: "طبقة الصوت",
         volumeLabel: "مستوى الصوت",
