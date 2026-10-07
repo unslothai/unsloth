@@ -73,7 +73,7 @@ test("text inside raw HTML and footnotes is read, as the page shows it", () => {
     "More\nHidden text\nSee note.\nEnd.\nThe note.",
   );
   assert.equal(
-    markdownToSpeechText("<div>Visible answer</div>\n<script>x()</script>"),
+    markdownToSpeechText("<div>Visible answer</div>\n<!-- note -->"),
     "Visible answer",
   );
 });
@@ -86,5 +86,22 @@ test("tags the page shows as text are read, and entities read as their character
   assert.equal(
     markdownToSpeechText("<div>AT&amp;T &lt; 5 &#33; &#x41;</div>"),
     "AT&T < 5 ! A",
+  );
+});
+
+test("raw HTML reads as the chat shows it: quoted attributes, literal tags, named entities", () => {
+  assert.equal(
+    markdownToSpeechText('<div aria-label="a > b">visible</div>'),
+    "visible",
+  );
+  assert.equal(
+    markdownToSpeechText(
+      "<div>The <small> tag and <script>alert(1)</script></div>",
+    ),
+    "The <small> tag and <script>alert(1)</script>",
+  );
+  assert.equal(
+    markdownToSpeechText("<div>caf&eacute; &copy; &hellip;</div>"),
+    "café © …",
   );
 });
