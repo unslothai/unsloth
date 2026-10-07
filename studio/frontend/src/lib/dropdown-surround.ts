@@ -158,13 +158,17 @@ function boxesAt(
         (style.position !== "static" && style.zIndex !== "auto"
           ? Number(style.zIndex) || 0
           : null);
+      const onBox = empty
+        ? under
+        : under.filter((i) => !inRoundedCorner(style, box, ...points[i]));
       if (!empty) {
         const hit = { el, layer: own ?? 0, order: order++ };
-        for (const i of under) {
-          if (!inRoundedCorner(style, box, ...points[i])) hits[i].push(hit);
-        }
+        for (const i of onBox) hits[i].push(hit);
       }
-      visit(el, under, own);
+      // Clipped overflow cuts the children off at the same rounded corners.
+      const clips =
+        style.overflowX !== "visible" || style.overflowY !== "visible";
+      visit(el, clips ? onBox : under, own);
     }
   };
   const all = points.map((_, i) => i);

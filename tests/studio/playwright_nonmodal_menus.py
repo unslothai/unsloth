@@ -467,6 +467,25 @@ GLOW_CASES = (
         "rgb(60 60 60)",
     ),
     (
+        # overflow: hidden clips the children to the same corner.
+        "a rounded overflow-hidden panel clips its child at the corner",
+        """(r) => {
+          const add = (css, parent = document.body) => {
+            const el = document.createElement('div');
+            el.dataset.glowFixture = '';
+            el.style.cssText = css;
+            parent.append(el);
+            return el;
+          };
+          add('position: fixed; inset: 0; z-index: 40; background: rgb(60, 60, 60)');
+          const panel = add(`position: fixed; left: ${r.right + 6}px; top: ${r.bottom + 6}px;`
+            + ' width: 400px; height: 400px; border-top-left-radius: 40px; overflow: hidden;'
+            + ' z-index: 45');
+          add('width: 100%; height: 100%; background: rgb(5, 5, 5)', panel);
+        }""",
+        "rgb(60 60 60)",
+    ),
+    (
         # rounded-full computes to a huge radius; CSS scales it down to a pill.
         "a rounded-full surface around the menu is sampled",
         """(r) => {
