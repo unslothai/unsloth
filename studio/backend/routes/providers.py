@@ -1006,7 +1006,7 @@ async def list_provider_model_capabilities(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    # Per credential: one key's catalog (which models it can reach) is not another caller's answer.
+    # Per credential: one key's model list is not another caller's.
     key_digest = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
     cache_key = f"{payload.provider_type}\n{base_url}\n{key_digest}"
     cached = _model_capability_cache.get(cache_key)

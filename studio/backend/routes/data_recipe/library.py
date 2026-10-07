@@ -54,8 +54,7 @@ class LegacyImportRequest(BaseModel):
 
 
 def _payload_has_stdio_mcp(payload: Any) -> bool:
-    """True when a saved recipe holds a local (stdio) MCP provider anywhere, recipe or UI state: running the
-    recipe later from the UI would start that command, so storing one is the same choice as configuring it."""
+    """True when the recipe holds a stdio MCP provider anywhere; running it later starts that command."""
     stack = [payload]
     while stack:
         node = stack.pop()

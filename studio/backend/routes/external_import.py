@@ -49,8 +49,7 @@ def external_import_status(source: SourceKey, current_subject: str = Depends(get
     return ExternalImportStatus(available = bool(chats), chats = chats)
 
 
-# Authenticate before the owner check: decorator dependencies run before parameter ones, and until the
-# bearer is resolved the request still carries the default (owner) account.
+# Authenticate first: until the bearer is resolved the request carries the default (owner) account.
 @router.post(
     "/{source}",
     response_model = ExternalImportResult,

@@ -515,7 +515,7 @@ async def delete_mcp_server(
         raise HTTPException(
             status_code = 400, detail = "Managed integrations cannot be deleted; disable them instead."
         )
-    # Same rule as an update: an API key cannot touch a stdio row, so it cannot remove one either.
+    # Same rule as update: an API key cannot touch a stdio row.
     if is_stdio(old["url"]):
         require_ui_session_for_local_commands(via_api_key)
     if old.get("use_oauth"):

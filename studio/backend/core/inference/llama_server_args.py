@@ -178,8 +178,7 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "--log-prompts-dir",
         # llama-server runs <dir>/ffmpeg to decode a video.
         "--video-ffmpeg-dir",
-        # Not a path, but the same trust question: llama-server dials these hosts and sends them the model's
-        # tensors. The owner's own distributed inference is unchanged.
+        # Not a path: llama-server sends the model's tensors to these hosts.
         "--rpc",
     }
 )
