@@ -455,7 +455,7 @@ function savedUsageFor(
   }
   // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
   const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-  if (typeof limit === "number" && limit > 0 && (usage.totalTokens ?? 0) > limit) {
+  if (typeof limit === "number" && limit > 0 && (usage.contextTokens ?? usage.totalTokens ?? 0) > limit) {
     return null;
   }
   return usage;
@@ -4714,7 +4714,7 @@ export function ChatPage({
             view.mode === "single" &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
-                used={contextUsage?.totalTokens ?? null}
+                used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
                 cached={contextUsage?.cachedTokens}

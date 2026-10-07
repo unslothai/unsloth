@@ -2214,6 +2214,8 @@ type ContextUsageSnapshot = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // Studio tool loops only: what the context holds (totalTokens re-counts earlier passes' output).
+  contextTokens?: number;
   cachedTokens: number;
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;

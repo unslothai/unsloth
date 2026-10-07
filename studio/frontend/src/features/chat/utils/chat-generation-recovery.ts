@@ -213,16 +213,15 @@ export function recoveredGenerationFinalMetadata(options: {
     next.contextUsage === undefined &&
     typeof usage?.prompt_tokens === "number" &&
     completionTokens !== undefined &&
-    (typeof usage.total_tokens === "number" ||
-      typeof usage.context_tokens === "number")
+    typeof usage.total_tokens === "number"
   ) {
     next.contextUsage = {
       promptTokens: usage.prompt_tokens,
       completionTokens,
-      totalTokens:
-        typeof usage.context_tokens === "number"
-          ? usage.context_tokens
-          : usage.total_tokens,
+      totalTokens: usage.total_tokens,
+      ...(typeof usage.context_tokens === "number"
+        ? { contextTokens: usage.context_tokens }
+        : {}),
       cachedTokens:
         (typeof timings?.cache_n === "number" ? timings.cache_n : undefined) ??
         (typeof usage.prompt_tokens_details?.cached_tokens === "number"

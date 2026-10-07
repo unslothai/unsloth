@@ -188,9 +188,12 @@ test("terminal recovery prices a tool loop's context, not its summed completions
     firstChunkAt: 220,
     totalChunks: 4,
   });
-  const usage = metadata.contextUsage as { totalTokens: number; completionTokens: number };
-  assert.equal(usage.totalTokens, 150);
-  assert.equal(usage.completionTokens, 40);
+  const usage = metadata.contextUsage as {
+    totalTokens: number;
+    contextTokens: number;
+  };
+  assert.equal(usage.contextTokens, 150);
+  assert.equal(usage.totalTokens, 180);
 });
 
 test("terminal recovery restores final local usage and timing metadata", () => {

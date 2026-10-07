@@ -8283,7 +8283,10 @@ export function createOpenAIStreamAdapter(
           const usage = {
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
-            totalTokens: meta.usage.context_tokens ?? meta.usage.total_tokens,
+            totalTokens: meta.usage.total_tokens,
+            ...(typeof meta.usage.context_tokens === "number"
+              ? { contextTokens: meta.usage.context_tokens }
+              : {}),
             cachedTokens,
             cacheWriteTokens,
           };
@@ -8467,8 +8470,10 @@ export function createOpenAIStreamAdapter(
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
-                    totalTokens:
-                      meta.usage.context_tokens ?? meta.usage.total_tokens,
+                    totalTokens: meta.usage.total_tokens,
+                    ...(typeof meta.usage.context_tokens === "number"
+                      ? { contextTokens: meta.usage.context_tokens }
+                      : {}),
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
