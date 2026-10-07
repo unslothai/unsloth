@@ -171,6 +171,7 @@ if bnb is not None:
 else:
     get_ptr = _bnb_required
 
+
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
 
@@ -397,8 +398,11 @@ def get_lora_parameters(proj):
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
 
-    # Optionally apply fake quantization to base layer weights for QAT.
-    if hasattr(base_layer, "weight_fake_quantizer"):
+    # Optionally apply fake quantization to base layer weights for QAT
+    # (skipped for EXL3: its weight is a placeholder, already quantized+frozen).
+    if hasattr(base_layer, "weight_fake_quantizer") and not _is_exl3_quant_state(
+        getattr(W, "quant_state", None)
+    ):
         weight_fake_quantizer = getattr(base_layer, "weight_fake_quantizer", None)
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
@@ -1341,6 +1345,7 @@ else:
     pass
 
 
+# Backend dispatch for packed quantized LoRA base weights.
 from .int4_packed import (
     Int4QuantState,
     int4_dequantize_weight as _int4_dequantize_weight,
@@ -1383,6 +1388,48 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
+# EXL3 dispatch for LoRA math remains local to the weight materialization
+# boundary, leaving the device-specific bitsandbytes hot path intact.
+try:
+    from ..exllama.quant_linear import Exl3QuantState as _Exl3QuantState
+    from ..exllama.quant_linear import exl3_fast_dequantize as _exl3_fast_dequantize
+except Exception:
+    _Exl3QuantState = None
+    _exl3_fast_dequantize = None
+
+
+def _is_exl3_quant_state(quant_state) -> bool:
+    return _Exl3QuantState is not None and isinstance(quant_state, _Exl3QuantState)
+
+
+@torch.inference_mode
+def _dequantize_for_lora(
+    W,
+    quant_state = None,
+    *,
+    transpose = False,
+    out = None,
+    use_global_buffer = False,
+):
+    """Materialize a LoRA base weight through its selected quant backend."""
+    if _is_exl3_quant_state(quant_state):
+        dtype = getattr(quant_state, "dtype", None)
+        result = _exl3_fast_dequantize(quant_state, transpose = transpose, dtype = dtype)
+        # Keep the weight on the placeholder's device (multi-GPU device_map).
+        if W is not None and getattr(W, "device", None) is not None and result.device != W.device:
+            result = result.to(W.device)
+        if out is not None:
+            out.copy_(result)
+            return out
+        return result
+    return fast_dequantize(
+        W.t() if transpose else W,
+        quant_state,
+        out = out,
+        use_global_buffer = use_global_buffer,
+    )
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1397,7 +1444,10 @@ def fast_linear_forward(
     if q_len != 1:
         return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
-    if W_quant is None:
+    if _is_exl3_quant_state(W_quant):
+        W = _dequantize_for_lora(W, W_quant, transpose = True)
+        out = torch_matmul(X, W, out = out)
+    elif W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif type(W_quant) is NVFP4QuantState:
         # Bias is added once below.
@@ -1416,7 +1466,7 @@ def fast_linear_forward(
         # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
+        W = _dequantize_for_lora(W, W_quant, transpose = True, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
 
     if lora_A is not None:
@@ -1506,7 +1556,7 @@ def matmul_lora(
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        W = _dequantize_for_lora(W, W_quant, use_global_buffer = True)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
