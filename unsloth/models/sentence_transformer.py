@@ -156,18 +156,22 @@ def _maybe_upcast_force_float32_inference(st_model):
 def _apply_max_seq_length(st_model, max_seq_length):
     if max_seq_length is None:
         return
-    embeddings = getattr(getattr(st_model[0], "auto_model", None), "embeddings", None)
-    position_embeddings = getattr(embeddings, "position_embeddings", None)
-    if isinstance(position_embeddings, torch.nn.Embedding):
-        # RoBERTa-style positions start after padding_idx, so 514 rows hold 512 tokens.
-        padding_idx = position_embeddings.padding_idx
-        limit = position_embeddings.num_embeddings - (0 if padding_idx is None else padding_idx + 1)
-        if max_seq_length > limit:
-            print(
-                f"Unsloth: max_seq_length = {max_seq_length} is longer than this model supports. "
-                f"Using {limit}."
+    limits = []
+    for module in st_model[0].modules():
+        embeddings = getattr(getattr(module, "auto_model", None), "embeddings", None)
+        position_embeddings = getattr(embeddings, "position_embeddings", None)
+        if isinstance(position_embeddings, torch.nn.Embedding):
+            # RoBERTa-style positions start after padding_idx, so 514 rows hold 512 tokens.
+            padding_idx = position_embeddings.padding_idx
+            limits.append(
+                position_embeddings.num_embeddings - (0 if padding_idx is None else padding_idx + 1)
             )
-            max_seq_length = limit
+    if limits and max_seq_length > (limit := min(limits)):
+        print(
+            f"Unsloth: max_seq_length = {max_seq_length} is longer than this model supports. "
+            f"Using {limit}."
+        )
+        max_seq_length = limit
     st_model.max_seq_length = max_seq_length
 
 

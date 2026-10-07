@@ -9,7 +9,11 @@ from real_accelerator import has_real_accelerator
 LONG_TEXT = " ".join(f"word{i % 60 + 3}" for i in range(200))
 
 
-def _save_encoder_sentence_model(tmp_path, family):
+def _save_encoder_sentence_model(
+    tmp_path,
+    family,
+    position_limit = 32,
+):
     if not has_real_accelerator() or not torch.cuda.is_available():
         pytest.skip("FastSentenceTransformer needs CUDA")
     pytest.importorskip("sentence_transformers")
@@ -33,7 +37,7 @@ def _save_encoder_sentence_model(tmp_path, family):
         num_hidden_layers = 2,
         num_attention_heads = 2,
         intermediate_size = 24,
-        max_position_embeddings = 32 + (0 if family == "bert" else pad + 1),
+        max_position_embeddings = position_limit + (0 if family == "bert" else pad + 1),
         pad_token_id = pad,
     )
     checkpoint = tmp_path / "base"
@@ -83,3 +87,30 @@ def test_max_seq_length_is_capped_at_the_model_positions(tmp_path, family, for_i
 def test_saved_max_seq_length_stays_when_none_is_requested(tmp_path):
     path = _save_encoder_sentence_model(tmp_path, "bert")
     assert _load(path).max_seq_length == 8
+
+
+def test_router_uses_the_smallest_encoder_position_limit(tmp_path):
+    if not has_real_accelerator() or not torch.cuda.is_available():
+        pytest.skip("FastSentenceTransformer needs CUDA")
+    pytest.importorskip("sentence_transformers")
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.models import Router
+
+    query_model = SentenceTransformer(
+        _save_encoder_sentence_model(tmp_path / "query", "bert", position_limit = 24),
+        device = "cpu",
+    )
+    document_model = SentenceTransformer(
+        _save_encoder_sentence_model(tmp_path / "document", "roberta"),
+        device = "cpu",
+    )
+    router = Router.for_query_document(
+        query_modules = list(query_model.children()),
+        document_modules = list(document_model.children()),
+    )
+    path = tmp_path / "router"
+    SentenceTransformer(modules = [router], device = "cpu").save_pretrained(str(path))
+
+    model = _load(str(path), max_seq_length = 4096, for_inference = True)
+    assert model.max_seq_length == 24
+    assert {route[0].max_seq_length for route in model[0].sub_modules.values()} == {24}
