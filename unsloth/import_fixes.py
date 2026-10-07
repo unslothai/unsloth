@@ -2062,11 +2062,8 @@ def _mrope_position_ids_read_as_packed(is_packed_sequence):
 
 
 def fix_transformers_flash_attention_mrope_packed_sequence():
-    """Stop flash attention reading one unpadded Qwen3.5 row as three packed ones.
-
-    transformers 5.3 turns `(3, 1, L)` mRoPE ids into `cu_seqlens = [0, L, 2L, 3L]`
-    over L tokens, so flash-attn reads and writes 2L tokens out of bounds.
-    Packed sequences are flattened 2D `(1, total)` ids, so more dims never are.
+    """Stop transformers 5.3 turning Qwen3.5's `(3, 1, L)` mRoPE ids into out-of-bounds
+    `cu_seqlens = [0, L, 2L, 3L]`: packed ids are flattened 2D `(1, total)`, never more dims.
     """
     try:
         from transformers import modeling_flash_attention_utils as fa_utils
