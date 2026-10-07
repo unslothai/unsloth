@@ -4139,6 +4139,60 @@ def test_macos_install_makes_llama_fit_params_executable(
         assert not fit_params.exists()
 
 
+@pytest.mark.parametrize("skip_path", ["no_network_check", "plan_match"])
+def test_a_reused_install_repairs_a_non_executable_llama_fit_params(
+    tmp_path: Path, monkeypatch, skip_path: str
+) -> None:
+    """#12901: installs made before the fix keep a 0644 probe, and an update on the same
+    release returns before any extraction, so the skip paths must restore the bit."""
+    M = INSTALL_LLAMA_PREBUILT
+    install_dir = tmp_path / "llama.cpp"
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.parent.mkdir(parents = True)
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    host = macos_host()
+    choice = asset_choice(name = "llama-b9001-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+    release_plan = M.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM)),
+    )
+    route = types.SimpleNamespace(
+        host = host, backend = "auto", published_repo = "unslothai/llama.cpp", published_release_tag = ""
+    )
+    monkeypatch.setattr(M, "route_backend_request", lambda **_k: route)
+    monkeypatch.setattr(
+        M,
+        "existing_install_current_without_plan",
+        lambda *_a, **_k: skip_path == "no_network_check",
+    )
+    monkeypatch.setattr(
+        M,
+        "select_backend_install",
+        lambda **_k: M.BackendSelection(
+            backend = "auto",
+            host = host,
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [release_plan],
+            persist_llama_backend = None,
+            persist_rocm_gfx = None,
+        ),
+    )
+    monkeypatch.setattr(M, "existing_install_matches_plan", lambda *_a, **_k: True)
+    monkeypatch.setattr(M, "diffusion_visual_server_backfill_needed", lambda *_a, **_k: False)
+    monkeypatch.setattr(M, "sync_marker_selection", lambda *_a, **_k: None)
+
+    M.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
+
+
 def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: Path) -> None:
     """Installer DLL discovery must scan the same path set as the backend (cu12/cu13/conda layouts + torch/lib)."""
     import site as _site

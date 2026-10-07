@@ -5441,6 +5441,18 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         prune_install_staging_root(install_dir)
 
 
+def ensure_fit_params_executable(install_dir: Path) -> None:
+    """chmod the optional Metal probe, which the guarded extractor leaves 0644 (#12901).
+    Also run on the reuse paths so installs made before this fix are repaired."""
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    try:
+        if helper.is_file() and not helper.is_symlink():
+            if stat.S_IMODE(helper.stat().st_mode) & 0o111 != 0o111:
+                os.chmod(helper, 0o755)
+    except OSError:
+        pass
+
+
 def install_from_archives(
     choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path
 ) -> tuple[Path, Path]:
@@ -5527,9 +5539,7 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
-    source_fit_params = build_bin / "llama-fit-params"
-    if source_fit_params.is_file():
-        os.chmod(source_fit_params, 0o755)
+    ensure_fit_params_executable(install_dir)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -11312,6 +11322,7 @@ def install_prebuilt(
                 # honour; a request read back off the marker retries when something moves.
                 backend_request_mandatory = backend_mandatory,
             ):
+                ensure_fit_params_executable(install_dir)
                 return
             # A request detection had to replace; kept so the marker records the CHOICE.
             unhonoured_request: str | None = None
@@ -11348,6 +11359,7 @@ def install_prebuilt(
                 plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool
             ) -> None:
                 """Update selection fields when the existing bundle is reused."""
+                ensure_fit_params_executable(install_dir)
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
