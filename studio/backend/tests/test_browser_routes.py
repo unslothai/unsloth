@@ -755,6 +755,17 @@ def test_a_slow_error_page_stops_at_the_fetch_deadline(monkeypatch):
     assert time.monotonic() - started < 1.8
 
 
+def test_an_error_that_is_not_a_page_fails_without_reading_it(monkeypatch):
+    monkeypatch.setattr(browser_mod, "_FETCH_TIMEOUT_S", 1.5)
+    head = _error_response(503, b"x" * 9, {"Content-Type": "application/octet-stream"})[:-9]
+    url = _serve(monkeypatch, head, *[b"x"] * 9, gap = 1)
+    started = time.monotonic()
+    with pytest.raises(HTTPException) as caught:
+        _call(url = url, error_page = True)
+    assert caught.value.detail == "Failed to fetch URL: HTTP 503 Not Found"
+    assert time.monotonic() - started < 1
+
+
 @pytest.mark.parametrize(
     "code, body, headers, detail",
     [

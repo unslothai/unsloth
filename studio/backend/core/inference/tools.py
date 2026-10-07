@@ -15816,7 +15816,7 @@ def _fetch_url_raw(
     or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
     gates apply either way.
 
-    ``error_page`` (binary mode) also returns an HTTP error's body, under the same caps.
+    ``error_page`` (binary mode) also returns an HTTP error's HTML body, under the same caps.
 
     ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
     private/loopback/link-local targets and caps the download size. No input reaches the caller as
@@ -15917,7 +15917,12 @@ def _fetch_url_raw(
                     if meta_out is not None:
                         meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
                     http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
-                    if not error_page or raw_bytes_max is None:
+                    declared = e.headers.get("Content-Type") and e.headers.get_content_type()
+                    if (
+                        not error_page
+                        or raw_bytes_max is None
+                        or declared not in (None, "", "text/html", "application/xhtml+xml")
+                    ):
                         return http_error, "", ""
                     resp = e
                 else:
