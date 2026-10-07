@@ -280,9 +280,6 @@ async function fetchStatus(
   }
 }
 
-// Manual checks bypass the 24h release cache; job polls read local state.
-const recheckStatus = () => fetchStatus(true);
-
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
   /**
@@ -319,6 +316,15 @@ export function useLlamaUpdateCheck({
   const statusRef = useRef<LlamaUpdateStatus | null>(null);
   const activeRef = useRef(enabled);
   const surfaceRef = useRef<(next: LlamaUpdateStatus | null) => void>(() => {});
+  const statusReadRef = useRef({ issued: 0, accepted: 0 });
+
+  const readStatus = useCallback(async (forceRefresh = false) => {
+    const sequence = ++statusReadRef.current.issued;
+    const next = await fetchStatus(forceRefresh);
+    if (!next || sequence < statusReadRef.current.accepted) return null;
+    statusReadRef.current.accepted = sequence;
+    return next;
+  }, []);
 
   const armSnoozeTimer = useCallback(() => {
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
@@ -329,11 +335,11 @@ export function useLlamaUpdateCheck({
     if (remaining <= 0) return;
     snoozeTimer.current = setTimeout(() => {
       snoozeTimer.current = null;
-      recheckStatus().then((next) => {
+      readStatus(true).then((next) => {
         if (activeRef.current) surfaceRef.current(next);
       });
     }, remaining);
-  }, []);
+  }, [readStatus]);
 
   const clearSuppression = useCallback(() => {
     if (!suppressionRef.current) return;
@@ -418,7 +424,7 @@ export function useLlamaUpdateCheck({
     (onDone?: (result: LlamaApplyResult) => void) => {
       clearPollTimer();
       const timer = setInterval(async () => {
-        const s = await fetchStatus();
+        const s = await readStatus();
         // Polls overlap: a "running" answer landing after a later poll saw the job
         // finish would re-set applying with no timer left to clear it.
         if (!s || pollTimer.current !== timer) return;
@@ -449,7 +455,7 @@ export function useLlamaUpdateCheck({
       }, JOB_POLL_INTERVAL_MS);
       pollTimer.current = timer;
     },
-    [clearPollTimer, commitStatus, notifyReloadIfNeeded],
+    [clearPollTimer, readStatus, commitStatus, notifyReloadIfNeeded],
   );
 
   const surfaceIfAvailable = useCallback(
@@ -482,13 +488,13 @@ export function useLlamaUpdateCheck({
     else armSnoozeTimer();
 
     const firstTimer = setTimeout(() => {
-      recheckStatus().then((s) => {
+      readStatus(true).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, FIRST_CHECK_DELAY_MS);
 
     const reminder = setInterval(() => {
-      recheckStatus().then((s) => {
+      readStatus(true).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, REMINDER_INTERVAL_MS);
@@ -504,7 +510,14 @@ export function useLlamaUpdateCheck({
         snoozeTimer.current = null;
       }
     };
-  }, [enabled, surfaceIfAvailable, clearPollTimer, armSnoozeTimer, presentStatus]);
+  }, [
+    enabled,
+    readStatus,
+    surfaceIfAvailable,
+    clearPollTimer,
+    armSnoozeTimer,
+    presentStatus,
+  ]);
 
   // Cross-tab nudge: a tab that only checks hourly would otherwise stay pointed at a
   // server-unloaded model for up to an hour after a DIFFERENT open tab applies an update. The
@@ -524,19 +537,19 @@ export function useLlamaUpdateCheck({
         event.newValue &&
         event.newValue !== reloadNotifiedForRef.current
       ) {
-        recheckStatus().then(surfaceIfAvailable);
+        readStatus(true).then(surfaceIfAvailable);
       }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [enabled, surfaceIfAvailable, presentStatus, armSnoozeTimer]);
+  }, [enabled, readStatus, surfaceIfAvailable, presentStatus, armSnoozeTimer]);
 
   useEffect(() => {
     if (!enabled) return;
     return subscribeToLlamaJobStarted(() => {
-      fetchStatus().then(surfaceIfAvailable);
+      readStatus().then(surfaceIfAvailable);
     });
-  }, [enabled, surfaceIfAvailable]);
+  }, [enabled, readStatus, surfaceIfAvailable]);
 
   const dismiss = useCallback(() => {
     const current = statusRef.current;
