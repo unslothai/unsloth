@@ -3649,8 +3649,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
     # cached before the damage keeps it off the scanning path. A successful repair clears it.
     _request_latest_repair()
     if ".dev" in version:
-        # Main moves, so a rebuild would install code the user never agreed to. Stay broken: the
-        # model then reads as unsupported again and the consent dialog offers a fresh install.
+        # A rebuild would install main code nobody consented to; broken -> the dialog offers it again.
         logger.warning(
             ".venv_t5_latest (transformers %s from main) is incomplete; load the model again "
             "to reinstall it.",

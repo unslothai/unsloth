@@ -779,8 +779,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": f"Requested version {version!r} is not the latest transformers "
             f"release ({snapshot['pypi_version']}).",
-            # Lets the consent dialog retry with the release (or main) that superseded
-            # the one /validate saw, instead of re-sending the stale version forever.
+            # Retry uses these instead of re-sending the stale version forever.
             "latest_version": snapshot["pypi_version"],
             "latest_main_version": snapshot.get("main_version"),
         }
