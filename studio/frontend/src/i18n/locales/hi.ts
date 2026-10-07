@@ -1155,7 +1155,7 @@ export const hi = {
       windowsSection: "Windows सैंडबॉक्स (पूर्वावलोकन)",
       windowsDescription: "Microsoft का MXC सैंडबॉक्स। यह Windows में बने कंटेनर का उपयोग करता है, और जिन Windows संस्करणों में वह नहीं है, उनमें एक वैकल्पिक सैंडबॉक्स का।",
       builtinLabel: "बिल्ट-इन कंटेनर",
-      builtinDescription: "Python और टर्मिनल Windows के बिल्ट-इन कंटेनर में चलते हैं, बिना किसी व्यवस्थापक चरण के।",
+      builtinDescription: "Windows सैंडबॉक्स Windows के बिल्ट-इन कंटेनर में चलता है, बिना किसी व्यवस्थापक चरण के।",
       builtinInUse: "उपयोग में",
       optInLabel: "वैकल्पिक सैंडबॉक्स का उपयोग करें",
       optInDescription: "उन Windows संस्करणों के लिए जिनमें बिल्ट-इन कंटेनर नहीं है। तब Python और टर्मिनल केवल चैट के फ़ोल्डर में फ़ाइलें बदल सकते हैं।",

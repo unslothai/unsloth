@@ -1152,7 +1152,7 @@ export const ko = {
       windowsSection: "Windows 샌드박스 (미리 보기)",
       windowsDescription: "Microsoft의 MXC 샌드박스입니다. Windows에 기본 제공되는 컨테이너를 사용하며, 이 컨테이너가 없는 Windows 버전에서는 대체 샌드박스를 사용합니다.",
       builtinLabel: "기본 제공 컨테이너",
-      builtinDescription: "Python과 터미널이 Windows의 기본 제공 컨테이너에서 실행되며, 관리자 단계가 필요 없습니다.",
+      builtinDescription: "Windows 샌드박스가 Windows의 기본 제공 컨테이너에서 실행되며, 관리자 단계가 필요 없습니다.",
       builtinInUse: "사용 중",
       optInLabel: "대체 샌드박스 사용",
       optInDescription: "기본 제공 컨테이너가 없는 Windows 버전용입니다. 그러면 Python과 터미널은 채팅 폴더의 파일만 변경할 수 있습니다.",

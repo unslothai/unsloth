@@ -1156,7 +1156,7 @@ export const fr = {
       windowsSection: "Bac à sable Windows (aperçu)",
       windowsDescription: "Le bac à sable MXC de Microsoft. Il utilise le conteneur intégré à Windows ou, sur les versions de Windows qui n'en ont pas, une solution de repli.",
       builtinLabel: "Conteneur intégré",
-      builtinDescription: "Python et Terminal s'exécutent dans le conteneur intégré de Windows, sans étape administrateur.",
+      builtinDescription: "Le bac à sable Windows s'exécute dans le conteneur intégré de Windows, sans étape administrateur.",
       builtinInUse: "Utilisé",
       optInLabel: "Utiliser le bac à sable de repli",
       optInDescription: "Pour les versions de Windows sans conteneur intégré. Python et Terminal ne peuvent alors modifier que les fichiers du dossier de la conversation.",

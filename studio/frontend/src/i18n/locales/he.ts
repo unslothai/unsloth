@@ -1239,7 +1239,7 @@ export const he = {
         "ארגז החול MXC של Microsoft. הוא משתמש בקונטיינר המובנה ב-Windows, ובגרסאות Windows בלעדיו, בארגז חול חלופי.",
       builtinLabel: "קונטיינר מובנה",
       builtinDescription:
-        "Python ו-Terminal רצים בקונטיינר המובנה של Windows, ללא שלב של מנהל מערכת.",
+        "ארגז החול של Windows רץ בקונטיינר המובנה של Windows, ללא שלב של מנהל מערכת.",
       builtinInUse: "בשימוש",
       optInLabel: "השתמש בארגז החול החלופי",
       optInDescription:

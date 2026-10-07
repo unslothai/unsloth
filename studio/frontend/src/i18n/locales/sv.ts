@@ -1267,7 +1267,7 @@ export const sv = {
         "Microsofts MXC-sandlåda. Den använder containern som är inbyggd i Windows, eller en reservsandlåda på Windows-versioner utan den.",
       builtinLabel: "Inbyggd container",
       builtinDescription:
-        "Python och Terminal körs i Windows inbyggda container, utan något administratörssteg.",
+        "Windows-sandlådan körs i Windows inbyggda container, utan något administratörssteg.",
       builtinInUse: "Används",
       optInLabel: "Använd reservsandlådan",
       optInDescription:

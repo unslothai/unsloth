@@ -1155,7 +1155,7 @@ export const es = {
       windowsSection: "Sandbox de Windows (versión preliminar)",
       windowsDescription: "El sandbox MXC de Microsoft. Usa el contenedor integrado en Windows o, en versiones de Windows sin él, una alternativa.",
       builtinLabel: "Contenedor integrado",
-      builtinDescription: "Python y Terminal se ejecutan en el contenedor integrado de Windows, sin ningún paso de administrador.",
+      builtinDescription: "El sandbox de Windows se ejecuta en el contenedor integrado de Windows, sin ningún paso de administrador.",
       builtinInUse: "En uso",
       optInLabel: "Usar el sandbox alternativo",
       optInDescription: "Para versiones de Windows sin el contenedor integrado. Así, Python y Terminal solo pueden modificar archivos en la carpeta del chat.",

@@ -1198,7 +1198,7 @@ export const en = {
       windowsSection: "Windows sandbox (preview)",
       windowsDescription: "Microsoft's MXC sandbox. It uses the container built into Windows, or a fallback on Windows versions without one.",
       builtinLabel: "Built-in container",
-      builtinDescription: "Python and Terminal run in Windows' built-in container, with no administrator step.",
+      builtinDescription: "The Windows sandbox runs in Windows' built-in container, with no administrator step.",
       builtinInUse: "In use",
       optInLabel: "Use the fallback sandbox",
       optInDescription: "For Windows versions without the built-in container. Python and Terminal can then only change files in the chat's folder.",

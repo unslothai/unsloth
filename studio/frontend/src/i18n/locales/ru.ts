@@ -1154,7 +1154,7 @@ export const ru = {
       windowsSection: "Песочница Windows (предварительная версия)",
       windowsDescription: "Песочница MXC от Microsoft. Она использует встроенный в Windows контейнер, а в версиях Windows без него использует запасной вариант.",
       builtinLabel: "Встроенный контейнер",
-      builtinDescription: "Python и терминал работают во встроенном контейнере Windows, без шага администратора.",
+      builtinDescription: "Песочница Windows работает во встроенном контейнере Windows, без шага администратора.",
       builtinInUse: "Используется",
       optInLabel: "Использовать запасную песочницу",
       optInDescription: "Для версий Windows без встроенного контейнера. Тогда Python и терминал смогут изменять файлы только в папке чата.",

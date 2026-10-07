@@ -1152,7 +1152,7 @@ export const ar = {
       windowsSection: "وضع حماية Windows (معاينة)",
       windowsDescription: "وضع حماية MXC من Microsoft. يستخدم الحاوية المدمجة في Windows، أو وضع حماية بديلًا في إصدارات Windows التي لا تتضمنها.",
       builtinLabel: "الحاوية المدمجة",
-      builtinDescription: "يعمل Python والطرفية داخل حاوية Windows المدمجة، دون أي خطوة مسؤول.",
+      builtinDescription: "يعمل وضع حماية Windows داخل حاوية Windows المدمجة، دون أي خطوة مسؤول.",
       builtinInUse: "قيد الاستخدام",
       optInLabel: "استخدام وضع الحماية البديل",
       optInDescription: "لإصدارات Windows التي لا تتضمن الحاوية المدمجة. بعدها لا يمكن لـ Python والطرفية تغيير الملفات إلا في مجلد المحادثة.",

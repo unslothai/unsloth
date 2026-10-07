@@ -1150,7 +1150,7 @@ export const zhCN = {
       windowsSection: "Windows 沙箱（预览）",
       windowsDescription: "Microsoft 的 MXC 沙箱。它使用 Windows 内置的容器；在没有该容器的 Windows 版本上，则使用备用沙箱。",
       builtinLabel: "内置容器",
-      builtinDescription: "Python 和终端在 Windows 内置的容器中运行，无需管理员步骤。",
+      builtinDescription: "Windows 沙箱在 Windows 内置的容器中运行，无需管理员步骤。",
       builtinInUse: "使用中",
       optInLabel: "使用备用沙箱",
       optInDescription: "适用于没有内置容器的 Windows 版本。开启后，Python 和终端只能更改聊天文件夹中的文件。",

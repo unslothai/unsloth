@@ -1156,7 +1156,7 @@ export const de = {
       windowsSection: "Windows-Sandbox (Vorschau)",
       windowsDescription: "Die MXC-Sandbox von Microsoft. Sie nutzt den in Windows eingebauten Container oder, auf Windows-Versionen ohne ihn, einen Fallback.",
       builtinLabel: "Eingebauter Container",
-      builtinDescription: "Python und Terminal laufen im eingebauten Container von Windows, ohne Administratorschritt.",
+      builtinDescription: "Die Windows-Sandbox läuft im eingebauten Container von Windows, ohne Administratorschritt.",
       builtinInUse: "Aktiv",
       optInLabel: "Fallback-Sandbox verwenden",
       optInDescription: "Für Windows-Versionen ohne eingebauten Container. Python und Terminal können dann nur Dateien im Ordner des Chats ändern.",

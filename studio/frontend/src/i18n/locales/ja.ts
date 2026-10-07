@@ -1154,7 +1154,7 @@ export const ja = {
       windowsSection: "Windows サンドボックス (プレビュー)",
       windowsDescription: "Microsoft の MXC サンドボックス。Windows に組み込まれたコンテナーを使い、それがない Windows バージョンではフォールバックを使います。",
       builtinLabel: "組み込みコンテナー",
-      builtinDescription: "Python とターミナルは Windows の組み込みコンテナーで実行され、管理者手順は不要です。",
+      builtinDescription: "Windows サンドボックスは Windows の組み込みコンテナーで実行され、管理者手順は不要です。",
       builtinInUse: "使用中",
       optInLabel: "フォールバックのサンドボックスを使う",
       optInDescription: "組み込みコンテナーがない Windows バージョン向けです。Python とターミナルは、チャットのフォルダー内のファイルだけを変更できるようになります。",

@@ -224,6 +224,25 @@ def test_windows_status_names_the_builtin_container(
     assert body["windows"]["builtin_container"] is expected
 
 
+@pytest.mark.parametrize("dacl_before, dacl_after", [(True, False), (False, True)])
+def test_a_save_during_the_probe_leaves_the_builtin_container_unknown(
+    host, windows, monkeypatch, dacl_before, dacl_after
+):
+    """A verdict measured under one fallback setting says nothing about the tier under the other."""
+    _calls, saved = host
+    saved["dacl"] = dacl_before
+
+    def snapshot(**_kw):
+        saved["dacl"] = dacl_after  # the owner saved the switch while the probe ran
+        return _cap(backend = "mxc-processcontainer")
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", snapshot)
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()
+    assert body["windows"]["allow_dacl_fallback"] is dacl_after
+    assert body["windows"]["builtin_container"] is None
+
+
 def test_without_the_runtime_the_builtin_container_is_unknown(host, windows, monkeypatch):
     block = _windows_block({"dacl": False, "grants": True}).model_copy(
         update = {"runtime_installed": False}
