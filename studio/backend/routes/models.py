@@ -908,13 +908,20 @@ def _scan_nested_compat_rows(
     return found
 
 
-def _scan_comfy_compat_rows(
+def _with_comfy_compat_rows(
     folder_path: Path, existing: List[LocalModelInfo], *, limit: int
 ) -> List[LocalModelInfo]:
-    """Rows from a ComfyUI root's (or ``models/`` dir's) denoiser folders, which a plain scan of the
-    registered folder never reaches; see ``hub.utils.comfy_models``."""
-    from hub.utils.comfy_models import comfy_dit_scan_roots
+    """``existing`` plus rows from a ComfyUI root's (or ``models/`` dir's) denoiser folders, which a
+    plain scan of the registered folder never reaches; see ``hub.utils.comfy_models``. The role
+    folders themselves (``diffusion_models/``, ``vae/``, ...), which the LM Studio-style
+    ``publisher/model`` scan lists as models, are dropped: they are containers."""
+    from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
 
+    role_dirs = comfy_role_dirs(folder_path)
+    if role_dirs:
+        existing = [
+            m for m in existing if os.path.normcase(os.path.realpath(m.path)) not in role_dirs
+        ]
     seen = {(m.path, m.model_format) for m in existing}
     found: List[LocalModelInfo] = []
     roots = comfy_dit_scan_roots(folder_path)
@@ -931,7 +938,7 @@ def _scan_comfy_compat_rows(
                 continue
             seen.add(key)
             found.append(row)
-    return found
+    return existing + found
 
 
 def collect_local_models(
@@ -1072,7 +1079,7 @@ def collect_local_models(
                 _generic += _scan_nested_compat_rows(
                     folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
                 )
-            _generic += _scan_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
+            _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
             custom_models = []
             for model in _generic:
                 path = Path(model.path)

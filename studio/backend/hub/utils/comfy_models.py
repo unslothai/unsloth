@@ -247,6 +247,23 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def comfy_role_dirs(folder: Path) -> frozenset[str]:
+    """``normcase(realpath)`` of every role folder of the ComfyUI layout ``folder`` roots, else empty."""
+    layout = comfy_layout(folder)
+    if layout is None:
+        return frozenset()
+    dirs = [*layout.dit_dirs, *layout.text_encoder_dirs, *layout.vae_dirs]
+    if layout.models_dir is not None:
+        dirs += [layout.models_dir / name for name in _COMFY_ONLY_FOLDERS]
+    out: set[str] = set()
+    for path in dirs:
+        try:
+            out.add(os.path.normcase(os.path.realpath(path)))
+        except OSError:
+            continue
+    return frozenset(out)
+
+
 def is_loose_checkpoint_candidate(path: Path) -> bool:
     """A loose ``.safetensors`` that could be a whole single-file checkpoint by its name: not a
     shard, not a PEFT adapter, not macOS metadata."""

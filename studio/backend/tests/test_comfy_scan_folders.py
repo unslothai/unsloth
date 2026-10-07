@@ -331,6 +331,9 @@ def test_compat_inventory_of_a_registered_comfy_root(tmp_path):
     names = {Path(r.path).name for r in rows if r.path.endswith(".safetensors")}
     assert names == _COMFY_FILES
     assert all(r.source == "custom" for r in rows if r.path.endswith(".safetensors"))
+    # the role folders are containers: the publisher/model scan must not list them as models
+    role_rows = [r.path for r in rows if Path(r.path).parent.name == "models"]
+    assert role_rows == []
 
 
 def test_split_local_checkpoint_path(tmp_path):
