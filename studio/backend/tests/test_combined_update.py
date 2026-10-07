@@ -1117,6 +1117,8 @@ def test_apply_audio_only_runs_only_the_audio_phase(monkeypatch, tmp_path):
     assert job["phases"]["whisper"]["state"] == "skipped"
     assert job["phases"]["audio"]["state"] == "success"
     assert job["phases"]["audio"]["to_tag"] == "v0.9.0-unsloth.1"
+    # The job-level to_tag stays the llama.cpp build, as for a whisper-only round.
+    assert job["to_tag"] is None
     assert "Updated audio.cpp to v0.9.0-unsloth.1." in job["message"]
     assert job["progress"] == 1.0
 

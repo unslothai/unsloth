@@ -1355,6 +1355,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 "failure_message": "audio.cpp update failed.",
                 # Unloading a main-slot audio.cpp model is a server model change the UI must resync on.
                 "affects_job_reload": True,
+                "reports_job_tag": False,
                 "skip_reason": audio_plan.get("skip_reason") or "unavailable",
                 "run": audio_run,
             },
