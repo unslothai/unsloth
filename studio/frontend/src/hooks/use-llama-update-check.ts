@@ -169,6 +169,84 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
 // resynced -- would otherwise replay the same completed job forever. Persist the handled marker
 // outside React state so it survives both, and is shared across tabs in this browser.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
+const OFFER_SUPPRESSION_STORAGE_KEY = "unsloth_llama_update_offer_suppression";
+
+type OfferSuppression =
+  | { kind: "dismissed"; offerKey: string }
+  | { kind: "snoozed"; offerKey: string; until: number };
+
+function offerKey(status: LlamaUpdateStatus): string {
+  return JSON.stringify({
+    llama: status.llama.update_available
+      ? [status.llama.installed_tag, status.llama.latest_tag]
+      : null,
+    whisper: status.whisper?.update_available
+      ? [status.whisper.installed_tag, status.whisper.latest_tag]
+      : null,
+    migration: status.backend_migration_available
+      ? [
+          status.llama.installed_tag,
+          status.llama.latest_tag,
+          status.from_backend,
+          status.to_backend,
+        ]
+      : null,
+  });
+}
+
+function parseOfferSuppression(raw: string | null): OfferSuppression | null {
+  if (!raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    if (record.version !== 1 || typeof record.offerKey !== "string") {
+      return null;
+    }
+    if (record.kind === "dismissed") {
+      return { kind: "dismissed", offerKey: record.offerKey };
+    }
+    if (
+      record.kind === "snoozed" &&
+      typeof record.until === "number" &&
+      Number.isFinite(record.until)
+    ) {
+      return {
+        kind: "snoozed",
+        offerKey: record.offerKey,
+        until: record.until,
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function getOfferSuppression(): OfferSuppression | null {
+  try {
+    return parseOfferSuppression(
+      localStorage.getItem(OFFER_SUPPRESSION_STORAGE_KEY),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function persistOfferSuppression(suppression: OfferSuppression | null): void {
+  try {
+    if (suppression) {
+      localStorage.setItem(
+        OFFER_SUPPRESSION_STORAGE_KEY,
+        JSON.stringify({ version: 1, ...suppression }),
+      );
+    } else {
+      localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
+    }
+  } catch {
+    return;
+  }
+}
 
 function getHandledReloadAt(): string | null {
   try {
@@ -237,6 +315,62 @@ export function useLlamaUpdateCheck({
   const [applying, setApplying] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const snoozeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressionRef = useRef<OfferSuppression | null>(getOfferSuppression());
+  const statusRef = useRef<LlamaUpdateStatus | null>(null);
+  const activeRef = useRef(enabled);
+  const surfaceRef = useRef<(next: LlamaUpdateStatus | null) => void>(() => {});
+
+  const armSnoozeTimer = useCallback(() => {
+    if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
+    snoozeTimer.current = null;
+    const suppression = suppressionRef.current;
+    if (!activeRef.current || suppression?.kind !== "snoozed") return;
+    const remaining = suppression.until - Date.now();
+    if (remaining <= 0) return;
+    snoozeTimer.current = setTimeout(() => {
+      snoozeTimer.current = null;
+      recheckStatus().then((next) => {
+        if (activeRef.current) surfaceRef.current(next);
+      });
+    }, remaining);
+  }, []);
+
+  const clearSuppression = useCallback(() => {
+    if (!suppressionRef.current) return;
+    suppressionRef.current = null;
+    persistOfferSuppression(null);
+    armSnoozeTimer();
+  }, [armSnoozeTimer]);
+
+  const presentStatus = useCallback(
+    (next: LlamaUpdateStatus) => {
+      const presentation = llamaUpdatePresentation(
+        llamaUpdateOffered(next),
+        next.job,
+      );
+      const suppression = suppressionRef.current;
+      const suppressed =
+        suppression?.offerKey === offerKey(next) &&
+        (suppression.kind === "dismissed" || suppression.until > Date.now());
+      setApplying(presentation.applying);
+      setVisible(presentation.visible && (presentation.running || !suppressed));
+      armSnoozeTimer();
+      return presentation;
+    },
+    [armSnoozeTimer],
+  );
+
+  const commitStatus = useCallback(
+    (next: LlamaUpdateStatus) => {
+      statusRef.current = next;
+      setStatus(next);
+      const presentation = presentStatus(next);
+      if (presentation.applying) clearSuppression();
+      return presentation;
+    },
+    [presentStatus, clearSuppression],
+  );
+
   // Read through a ref so startJobPoll stays stable (apply/surfaceIfAvailable
   // depend on it) while still calling the latest callback.
   const onReloadRequiredRef = useRef(onReloadRequired);
@@ -288,10 +422,7 @@ export function useLlamaUpdateCheck({
         // Polls overlap: a "running" answer landing after a later poll saw the job
         // finish would re-set applying with no timer left to clear it.
         if (!s || pollTimer.current !== timer) return;
-        setStatus(s);
-        const presentation = llamaUpdatePresentation(llamaUpdateOffered(s), s.job);
-        setApplying(presentation.applying);
-        setVisible(presentation.visible);
+        const presentation = commitStatus(s);
         if (presentation.running) return;
         clearPollTimer();
         if (s.job.state === "success") {
@@ -318,19 +449,13 @@ export function useLlamaUpdateCheck({
       }, JOB_POLL_INTERVAL_MS);
       pollTimer.current = timer;
     },
-    [clearPollTimer, notifyReloadIfNeeded],
+    [clearPollTimer, commitStatus, notifyReloadIfNeeded],
   );
 
   const surfaceIfAvailable = useCallback(
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
-      setStatus(next);
-      const presentation = llamaUpdatePresentation(
-        llamaUpdateOffered(next),
-        next.job,
-      );
-      setApplying(presentation.applying);
-      setVisible(presentation.visible);
+      const presentation = commitStatus(next);
       if (presentation.running) {
         if (!pollTimer.current) startJobPoll();
         return;
@@ -340,15 +465,21 @@ export function useLlamaUpdateCheck({
       // just-finished moments) still needs to resync here, not just from the poll path above.
       notifyReloadIfNeeded(next.job);
     },
-    [startJobPoll, notifyReloadIfNeeded],
+    [commitStatus, startJobPoll, notifyReloadIfNeeded],
   );
+  useEffect(() => {
+    surfaceRef.current = surfaceIfAvailable;
+  }, [surfaceIfAvailable]);
 
   useEffect(() => {
+    activeRef.current = enabled;
     if (!enabled) {
       // Re-enabling will rediscover any still-running job.
       return;
     }
     let canceled = false;
+    if (statusRef.current) presentStatus(statusRef.current);
+    else armSnoozeTimer();
 
     const firstTimer = setTimeout(() => {
       recheckStatus().then((s) => {
@@ -364,6 +495,7 @@ export function useLlamaUpdateCheck({
 
     return () => {
       canceled = true;
+      activeRef.current = false;
       clearTimeout(firstTimer);
       clearInterval(reminder);
       clearPollTimer();
@@ -372,16 +504,22 @@ export function useLlamaUpdateCheck({
         snoozeTimer.current = null;
       }
     };
-  }, [enabled, surfaceIfAvailable, clearPollTimer]);
+  }, [enabled, surfaceIfAvailable, clearPollTimer, armSnoozeTimer, presentStatus]);
 
   // Cross-tab nudge: a tab that only checks hourly would otherwise stay pointed at a
   // server-unloaded model for up to an hour after a DIFFERENT open tab applies an update. The
   // storage event only fires in other tabs (never the one that wrote it), so this recheck fires
   // promptly there without this tab redundantly re-triggering itself.
   useEffect(() => {
-    if (!enabled) return;
     const onStorage = (event: StorageEvent) => {
+      if (event.key === OFFER_SUPPRESSION_STORAGE_KEY) {
+        suppressionRef.current = parseOfferSuppression(event.newValue);
+        if (enabled && statusRef.current) presentStatus(statusRef.current);
+        else armSnoozeTimer();
+        return;
+      }
       if (
+        enabled &&
         event.key === HANDLED_RELOAD_STORAGE_KEY &&
         event.newValue &&
         event.newValue !== reloadNotifiedForRef.current
@@ -391,7 +529,7 @@ export function useLlamaUpdateCheck({
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, [enabled, surfaceIfAvailable]);
+  }, [enabled, surfaceIfAvailable, presentStatus, armSnoozeTimer]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -401,17 +539,29 @@ export function useLlamaUpdateCheck({
   }, [enabled, surfaceIfAvailable]);
 
   const dismiss = useCallback(() => {
-    setVisible(false);
-  }, []);
+    const current = statusRef.current;
+    if (!current) return;
+    const suppression: OfferSuppression = {
+      kind: "dismissed",
+      offerKey: offerKey(current),
+    };
+    suppressionRef.current = suppression;
+    persistOfferSuppression(suppression);
+    presentStatus(current);
+  }, [presentStatus]);
 
   const snooze = useCallback(() => {
-    setVisible(false);
-    if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
-    snoozeTimer.current = setTimeout(() => {
-      snoozeTimer.current = null;
-      recheckStatus().then(surfaceIfAvailable);
-    }, SNOOZE_DELAY_MS);
-  }, [surfaceIfAvailable]);
+    const current = statusRef.current;
+    if (!current) return;
+    const suppression: OfferSuppression = {
+      kind: "snoozed",
+      offerKey: offerKey(current),
+      until: Date.now() + SNOOZE_DELAY_MS,
+    };
+    suppressionRef.current = suppression;
+    persistOfferSuppression(suppression);
+    presentStatus(current);
+  }, [presentStatus]);
 
   const apply = useCallback(async (): Promise<LlamaApplyResult> => {
     if (applying) return { ok: false, error: "already running" };
@@ -465,10 +615,16 @@ export function useLlamaUpdateCheck({
       };
     }
 
+    if (
+      actionJob.operation !== "switch" &&
+      (action?.started === true || actionJob.state === "running")
+    ) {
+      clearSuppression();
+    }
     return await new Promise<LlamaApplyResult>((resolve) =>
       startJobPoll(resolve),
     );
-  }, [applying, startJobPoll, notifyReloadIfNeeded]);
+  }, [applying, startJobPoll, notifyReloadIfNeeded, clearSuppression]);
 
   return {
     status: enabled ? status : null,
