@@ -149,7 +149,12 @@ function codeSpanRegions(
     text.matchAll(BLANK_LINE_RE),
     (match) => match.index,
   );
-  const runs: { start: number; end: number; paragraph: number }[] = [];
+  const runs: {
+    start: number;
+    end: number;
+    escaped: boolean;
+    paragraph: number;
+  }[] = [];
   let paragraph = 0;
   for (const match of text.matchAll(BACKTICK_RUN_RE)) {
     while (paragraph < breaks.length && breaks[paragraph] < match.index) {
@@ -158,6 +163,7 @@ function codeSpanRegions(
     runs.push({
       start: match.index,
       end: match.index + match[0].length,
+      escaped: isEscaped(text, match.index),
       paragraph,
     });
   }
@@ -166,6 +172,9 @@ function codeSpanRegions(
   for (let i = runs.length - 1; i >= 0; i -= 1) {
     if (i + 1 < runs.length && runs[i + 1].paragraph !== runs[i].paragraph) {
       nearest.clear();
+    }
+    if (runs[i].escaped) {
+      continue;
     }
     const width = runs[i].end - runs[i].start;
     closers[i] = nearest.get(width) ?? -1;
@@ -192,7 +201,7 @@ function codeSpanRegions(
       continue;
     }
     const closer = closers[i];
-    if (closer < 0 || isEscaped(text, runs[i].start)) {
+    if (closer < 0 || runs[i].escaped) {
       continue;
     }
     regions.push([runs[i].start, runs[closer].end]);
@@ -573,6 +582,7 @@ function inlineMathRegions(text: string): [number, number][] {
     return {
       start: match.index,
       end: match.index + match[0].length,
+      escaped: isEscaped(text, match.index),
       width: match[0].length,
       paragraph,
     };
@@ -585,6 +595,7 @@ function inlineMathRegions(text: string): [number, number][] {
       nearest.clear();
       currentParagraph = runs[index].paragraph;
     }
+    if (runs[index].escaped) continue;
     closers[index] = nearest.get(runs[index].width) ?? -1;
     nearest.set(runs[index].width, index);
   }
@@ -592,7 +603,7 @@ function inlineMathRegions(text: string): [number, number][] {
   const regions: [number, number][] = [];
   for (let index = 0; index < runs.length; index += 1) {
     const closer = closers[index];
-    if (closer < 0 || isEscaped(text, runs[index].start)) continue;
+    if (closer < 0 || runs[index].escaped) continue;
     regions.push([runs[index].start, runs[closer].end]);
     index = closer;
   }

@@ -391,6 +391,13 @@ test("inline math does not lend its backticks to a later code span", () => {
   );
 });
 
+test("escaped backticks do not close code spans", () => {
+  assert.equal(
+    markdownRenderScope("Read ` [1] \\`\n\n[1]: /one\n"),
+    "document",
+  );
+});
+
 test("table cells do not share code span delimiters", () => {
   const reply =
     "| left | right |\n| --- | --- |\n| `open | [1] |\n| x | close` |\n\n[1]: /one\n";
