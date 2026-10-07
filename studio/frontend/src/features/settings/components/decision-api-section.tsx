@@ -100,6 +100,7 @@ export function DecisionApiSection(): ReactElement | null {
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
 
   const enabled = settings?.enabled ?? false;
+  if (tryOpen && !enabled) setTryOpen(false);
   const model = settings?.model ?? null;
   const plan = planState && planState.model === model ? planState.plan : null;
 

@@ -192,3 +192,31 @@ test("Try it in Settings > API opens the decision playground", () => {
     /runDecision\(/,
   );
 });
+
+test("Try it runs only the configured model and keeps typed JSON", () => {
+  const section = readSrc(
+    "features/settings/components/decision-api-section.tsx",
+  );
+  assert.match(section, /if \(tryOpen && !enabled\) setTryOpen\(false\);/);
+  const dialog = readSrc(
+    "features/settings/components/decision-try-dialog.tsx",
+  );
+  assert.match(
+    dialog,
+    /disabled=\{!option\.available \|\| option\.name !== settings\.model\}/,
+  );
+  assert.match(dialog, /disabled: !jsonFitsForm/);
+  assert.match(
+    dialog,
+    /draftFromRequest\(body\)\?\.type \?\? type\) : type;\s+setType\(runType\);/,
+  );
+});
+
+test("a loading wait never runs past the ten minute deadline", () => {
+  const api = readSrc("features/settings/api/systemone.ts");
+  assert.match(
+    api,
+    /Math\.min\(retryAfter \* 1000, deadline - Date\.now\(\)\)/,
+  );
+  assert.match(api, /signal\.aborted \|\| Date\.now\(\) >= deadline/);
+});

@@ -179,7 +179,7 @@ function ViewToggle<T extends string>({
 }: {
   value: T;
   onChange: (value: T) => void;
-  options: { id: T; label: string; icon: IconSvgElement }[];
+  options: { id: T; label: string; icon: IconSvgElement; disabled?: boolean }[];
 }): ReactElement {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as T)}>
@@ -188,6 +188,7 @@ function ViewToggle<T extends string>({
           <TabsTrigger
             key={option.id}
             value={option.id}
+            disabled={option.disabled}
             className="px-2.5 text-ui-12"
           >
             <span className="inline-flex items-center gap-1.5">
@@ -757,8 +758,13 @@ function ModelPicker({
               <SelectItem
                 key={option.name}
                 value={option.name}
-                disabled={!option.available}
-                title={option.unavailableReason ?? undefined}
+                disabled={!option.available || option.name !== settings.model}
+                title={
+                  option.unavailableReason ??
+                  (option.name === settings.model
+                    ? undefined
+                    : t("decisions.connectionNotDefault"))
+                }
               >
                 {label(option.name)}
               </SelectItem>
@@ -857,6 +863,12 @@ export function DecisionTryDialog({
     [type],
   );
 
+  const jsonFitsForm = useMemo(() => {
+    if (inputView !== "json") return true;
+    const parsed = parseJson(jsonText);
+    return "value" in parsed && draftFromRequest(parsed.value) !== null;
+  }, [inputView, jsonText]);
+
   const syncFromJson = () => {
     const parsed = parseJson(jsonText);
     const restored = "value" in parsed ? draftFromRequest(parsed.value) : null;
@@ -872,7 +884,9 @@ export function DecisionTryDialog({
     if (next === "json") {
       setJsonText(requestText(request));
     } else {
-      setType(syncFromJson()?.type ?? type);
+      const restored = syncFromJson();
+      if (!restored) return;
+      setType(restored.type);
     }
     setInputView(next);
   };
@@ -880,10 +894,13 @@ export function DecisionTryDialog({
   const changeType = (next: DecisionType) => {
     if (inputView === "json") {
       const restored = syncFromJson();
-      const nextDraft = restored?.type === next ? restored.draft : drafts[next];
-      setJsonText(
-        requestText(buildRequest(next, nextDraft, restored?.model ?? model)),
-      );
+      if (restored) {
+        const nextDraft =
+          restored.type === next ? restored.draft : drafts[next];
+        setJsonText(
+          requestText(buildRequest(next, nextDraft, restored.model ?? model)),
+        );
+      }
     }
     setType(next);
   };
@@ -929,7 +946,9 @@ export function DecisionTryDialog({
     }
     const controller = new AbortController();
     abortRef.current = controller;
-    const runType = type;
+    const runType =
+      inputView === "json" ? (draftFromRequest(body)?.type ?? type) : type;
+    setType(runType);
     setRunning(true);
     setWaiting(null);
     try {
@@ -1092,6 +1111,7 @@ export function DecisionTryDialog({
                       id: "form",
                       label: t("decisions.form"),
                       icon: SlidersHorizontalIcon,
+                      disabled: !jsonFitsForm,
                     },
                     { id: "json", label: t("decisions.json"), icon: CodeIcon },
                   ]}
