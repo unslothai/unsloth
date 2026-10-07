@@ -19,6 +19,7 @@ import {
   type PerModelConfig,
   deletePerModelConfigsForOverrideKeys,
   normalizePerModelConfig,
+  perModelConfigSnapshot,
 } from "../model-config/per-model-config";
 
 const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
@@ -623,13 +624,15 @@ export function syncModelOverride(
 ): void {
   const seq = ++syncSeq;
   lastWriteSeq.set(foldOverrideKey(modelOverrideKey(modelId, ggufVariant)), seq);
+  // localStorage is shared, so this also catches a save from another tab meanwhile.
+  const sent = config === null ? perModelConfigSnapshot() : undefined;
   void putModelOverride(modelId, ggufVariant, config, options)
     .then(({ removedKeys }) => {
       // An undo, or a save under another alias, already rewrote what this forget reports.
       const stale = removedKeys.filter(
         (key) => (lastWriteSeq.get(foldOverrideKey(key)) ?? 0) <= seq,
       );
-      if (!deletePerModelConfigsForOverrideKeys(stale)) {
+      if (!deletePerModelConfigsForOverrideKeys(stale, sent)) {
         console.warn(
           "Forgot model settings on the server, but this browser kept its own copy.",
         );

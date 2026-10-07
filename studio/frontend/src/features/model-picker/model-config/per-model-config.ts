@@ -1445,10 +1445,14 @@ export function deletePerModelConfig(
  * can spell one key. */
 function findModelOverrideKeyOwners(
   overrideKey: string,
-): { modelId: string; ggufVariant: string | null }[] {
+): { modelId: string; ggufVariant: string | null; storageKey: string }[] {
   const key = overrideKey.trim();
   const foldedKey = normalizeModelIdentity(key);
-  const owners: { modelId: string; ggufVariant: string | null }[] = [];
+  const owners: {
+    modelId: string;
+    ggufVariant: string | null;
+    storageKey: string;
+  }[] = [];
   for (const storageKey of Object.keys(readMap())) {
     const modelId = modelIdFromStorageKey(storageKey);
     if (!modelId) {
@@ -1460,7 +1464,7 @@ function findModelOverrideKeyOwners(
     );
     if (!variant) {
       if (foldedKey === normalizeModelIdentity(modelId)) {
-        owners.push({ modelId, ggufVariant: null });
+        owners.push({ modelId, ggufVariant: null, storageKey });
       }
       continue;
     }
@@ -1472,19 +1476,34 @@ function findModelOverrideKeyOwners(
       normalizeModelIdentity(key.slice(0, cut)) ===
         normalizeModelIdentity(modelId)
     ) {
-      owners.push({ modelId, ggufVariant: variant });
+      owners.push({ modelId, ggufVariant: variant, storageKey });
     }
   }
   return owners;
 }
 
-/** Delete the records the server keys name; false when one was left behind. */
+/** Every saved record as stored, shared by all tabs; see `unchangedSince` below. */
+export function perModelConfigSnapshot(): Readonly<Record<string, unknown>> {
+  return readMapRaw();
+}
+
+/** Delete the records the server keys name; false when one was left behind. With
+ *  `unchangedSince`, a record written after that snapshot (in any tab) is kept. */
 export function deletePerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
+  unchangedSince?: Readonly<Record<string, unknown>>,
 ): boolean {
   let deleted = true;
+  const current = unchangedSince ? readMapRaw() : {};
   for (const overrideKey of overrideKeys) {
     for (const owner of findModelOverrideKeyOwners(overrideKey)) {
+      if (
+        unchangedSince &&
+        JSON.stringify(current[owner.storageKey]) !==
+          JSON.stringify(unchangedSince[owner.storageKey])
+      ) {
+        continue;
+      }
       if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
         deleted = false;
       }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { PerModelConfig } from "./per-model-config";
+import { type PerModelConfig, savedContextPin } from "./per-model-config";
 
 interface SettingReset {
   isDefault: (config: PerModelConfig) => boolean;
@@ -13,6 +13,11 @@ const SETTING_RESETS = {
   contextLength: {
     isDefault: (c) => c.customContextLength == null,
     patch: { customContextLength: null },
+  },
+  // Non-GGUF: the pin may sit in either field (see savedContextPin), so both clear.
+  contextPin: {
+    isDefault: (c) => savedContextPin(c) == null,
+    patch: { customContextLength: null, maxSeqLength: null },
   },
   kvCacheDtype: {
     isDefault: (c) => c.kvCacheDtype == null,

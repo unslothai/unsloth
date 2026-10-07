@@ -461,6 +461,7 @@ function MaxSeqLengthSetting({
   fittedToMemory,
   windowUnknown,
   hint,
+  reset,
 }: {
   value: number;
   max: number;
@@ -472,6 +473,7 @@ function MaxSeqLengthSetting({
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
   hint?: string;
+  reset?: ReactNode;
 }) {
   // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
@@ -481,6 +483,7 @@ function MaxSeqLengthSetting({
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
+          {reset}
           <InfoHint>
             {hint ?? (isMlx
               ? "Tokens of context the model is sized for." +
@@ -3698,6 +3701,14 @@ export function ModelConfigPage({
               inputRef={maxSeqLengthInputRef}
               isMlx={pinsContextLength}
               pinned={savedContextPin(config) != null}
+              reset={
+                <SettingResetButton
+                  label={pinsContextLength ? "Context Length" : "Max Seq Length"}
+                  setting="contextPin"
+                  config={config}
+                  update={update}
+                />
+              }
               fittedToMemory={
                 savedContextPin(config) == null && mlxFittedWindow != null
               }

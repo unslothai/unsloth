@@ -237,3 +237,69 @@ test("a save under another alias before the forget's response keeps that record"
     setAuthFetchHandler(null);
   }
 });
+
+test("a save from another tab before the forget's response keeps that record", async () => {
+  store.clear();
+  const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
+  let releaseForget: (() => void) | null = null;
+  setAuthFetchHandler((_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const response = () =>
+      new Response(
+        JSON.stringify({
+          overrides: {},
+          // biome-ignore lint/style/useNamingConvention: API schema
+          removed_keys: body.remove ? [`${REPO}:${QUANT}`, `${SNAPSHOT}:${QUANT}`] : [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    if (!body.remove) {
+      return response();
+    }
+    return new Promise<Response>((resolve) => {
+      releaseForget = () => resolve(response());
+    });
+  });
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    // An older copy under the alias, as the forget will find and clear it.
+    savePerModelConfig(SNAPSHOT, QUANT, { ...tuned(), nParallel: 2 });
+    assert.ok(forgetRunSettings(ggufTarget()));
+    // The other tab writes the shared localStorage directly; this tab's module never sees it.
+    assert.ok(savePerModelConfig(SNAPSHOT, QUANT, tuned()));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(releaseForget, "the forget is still in flight");
+    releaseForget();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).config.nParallel, 4);
+    assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, true);
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});
+
+test("an unchanged alias is still cleared when the forget's response lands", async () => {
+  store.clear();
+  const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
+  setAuthFetchHandler((_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    return new Response(
+      JSON.stringify({
+        overrides: {},
+        // biome-ignore lint/style/useNamingConvention: API schema
+        removed_keys: body.remove ? [`${REPO}:${QUANT}`, `${SNAPSHOT}:${QUANT}`] : [],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    savePerModelConfig(SNAPSHOT, QUANT, tuned());
+    assert.ok(forgetRunSettings(ggufTarget()));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, false);
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});

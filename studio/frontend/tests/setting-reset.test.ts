@@ -24,6 +24,7 @@ type Setting = Parameters<typeof settingIsDefault>[1];
 
 const CHANGED: [Setting, Partial<Config>][] = [
   ["contextLength", { customContextLength: 34432 }],
+  ["contextPin", { maxSeqLength: 8192 }],
   ["kvCacheDtype", { kvCacheDtype: "q8_0" }],
   ["mlxKvQuant", { mlxKvQuant: "8" as Config["mlxKvQuant"] }],
   ["speculative", { speculativeType: "mtp", specDraftNMax: 3 }],
@@ -98,4 +99,16 @@ test("Auto speculative decoding reads as the default, as the select and a loaded
     ),
     false,
   );
+});
+
+test("a non-GGUF context reset clears a pin in either field", () => {
+  const both = {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    customContextLength: 16384,
+    maxSeqLength: 8192,
+  };
+  assert.equal(settingIsDefault(both, "contextPin"), false);
+  const reset = { ...both, ...settingResetPatch("contextPin") };
+  assert.equal(reset.customContextLength, null);
+  assert.equal(reset.maxSeqLength, null);
 });
