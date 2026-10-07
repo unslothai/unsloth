@@ -269,3 +269,40 @@ def test_cached_untrusted_single_file_repo_is_listed_but_untrusted_pipeline_is_n
     monkeypatch.setattr(cc, "_repo_has_pipeline_index", lambda info, selected = None: True)
     assert not cc._untrusted_repo_single_files_loadable(single)
     assert cc._cached_repo_task(single) is None
+
+
+def test_an_oversized_comfy_quant_declaration_is_refused_without_reading_it(tmp_path, monkeypatch):
+    """A comfy_quant entry is small JSON; a file claiming a huge span is refused, not read into memory."""
+    import builtins
+
+    import core.inference.diffusion_comfy_quant as cq
+
+    span = 4 << 20
+    path = _write_safetensors(
+        tmp_path / "dit.safetensors",
+        header = {
+            "w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]},
+            "w.comfy_quant": {"dtype": "U8", "shape": [span], "data_offsets": [4, 4 + span]},
+        },
+        data = b"\x00\x00\x80\x3f" + b"{" * span,
+    )
+    assert_safetensors_file(path)
+    reads = []
+    real_open = builtins.open
+
+    def _open(
+        file,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        handle = real_open(file, mode, *args, **kwargs)
+        if str(file) == str(path) and "b" in mode:
+            real_read = handle.read
+            handle.read = lambda n = -1: reads.append(n) or real_read(n)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", _open)
+    scan = cq.scan_comfy_quant(str(path))
+    assert scan is not None and scan.problems
+    assert reads and max(reads) <= 1 << 20
