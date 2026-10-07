@@ -514,9 +514,9 @@ def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch)
     with pytest.raises(RuntimeError, match = "Timeout waiting for audio generation"):
         orchestrator.generate_audio_response("hello")
 
-    assert cancel_state == ["audio generation is in progress"], (
-        "timeout cancellation must occur under TTS exclusivity"
-    )
+    assert cancel_state == [
+        "audio generation is in progress"
+    ], "timeout cancellation must occur under TTS exclusivity"
     assert orchestrator._worker_reserved_for is None
     assert orchestrator._active_cancel_events == []
     assert orchestrator._executing_cancel_events == []
