@@ -464,9 +464,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     },
   },
   {
-    // A remembered split owns its ordered GPU selection. Discard it if reconciliation
-    // changes that selection. Automatic loads may report a planner-selected split even
-    // when the request has no custom ratio.
+    // A remembered split is dropped with its GPU pick; auto loads may report a planner split unasked.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
