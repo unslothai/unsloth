@@ -295,15 +295,18 @@ async function confirmSttDownloadReplacement(
       undefined,
       resolvedEngine === "transformers" ? model : undefined,
     );
-    if (
-      sttEngineStatusFor(status, model, resolvedEngine)?.download.download_id === candidate
-    ) {
+    const download = sttEngineStatusFor(status, model, resolvedEngine)?.download;
+    const candidateCompleted =
+      download?.completed_download_ids?.includes(candidate) ?? false;
+    if (download?.download_id === candidate || candidateCompleted) {
       const current = trackedDownloadIds.get(key);
       const action = sttReplacementAction(
         trackers.has(key),
         current,
         previousDownloadId,
         candidate,
+        download?.download_id,
+        candidateCompleted,
       );
       if (action === "track") {
         trackSttDownloadNow(model, options);

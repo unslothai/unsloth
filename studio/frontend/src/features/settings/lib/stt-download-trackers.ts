@@ -34,10 +34,20 @@ export function sttReplacementAction(
   currentDownloadId: string | null | undefined,
   previousDownloadId: string,
   candidateDownloadId: string,
+  backendDownloadId: string | null | undefined,
+  candidateCompleted: boolean,
 ): SttReplacementAction {
+  if (
+    candidateCompleted &&
+    currentDownloadId &&
+    currentDownloadId === backendDownloadId &&
+    currentDownloadId !== candidateDownloadId
+  )
+    return "ignore";
   if (!hasTracker || currentDownloadId === previousDownloadId) return "track";
-  if (currentDownloadId !== candidateDownloadId) return "retry";
-  return "ignore";
+  if (currentDownloadId === candidateDownloadId || candidateCompleted)
+    return "ignore";
+  return "retry";
 }
 
 /** A failed confirmation still needs another status check if no poller owns the candidate. */

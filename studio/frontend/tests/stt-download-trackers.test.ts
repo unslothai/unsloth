@@ -55,18 +55,75 @@ test("stopping an untracked model is a no-op", () => {
 
 test("an authoritative replacement survives its previous tracker settling", () => {
   assert.equal(
-    sttReplacementAction(false, undefined, "attempt-x", "attempt-y"),
+    sttReplacementAction(
+      false,
+      undefined,
+      "attempt-x",
+      "attempt-y",
+      "attempt-y",
+      false,
+    ),
     "track",
   );
 });
 
 test("replacement confirmation cannot displace a newer local attempt", () => {
   assert.equal(
-    sttReplacementAction(true, "attempt-z", "attempt-x", "attempt-y"),
+    sttReplacementAction(
+      true,
+      "attempt-z",
+      "attempt-x",
+      "attempt-y",
+      "attempt-y",
+      false,
+    ),
     "retry",
   );
   assert.equal(
-    sttReplacementAction(true, "attempt-y", "attempt-x", "attempt-y"),
+    sttReplacementAction(
+      true,
+      "attempt-y",
+      "attempt-x",
+      "attempt-y",
+      "attempt-y",
+      false,
+    ),
+    "ignore",
+  );
+});
+
+test("a completed candidate settles unless a newer local attempt already owns the row", () => {
+  assert.equal(
+    sttReplacementAction(
+      false,
+      undefined,
+      "attempt-a",
+      "attempt-b",
+      "attempt-c",
+      true,
+    ),
+    "track",
+  );
+  assert.equal(
+    sttReplacementAction(
+      true,
+      "attempt-c",
+      "attempt-a",
+      "attempt-b",
+      "attempt-c",
+      true,
+    ),
+    "ignore",
+  );
+  assert.equal(
+    sttReplacementAction(
+      true,
+      "attempt-c",
+      "attempt-c",
+      "attempt-b",
+      "attempt-c",
+      true,
+    ),
     "ignore",
   );
 });

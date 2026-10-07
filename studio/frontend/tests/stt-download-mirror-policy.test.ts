@@ -29,7 +29,7 @@ test("an adopted STT transfer keeps progress and merges its Voice owner", () => 
   );
   assert.match(
     source,
-    /download\.download_id === candidate[\s\S]*sttReplacementAction\([\s\S]*action === "track"[\s\S]*trackSttDownloadNow\(model, options\)/,
+    /completed_download_ids\?\.includes\(candidate\)[\s\S]*download\?\.download_id === candidate \|\| candidateCompleted[\s\S]*sttReplacementAction\([\s\S]*action === "track"[\s\S]*trackSttDownloadNow\(model, options\)/,
   );
   assert.match(source, /action === "retry"[\s\S]*retry = true/);
   assert.match(
