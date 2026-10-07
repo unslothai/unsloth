@@ -164,6 +164,15 @@ def test_cache_key_tracks_content_family_and_resolution(tmp_path):
     assert c1.latent_key(str(renamed), v) == k1
 
 
+
+def test_latent_cache_misses_entries_encoded_before_white_flattening(tmp_path):
+    cache = PersistentConditioningCache(tmp_path / "cc", "qwen-image", 512)
+    img = _make_image(tmp_path)
+    stale = cache.latent_key(img, (0.5, 0.5, False)).replace("lat_v2_", "lat_v1_", 1)
+    cache.put(stale, (torch.zeros(1), torch.zeros(1)))
+    assert stale != cache.latent_key(img, (0.5, 0.5, False))
+    assert not cache.has(cache.latent_key(img, (0.5, 0.5, False)))
+
 def test_cache_corrupt_entry_returns_none(tmp_path):
     cache = PersistentConditioningCache(tmp_path / "cc", "flux.1", 512)
     cache.path_for("bad_key").write_bytes(b"not a safetensors file")

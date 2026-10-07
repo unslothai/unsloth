@@ -4376,7 +4376,7 @@ async def get_diffusion_dataset_image(
         thumbs_dir.mkdir(exist_ok = True)
         # Key on the full filename, not the stem: two images sharing a stem would collide on one cache file and the
         # mtime-newer entry would be served for both.
-        thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
+        thumb_path = thumbs_dir / f"{image_path.name}_{size}_w.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
             return thumb_path

@@ -202,6 +202,8 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
 
 
 _CACHE_VERSION = "1"
+# v2: transparent images are composited onto white before encoding.
+_LATENT_CACHE_VERSION = "2"
 
 
 def _file_content_hash(path: str) -> str:
@@ -337,7 +339,7 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_CACHE_VERSION}_{self.family}_{geom}_" f"{_file_content_hash(image_path)}_{var}"
+            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_" f"{_file_content_hash(image_path)}_{var}"
         )
 
     def text_key(self, caption: str) -> str:
