@@ -35,6 +35,18 @@ const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
 /// Clear labels are a small fixed set; this only bounds a pathological producer.
 const MAX_UNPAIRED_CLEARS: usize = 64;
 
+/// uv, Windows, and libc all phrase a full disk differently. Match the stable
+/// phrases, not a single tool's wording.
+fn is_disk_full_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("no space left on device")
+        || lower.contains("not enough space on the disk")
+        || lower.contains("os error 28")
+        || lower.contains("os error 112")
+        || lower.contains("enospc")
+        || lower.contains("disk quota exceeded")
+}
+
 fn generic_failure_message(code: i32) -> String {
     format!(
         "Installation failed with exit code {}. Open the installer logs for details.",
@@ -189,6 +201,12 @@ struct InstallFailureContext {
     unpaired_clears: HashMap<(String, InstallOutputStream), usize>,
     started: bool,
     output_tail: VecDeque<InstallOutputLine>,
+    /// The disk-full line from this stream, kept even after the 8-line tail has
+    /// moved on. uv follows "No space left on device" with a dependency footer
+    /// whose last line is only the package that was unpacking (`sounddevice`),
+    /// and that footer is what the summary would otherwise show. Cleared with
+    /// the stream so a later step does not inherit it.
+    disk_full_line: Option<(InstallOutputStream, String)>,
 }
 
 impl InstallFailureContext {
@@ -251,11 +269,18 @@ impl InstallFailureContext {
     fn capture_output_error(&mut self, stream: InstallOutputStream, fallback: &str) {
         let fallback = fallback.trim();
         let detail = self
-            .output_tail
-            .iter()
-            .rev()
-            .find(|line| line.stream == stream)
-            .map(|line| line.text.as_str());
+            .disk_full_line
+            .as_ref()
+            .filter(|(seen, _)| *seen == stream)
+            .map(|(_, text)| text.clone())
+            .or_else(|| {
+                self.output_tail
+                    .iter()
+                    .rev()
+                    .find(|line| line.stream == stream)
+                    .map(|line| line.text.clone())
+            });
+        let detail = detail.as_deref();
         if let Some(error) = match (fallback.is_empty(), detail) {
             (_, Some(detail)) if fallback == detail => Some(detail.to_owned()),
             (false, Some(detail)) => Some(Self::bounded_line(&format!("{fallback}: {detail}"))),
@@ -327,6 +352,13 @@ impl InstallFailureContext {
 
     fn clear_stream(&mut self, stream: InstallOutputStream) {
         self.output_tail.retain(|line| line.stream != stream);
+        if self
+            .disk_full_line
+            .as_ref()
+            .is_some_and(|(seen, _)| *seen == stream)
+        {
+            self.disk_full_line = None;
+        }
     }
 
     fn push_output(&mut self, stream: InstallOutputStream, text: &str) {
@@ -335,6 +367,9 @@ impl InstallFailureContext {
             return;
         }
         let text = Self::bounded_line(text);
+        if is_disk_full_text(&text) {
+            self.disk_full_line = Some((stream, text.clone()));
+        }
         self.output_tail
             .push_back(InstallOutputLine { stream, text });
         while self.output_tail.len() > FAILURE_CONTEXT_LINES {
@@ -1927,6 +1962,37 @@ mod tests {
         assert_eq!(
             context.message(1),
             "Installation failed: install unsloth failed (exit code 1): resolver error: no space left on device"
+        );
+    }
+
+    #[test]
+    fn disk_full_is_reported_instead_of_the_package_footer() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("  ╰─▶ failed to create file");
+        context.observe_stderr("      No space left on device (os error 28)");
+        // Longer than FAILURE_CONTEXT_LINES, which is what hid the cause: uv's
+        // help footer ends on the package name that was being unpacked.
+        for _ in 0..FAILURE_CONTEXT_LINES {
+            context.observe_stderr("        depends on `unsloth-zoo` which depends on `mlx-audio`");
+        }
+        context.observe_stderr("        `sounddevice`");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install unsloth failed (exit code 1)"));
+        assert_eq!(
+            context.message(1),
+            "Installation failed: install unsloth failed (exit code 1): No space left on device (os error 28)"
+        );
+    }
+
+    #[test]
+    fn disk_full_does_not_survive_a_cleared_stream() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("No space left on device (os error 28)");
+        assert!(context.observe_stderr("[TAURI:OUTPUT_CLEAR] install unsloth"));
+        context.observe_stderr("resolver error: package not found");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install unsloth failed (exit code 1)"));
+        assert_eq!(
+            context.message(1),
+            "Installation failed: install unsloth failed (exit code 1): resolver error: package not found"
         );
     }
 
