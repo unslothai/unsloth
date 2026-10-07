@@ -118,6 +118,7 @@ def _wanted(path: str, subfolder: str | None) -> bool:
 
 
 LLAMA_CPP = "llama.cpp"
+GGUF = "gguf"
 
 
 def _is_native(checkpoint) -> bool:
@@ -125,7 +126,9 @@ def _is_native(checkpoint) -> bool:
 
 
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
-    """The llama.cpp form of a Clef entry: ggml-org's GGUF for a stock model, a current export for a folder."""
+    """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a folder, a GGUF entry itself."""
+    if checkpoint.layout == GGUF:
+        return checkpoint
     if checkpoint.layout != "clef" or _is_native(checkpoint):
         return None
     if checkpoint.is_local:
@@ -175,20 +178,45 @@ def _native_files(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path 
     from utils.utils import hf_env_offline
 
     companion = GGUF_COMPANIONS[checkpoint.name]
-    paths = [
-        Path(
-            hf_hub_download(
+    cache = active_hf_hub_cache()
+    paths = []
+    for index, name in enumerate(n for n in (companion.model, companion.mmproj) if n):
+        try:
+            path = hf_hub_download(
                 companion.repo,
                 name,
                 revision = companion.revision,
-                cache_dir = active_hf_hub_cache(),
+                cache_dir = cache,
                 local_files_only = local_only or hf_env_offline(),
             )
-        )
-        for name in (companion.model, companion.mmproj)
-        if name
-    ]
+        except Exception:
+            # Settings downloads fetch the repo's main: the same blob there is the pinned file.
+            sha256 = companion.sha256[index] if index < len(companion.sha256) else None
+            if (path := _cached_blob(cache, companion.repo, name, sha256)) is None:
+                raise
+        paths.append(Path(path))
     return paths[0], (paths[1] if companion.mmproj else None)
+
+
+def _cached_blob(cache, repo: str, name: str, sha256: str | None) -> Path | None:
+    """``name`` in any cached snapshot of ``repo`` whose blob is ``sha256``, else None."""
+    if not sha256:
+        return None
+    if cache is None:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        cache = HF_HUB_CACHE
+    snapshots = Path(cache) / f"models--{repo.replace('/', '--')}" / "snapshots"
+    try:
+        candidates = sorted(snapshots.glob(f"*/{name}"))
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            if path.resolve(strict = True).name == sha256:
+                return path
+        except (OSError, RuntimeError):
+            continue
+    return None
 
 
 def _binary_key(binary: str) -> tuple[str, int]:
@@ -222,12 +250,14 @@ def select(
     """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
 
     Auto takes llama.cpp when the entry has a GGUF and Studio's llama-server serves decisions, else PyTorch.
-    Images are llama.cpp only. Laya is always served by PyTorch.
+    Images are llama.cpp only. Laya is always served by PyTorch, a GGUF entry always by llama.cpp.
     """
     from utils.systemone_settings import get_backend
 
     from .native_worker import request_gap
 
+    if checkpoint.layout == GGUF:
+        return _select_gguf(checkpoint, questions, preference or get_backend()), None
     if checkpoint.layout != "clef":
         if images:
             raise Unavailable(
@@ -270,6 +300,23 @@ def select(
     return checkpoint, reason
 
 
+def _select_gguf(checkpoint: Checkpoint, questions, preference: str) -> Checkpoint:
+    from .native_worker import request_gap
+
+    if preference == "pytorch":
+        raise Unavailable(
+            400,
+            "api_usage_error",
+            f"{checkpoint.name} is a GGUF served only by llama.cpp; set the Decision API runtime "
+            "to Auto or llama.cpp.",
+        )
+    if (reason := _native_unavailable(checkpoint, checkpoint)) is not None:
+        raise Unavailable(503, "model_unavailable", f"{checkpoint.name} needs llama.cpp: {reason}")
+    if (reason := request_gap(questions or {})) is not None:
+        raise Unavailable(422, "invalid_request_error", reason)
+    return checkpoint
+
+
 def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | None:
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
     from core.inference.gpu_arbiter import DECISIONS, current_owner
@@ -299,8 +346,8 @@ def effective_backend(checkpoint) -> tuple[str | None, str | None]:
 
 
 def native_ready(checkpoint) -> bool:
-    """Whether llama.cpp could serve this Clef entry here (the runtime setting aside)."""
-    if not isinstance(checkpoint, Checkpoint) or checkpoint.layout != "clef":
+    """Whether llama.cpp could serve this Clef or GGUF entry here under the runtime setting."""
+    if not isinstance(checkpoint, Checkpoint) or checkpoint.layout == "laya":
         return False
     from utils.systemone_settings import get_backend
 
@@ -671,6 +718,7 @@ def _load_native(checkpoint: Checkpoint):
             mmproj,
             checkpoint.name,
             gpu = gpu,
+            clef_answers = checkpoint.layout == "clef",
             ctx = get_native_ctx(),
             cancelled = (lambda: _training_active()) if gpu else None,
         )
@@ -688,7 +736,7 @@ def _load_native(checkpoint: Checkpoint):
     return agent, agent.device
 
 
-_GPU_BUSY = "Unload the resident chat, image or video model before serving Clef through llama.cpp on the GPU."
+_GPU_BUSY = "Unload the resident chat, image or video model before serving a decision model through llama.cpp on the GPU."
 
 
 _build_lock = threading.Lock()
@@ -1013,7 +1061,7 @@ def _misplaced() -> bool:
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
-    if checkpoint.layout != "clef":
+    if checkpoint.layout == "laya":
         return
     from .catalog import clef_unsupported_reason
 
@@ -1025,7 +1073,7 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
     # Only a resident on the GPU: a llama.cpp server on CPU keeps serving during the run.
-    if _loaded is not None and _loaded.layout == "clef" and _device_name not in (None, "cpu"):
+    if _loaded is not None and _loaded.layout != "laya" and _device_name not in (None, "cpu"):
         _evict(external = True)
     raise Unavailable(
         503,
@@ -1687,7 +1735,7 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
     from .native_worker import NativeContextOverflow
 
     target, reason = select(checkpoint, images, questions)
-    if checkpoint.layout == "clef":
+    if checkpoint.layout != "laya":
         _fallback_reason = reason
     try:
         return _decide(target, state, questions, images)
@@ -1697,6 +1745,7 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
 
         if (
             get_backend() != "auto"
+            or checkpoint.layout == GGUF
             or images
             or exc.limit >= MAX_LENGTH
             or clef_unsupported_reason() is not None
