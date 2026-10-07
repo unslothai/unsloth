@@ -173,7 +173,12 @@ def test_a_rocm_mask_keeps_the_runtime_repeat_rule(monkeypatch, env, numeric_ids
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.sys, "platform", "linux")
-    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_DEVICE_ORDER",
+    ):
         monkeypatch.delenv(var, raising = False)
     for var, value in env.items():
         monkeypatch.setenv(var, value)
