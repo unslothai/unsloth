@@ -1,5 +1,7 @@
 import ast
+import functools
 import inspect
+import os
 import types
 from pathlib import Path
 
@@ -143,6 +145,7 @@ def _namespace(fake_torch, device_type, workarounds):
     overrides = {
         "torch": fake_torch,
         "inspect": inspect,
+        "os": os,
         "DEVICE_TYPE": device_type,
         # Recorded, not run: the real one writes Triton and Inductor settings into os.environ.
         "apply_gfx101x_triton_workaround": lambda *a, **k: workarounds.append((a, k)),
@@ -253,11 +256,46 @@ def test_torch_saying_no_is_still_respected(monkeypatch):
 
 @pytest.mark.parametrize("device_type", ["cuda", "xpu"])
 def test_the_gate_does_not_leak_off_hip(monkeypatch, device_type):
+    monkeypatch.delenv("UNSLOTH_DDP_COMMON_DTYPE", raising = False)
     fake = _fake_torch(["gfx1032"])
     namespace = _run_chain(monkeypatch, fake, device_type)
     assert namespace["SUPPORTS_BFLOAT16"] is True
     if device_type == "cuda":
         assert fake.cuda.is_bf16_supported(including_emulation = False) is True
+
+
+@pytest.mark.parametrize("common_dtype, expected", [("fp16", False), ("bf16", True)])
+def test_cuda_ddp_common_dtype_reaches_gpu_probe(monkeypatch, common_dtype, expected):
+    monkeypatch.setenv("UNSLOTH_DDP_COMMON_DTYPE", common_dtype)
+    fake = _fake_torch(["gfx1100"])
+    namespace = _run_chain(monkeypatch, fake, "cuda")
+    assert namespace["SUPPORTS_BFLOAT16"] is expected
+    assert fake.cuda.is_bf16_supported(including_emulation = False) is expected
+
+
+@pytest.mark.parametrize(
+    "common_dtype, expected", [("fp16", False), ("bf16", True), (None, True)]
+)
+def test_model_utils_cuda_constant_matches_ddp_dtype(monkeypatch, common_dtype, expected):
+    """Exercise the model loader's own constant, not only _gpu_init's patched torch probe."""
+    if common_dtype is None:
+        monkeypatch.delenv("UNSLOTH_DDP_COMMON_DTYPE", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DDP_COMMON_DTYPE", common_dtype)
+    source = MODEL_UTILS.read_text(encoding = "utf-8")
+    start = 'if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():'
+    body = start + source.split(start, 1)[1].split('\nelif DEVICE_TYPE == "hip":', 1)[0]
+    fake = _fake_torch(["gfx1100"])
+    namespace = {
+        "DEVICE_TYPE": "cuda",
+        "torch": fake,
+        "os": os,
+        "functools": functools,
+        "_package_available": lambda _name: False,
+        "SUPPORTS_BFLOAT16": False,
+    }
+    exec(compile(body, str(MODEL_UTILS), "exec"), namespace)
+    assert namespace["SUPPORTS_BFLOAT16"] is expected
 
 
 def test_importing_unsloth_twice_is_stable(monkeypatch):
