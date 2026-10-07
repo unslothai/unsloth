@@ -5244,7 +5244,6 @@ def _loss_kwargs_levels(model):
 
 
 def _shadow_accepts_loss_kwargs(model, value):
-    # A value the model or user set on an instance is left alone.
     for m in _loss_kwargs_levels(model):
         d = getattr(m, "__dict__", None)
         if d is None:
@@ -5581,8 +5580,7 @@ def _zoo_counts_fallback_branches():
 
 
 def _old_zoo_fallbacks_only(head, fused_with_count, via_loss_function):
-    # An older unsloth_zoo leaves the UNSLOTH_RETURN_LOGITS / non-causal fallbacks of a fused forward
-    # without the count; only the fused branch trains then, so keep the answer that zoo relied on.
+    # An older unsloth_zoo trains only the fused branch with the count; keep the answer it relied on.
     return (
         fused_with_count
         and not via_loss_function
