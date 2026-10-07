@@ -166,6 +166,22 @@ def test_tool_calls_and_empty_message_lists(mapping):
 
 
 @pytest.mark.parametrize("mapping", [None, _MAPPING], ids = ["auto_mapping", "user_mapping"])
+def test_tool_call_message_may_omit_content(mapping):
+    row = {
+        "prompt": [_user("Weather?")],
+        "completion": [{"role": "assistant", "tool_calls": [_CALL]}],
+    }
+
+    result = format_dataset(Dataset.from_list([row]), custom_format_mapping = mapping)
+    conversation = [
+        {key: value for key, value in turn.items() if value is not None}
+        for turn in result["dataset"][0]["conversations"]
+    ]
+
+    assert conversation == [_user("Weather?"), {"role": "assistant", "tool_calls": [_CALL]}]
+
+
+@pytest.mark.parametrize("mapping", [None, _MAPPING], ids = ["auto_mapping", "user_mapping"])
 def test_sharegpt_message_lists_train_as_one_conversation(mapping):
     row = {
         "prompt": [{"from": "system", "value": "Be brief."}, {"from": "human", "value": "Sky?"}],

@@ -50,6 +50,8 @@ def _message(turn):
         return None
     if {"role", "content"} <= turn.keys():
         return turn
+    if turn.get("role") == "assistant" and "tool_calls" in turn:
+        return {**turn, "content": None}
     if {"from", "value"} <= turn.keys():
         return {"role": _SHAREGPT_ROLES.get(turn["from"], turn["from"]), "content": turn["value"]}
     return None
