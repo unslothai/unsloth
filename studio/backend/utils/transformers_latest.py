@@ -565,8 +565,11 @@ def _resolve_main_commit() -> str | None:
 
 
 def _fetch_main_requires() -> list[str] | None:
-    """Core install_requires of transformers main, read from its setup.py."""
-    body = _fetch_text(f"{_MAIN_RAW}/setup.py")
+    """Core install_requires of transformers main (at the commit being installed), from setup.py."""
+    from utils import transformers_version as tv
+
+    ref = tv._main_archive_commit or "main"
+    body = _fetch_text(f"{_MAIN_RAW.rsplit('/', 1)[0]}/{ref}/setup.py")
     if body is None or body == _FETCH_MISSING:
         return None
     deps_block = re.search(r"^_deps = \[(.*?)^\]", body, re.MULTILINE | re.DOTALL)
@@ -796,18 +799,19 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "latest_version": snapshot["pypi_version"],
             "latest_main_version": current_main,
         }
-    extra_packages, blockers = compat_plan(version)
-    if blockers:
-        return {
-            "success": False,
-            "version": version,
-            "message": "Cannot install transformers "
-            f"{version}: this environment does not satisfy {', '.join(blockers)}. "
-            "An Unsloth update is required first.",
-        }
     from utils.transformers_version import transformers_main_at
 
+    # Requirements and archive both come from the pinned commit.
     with transformers_main_at(main_commit) if main_commit else contextlib.nullcontext():
+        extra_packages, blockers = compat_plan(version)
+        if blockers:
+            return {
+                "success": False,
+                "version": version,
+                "message": "Cannot install transformers "
+                f"{version}: this environment does not satisfy {', '.join(blockers)}. "
+                "An Unsloth update is required first.",
+            }
         installed = ensure_latest_transformers_venv(
             version, extra_packages, before_swap = before_swap
         )

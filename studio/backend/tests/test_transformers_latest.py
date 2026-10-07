@@ -1645,6 +1645,15 @@ def test_fetch_main_requires_parses_setup_py(monkeypatch):
     ]
 
 
+def test_fetch_main_requires_reads_the_pinned_commit(monkeypatch):
+    seen = []
+    monkeypatch.setattr(tl, "_fetch_text", lambda url: seen.append(url))
+    tl._fetch_main_requires()
+    with tv.transformers_main_at("e" * 40):
+        tl._fetch_main_requires()
+    assert seen[0].endswith("/main/setup.py") and seen[1].endswith(f"/{'e' * 40}/setup.py")
+
+
 def test_fetch_main_version_requires_dev_string(monkeypatch):
     monkeypatch.setattr(tl, "_fetch_text", lambda url: '__version__ = "5.18.0"\n')
     assert tl._fetch_main_version() is None
