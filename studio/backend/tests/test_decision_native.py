@@ -59,8 +59,10 @@ def log(kind, **data):
 
 log("start", argv=args, env={k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES")})
 if mode == "exit":
+    print("stub: failed to load model", flush=True)
     sys.exit(3)
-port, key, alias, ub, mmproj = int(opt("--port")), opt("--api-key"), opt("--alias"), int(opt("-ub")), "--mmproj" in args
+key = opt("--api-key") or open(opt("--api-key-file"), encoding="utf-8").read().strip()
+port, alias, ub, mmproj = int(opt("--port")), opt("--alias"), int(opt("-ub")), "--mmproj" in args
 
 
 def answer(q):
@@ -114,6 +116,8 @@ class Handler(BaseHTTPRequestHandler):
         state = body["state"] if isinstance(body["state"], str) else json.dumps(body["state"])
         if state == "crash":
             os._exit(1)
+        if state == "badimage":
+            return self.error(500, "Failed to load image or audio file")
         if state == "reject":
             return self.error(400, 'questions.q: "criteria" must be a non-empty object')
         if state == "context":
@@ -431,11 +435,30 @@ def test_cpu_flags_hide_the_gpu_and_keep_weights_unrepacked(home, stub, tmp_path
         assert (value("-ngl"), value("--device")) == ("0", "none")
         assert "--no-repack" in argv and "--no-mmproj-offload" in argv
         assert start["env"] == {"CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": "-1"}
-        assert len(value("--api-key")) >= 32
         assert agent.device == "cpu" and agent.accepts_images
     finally:
         agent.close()
     assert not agent.is_alive()
+
+
+def test_the_key_is_passed_in_a_private_file_and_files_go_with_the_server(home, stub, tmp_path):
+    from utils.paths.storage_roots import auth_root
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
+    agent = native_worker.NativeClefAgent(model, None, "clef-flash", gpu = False)
+    argv = stub.records("start")[0]["argv"]
+    key_file, log_file = Path(argv[argv.index("--api-key-file") + 1]), agent._log_path
+    assert "--api-key" not in argv and agent._key not in " ".join(argv)
+    assert key_file.parent == auth_root() and key_file.read_text(encoding = "utf-8") == agent._key
+    assert len(agent._key) >= 32
+    if os.name != "nt":
+        assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    second = native_worker.NativeClefAgent(model, None, "clef-flash", gpu = False)
+    assert second._log_path != log_file and second._key_file != key_file
+    for each in (agent, second):
+        each.close()
+    assert not key_file.exists() and not log_file.exists() and not second._key_file.exists()
 
 
 def test_gpu_flags_offload_to_the_freest_device(home, stub, tmp_path):
@@ -449,12 +472,12 @@ def test_gpu_flags_offload_to_the_freest_device(home, stub, tmp_path):
         assert "--mmproj" not in argv and "--no-repack" not in argv
         # Without a projector the server reads text only.
         assert agent.device == "CUDA1" and not agent.accepts_images
-        api_key = argv[argv.index("--api-key") + 1]
+        api_key = agent._key
     finally:
         agent.close()
     second = native_worker.NativeClefAgent(model, None, "x", gpu = True)
     second.close()
-    assert stub.records("start")[1]["argv"][argv.index("--api-key") + 1] != api_key
+    assert second._key != api_key
 
 
 @pytest.mark.parametrize("mode", ["nodecisions", "wrongalias"])
@@ -470,8 +493,14 @@ def test_a_server_that_dies_at_startup_is_a_startup_error(home, stub, tmp_path):
     model = tmp_path / "m.gguf"
     model.write_bytes(b"GGUF")
     stub.set_mode("exit")
-    with pytest.raises(native_worker.NativeError, match = "exited while loading"):
+    with pytest.raises(native_worker.NativeError, match = "exited while loading") as failed:
         native_worker.NativeClefAgent(model, None, "clef-flash", gpu = False)
+    # The server's own output is quoted, and a server that died by itself keeps its log.
+    assert "code 3" in str(failed.value) and "stub: failed to load model" in str(failed.value)
+    from utils.paths.storage_roots import studio_root
+
+    kept = list((studio_root() / "logs").glob("decision-llama-server-*.log"))
+    assert len(kept) == 1 and "stub: failed to load model" in kept[0].read_text(encoding = "utf-8")
 
 
 def test_the_binary_comes_from_studios_resolver(monkeypatch, tmp_path):
@@ -501,6 +530,9 @@ def test_error_mapping():
         assert isinstance(
             native_worker.map_error(status, text), native_worker.NativeContextOverflow
         )
+    # llama.cpp answers an image mtmd cannot decode with HTTP 500, from a healthy server.
+    undecodable = native_worker.map_error(500, "Failed to load image or audio file")
+    assert type(undecodable) is native_worker.NativeInputError and not undecodable.retire
     other = native_worker.map_error(400, 'questions.q: "type" must be one of: choice, score, noul')
     assert (
         type(other) is native_worker.NativeInputError and other.status == 422 and not other.retire
@@ -756,12 +788,27 @@ def test_training_and_the_gpu_arbiter_gate_a_gpu_server(home, client, stub, monk
     assert stub.records("start") == []
     home.training = False
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    # Auto answers text on PyTorch beside the chat model, as before llama.cpp served decisions.
+    beside = _post(client)
+    assert beside.status_code == 200 and beside.headers["x-unsloth-decision-backend"] == "pytorch"
+    assert client.get("/api/settings/systemone").json()["fallback_reason"] == (
+        "Another model is using the GPU."
+    )
+    # Only llama.cpp reads images: those still wait for the GPU.
+    busy = _post(client, images = [PNG])
+    assert (
+        busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
+    )
+    laya_runtime.unload()
+    _put(client, backend = "llama.cpp")
     busy = _post(client)
     assert (
         busy.status_code == 409 and "Unload the resident chat" in busy.json()["detail"]["message"]
     )
+    assert stub.records("start") == []
+    _put(client, backend = "auto")
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
-    assert _post(client).status_code == 200
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
     assert gpu_arbiter.current_owner() == gpu_arbiter.DECISIONS
     # A chat load evicts the idle server through the arbiter.
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
@@ -878,3 +925,153 @@ def test_the_model_list_shows_image_input_only_where_llama_cpp_serves_it(
         m["id"]: m["architecture"]["input_modalities"] for m in systemone.decision_model_objects()
     }
     assert listed["clef-flash"] == ["text"]
+
+
+@pytest.mark.parametrize(
+    "owner, status", [(gpu_arbiter.DECISIONS, 409), (gpu_arbiter.DIFFUSION, None)]
+)
+def test_a_chat_load_refused_by_a_busy_decision_server_is_retryable(owner, status):
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    from fastapi import HTTPException
+
+    from models.inference import LoadRequest
+    from routes import inference as inference_route
+
+    path = "unsloth/Qwen3-0.6B-GGUF"
+    with (
+        patch.object(
+            inference_route,
+            "_resolve_model_identifier_for_request",
+            return_value = (path, path, False),
+        ),
+        patch.object(
+            inference_route, "resolve_effective_chat_template_override", return_value = None
+        ),
+        patch.object(
+            inference_route, "get_inference_backend", return_value = MagicMock(active_model_name = None)
+        ),
+        patch.object(inference_route, "get_llama_cpp_backend", return_value = MagicMock()),
+        patch.object(
+            inference_route.ModelConfig,
+            "from_identifier",
+            side_effect = gpu_arbiter.GpuOwnerBusyError(owner),
+        ),
+    ):
+        load = inference_route.load_model(LoadRequest(model_path = path), MagicMock(), "unsloth")
+        if status is None:
+            # The preview route maps the image/video refusal itself.
+            with pytest.raises(gpu_arbiter.GpuOwnerBusyError):
+                asyncio.run(load)
+            return
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(load)
+    assert refused.value.status_code == 409 and refused.value.headers["Retry-After"] == "5"
+    assert refused.value.detail == "The Decision API is using the GPU; retry shortly."
+
+
+def _image_url(kind, data):
+    import base64
+    return f"data:image/{kind};base64," + base64.b64encode(data).decode()
+
+
+def test_an_unreadable_image_is_refused_and_the_server_keeps_serving(home, client, stub):
+    import io
+
+    from PIL import Image
+
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash")
+    webp = io.BytesIO()
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(webp, "WEBP")
+    jpeg = io.BytesIO()
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(jpeg, "JPEG")
+    for bad in (
+        _image_url("webp", webp.getvalue()),
+        _image_url("png", b"\x89PNG\r\n\x1a\n" + b"garbage" * 20),
+        _image_url("png", webp.getvalue()),
+    ):
+        refused = _post(client, images = [bad])
+        assert refused.status_code == 422, refused.text
+    assert stub.records("start") == []
+    assert _post(client, images = [_image_url("jpeg", jpeg.getvalue())]).status_code == 200
+    # One the server still cannot decode is the caller's error, not a crash.
+    refused = _post(client, state = "badimage", images = [PNG])
+    assert refused.status_code == 422 and "Failed to load image" in refused.text
+    assert _post(client).status_code == 200
+    assert len(stub.records("start")) == 1
+
+
+def test_a_slow_close_keeps_the_claim_of_a_server_loading_after_it(home, monkeypatch, tmp_path):
+    import threading
+
+    native = laya_runtime._native_target(catalog.CHECKPOINTS["clef-flash"])
+    closing, closed = threading.Event(), threading.Event()
+
+    class Server:
+        backend, gpu, device = "llama.cpp", True, "CUDA0"
+
+        def __init__(self, slow = False):
+            self.slow = slow
+
+        def close(self):
+            if self.slow:
+                closing.set()
+                # llama-server takes its time to exit; the next load starts meanwhile.
+                time.sleep(0.3)
+                closed.set()
+
+    def starting(*args, **kwargs):
+        assert closed.wait(5)
+        return Server()
+
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    monkeypatch.setattr(laya_runtime, "_native_files", lambda *a, **k: (tmp_path / "m.gguf", None))
+    monkeypatch.setattr(native_worker, "NativeClefAgent", starting)
+    gpu_arbiter.acquire_for(gpu_arbiter.DECISIONS, allow_evict = False)
+    old = Server(slow = True)
+    monkeypatch.setattr(laya_runtime, "_agent", old)
+    monkeypatch.setattr(laya_runtime, "_loaded", native)
+    retire = threading.Thread(target = laya_runtime._evict_agent, args = (old,))
+    retire.start()
+    assert closing.wait(5)
+    monkeypatch.setattr(laya_runtime, "_loading", native)
+    laya_runtime._load(native)
+    retire.join(5)
+    assert isinstance(laya_runtime._agent, Server) and laya_runtime._agent is not old
+    assert gpu_arbiter.current_owner() == gpu_arbiter.DECISIONS
+    # With nothing loading or resident, a close hands the GPU back.
+    laya_runtime.unload()
+    assert gpu_arbiter.current_owner() is None
+
+
+def test_auto_keeps_pytorch_while_the_gguf_is_not_downloaded(home, client, stub):
+    _put(client, enabled = True, model = "clef-flash")
+    clef = catalog.CHECKPOINTS["clef-flash"]
+    target, reason = laya_runtime.select(clef)
+    assert target == clef and "not downloaded" in reason
+    assert client.get("/api/settings/systemone").json()["effective_backend"] == "pytorch"
+    response = _post(client)
+    assert response.headers["x-unsloth-decision-backend"] == "pytorch"
+    assert stub.records("start") == []
+    # Images and a forced llama.cpp still take the GGUF.
+    assert laya_runtime.select(clef, images = [PNG])[0].backend == "llama.cpp"
+    assert laya_runtime.select(clef, preference = "llama.cpp")[0].backend == "llama.cpp"
+    laya_runtime.unload()
+    _cache_gguf(home.cache)
+    assert laya_runtime.select(clef) == (laya_runtime._native_target(clef), None)
+
+
+def test_an_over_long_state_is_not_retried_where_pytorch_cannot_serve_clef(
+    home, client, stub, monkeypatch
+):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    monkeypatch.setattr(hardware, "DEVICE", hardware.DeviceType.MLX)
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash", native_ctx = 1024)
+    response = _post(client, state = "word " * 1100)
+    assert response.status_code == 422 and "at most 1024" in response.json()["detail"]["message"]
+    assert home.torch_agents == []
