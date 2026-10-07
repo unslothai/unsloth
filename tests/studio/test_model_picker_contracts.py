@@ -265,7 +265,11 @@ def test_model_config_page_floors_the_context_ceiling():
     rounded up (rounding up can offer/persist a length above the model's real
     ceiling and break loading)."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
+    assert re.search(
+        r"floorMaxSeqLength\(\s*targetIsNpu\s*\? target\.meta\.contextLength\s*"
+        r": modelMaxPosition\.maxPositionEmbeddings,\s*\)",
+        src,
+    )
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
@@ -425,9 +429,10 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
     assert "closeButton: true" in model_load
     assert "icon: createLoadingToastIcon()" in model_load
     assert "onDismiss:" in model_load
-    assert "description: undefined" in model_load
+    # A plain success clears the loading description and lasts 2 s; only a layer split says more.
+    assert "description: offloadNotice?.description" in model_load
     assert "icon: undefined" in model_load
-    assert "duration: 2000" in model_load
+    assert "duration: offloadNotice ? 8000 : 2000" in model_load
 
     toast_lib = _read("lib/toast.ts")
     assert "createElement(Spinner" in toast_lib
@@ -507,9 +512,19 @@ def test_active_model_config_round_trips_gpu_fields():
         "nCpuMoe",
         "selectedGpuIds",
         "selectedGpuIndexKind",
+        "llamaExtraArgs",
+        "loadedLlamaExtraArgs",
     ):
         assert field in src, field
-    assert "if (!isGguf)" in src and "return base" in src
+    # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
+    flat = " ".join(src.split())
+    assert "if (!isGguf) {" in flat and ": base; }" in flat
+    assert (
+        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
+        in flat
+    )
+    assert "loadedLlamaExtraArgs != null" in src
+    assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
@@ -703,7 +718,7 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[\s*inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 
@@ -754,15 +769,17 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
-    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    # #7767 added the expander's abort signal to this call, so the options are an object
-    # literal now rather than the bare localSource ternary.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
         0
     ), "the expander drops the row's own cache directory"
     assert "preferLocalCache" not in call.group(0)
+    assert "localOnly," in call.group(0)
+    assert "loadPickerGgufVariants(" in picker
+    sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
+    assert sole and "localOnly: true," in sole.group(0)
+    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -1071,7 +1088,7 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # Both GGUF responses report it: the status poll and the already_loaded
     # dedup reply. Either one re-deriving it reintroduces the flip.
     assert route.count("is_local_model = _loaded_is_local_model(") >= 2
-    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
+    assert "is_local_model = bool(_active and is_local_path(_active))" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
@@ -1146,9 +1163,10 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
-    # MLX pins via customContextLength, so substituting the shown default would turn
-    # "Auto" into a request for that number.
-    assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
+    # MLX and NPU pin via customContextLength, so substituting the shown default would
+    # turn "Auto" into a request for that number.
+    assert "const pinsContextLength = targetIsMlx || targetIsNpu;" in src
+    assert "target.isGguf || pinsContextLength\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -1217,7 +1235,8 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     # The committed draft lands in this target's pin field.
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
+        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        in page
     )
 
 
@@ -1225,7 +1244,7 @@ def test_context_commit_rechecks_persistence_only_shortcut():
     """Committed context changes must bypass persistence-only saves."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
     assert "const effectivePersistenceOnly =" in src
     assert "if (effectivePersistenceOnly)" in src
 
@@ -1317,7 +1336,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
-    assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
+    assert (
+        "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
+        "                npuServedWindow == null\n" in page
+    )
     assert "const mlxServedWindow = resolveMlxServedWindow(" in page
     assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
@@ -1343,14 +1365,14 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, targetIsMlx))" in page
+    assert "update(contextPinPatch(value, pinsContextLength))" in page
     # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
         in page
     )
     # Both props are optional, so dropping either typechecks and mislabels the control.
-    assert "isMlx={targetIsMlx}" in page
+    assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
 
 
@@ -1522,6 +1544,71 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         assert field in page
 
 
+def _save_button_gate():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
+    return save_button.split("disabled={", 1)[1].split("}", 1)[0]
+
+
+def test_save_settings_waits_for_gguf_classification():
+    """Save without load (#10216) must wait for classification, or it persists (locally and to
+    the API override) settings the diffusion sanitizer would strip."""
+    gate = _save_button_gate()
+    assert "stagedMetadataPending" in gate, gate
+
+
+def test_save_settings_waits_for_the_vram_budget_to_settle():
+    """A Save during a budget PUT would toast "Settings saved." while the in-flight load
+    carries the config captured before the click."""
+    gate = _save_button_gate()
+    assert "budgetSettling" in gate, gate
+
+
+def test_forget_settings_is_not_locked_by_unloadable_extra_args():
+    """Forget only deletes, so invalid saved llama args must not lock it: the args gates
+    apply to a save only."""
+    gate = " ".join(_save_button_gate().split())
+    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
+    assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
+
+
+def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
+    """A footer that wraps on demand moved Load ~30px between mousedown and mouseup when the
+    blur-committed draft mounted Save, so the click was never dispatched (#10216)."""
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    before = src.split("<Checkbox id={rememberId}", 1)[0]
+    footer = before.rsplit("<div", 2)[1]
+    assert "flex-wrap" not in footer, footer[:200]
+    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
+
+
+def test_save_settings_is_not_rendered_when_it_could_do_nothing():
+    """A never-configured model must not show a dead "Forget settings" (#10216)."""
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    before = src.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[0]
+    guard = "!persistenceOnly && (remember || savedRemember) && ("
+    assert guard in before, before[-160:]
+    assert "</Button>" not in before.rsplit(guard, 1)[1]
+
+
+def test_save_settings_reflects_the_context_it_pinned():
+    """Save stays on the page, so a pinned context must show; a forget must not pin one."""
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    handler = src.split("const handleSave = () => {", 1)[1].split("const handleRun", 1)[0]
+    assert (
+        "if ( remember && effectiveRuntimeConfig.customContextLength !== config.customContextLength"
+        in handler
+    )
+    assert (
+        "setConfig((current) => ({ ...current, customContextLength: "
+        "effectiveRuntimeConfig.customContextLength, }));" in handler
+    )
+    # update() re-marks the draft edited right after persistConfig cleared it, and an edited
+    # draft refuses newer server settings on the next hydration.
+    assert "update(" not in handler
+
+
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser
@@ -1580,6 +1667,16 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert "diffusionRoutePick(" in src, f"{rel}: route pick not derived"
         # And the derived pick is what gets loaded, not the raw search params.
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
+
+
+def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
+    """Reapply after refresh rebuilds target, logical identity and H3 partition from status."""
+    src = _read("features/video/video-page.tsx")
+    assert 'status?.model_kind !== "pipeline"' in src
+    assert "displayRepoId: status.display_repo_id ?? undefined," in src
+    assert 'status.h3_task === "fl2va" || status.h3_task === "ref2va"' in src
+    assert "lastLoad.current = {" in src
+    assert "setCanReapply(true);" in src
 
 
 def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
@@ -2020,13 +2117,18 @@ def test_staged_downloads_always_scope_their_files():
     it would finish instantly having fetched everything except the weights and leave the
     repo on device unloadable."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    # A GGUF quant entry goes out as the standard variant download (its plan brings companions);
+    # every other entry is the scoped branch.
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", src, re.S)
     assert start, "requestStart call not found"
     body = start.group(0)
     # Unconditional: no branch may send a null scope or omit the files.
     assert "scopeId," in body and "files: current.files," in body
     assert "? null" not in body and "? undefined" not in body
-    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+    assert re.search(
+        r"const activeVariant = current\s*\?\s*\(current\.ggufVariant \?\? scopedVariant\(scopeId\)\)\s*:\s*null;",
+        src,
+    )
 
 
 def test_staged_downloads_use_one_actionable_download_surface():
@@ -2055,23 +2157,23 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     alone is not enough -- a checkpoint sharing its repo with the companions, and already
     cached, leaves an entry of companion files that would still claim to be the model."""
     for page in ("images/images-page.tsx", "video/video-page.tsx"):
-        src = _read(f"features/{page}")
-        entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
-        assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "e.files.includes(opts.filename)" in entries.group(
-            0
-        ), f"{page} does not mark the picked repo's entry as the checkpoint"
-        # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
-        # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
-        # reads the whole selected model as "Required assets". Only the planner knows about the
-        # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
-        assert "e.checkpoint ??" in entries.group(
-            0
-        ), f"{page} ignores the checkpoint flag the plan carried"
+        assert "diffusionStagingEntries(plan.entries" in _read(
+            f"features/{page}"
+        ), f"{page} does not map the plan entries into staged downloads"
+    page = "lib/diffusion-pipeline-load-target.ts"
+    entries = re.search(r"entries\s*\.map\(\(e\) => \(\{.*?\}\)\)", _read(page), re.S)
+    assert entries, f"{page} does not map the plan entries into staged downloads"
+    assert "e.files.includes(opts.filename)" in entries.group(
+        0
+    ), f"{page} does not mark the picked repo's entry as the checkpoint"
+    # The plan's answer wins (only it knows a gated pipeline is staged from an ungated mirror); false is final.
+    assert "e.checkpoint ??" in entries.group(
+        0
+    ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", staged, re.S)
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", staged, re.S)
     assert start, "requestStart call not found"
     assert "checkpoint: current.checkpoint," in start.group(0)
 
@@ -2441,7 +2543,7 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     # And the rollback that makes the reseed necessary is still ordered before the
     # hydration it protects, in the adopt path.
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
+    adopt = runtime[runtime.index("const confirmedStatus = await readPickStatus()") :]
     adopt = adopt[: adopt.index("void refreshContextUsage(")]
     assert (
         adopt.index("restorePreviousConfig();")
@@ -2848,7 +2950,7 @@ def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     loadable. The ordering requirement is unchanged and is what this still pins.
     """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
+    branch = src[src.index("const confirmedStatus = await readPickStatus()") :]
     branch = branch[: branch.index("void refreshContextUsage(")]
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
     # Landing before the checkpoint moves, so nothing reads the pair half updated.
@@ -2862,11 +2964,11 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if ( !saveFailed && (target.apiLoadable ?? target.isGguf) && !nativePathToken ) "
+        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
         "{ syncModelOverride(" in src
     )
     # The local save is not behind the same gate.
-    assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+    assert "const saved = remember ? savePerModelConfig(" in src
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
@@ -2874,7 +2976,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken ) { syncModelOverride(" in page
+    assert "&& !nativePathToken) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
@@ -2939,9 +3041,9 @@ def test_reasoning_resets_reach_the_server_without_making_backfill_destructive()
 
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "baseline.reasoningBudget !== -1" in page
-    assert "normalizedRuntimeConfig.reasoningBudget === -1" in page
+    assert "normalized.reasoningBudget === -1" in page
     assert 'baseline.reasoningBudgetMessage !== ""' in page
-    assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
+    assert 'normalized.reasoningBudgetMessage === ""' in page
 
 
 def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
@@ -3148,14 +3250,14 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
     Speculative Decoding "auto", which canonicalizes to null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );" in src
-    )
-    assert "const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);" in src
+    # Load and Save (#10216) both go through persistConfig.
+    assert "const normalized = normalizePerModelConfig(next);" in src
+    assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
-    assert "target.ggufVariant, normalizedRuntimeConfig, evicted," in src
-    assert "remember ? normalizedRuntimeConfig : null," in src
+    assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src
+    assert "remember ? normalized : null," in src
     assert "isDefaultConfig(effectiveRuntimeConfig)" not in src
+    assert "isDefaultConfig(next)" not in src
 
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function normalizePerModelConfig(" in store
@@ -3271,7 +3373,7 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     assert "!isModelConfigDraftEdited(draftKey) &&" in page
     assert "markModelConfigDraftEdited(draftKey)" in page
     # Only once the write landed, or the next read replaces values still on screen.
-    assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
+    assert re.search(r"if \(saved\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
     # An unticked Remember is a pending Forget the read's own guard would pass and re-tick.
     assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
     # A peer that fixed the text lifts this editor's retained refusal.

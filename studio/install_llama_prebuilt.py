@@ -12,6 +12,7 @@ import errno
 import fnmatch
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -4443,10 +4444,8 @@ def ensure_diffusion_visual_server(
         return
 
     try:
-        assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
         match = None
-        unapproved_matches: list[str] = []
-        for asset_name, url in assets.items():
+        for asset_name, approved in approved_checksums.artifacts.items():
             low = asset_name.lower()
             if "llama-diffusion-gemma-visual-server" not in low:
                 continue
@@ -4454,28 +4453,18 @@ def ensure_diffusion_visual_server(
                 continue
             if (not host.is_windows) and low.endswith(".exe"):
                 continue
-            # This binary is chmod'd executable and later launched by the
-            # backend, so it must be covered by the approved checksum manifest
-            # just like every other prebuilt artifact. An asset that matches the
-            # name but is missing from the manifest is refused rather than run.
-            approved = approved_checksums.artifacts.get(asset_name)
-            if approved is None:
-                unapproved_matches.append(asset_name)
+            if approved.repo and approved.repo != DEFAULT_PUBLISHED_REPO:
+                continue
+            url = release_asset_download_url(DEFAULT_PUBLISHED_REPO, release_tag, asset_name)
+            if not url:
                 continue
             match = (asset_name, url, approved.sha256)
             break
         if match is None:
-            if unapproved_matches:
-                log(
-                    "diffusion visual server asset(s) were present but omitted from the "
-                    "approved checksum manifest; refusing unverified native executable: "
-                    + ", ".join(unapproved_matches)
-                )
-            else:
-                log(
-                    "diffusion visual server not found in the published release; native "
-                    "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
-                )
+            log(
+                "diffusion visual server not in the approved checksum manifest for this "
+                "release; native DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+            )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
         download_file_verified(
@@ -4809,15 +4798,69 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def blocked_replace_hint(winerror: object) -> str:
+    # 5 is also what a scanner holding a handle returns (is_busy_lock_error: busy).
+    if winerror == 5:
+        return (
+            "access is denied -- a scanner or running process may still hold a handle, "
+            "or the ACLs are broken"
+        )
+    if winerror == 145:
+        return "the directory is not empty yet -- an earlier copy is still being removed"
+    return "a scanner is likely still holding the install open"
+
+
+def _tree_link_state(root: Path) -> str:
+    """Return "link", "unreadable" (root or a directory not readable) or "clean"."""
+    try:
+        root.lstat()
+    except OSError:
+        return "unreadable"
+    if _is_link_or_junction(root):
+        return "link"
+    unreadable: list[OSError] = []
+    for current_dir, dirnames, filenames in os.walk(
+        root, followlinks = False, onerror = unreadable.append
+    ):
+        current_path = type(root)(current_dir)
+        if any(_is_link_or_junction(current_path / name) for name in (*dirnames, *filenames)):
+            return "link"
+    return "unreadable" if unreadable else "clean"
+
+
+def log_acl_repair(path: Path) -> None:
+    # Printed, never run: repairing permissions is the user's call (#9928).
+    # takeown /R and icacls /T follow links, so recursion is offered only for a tree
+    # fully listed and link-free; otherwise just the root, which is not a link.
+    state = _tree_link_state(path)
+    if state == "link":
+        log(f"rename still denied after retrying; {path} contains a link, check its permissions")
+    else:
+        log(
+            "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
+        )
+        recursive = state == "clean"
+        log(f'takeown /F "{path}"' + (" /R /D Y" if recursive else ""))
+        # /L: if an unreadable root is a link after all, reset the link, not its target.
+        log(f'icacls "{path}" /reset' + (" /T" if recursive else " /L"))
+        if not recursive:
+            log("then run the install again")
+    log(
+        "if access stays denied, Controlled folder access or antivirus may be blocking "
+        "the path: allow or exclude it there"
+    )
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    acl_repair: bool = True,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
+    WinError 5/32/145 usually means a scanner holds a handle inside the tree,
     which clears in a second or two; without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
@@ -4833,12 +4876,16 @@ def replace_with_busy_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (5, 32, 145)
             if not transient or attempt == attempts - 1:
+                if acl_repair and transient and winerror == 5:
+                    # src, not dst: the aside-move's dst does not exist yet.
+                    log_acl_repair(src)
                 raise
             log(
-                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"rename {src.name} -> {dst.name} blocked ({winerror}), retrying in "
+                f"{delay:.2f}s -- {blocked_replace_hint(winerror)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
@@ -5232,7 +5279,8 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
                 try:
-                    replace_with_busy_retry(rollback_dir, install_dir)
+                    # A copy fallback follows, so ACL advice here could name a tree it then removes.
+                    replace_with_busy_retry(rollback_dir, install_dir, acl_repair = False)
                 except OSError as restore_exc:
                     # The rename is the one-step restore; when it cannot run,
                     # the rollback tree is the sole remaining llama.cpp, so a
@@ -10861,6 +10909,61 @@ class BackendRoute:
     rocm_fallback_host: HostInfo | None = None
 
 
+# Quoted values only: non-ROCm builds write `hip: Optional[str] = None`. Mirrors install_python_stack.
+_TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
+# AMD's Radeon SDK wheels leave hip None and carry the tag here (2.9.0+rocmsdk20251116).
+_TORCH_VERSION_PY_VERSION_RE = re.compile(
+    r"""^__version__\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE
+)
+
+
+def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
+    try:
+        text = version_py.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    hip = _TORCH_VERSION_PY_HIP_RE.search(text)
+    version = _TORCH_VERSION_PY_VERSION_RE.search(text)
+    return bool((hip and hip.group(1)) or (version and "rocm" in version.group(1).lower()))
+
+
+def _installed_torch_is_rocm() -> bool | None:
+    """Read off disk: importing torch here is slow and can fail."""
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec is None or not spec.origin:
+            return None
+        return _torch_version_py_is_rocm(Path(spec.origin).with_name("version.py"))
+    except Exception:
+        return None
+
+
+def _rocm_torch_preferred() -> bool:
+    if (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    return _installed_torch_is_rocm() is True
+
+
+def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
+    """Only moves off CUDA on live AMD evidence (stale ROCm torch keeps CUDA)."""
+    if not host.has_usable_nvidia:
+        return host
+    probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
+    # Marker-replayed arches outlive a removed card; setup.sh forwards none while NVIDIA is usable.
+    if not (probed.has_rocm or _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))):
+        return host
+    log(
+        "ROCm torch is installed or requested; Automatic prefers the ROCm llama.cpp build "
+        "over CUDA on this mixed NVIDIA+AMD host"
+    )
+    return dataclasses_replace(probed, has_physical_nvidia = False, has_usable_nvidia = False)
+
+
 def route_backend_request(
     *,
     backend: str | None,
@@ -10890,6 +10993,8 @@ def route_backend_request(
             has_physical_nvidia = False,
             has_usable_nvidia = False,
         )
+    elif backend in (None, "auto") and _rocm_torch_preferred():
+        detected_host = _auto_host_following_rocm_torch(detected_host)
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
         detected_host,

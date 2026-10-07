@@ -59,19 +59,31 @@ import time
 import urllib.parse
 import urllib.request
 
+from core.inference.mcp_image import (
+    ATTACHED_IMAGE,
+    image_input_mappings,
+    image_mapping,
+    public_tool,
+)
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
+    MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     call_tool_sync,
     get_cached_tools,
     in_failure_cooloff,
+    is_studio_decisions,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
+    parse_stdio_command,
     probe_timeout,
     record_probe_failure,
     stdio_mcp_enabled,
+    tool_ui_resource_uri,
+    tool_visible_to,
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
@@ -2656,6 +2668,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "subprocess",
         "shutil",
         "socket",
+        "_socket",
         "ctypes",
         "multiprocessing",
         "pty",
@@ -5191,8 +5204,6 @@ _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
 # Each pass doubles resolved alias hops; leftover work after the cap fails closed.
 _MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
-# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
-_GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
 _TREE_NODES_ATTR = "_unsloth_walk_nodes"
 
@@ -5936,12 +5947,32 @@ def _cmd_reading(command: str) -> str:
     return _CMD_CONTROL_RE.sub(" & ", text)
 
 
+# The request's sandbox level while a call is classified: Low runs the Terminal on the host shell,
+# so the classifier must not probe for (or assume) the isolated cmd profile.
+_classifying_sandbox_level: "ContextVar[str | None]" = ContextVar(
+    "unsloth_classifying_sandbox_level", default = None
+)
+
+
+@contextlib.contextmanager
+def classifying_under(sandbox_level: "str | None"):
+    token = _classifying_sandbox_level.set(sandbox_level)
+    try:
+        yield
+    finally:
+        _classifying_sandbox_level.reset(token)
+
+
+# Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
+_CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
+
+
 def _reads_differently_under_cmd(command: str) -> bool:
-    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    """True when cmd.exe will run ``command`` and would split it unlike bash."""
     return (
         sys.platform == "win32"
         and _cmd_reading(command) != command
-        and _terminal_profile() == "cmd_isolated"
+        and _terminal_profile(_classifying_sandbox_level.get() == "low") in _CMD_PROFILES
     )
 
 
@@ -7074,6 +7105,8 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "search_conversation",
         "read_skill",
         "deep_research",
+        "mcp_tool_schema",
+        "view_image",
     }
 )
 
@@ -7433,9 +7466,6 @@ _OPENSSL_NETWORK_RE = re.compile(
 # -c/eval it runs an unscreened payload. Paired with the var-executed-as-command test so `echo "${a[@]}"` is left
 # alone.
 _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
-# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that precedes the real command, so it is
-# not mistaken for the command itself.
-_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # Non-shell interpreters running an inline program (python -c, node -e, php -r): the terminal path never screens that
 # program the way the python tool does. sh/bash -c are omitted, the hard-block already recursing into their payloads.
 _INLINE_CODE_INTERPRETERS = frozenset(
@@ -9475,9 +9505,9 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     Whitelist-built from scratch (parent env NOT inherited): only
     PATH/HOME/TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows SystemRoot and a
     minimal PATHEXT) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    points at the sandbox workdir so SDKs can't read the operator's cached creds, and the temp vars
-    at _sandbox_temp_dir just inside it. PYTHONPATH carries only the sandbox sitecustomize shim
-    directory.
+    (and on Windows HOMEDRIVE/HOMEPATH) points at the sandbox workdir so SDKs can't read the
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside it. PYTHONPATH
+    carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Unsloth interpreter / venv and OS system dirs so ``python``/``pip`` stay
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
@@ -9549,6 +9579,8 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # and writes outside the workdir.
         env["TEMP"] = temp_dir
         env["TMP"] = temp_dir
+        # Path.home() ignores HOME on Windows; a workdir USERPROFILE would instead send pip's cache to .\pip in the cwd.
+        env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -10164,10 +10196,11 @@ def _windows_system_cmd() -> str:
 def _terminal_profile(disable_sandbox: bool = False) -> str:
     """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
 
-    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
-    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
-    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
-    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when bash fails the MXC probe and
+    cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than unsandboxed on bash.
+    Any bash failure counts, not only the MSYS verdict: on a freshly prepared host bash fails without
+    that signature while cmd passes. Only a failed bash probes cmd. Full access and
+    UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
     """
     if sys.platform != "win32":
         return "bash"
@@ -10176,16 +10209,12 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
         return host_default
     try:
-        from . import mxc_policy, mxc_probe
-
         if bash:
-            # Measured only on MXC's DACL tier; BaseContainer hosts keep bash until it is.
-            if not mxc_policy.dacl_fallback_enabled():
-                return "bash"
+            # Either MXC tier: any bash failure tries cmd.
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
-            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+            if verdict.available:
                 return "bash"
         cmd = os_sandbox.capability_snapshot(
             execution_kind = "terminal", selected_executable = _windows_system_cmd()
@@ -10200,12 +10229,25 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
 _request_profile: list = [None, 0.0]
 _request_profile_lock = threading.Lock()
 _REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+# Bumped by every reset: a refresh that started earlier must not publish the profile it computed.
+_request_profile_generation = 0
+
+
+def reset_terminal_profile_cache() -> None:
+    """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    global _request_profile_generation
+    with _request_profile_lock:
+        _request_profile[:] = [None, 0.0]
+        _request_profile_generation += 1
 
 
 def _refresh_request_profile() -> str:
+    with _request_profile_lock:
+        generation = _request_profile_generation
     profile = _terminal_profile(False)
     with _request_profile_lock:
-        _request_profile[:] = [profile, time.monotonic()]
+        if generation == _request_profile_generation:
+            _request_profile[:] = [profile, time.monotonic()]
     return profile
 
 
@@ -10224,7 +10266,9 @@ def _profile_for_request() -> str:
     return profile
 
 
-def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+def apply_terminal_profile_for_request(
+    tools: list[dict], sandbox_level: "str | None" = None
+) -> list[dict]:
     """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
     first call can block on the MXC probe, so async callers run it in a worker thread; later calls
     reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
@@ -10233,7 +10277,8 @@ def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
         for t in tools or ()
     ):
         return tools
-    return apply_terminal_profile_description(tools, _profile_for_request())
+    profile = _terminal_profile(True) if sandbox_level == "low" else _profile_for_request()
+    return apply_terminal_profile_description(tools, profile)
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -12113,7 +12158,9 @@ def _edit_file_write(
                     "was being prepared; nothing was written. Read it again and "
                     "redo the edit against the current contents."
                 )
-        os.replace(tmp, path)
+        from core import library
+
+        library.replace_file(tmp, path)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
@@ -12616,6 +12663,41 @@ WEB_SEARCH_TOOL = {
         },
     },
 }
+
+
+# Local models often emit q/search_query instead of query, or uri/href instead of url.
+_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
+_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
+
+
+def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _resolve_web_search_args(arguments) -> tuple[str, str]:
+    args = arguments if isinstance(arguments, dict) else {}
+    return (
+        _first_nonempty_arg(args, _WEB_SEARCH_QUERY_ALIASES),
+        _first_nonempty_arg(args, _WEB_SEARCH_URL_ALIASES),
+    )
+
+
+def canonicalize_web_search_arguments(arguments) -> dict:
+    # URL mode returns before _web_search reads query or image_queries, so they are dropped from the key.
+    args = dict(arguments) if isinstance(arguments, dict) else {}
+    query, url = _resolve_web_search_args(args)
+    if url:
+        return {"url": url}
+    canonical: dict = {}
+    if query:
+        canonical["query"] = query
+    if "image_queries" in args:
+        canonical["image_queries"] = args["image_queries"]
+    return canonical
 
 
 def web_search_tool_with_images() -> dict:
@@ -13139,11 +13221,15 @@ CREATE_SKILL_TOOL = {
 }
 
 
+from .view_image import VIEW_IMAGE_TOOL
+
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
     EDIT_FILE_TOOL,
+    VIEW_IMAGE_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
@@ -13206,23 +13292,289 @@ _MCP_ALIAS_DIGEST_LEN = 8
 # The "_" plus digest every alias ends with, which is the room its stem does not get.
 _MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
+_MCP_COMPACT_SPEC_CHARS = 1500
+_MCP_SUMMARY_CHARS = 240
+_MCP_COMPACT_HINT = "Full parameters via mcp_tool_schema."
+_MCP_MIN_SCHEMA_PAGE_CHARS = 64
+_MCP_FULL_LISTING_SHARE = 0.75
+_MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
+# (account, window) -> tools its last MCP listing compacted; per account since studio.db (and so MCP servers) is.
+_MCP_COMPACTED_WINDOWS: dict[tuple, frozenset] = {}
 
-def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for MCP Apps tools marked app-only (_meta.ui.visibility without "model"): those exist
-    for a server-rendered widget to call, not the LLM."""
-    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
-    for key in ("meta", "_meta"):
-        meta = tool.get(key)
-        if not isinstance(meta, dict):
+
+def set_mcp_listing_context_tokens(context_tokens) -> None:
+    """The local window the next MCP listing in this context is sized against; unset lists every tool in full."""
+    valid = isinstance(context_tokens, int) and context_tokens > 0
+    _MCP_LISTING_CONTEXT_TOKENS.set(context_tokens if valid else None)
+
+
+MCP_TOOL_SCHEMA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "mcp_tool_schema",
+        "description": (
+            "Return the full description and parameter schema of an MCP tool. A tool whose "
+            f"listing ends with '{_MCP_COMPACT_HINT}' shows only its top-level parameters; "
+            "call this before using it when that listing is not enough."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The MCP tool name exactly as listed, including its mcp__ prefix.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Character offset for the next page. Defaults to 0.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+
+def _mcp_input_schema(tool: dict) -> dict:
+    return (
+        tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
+    )
+
+
+def _mcp_spec_compacted(tool: dict) -> bool:
+    schema_chars = len(json.dumps(_mcp_input_schema(tool), separators = (",", ":")))
+    return schema_chars + len(tool.get("description") or "") > _MCP_COMPACT_SPEC_CHARS
+
+
+def _mcp_summary(description: str) -> str:
+    text = " ".join((description or "").split()).lstrip("# ")
+    match = re.match(r"(.+?[.!?])(?:\s|$)", text)
+    if match:
+        text = match.group(1)
+    if len(text) > _MCP_SUMMARY_CHARS:
+        text = text[: _MCP_SUMMARY_CHARS - 3].rstrip() + "..."
+    return text
+
+
+def _mcp_compact_parameters(schema: dict) -> dict:
+    properties: dict[str, dict] = {}
+    for key, value in (schema.get("properties") or {}).items():
+        prop: dict = {}
+        if isinstance(value, dict):
+            branches = value.get("anyOf") or value.get("oneOf") or []
+            branch_types = [b.get("type") for b in branches if isinstance(b, dict)]
+            if isinstance(value.get("type"), (str, list)):
+                prop["type"] = value["type"]
+            elif branch_types and all(isinstance(kind, str) for kind in branch_types):
+                kinds = list(dict.fromkeys(branch_types))
+                prop["type"] = kinds[0] if len(kinds) == 1 else kinds
+            if isinstance(value.get("enum"), list) and len(json.dumps(value["enum"])) <= 200:
+                prop["enum"] = value["enum"]
+        # llama.cpp compiles an empty schema to an object-only grammar; a description alone accepts any value.
+        properties[key] = prop or {"description": "See mcp_tool_schema."}
+    compact: dict = (
+        {"type": "object", "properties": properties} if properties else {"type": "object"}
+    )
+    if isinstance(schema.get("required"), list):
+        compact["required"] = schema["required"]
+    return compact
+
+
+def _mcp_compact_spec(name: str, display: str, tool: dict, description: str) -> dict:
+    parts = (f"[{display}]", _mcp_summary(description), _MCP_COMPACT_HINT)
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": " ".join(part for part in parts if part),
+            "parameters": _mcp_compact_parameters(_mcp_input_schema(tool)),
+        },
+    }
+
+
+def _mcp_tool_schema_text(display: str, tool: dict) -> str:
+    schema = json.dumps(_mcp_input_schema(tool), separators = (",", ":"))
+    description = " ".join((tool.get("description") or "").split())
+    return f"[{display}] {tool.get('name')}: {description}\n\nParameters (JSON Schema): {schema}"
+
+
+def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
+    for tool in get_cached_tools(server["id"]) or []:
+        if tool.get("name") == tool_name and tool_visible_to(tool, "model"):
+            return public_tool(server, tool)
+    return None
+
+
+def _mcp_image_recipient(server: dict, mapping: dict) -> str:
+    identity = [
+        server["id"],
+        server["url"],
+        server.get("headers_json"),
+        server.get("use_oauth"),
+        mapping,
+    ]
+    return hashlib.sha256(json.dumps(identity, sort_keys = True).encode()).hexdigest()
+
+
+def _mcp_image_destination(url: str) -> str:
+    # Host or program name only: credentials can sit in URL userinfo or in stdio arguments.
+    if is_stdio(url):
+        try:
+            return f"local command {os.path.basename(parse_stdio_command(url)[0])}"
+        except (ValueError, IndexError):
+            return "local command"
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "unknown host"
+    return f"{host}:{parts.port}" if parts.port else host
+
+
+def mcp_image_share(name, arguments, mcp_image) -> dict | None:
+    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    if mcp_image is None or not isinstance(arguments, dict):
+        return None
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    mapping = image_mapping(server, tool) if server else None
+    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+        return None
+    # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
+    return {
+        "disclosure": {
+            "server": server.get("display_name") or server["id"],
+            "tool": tool_name,
+            "size_bytes": len(mcp_image.data),
+            "destination": _mcp_image_destination(server["url"]),
+        },
+        "image": mcp_image.approved_for(_mcp_image_recipient(server, mapping)),
+    }
+
+
+def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
+    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX) or name.count("__") < 2:
+        return None, None, ""
+    _, server_key, _ = name.split("__", 2)
+    tool_name = _mcp_raw_tool_name(name)
+    server = mcp_servers_db.get_server_for_tool(server_key)
+    return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
+
+
+def mcp_catalog_takes_image(names) -> bool:
+    """Whether any of these catalog tools has a field mapped to the attached image."""
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        if server and image_mapping(server, tool):
+            return True
+    return False
+
+
+def mcp_tool_input_schema(name) -> dict | None:
+    tool = _mcp_resolve_tool(name)[1]
+    return _mcp_input_schema(tool) if tool is not None else None
+
+
+def _mcp_schema_page(prefix: str, text: str, offset: int) -> str:
+    page_chars = _tool_result_char_budget()
+    while True:
+        end = min(offset + page_chars, len(text))
+        page = prefix + text[offset:end]
+        if end < len(text):
+            page += (
+                f"\n\n[Characters {offset}-{end} of {len(text)}. "
+                f"Call mcp_tool_schema with offset={end} for the rest.]"
+            )
+        if _fit_result_to_room(page, "mcp_tool_schema") == page:
+            return page
+        if page_chars < _MCP_MIN_SCHEMA_PAGE_CHARS:
+            # The prefix may be a server's own unbounded error text.
+            return _fit_result_to_room(
+                (prefix or "Error: ") + "Not enough context room to read this MCP tool schema. "
+                "Reduce the conversation context and retry.",
+                "mcp_tool_schema",
+            )
+        page_chars //= 2
+
+
+def _mcp_tool_schema(name, offset = None) -> str:
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    if not tool_name:
+        return "Error: mcp_tool_schema needs an MCP tool name as listed, such as mcp__<server>__<tool>."
+    if not server:
+        return f"Error: MCP server for tool '{tool_name}' not found"
+    display = server.get("display_name") or server["id"]
+    if tool is None:
+        return f"Error: MCP server '{display}' does not list a tool named '{tool_name}'"
+    text = _mcp_tool_schema_text(display, tool)
+    offset = 0 if offset is None else offset
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset < len(text):
+        return f"Error: offset must be an integer from 0 to {len(text) - 1}."
+    return _mcp_schema_page("", text, offset)
+
+
+def _mcp_compact_candidates(listed) -> list[tuple[int, dict]]:
+    """(index in the flat listing, compact spec) for every large tool, largest saving first."""
+    candidates: list[tuple[int, int, dict]] = []
+    index = 0
+    for server, payload, server_specs in listed:
+        display = server.get("display_name") or server["id"]
+        by_name = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
+        for spec in server_specs:
+            function = spec["function"]
+            tool = by_name.get(_mcp_raw_tool_name(function["name"]))
+            if tool is not None and _mcp_spec_compacted(tool):
+                description = function["description"].removeprefix(f"[{display}]").strip()
+                compact = _mcp_compact_spec(function["name"], display, tool, description)
+                saving = len(json.dumps(spec, separators = (",", ":"))) - len(
+                    json.dumps(compact, separators = (",", ":"))
+                )
+                if saving > 0:
+                    candidates.append((saving, index, compact))
+            index += 1
+    candidates.sort(key = lambda item: -item[0])
+    return [(index, compact) for _, index, compact in candidates]
+
+
+def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
+    specs = [spec for _, _, server_specs in listed for spec in server_specs]
+    ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
+    if not ctx or not specs:
+        return specs
+    budget = ctx * _MCP_FULL_LISTING_SHARE
+    text = json.dumps(specs, separators = (",", ":"))
+    listing_tokens = _text_token_cost(text, ctx)
+    if listing_tokens <= budget:
+        _MCP_COMPACTED_WINDOWS[(current_account_id(), ctx)] = frozenset()
+        return specs
+    # Compact the largest tools first and stop once the listing fits, so every tool that can keep its nested and
+    # union parameters does: dropping them costs tool-call accuracy (#11046 measurements).
+    tokens_per_char = listing_tokens / max(len(text), 1)
+    budget -= _text_token_cost(json.dumps(MCP_TOOL_SCHEMA_TOOL, separators = (",", ":")), ctx)
+    listing = list(specs)
+    candidates = _mcp_compact_candidates(listed)
+    chars = len(text)
+    compacted: set[str] = set()
+    for position, (index, compact) in enumerate(candidates):
+        chars -= len(json.dumps(listing[index], separators = (",", ":"))) - len(
+            json.dumps(compact, separators = (",", ":"))
+        )
+        listing[index] = compact
+        compacted.add(compact["function"]["name"])
+        if chars * tokens_per_char > budget:
             continue
-        ui = meta.get("ui")
-        visibility = ui.get("visibility") if isinstance(ui, dict) else None
-        if visibility is None:
-            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
-            visibility = meta.get("ui/visibility")
-        if isinstance(visibility, (list, tuple)):
-            return "model" in visibility
-    return True
+        # The per-character rate is an average; confirm on the real listing before stopping short of the rest.
+        if (
+            position == len(candidates) - 1
+            or _text_token_cost(json.dumps(listing, separators = (",", ":")), ctx) <= budget
+        ):
+            break
+    _MCP_COMPACTED_WINDOWS[(current_account_id(), ctx)] = frozenset(compacted)
+    if compacted:
+        listing.append(MCP_TOOL_SCHEMA_TOOL)
+    return listing
+
+
+def _mcp_listing_compacted(name: str) -> bool:
+    key = (current_account_id(), _window_context_tokens() or 0)
+    return name in _MCP_COMPACTED_WINDOWS.get(key, frozenset())
 
 
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
@@ -13234,7 +13586,7 @@ def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
     prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
     raw_names = [
-        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+        tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
     ]
     names: dict[str, str] = {}
     for raw_name in raw_names:
@@ -13273,7 +13625,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not _mcp_tool_model_visible(tool):
+        if not tool_visible_to(tool, "model"):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = names_by_raw.get(raw_name)
@@ -13314,6 +13666,19 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
+    enabled = [server for server in servers if server.get("is_enabled")]
+    if not any(is_studio_decisions(server["url"]) for server in enabled):
+        return enabled
+    from utils import systemone_settings
+
+    return (
+        enabled
+        if systemone_settings.get_enabled()
+        else [server for server in enabled if not is_studio_decisions(server["url"])]
+    )
+
+
 def cached_mcp_tools() -> tuple[list[dict], bool]:
     """The MCP schemas already in cache, and whether that is the whole set.
 
@@ -13327,11 +13692,11 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     server renders nothing on the completion path either, so skipping that one is exact rather than
     short. Callers that must not undercount should decline on False.
     """
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
 
-    specs: list[dict] = []
+    listed: list[tuple[dict, list[dict], list[dict]]] = []
     complete = True
     for server in servers:
         payload = get_cached_tools(server["id"])
@@ -13339,15 +13704,14 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
             if not in_failure_cooloff(server["id"]):
                 complete = False
             continue
-        specs.extend(_mcp_specs_for_server(server, payload))
-    return specs, complete
+        payload = [public_tool(server, tool) for tool in payload]
+        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+    return _mcp_listing(listed), complete
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
     # Keep the SQLite-backed server list off the event loop.
-    servers = [
-        s for s in await asyncio.to_thread(mcp_servers_db.list_servers) if s.get("is_enabled")
-    ]
+    servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -13367,6 +13731,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     headers = parse_server_headers(s),
                     timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                     use_oauth = bool(s.get("use_oauth")),
+                    **oauth_client_kwargs(s),
                 )
                 for s in uncached
             ),
@@ -13394,13 +13759,30 @@ async def get_enabled_mcp_tools() -> list[dict]:
                 continue
             cache_tools(server["id"], payload)
 
-    specs: list[dict] = []
+    listed: list[tuple[dict, list[dict], list[dict]]] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
-        specs.extend(_mcp_specs_for_server(server, payload))
-    return specs
+        payload = [public_tool(server, tool) for tool in payload]
+        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+    return _mcp_listing(listed)
+
+
+def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
+    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    tools = get_cached_tools(server_id) or ()
+    return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
+
+
+def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
+    """Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
+    id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
+    percent-quote the parts so ids can't collide or ":" merge conversations."""
+    if not thread_id:
+        return None
+    quote = urllib.parse.quote
+    return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
 _TIMEOUT_UNSET = object()
@@ -13445,6 +13827,7 @@ def execute_tool(
     *,
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
+    mcp_image = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -13584,6 +13967,8 @@ def execute_tool(
         )
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments), name)
+    if name == "mcp_tool_schema":
+        return _mcp_tool_schema(arguments.get("name"), arguments.get("offset"))
     if name.startswith(MCP_TOOL_PREFIX):
         # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
         if _mcp_arguments_reference_studio_credential(arguments):
@@ -13602,19 +13987,57 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
-        # Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
-        # id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
-        # percent-quote the parts so ids can't collide or ":" merge conversations.
-        if thread_id:
-            mcp_scope = "s={}:t={}".format(
-                urllib.parse.quote(session_id or "", safe = ""),
-                urllib.parse.quote(thread_id, safe = ""),
-            )
-        else:
-            mcp_scope = None
+        tool = _mcp_cached_tool(server, tool_name) if _mcp_listing_compacted(name) else None
+        if tool is not None and isinstance(arguments, dict):
+            missing = [
+                key for key in _mcp_input_schema(tool).get("required") or [] if key not in arguments
+            ]
+            if missing:
+                return _mcp_schema_page(
+                    f"Error: MCP tool '{tool_name}' requires {', '.join(missing)}.\n\n",
+                    _mcp_tool_schema_text(display, tool),
+                    0,
+                )
+        mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
+        mapping = (
+            image_mapping(server, tool or _mcp_cached_tool(server, tool_name))
+            if image_input_mappings(server) and isinstance(arguments, dict)
+            else None
+        )
+        carries_image = bool(mapping) and arguments.get(mapping["field"]) == ATTACHED_IMAGE
+        if mcp_image is not None and not carries_image:
+            # Approved for a mapping that has since gone (edited server, dropped tool cache): never forward the call.
+            return (
+                "Error: the MCP server changed after the image was approved. Call the tool again."
+            )
+        if carries_image:
+            # Only a tool loop that just got the user's approval for this call passes mcp_image.
+            if mcp_image is None:
+                return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
+            # Re-read the row: an edit while the approval card was open must not redirect the image.
+            fresh = mcp_servers_db.get_server(server_id)
+            fresh_mapping = (
+                image_mapping(fresh, tool or _mcp_cached_tool(fresh, tool_name)) if fresh else None
+            )
+            if not (
+                fresh_mapping
+                and fresh.get("is_enabled")
+                and mcp_image.recipient
+                == _mcp_image_recipient(server, mapping)
+                == _mcp_image_recipient(fresh, fresh_mapping)
+            ):
+                return "Error: the MCP server changed after the image was approved. Call the tool again."
+            arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
+
+        def _image_still_approved(row: dict) -> bool:
+            # Checked again at dispatch: a call can wait behind a stdio session lock after the re-read above.
+            if not carries_image:
+                return True
+            current = image_mapping(row, tool or _mcp_cached_tool(row, tool_name))
+            return bool(current) and _mcp_image_recipient(row, current) == mcp_image.recipient
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -13628,36 +14051,54 @@ def execute_tool(
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and _image_still_approved(row)
             )
 
-        return _fit_result_to_room(
-            call_tool_sync(
-                url = url,
-                headers = headers,
-                name = tool_name,
-                args = arguments,
-                timeout = effective_timeout,
-                use_oauth = use_oauth,
-                cancel_event = cancel_event,
-                scope = mcp_scope,
-                config_check = _config_current,
-            ),
-            name,
+        result = call_tool_sync(
+            url = url,
+            headers = headers,
+            name = tool_name,
+            args = arguments,
+            timeout = effective_timeout,
+            use_oauth = use_oauth,
+            cancel_event = cancel_event,
+            scope = mcp_scope,
+            **oauth_client_kwargs(server),
+            config_check = _config_current,
+            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
+        if mcp_image is not None and isinstance(result, str):
+            # Returned images may be resized copies of the user's; none of them reach the model on this call.
+            result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
+            if returned_images:
+                result = (
+                    result.rstrip("\n")
+                    + "\n[Images the tool returned were withheld from the model.]"
+                )
+            result = mcp_image.redact(result)
+        if tool is not None and isinstance(result, str) and result.startswith("Error:"):
+            return _mcp_schema_page(
+                result.rstrip() + "\n\n", _mcp_tool_schema_text(display, tool), 0
+            )
+        return _fit_result_to_room(result, name)
     if name == "deep_research":
         if not str(arguments.get("question") or "").strip():
             return "Error: deep_research needs a question to investigate."
         return DEEP_RESEARCH_STARTED
     if name == "web_search":
+        query, url = _resolve_web_search_args(arguments)
+        image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
+        if not query and not url and not _clean_image_queries(image_queries):
+            return "No query provided."
         return _fit_result_to_room(
             _web_search(
-                arguments.get("query", ""),
-                url = arguments.get("url"),
+                query,
+                url = url or None,
                 timeout = effective_timeout,
                 cancel_event = cancel_event,
                 website_policy = website_policy,
                 include_images = search_images,
-                image_queries = arguments.get("image_queries"),
+                image_queries = image_queries,
             ),
             name,
         )
@@ -13688,8 +14129,13 @@ def execute_tool(
                 tool_execution_mode = tool_execution_mode,
                 host_access_approved = host_access_approved,
             )
-    # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
-    # unlink it underneath.
+    if name == "view_image":
+        from .view_image import view_image
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                view_image(arguments.get("path"), _get_workdir(session_id), cancel_event), name
+            )
+    # Keep the workdir alive if the chat is deleted during an edit.
     if name == "edit_file":
         with _session_in_flight(session_id):
             return _fit_result_to_room(
@@ -14297,6 +14743,22 @@ def rag_autoinject_reaches_retrieval(
     return bool(enabled), whole_doc_requested
 
 
+def _thread_document_ids(thread_id) -> set | None:
+    """Ids of the thread's indexed attachments; None when the store cannot say."""
+    try:
+        from core.rag import store
+        from storage import rag_db
+
+        conn = rag_db.get_connection()
+        try:
+            docs = store.list_documents(conn, store.thread_scope(thread_id))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    return {d["id"] for d in docs if d.get("status") == "completed" and d.get("num_chunks")}
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return ``{"events": [...],
     "messages": [...]}`` to splice into the loop, else ``None``. Toggle via ``rag_scope.autoinject``
@@ -14326,7 +14788,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    # Zero or below is no limit to the search, which then returns its own default count.
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None and sidebar_k > 0 else lean_k
     budget: int | None = None
     # The window the budget was sized against, so `_text_token_cost` only trusts a GGUF actually serving this same
     # window.
@@ -14400,19 +14863,34 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
+    thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+
+    def retrieve_thread_unfloored(*, max_tokens = None):
+        # Lexical-only finds nothing for a generic request ("summarize this") whose words are not in the file, so
+        # this mandatory grounding retries with the dense leg. Chats with no attachment skip the query embedding.
+        if thread_docs is not None and not thread_docs:
+            return None
+        scope_kwargs = _scope_retrieval_kwargs(rag_scope)
+        found = retrieve(
+            max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs
+        )
+        if not found and scope_kwargs["mode"] == "lexical":
+            found = retrieve(
+                max_tokens = max_tokens,
+                scope_thread_id = thread_id,
+                min_dense_score = None,
+                mode = "hybrid",
+            )
+        return found
+
     # An oversized thread attachment is mandatory grounding: with auto-injection off, search it alone, without the
     # optional-auto relevance floor, then add project context if the combination still fits. The budget binds on that
     # path only: with auto-injection on this stays the single combined unbudgeted search, so a small context cannot
-    # silently switch RAG off.
+    # silently switch RAG off, and the thread is searched again without the floor when none of it cleared.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
-                found = retrieve(
-                    max_tokens = budget,
-                    scope_thread_id = thread_id,
-                    min_dense_score = None,
-                    **_scope_retrieval_kwargs(rag_scope),
-                )
+                found = retrieve_thread_unfloored(max_tokens = budget)
                 project_id = rag_scope.get("project_id")
                 if found and project_id:
                     # Isolated like the whole-document companion above: an unavailable project index must not send the
@@ -14439,6 +14917,28 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
+                # Project hits clearing the floor must not crowd out the attachment: without one of its passages,
+                # it goes first.
+                grounded = (
+                    bool(found)
+                    and thread_docs is not None
+                    and any(s.get("documentId") in thread_docs for s in found[1])
+                )
+                if (
+                    whole_doc_requested
+                    and (not found or rag_scope.get("project_id"))
+                    and not grounded
+                ):
+                    thread_found = retrieve_thread_unfloored()
+                    if thread_found and found:
+                        cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
+                        if not any(s.get("documentId") in cited for s in found[1]):
+                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            n_proj = min(len(found[1]), top_k // 2)
+                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            found = (render_sources(merged), merged)
+                    elif thread_found:
+                        found = thread_found
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
@@ -15274,6 +15774,19 @@ def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str
     return None, host, pinned_ips
 
 
+def _is_bot_check(status: int, headers) -> bool:
+    """Whether a refusal came from a bot check (Cloudflare, DataDome, Akamai), not the site."""
+    if headers is None:
+        return False
+    if (headers.get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    if headers.get("x-datadome") or headers.get("x-dd-b"):
+        return True
+    # Rate limits and outages behind these CDNs carry the same Server header.
+    server = (headers.get("Server") or "").lower()
+    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -15282,8 +15795,19 @@ def _fetch_url_raw(
     cancel_event = None,
     website_policy: dict | None = None,
     raw_bytes_max: int | None = None,
+    post_data: bytes | None = None,
+    meta_out: dict | None = None,
+    host_headers = None,
 ) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``host_headers(host)`` adds headers for one hop, chosen by the host that hop goes to, so a
+    redirect to another site does not carry them.
+
+    ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
+    ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
+    successful binary-mode fetch, and
+    ``bot_check`` on HTTP errors.
 
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
     or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
@@ -15327,6 +15851,7 @@ def _fetch_url_raw(
         current_url = url
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
+        pending_post = post_data
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15372,18 +15897,27 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers = headers)
+            if host_headers is not None:
+                headers.update(host_headers(current_host))
+            if pending_post is not None:
+                headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
                 # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
                 # the whole fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
+                    if meta_out is not None:
+                        meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
                 location = e.headers.get("Location")
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
+                # 307/308 keep the POST; other redirects turn it into a GET.
+                if e.code not in (307, 308):
+                    pending_post = None
                 hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
@@ -15425,6 +15959,10 @@ def _fetch_url_raw(
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
+                if meta_out is not None:
+                    meta_out["url"] = current_url
+                    meta_out["charset"] = resp.headers.get_content_charset()
+                    meta_out["filename"] = resp.headers.get_filename()
                 return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
@@ -15443,6 +15981,8 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
+            # A refresh is a new GET, like a browser's.
+            pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
                 website_policy,
@@ -16126,7 +16666,8 @@ def _text_token_cost(text: str, ctx: int) -> float:
         return measured
     # A counter that could not answer is a counter that is not there: taking its presence as proof the estimate is
     # safe is what leaves dense ASCII priced at the English rate.
-    estimate = sum(0.25 if character.isascii() else 1.0 for character in text)
+    ascii_chars = len(text.encode("ascii", "ignore"))
+    estimate = ascii_chars * 0.25 + (len(text) - ascii_chars)
     return estimate / _UNMEASURED_ROOM_MARGIN
 
 
@@ -16374,6 +16915,57 @@ def _empty_result_with_requested_images(
     return empty_text + "\n\n---\n\n" + found
 
 
+def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
+    """search English Wikipedia independently of ddgs through the guarded HTTP fetcher."""
+    # ddgs uses a one-result Wikipedia lookup, so full-text search recovers misses and failures.
+    from html import unescape
+
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": min(max_results, 50),
+            "srnamespace": 0,
+        }
+    )
+    error, body, _ = _fetch_url_raw(
+        "https://en.wikipedia.org/w/api.php?" + params,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        website_policy = website_policy,
+        raw_bytes_max = 1024 * 1024,
+        extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
+    )
+    if error:
+        raise RuntimeError(error)
+    payload = json.loads(body)
+    if "error" in payload:
+        raise RuntimeError("Wikipedia search API returned an error")
+    return [
+        {
+            "title": item["title"],
+            "href": "https://en.wikipedia.org/wiki/"
+            + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
+        }
+        for item in payload["query"]["search"]
+        if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"].strip()
+    ]
+
+
+def _usable_search_results(results, website_policy):
+    from .web_access_policy import check_url_access
+    return [
+        r
+        for r in results
+        if isinstance(r, dict)
+        and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+    ]
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16384,11 +16976,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
-    fetches that page directly instead of searching. ``include_images`` adds image results registered
-    server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
-    envelope appended: one picture per ``image_queries`` subject when the model named them, else
-    a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
+    """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
@@ -16403,8 +16991,7 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        # Ahead of the try below, so this one has to carry its own guard: execute_tool returns a string for every
-        # input, and a raise here would escape _web_search.
+        # guard here because execute_tool requires a string result and this is outside the try.
         found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
         if found is None:
             return "No images found for: " + ", ".join(subjects)
@@ -16412,57 +16999,88 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be interrupted mid-flight, so gate on either
-    # side: skip an already-cancelled request, and discard results that land after the client has gone.
+    # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
         from .web_access_policy import check_url_access, scope_search_query
 
-        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
-        if not engine_tiers:
-            return "Search failed: no approved search engine is available."
-
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
-        # all disallowed otherwise yields nothing even when valid results rank just under them. Test the domain lists,
-        # not the dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
-        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
-        client = DDGS(timeout = timeout)
-        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
-        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
-        results, last_error = [], None
-        for backend in engine_tiers:
-            if cancel_event is not None and cancel_event.is_set():
-                return "Search cancelled."
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        client, results, last_error = None, [], None
+        rejected_results = False
+        wikipedia_fallback = False
+        try:
+            from ddgs import DDGS
+            from ddgs.engines import ENGINES
+
+            engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+            if not engine_tiers:
+                raise RuntimeError("no approved search engine is available.")
+            # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
+            deadline = time.monotonic() + timeout if timeout else None
+            client = DDGS(timeout = timeout)
+            # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
+            for backend in engine_tiers:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Search cancelled."
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    client = DDGS(timeout = remaining)
+                try:
+                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    results = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not results)
+                except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
+                    last_error = exc
+                    continue
+                if results:
                     break
-                client = DDGS(timeout = remaining)
-            try:
-                results = client.text(effective_query, max_results = wanted, backend = backend)
-            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
-                last_error = exc
-                continue
-            if results:
-                break
-        if not results and last_error is not None:
-            raise last_error
+        except Exception as exc:
+            last_error = exc
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
+            remaining = deadline - time.monotonic() if deadline else 5.0
+            allowed, _, _ = check_url_access("https://en.wikipedia.org/w/api.php", website_policy)
+            if allowed and remaining > 0:
+                try:
+                    fallback_timeout = min(remaining, 5.0)
+                    fallback_deadline = time.monotonic() + fallback_timeout
+                    if deadline is not None:
+                        fallback_deadline = min(fallback_deadline, deadline)
+                    results = _usable_search_results(
+                        _wikipedia_search(
+                            query,
+                            wanted,
+                            fallback_timeout,
+                            fallback_deadline,
+                            cancel_event,
+                            website_policy,
+                        ),
+                        website_policy,
+                    )
+                    wikipedia_fallback = bool(results)
+                except Exception:
+                    logger.debug("Independent Wikipedia search failed", exc_info = True)
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+        # blocked results take precedence over earlier tier exceptions.
+        if not results and last_error is not None and not rejected_results:
+            raise last_error
+        if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1]
+                if rejected_results and restricted
+                else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -16477,7 +17095,7 @@ def _web_search(
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
                 continue
-            title = " ".join(str(r.get("title") or "").split())
+            title = " ".join(str(r.get("title") or href).split())
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
@@ -16490,17 +17108,23 @@ def _web_search(
                 website_policy,
             )
         text = "\n\n---\n\n".join(parts)
+        if wikipedia_fallback:
+            text = (
+                "General web search was unavailable or returned no usable results. "
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n"
+                + text
+            )
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
         if include_images and subjects:
-            # The model named what it will show: one picture per subject, no generic pile.
+            # named subjects require one image each rather than a generic image batch.
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
-        elif include_images:
+        elif include_images and not wikipedia_fallback:
             text += _web_search_images_suffix(
                 client,
                 effective_query,
@@ -16509,13 +17133,12 @@ def _web_search(
                 website_policy,
             )
         elif subjects:
-            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            # replayed history must retain the disabled-search reminder.
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         failure = _search_failure_message(e, timeout)
-        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too and owes the named subjects
-        # their pictures. A genuine failure keeps its message alone: pictures under an error read as a partial answer.
+        # ddgs raises on an empty sweep; attach requested images only to empty results, not genuine errors.
         if failure == EMPTY_SEARCH_RESULTS[0]:
             return _empty_result_with_requested_images(
                 failure,
@@ -16667,6 +17290,8 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
 _NETWORK_ROOT_NAMES = frozenset(
     {
         "socket",
+        # The C module behind `socket`: same primitives, so it screens the same.
+        "_socket",
         "urllib",
         "urllib3",
         "http",
@@ -17076,6 +17701,9 @@ def _check_signal_escape_patterns(code: str):
         "socket.socket",
         "socket.create_connection",
         "socket.getaddrinfo",
+        "_socket.socket",
+        "_socket.SocketType",
+        "_socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
         "urllib3.",
@@ -17103,6 +17731,7 @@ def _check_signal_escape_patterns(code: str):
     _NETWORK_MODULES = frozenset(
         {
             "socket",
+            "_socket",
             "urllib.request",
             "urllib3",
             "urllib3.connection",
@@ -17133,6 +17762,7 @@ def _check_signal_escape_patterns(code: str):
         {
             "socket.create_connection",
             "socket.getaddrinfo",
+            "_socket.getaddrinfo",
             "urllib.request.urlopen",
             "urllib.request.urlretrieve",
             "http.client.HTTPConnection",
@@ -17144,7 +17774,7 @@ def _check_signal_escape_patterns(code: str):
             ),
         }
     )
-    _HOST_ARG_ROOTS = ("socket.", "http.client.")
+    _HOST_ARG_ROOTS = ("socket.", "_socket.", "http.client.")
     _NETWORK_DESTINATION_ARG = {
         fq: (
             0,
@@ -17189,7 +17819,13 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.poolmanager.proxy_from_url",
         "urllib3.contrib.socks.SOCKSProxyManager",
     )
-    _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
+    # SocketType is an alias of the socket class in both modules.
+    _SOCKET_TYPES = ("socket.socket", "socket.SocketType", "_socket.socket", "_socket.SocketType")
+    _SOCKET_CLIENTS = (
+        *_SOCKET_TYPES,
+        "paramiko.SSHClient",
+        "paramiko.client.SSHClient",
+    )
     _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
     _CLIENT_CLASSES = frozenset(
         (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
@@ -17266,13 +17902,17 @@ def _check_signal_escape_patterns(code: str):
                 for conn in ("HTTPConnection", "HTTPSConnection")
             },
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
-            **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{
+                f"{sock}.{m}": (0, ("address",), "host")
+                for sock in _SOCKET_TYPES
+                for m in ("connect", "connect_ex")
+            },
             **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
             "urllib.request.ProxyHandler": (None, (), "proxy"),
             # A datagram names its address per send. `sendto(data, flags, address)` puts the int
             # flags at index 1, which reads as unreadable and fails closed.
-            "socket.socket.sendto": (1, (), "host"),
-            "socket.socket.sendmsg": (3, (), "host"),
+            **{f"{sock}.sendto": (1, (), "host") for sock in _SOCKET_TYPES},
+            **{f"{sock}.sendmsg": (3, (), "host") for sock in _SOCKET_TYPES},
             **{
                 f"{client}.connect": (0, ("hostname", "host"), "host")
                 for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
@@ -19990,6 +20630,65 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
+MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
+_TOOL_TEXT_READERS = frozenset({"terminal", "python"})
+
+
+def _hard_cap_chars() -> int:
+    """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
+    spilled) passes through with its own spill reference intact."""
+    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+
+
+def _tool_text_notice_head() -> str:
+    return f"\n\n... (tool result truncated to {_hard_cap_chars():,} chars for the model;"
+
+
+def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
+    ways = []
+    if "terminal" in readers and _posix_tools_available():
+        ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
+    elif "terminal" in readers:
+        ways.append(f'findstr /n "pattern" {path.replace("/", chr(92))}')
+    if "python" in readers:
+        ways.append(f"open({path!r}) in python")
+    return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
+
+
+def cap_tool_text(
+    text: str,
+    *,
+    session_id: "str | None" = None,
+    thread_id: "str | None" = None,
+    readers: "frozenset[str]" = frozenset(),
+) -> str:
+    """Unconditional floor (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``); spills when a reader tool exists."""
+    limit = _hard_cap_chars()
+    if len(text) <= limit:
+        return text
+    head = _head_whole_lines(text, limit)[0]
+    readers = readers & _TOOL_TEXT_READERS
+    if readers and session_id and _spill_scope(session_id, thread_id) is not None:
+        try:
+            workdir = _get_workdir(session_id)
+        except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
+            logger.debug("tool text spill: no workdir", exc_info = True)
+            workdir = None
+        from .tool_loop_controller import redact_studio_credentials  # noqa: PLC0415
+
+        # Masked like the card and the model copy: the model reads this file.
+        spill, complete = _spill_full_output(
+            redact_studio_credentials(text), workdir, _spill_scope(session_id, thread_id)
+        )
+        if spill is not None:
+            return (
+                head
+                + f"{_tool_text_notice_head()} {_spill_phrase(spill, complete)} in the working "
+                f"directory. {_tool_text_search_hint(spill, readers)}.)"
+            )
+    return head + f"{_tool_text_notice_head()} the full output is not retained in model context.)"
+
+
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
@@ -21574,7 +22273,8 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    profile = _terminal_profile(disable_sandbox)
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
@@ -21583,9 +22283,9 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        if profile == "cmd_isolated":
+        if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
-            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
+            # ' does not quote, so screen every reading.
             unescaped = command.replace("^", "")
             blocked = set().union(
                 *(

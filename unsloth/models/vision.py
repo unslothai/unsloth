@@ -66,13 +66,42 @@ def _multimodal_auto_classes():
     return classes
 
 
+def _is_text_seq2seq_config(config):
+    """T5 / BART / Marian: Seq2SeqLM-mapped, no multimodal class or sub-config (Voxtral, T5Gemma2 are Seq2SeqLM too)."""
+    import transformers
+
+    if config is None or any(
+        hasattr(config, key)
+        for key in ("vision_config", "audio_config", "text_config", "encoder_config")
+    ):
+        return False
+
+    def mapped(auto_class):
+        try:
+            return auto_class is not None and type(config) in auto_class._model_mapping
+        except Exception:
+            return False
+
+    if not mapped(getattr(transformers, "AutoModelForSeq2SeqLM", None)):
+        return False
+    return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
+
+
+def _generation_padding_side(config):
+    # BART / Marian encoder positions are absolute, so left padding would shift every real token.
+    return "right" if _is_text_seq2seq_config(config) else "left"
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
+from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ._utils import (
     __version__,
     importlib_version,
+    _offload_embedding_for_room,
     _prepare_model_for_qat,
+    load_layers_to_host,
     resolve_model_class,
     resolve_remote_code_model_class,
     attention_class_for_load,
@@ -91,8 +120,15 @@ from ._utils import (
     _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
+    _unsloth_freeze_norm_running_stats,
+    arm_gradient_checkpointing,
+    resolve_training_gradient_checkpointing,
+    set_module_gradient_checkpointing,
+    _is_seq2seq_lm_config,
 )
 from ._utils import *
+from ._uma_safetensors import is_integrated_unified_memory_gpu
+from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
@@ -113,8 +149,10 @@ from .loader_utils import (
     _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
+    exclude_no_placement_params,
     planner_quantization_kwargs,
     requested_device_map,
+    resolve_auto_block_swap,
     resolve_unsloth_device_map,
     warn_if_bitsandbytes_quantized_nothing,
 )
@@ -143,7 +181,7 @@ from unsloth_zoo.gradient_checkpointing import (
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModelForSeq2SeqLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -164,10 +202,10 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools
+import importlib.util
 import os
 import copy
 import gc
@@ -204,19 +242,34 @@ __all__ = [
 ]
 
 
-def _infer_device_map_from_loaded_model(model):
-    """Build a compact device_map by inspecting actual parameter placements."""
+def _infer_device_map_from_loaded_model(model, skip = ()):
+    """Build a compact device_map from actual parameter placements, leaving `skip` names off."""
     device_map = {}
 
     def _assign(module, prefix):
-        params = list(module.named_parameters(remove_duplicate = False))
+        params = [
+            (n, p)
+            for n, p in module.named_parameters(remove_duplicate = False)
+            if (f"{prefix}.{n}" if prefix else n) not in skip
+        ]
+        if (
+            not params
+            and skip
+            and any(
+                (f"{prefix}.{n}" if prefix else n) in skip
+                for n, _ in module.named_parameters(remove_duplicate = False)
+            )
+        ):
+            return
         if not params:
             bufs = list(module.named_buffers())
             if bufs:
                 device_map[prefix] = bufs[0][1].device
             return
         devices = {p.device for _, p in params}
-        if len(devices) == 1:
+        # A key covering a skipped tensor would make dispatch_model move it too: recurse instead.
+        holds_skipped = bool(skip) and any(not prefix or s.startswith(prefix + ".") for s in skip)
+        if len(devices) == 1 and not holds_skipped:
             device_map[prefix] = next(iter(devices))
         else:
             for child_name, child in module.named_children():
@@ -225,6 +278,8 @@ def _infer_device_map_from_loaded_model(model):
             for pname, param in module.named_parameters(remove_duplicate = False):
                 if "." not in pname:
                     full = f"{prefix}.{pname}" if prefix else pname
+                    if full in skip:
+                        continue
                     if not any(full == k or full.startswith(k + ".") for k in device_map):
                         device_map[full] = param.device
 
@@ -415,6 +470,80 @@ def _align_root_hook_with_input_embeddings(model):
     return target
 
 
+def _move_gemma4_token_types_to_input_embeddings(model):
+    inner = getattr(model, "model", None)
+    device_map = getattr(model, "hf_device_map", None)
+    if (
+        getattr(getattr(inner, "config", None), "model_type", None) != "gemma4"
+        or not device_map
+        or len(set(device_map.values())) < 2
+    ):
+        return
+    target = inner.get_input_embeddings().weight.device
+    if target.type in ("cpu", "meta"):
+        return
+
+    # transformers 5.5-5.8 build Gemma 4's vision mask groups on mm_token_type_ids' device (the root hook's) but index them from the embedding's; 5.9 moves them itself.
+    def to_input_embeddings(module, args, kwargs):
+        if kwargs.get("mm_token_type_ids") is not None:
+            kwargs["mm_token_type_ids"] = kwargs["mm_token_type_ids"].to(target)
+        return args, kwargs
+
+    inner.register_forward_pre_hook(to_input_embeddings, with_kwargs = True)
+
+
+def _hook_no_placement_ancestors(model):
+    """Input-align hooks on single-card ancestors of a CPU-kept no-placement table (split model)."""
+    from .loader_utils import no_placement_tensor_names
+
+    unplaced = no_placement_tensor_names(model)
+    if not unplaced:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+    placed_devices = {
+        p.device
+        for n, p in model.named_parameters()
+        if n not in unplaced and p.device.type not in ("cpu", "meta")
+    }
+    if len(placed_devices) < 2:
+        return 0
+    names = getattr(model, "_no_placement_params", None) or []
+    owners = {
+        n.rsplit(".", 1)[0] for n in unplaced if any(n == x or n.endswith("." + x) for x in names)
+    }
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    hooked = 0
+    for owner in owners:
+        parts = owner.split(".")
+        for depth in range(1, len(parts)):
+            path = ".".join(parts[:depth])
+            module = model.get_submodule(path)
+            if hasattr(module, "_hf_hook"):
+                continue
+            devices = {
+                t.device
+                for n, t in list(module.named_parameters(prefix = path))
+                + list(module.named_buffers(prefix = path))
+                if n not in unplaced
+            }
+            if len(devices) != 1:
+                continue
+            device = next(iter(devices))
+            if device.type in ("cpu", "meta"):  # meta = disk-offloaded, has its own hook
+                continue
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(
+                    execution_device = device, io_same_device = False, skip_keys = skip_keys
+                ),
+            )
+            hooked += 1
+    return hooked
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -443,8 +572,14 @@ def _attach_bnb_multidevice_hooks(
     if getattr(model, "hf_device_map", None) is not None:
         return  # already dispatched
 
+    # Unplaceable tables stay on CPU unhooked; hooking copies ~102 GB to the GPU every forward.
     try:
-        all_devs = {p.device for p in model.parameters()}
+        from .loader_utils import no_placement_tensor_names
+        _unplaced = no_placement_tensor_names(model)
+    except Exception:
+        _unplaced = set()
+    try:
+        all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
         warnings.warn(
             "Unsloth: Failed to determine device placement from model parameters, "
@@ -468,7 +603,7 @@ def _attach_bnb_multidevice_hooks(
         return  # accelerate not available
 
     try:
-        inferred_map = _infer_device_map_from_loaded_model(model)
+        inferred_map = _infer_device_map_from_loaded_model(model, skip = _unplaced)
         if not inferred_map:
             return
 
@@ -494,13 +629,21 @@ def _attach_bnb_multidevice_hooks(
                     (d for d in device_map_int.values() if d not in ("cpu", "disk")),
                     None,
                 )
-            dispatch_model(
-                model,
-                device_map = device_map_int,
-                main_device = main_device,
-                skip_keys = getattr(model, "_skip_keys_device_placement", None),
-                force_hooks = True,
-            )
+            _skip_check = contextlib.nullcontext()
+            if _unplaced:
+                try:
+                    from transformers.integrations.accelerate import skip_device_map_check
+                    _skip_check = skip_device_map_check()
+                except Exception:
+                    pass
+            with _skip_check:
+                dispatch_model(
+                    model,
+                    device_map = device_map_int,
+                    main_device = main_device,
+                    skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                    force_hooks = True,
+                )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             for param, key, val in _stripped:
@@ -538,6 +681,41 @@ def _unsloth_generate_accepts_kwarg(model, key):
     return key in model_args
 
 
+def _is_scaled_word_embedding_forward(cls, forward):
+    """Exactly transformers' `*ScaledWordEmbedding.forward` over nn.Embedding.forward: the op
+    reproduces only that product (Unsloth's float32 Gemma patch, or any extra work, is declined)."""
+    import ast
+    import inspect
+    import textwrap
+
+    owner = next((c for c in cls.__mro__ if c.__dict__.get("forward") is forward), None)
+    if (
+        owner is None
+        or getattr(super(owner, cls), "forward", None) is not torch.nn.Embedding.forward
+    ):
+        return False
+    if hasattr(forward, "__wrapped__"):
+        return False
+    fn = ast.parse(textwrap.dedent(inspect.getsource(forward))).body[0]
+    body = [
+        n
+        for n in fn.body
+        if not (isinstance(n, ast.Expr) and isinstance(getattr(n, "value", None), ast.Constant))
+    ]
+    expected = ast.parse(
+        "super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)", mode = "eval"
+    ).body
+    return (
+        isinstance(fn, ast.FunctionDef)
+        and not fn.decorator_list
+        and [a.arg for a in fn.args.args] == ["self", "input_ids"]
+        and not (fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs or fn.args.defaults)
+        and len(body) == 1
+        and isinstance(body[0], ast.Return)
+        and ast.dump(body[0].value) == ast.dump(expected)
+    )
+
+
 def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_device):
     # Lookup runs on the weight's current device (CPU when offloaded); the output returns to the decoder device read live from output_embeddings, so it tracks model.to() moves. A meta or missing lm_head falls back to return_device.
     if embed_tokens is None:
@@ -568,6 +746,88 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
         if target is not None and hasattr(output, "device") and output.device != target:
             return output.to(target)
         return output
+
+    # Host lookups and cross-device copies cannot be traced: a compiled caller breaks around them.
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    if disable is not None:
+        _unsloth_offload_pre_hook = disable(_unsloth_offload_pre_hook)
+        _unsloth_offload_post_hook = disable(_unsloth_offload_post_hook)
+
+    # Compiled inference uses unsloth_zoo's opaque op (no graph break) only where it is exact.
+    op = None
+    cls_forward = type(embed_tokens).forward
+    scaled = False
+    if cls_forward is not torch.nn.Embedding.forward and isinstance(
+        embed_tokens, torch.nn.Embedding
+    ):
+        try:
+            scaled = isinstance(
+                getattr(embed_tokens, "embed_scale", None), torch.Tensor
+            ) and _is_scaled_word_embedding_forward(type(embed_tokens), cls_forward)
+        except Exception:
+            scaled = False
+    base_forward = torch.nn.Embedding.forward
+    if (
+        disable is not None
+        and isinstance(embed_tokens, torch.nn.Embedding)
+        # Not patched globally before install.
+        and getattr(base_forward, "__module__", None) == "torch.nn.modules.sparse"
+        and getattr(base_forward, "__qualname__", None) == "Embedding.forward"
+        and not hasattr(base_forward, "__wrapped__")
+        and (cls_forward is base_forward or scaled)
+        and embed_tokens.max_norm is None
+        and not embed_tokens.sparse
+        and "forward" not in embed_tokens.__dict__
+    ):
+        try:
+            from unsloth_zoo.offloaded_embedding import offloaded_embedding as op
+        except Exception:
+            op = None
+
+    if op is not None:
+        slow_pre_hook, slow_post_hook = _unsloth_offload_pre_hook, _unsloth_offload_post_hook
+
+        def _use_op(module, input_ids):
+            # No grad only: the op skips forward hooks (enable_input_require_grads) checkpointing needs.
+            weight = module.weight
+            return (
+                torch.compiler.is_compiling()
+                and not torch.is_grad_enabled()
+                and not weight.requires_grad
+                and module.max_norm is None
+                # Other pre-hooks expect ids already on the table's device.
+                and len(module._forward_pre_hooks) == 1
+                and isinstance(input_ids, torch.Tensor)
+                and weight.device != input_ids.device
+                and type(module).forward is cls_forward
+            )
+
+        def _unsloth_offload_pre_hook(module, args):
+            if len(args) == 1 and _use_op(module, args[0]):
+                return args
+            return slow_pre_hook(module, args)
+
+        def _unsloth_offload_post_hook(module, args, output):
+            if (
+                torch.compiler.is_compiling()
+                and not torch.is_grad_enabled()
+                and isinstance(output, torch.Tensor)
+                and output.device == _decoder_device()
+            ):
+                return output
+            return slow_post_hook(module, args, output)
+
+        def _unsloth_offload_forward(self, *args, **kwargs):
+            if len(args) == 1 and not kwargs and _use_op(self, args[0]):
+                return op(
+                    args[0], self.weight, self.padding_idx, self.embed_scale if scaled else None
+                )
+            return type(self).forward(self, *args, **kwargs)
+
+        import types
+
+        embed_tokens.forward = types.MethodType(_unsloth_offload_forward, embed_tokens)
+        embed_tokens._unsloth_offload_op_forward = True
 
     embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
     embed_tokens.register_forward_hook(_unsloth_offload_post_hook, prepend = True)
@@ -652,9 +912,14 @@ def _embedding_is_worth_offloading(input_embeddings):
     return size >= _OFFLOAD_EMBEDDING_MIN_BYTES and size / total >= _OFFLOAD_EMBEDDING_MIN_FRACTION
 
 
-def _resolve_offload_embedding(model, offload_embedding):
+def _resolve_offload_embedding(
+    model,
+    offload_embedding,
+    needed = False,
+):
     """Report `offload_embedding` as True only when the offload will really run. It is a VRAM optimisation, not a correctness switch, so turn it off where it cannot help instead of failing the load. It also gates `_attach_bnb_multidevice_hooks`, which must still run whenever no offload happens, so every "no offload" case has to answer False. `"auto"` (the default) decides from the size of the embedding, and the declines below stay silent for it: they explain why something a caller asked for is not happening, and nobody asked for a default."""
     automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
+    # `needed`: a memory plan wants the room, so "auto" skips the size rule.
 
     def _decline(reason):
         if not automatic:
@@ -683,7 +948,132 @@ def _resolve_offload_embedding(model, offload_embedding):
     if is_distributed():
         # The offload leaves embed_tokens on the CPU while the rest of the rank stays on CUDA; under full finetuning it is trainable, and DDP with device_ids refuses a module whose trainable parameters span both.
         return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
-    return _embedding_is_worth_offloading(in_embed) if automatic else True
+    if automatic and (
+        getattr(in_embed, "weight", None) is None or in_embed.weight.device.type in ("cpu", "meta")
+    ):
+        return False
+    if not automatic:
+        return True
+    # "auto" follows free VRAM; an unsloth_zoo without the reserve estimate keeps the size rule.
+    return needed or (_zoo_reserve_estimate is None and _embedding_is_worth_offloading(in_embed))
+
+
+# Other large token tables (Gemma 3n / 4 per-layer embeddings) move too; small position tables stay.
+_EXTRA_EMBEDDING_MIN_BYTES = 256 * 2**20
+
+
+def _input_side_embeddings(model):
+    """The input embedding plus every other large nn.Embedding not shared with the output head."""
+    main = model.get_input_embeddings()
+    out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    head = getattr(out_embed, "weight", None)
+    found = [main]
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if (
+            module is main
+            or not isinstance(module, torch.nn.Embedding)
+            or weight is None
+            or weight is head
+            or weight.numel() * weight.element_size() < _EXTRA_EMBEDDING_MIN_BYTES
+        ):
+            continue
+        found.append(module)
+    return found, out_embed
+
+
+def _accelerator_device(model):
+    # Headless backbones (AutoModel) have no head to say where the decoder runs.
+    return next(
+        (p.device for p in model.parameters() if p.device.type not in ("cpu", "meta")), None
+    )
+
+
+def offload_input_embedding(model, embeddings = None):
+    """Move the input embeddings to host RAM: lookups run there and only the looked-up rows go back
+    to the decoder's card. Returns the bytes moved."""
+    found, out_embed = _input_side_embeddings(model)
+    head = getattr(out_embed, "weight", None)
+    nbytes = 0
+    for embedding in found if embeddings is None else embeddings:
+        weight = embedding.weight
+        if weight.device.type == "cpu":
+            # Streamed to host by the block swap load: hook it (home = head's card) and move its buffers (embed_scale).
+            if getattr(embedding, "_unsloth_offload_hooks_installed", False):
+                continue
+            _embed_device = head.device if head is not None else _accelerator_device(model)
+            if _embed_device is None:
+                _embed_device = torch.device("cpu")
+            embedding.to("cpu")
+        else:
+            _embed_device = weight.device  # decoder device, before offload
+            embedding.to("cpu")
+        nbytes += weight.numel() * weight.element_size()
+        _install_offload_embedding_hooks(embedding, out_embed, _embed_device)
+    print(f"Unsloth: Offloading embeddings to RAM to save {round(nbytes / 1024**3, 2)} GB.")
+    # The transformers model, not a PEFT wrapper: its `device` property is the one callers read.
+    _pin_device_to_decoder(model.get_base_model() if hasattr(model, "get_base_model") else model)
+    # GPU memory must be freed explicitly or it will not be freed.
+    clean_gpu_cache()
+    gc.collect()
+    return nbytes
+
+
+def offload_spare_embeddings(model, require_frozen = True):
+    """offload_embedding = "auto" under memory pressure: move every input-side embedding that
+    lm_head does not share (and, after get_peft_model, that is frozen) to host RAM. A tied input
+    embedding stays, but Gemma 3n / 4 per-layer tables still go. Returns the bytes moved."""
+    if _offload_embedding_unsupported_platform() is not None or is_distributed():
+        return 0
+    try:
+        found, out_embed = _input_side_embeddings(model)
+    except Exception:
+        return 0
+    # Already on the host only via the block swap load (unhooked, decoder on an accelerator); CPU models have nothing to offload.
+    head = getattr(out_embed, "weight", None)
+    if head is not None:
+        accelerated = head.device.type not in ("cpu", "meta")
+    else:
+        accelerated = _accelerator_device(model) is not None
+    candidates = []
+    for embedding in found:
+        weight = getattr(embedding, "weight", None)
+        if (
+            weight is None
+            or weight.device.type == "meta"
+            or (
+                weight.device.type == "cpu"
+                and (
+                    not accelerated or getattr(embedding, "_unsloth_offload_hooks_installed", False)
+                )
+            )
+            or _embeddings_are_tied(embedding, out_embed)
+            or _embedding_dispatch_device(embedding) is not None
+            or (require_frozen and any(p.requires_grad for p in embedding.parameters()))
+        ):
+            continue
+        candidates.append(embedding)
+    return offload_input_embedding(model, candidates) if candidates else 0
+
+
+def restore_input_embedding(model):
+    """Undo `offload_input_embedding` for the input embedding (training it needs it on the card).
+    Frozen extra tables stay on the host. The hooks stay and become no-ops."""
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if not getattr(base, "_unsloth_embedding_offloaded", False):
+        return False
+    embedding = model.get_input_embeddings()
+    out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(out_embed, "weight", None)
+    if weight is None or weight.device.type == "cpu":
+        return False
+    if embedding.weight.device.type != "cpu":
+        return False
+    embedding.to(weight.device)
+    base._unsloth_embedding_offloaded = any(
+        e.weight.device.type == "cpu" for e in _input_side_embeddings(model)[0]
+    )
+    return True
 
 
 VLLM_SUPPORTED_VLM = [
@@ -696,6 +1086,10 @@ VLLM_SUPPORTED_VLM = [
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
     "idefics3",
+    # Exact-membership gate: "qwen3_5" does not match qwen3_5_moe.
+    "qwen3_5_moe",
+    "gemma4",
+    "gemma4_text",
 ]
 
 
@@ -707,6 +1101,29 @@ def _zoo_supports_idefics3_fast_inference():
             "model.text_model.layers.{kk}.self_attn.q_proj"
             in get_model_layer_config()["standard_layers"]
         )
+    except Exception:
+        return False
+
+
+# Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
+VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
+# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
+# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
+VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+
+
+def _is_sparse_moe_config(config):
+    text_config = getattr(config, "text_config", None) or config
+    return bool(
+        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
+    )
+
+
+def _zoo_supports_moe_fast_inference():
+    # Older unsloth_zoo releases leave every expert a 1-wide placeholder in the training model.
+    try:
+        from unsloth_zoo.empty_model import extract_moe_layers  # noqa: F401
+        return True
     except Exception:
         return False
 
@@ -734,6 +1151,183 @@ _compile_config = CompileConfig(
     mode = "reduce-overhead",
 )
 _compile_config.disable = True  # Must set manually
+
+# For these model types, eager decode steps skip Unsloth's compiled regions (on by default,
+# UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
+# static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
+# sessions came out ~3x slower overall even though a compiled step is ~5x faster.
+COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe", "gpt_oss")
+# gpt-oss decode only traces as one CUDA graph with unsloth_zoo's routed experts patch.
+_COMPILE_DECODE_NEEDS_ZOO = {"gpt_oss": "unsloth_zoo.temporary_patches.gpt_oss_routed"}
+_decode_compile_config = CompileConfig(
+    fullgraph = False,
+    dynamic = None,
+    mode = "reduce-overhead",
+)
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_decode_compile
+except ImportError:
+    unsloth_decode_compile = None
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_eager_decode
+except ImportError:
+    unsloth_eager_decode = None
+
+
+def _is_decode_compile_model(model):
+    config = model.config
+    model_types = (
+        getattr(config, "model_type", None),
+        getattr(getattr(config, "text_config", None), "model_type", None),
+    )
+    for mt in model_types:
+        if not isinstance(mt, str) or mt.removesuffix("_text") not in COMPILE_DECODE_MODELS:
+            continue
+        needs = _COMPILE_DECODE_NEEDS_ZOO.get(mt.removesuffix("_text"))
+        return needs is None or _zoo_module_available(needs)
+    return False
+
+
+@functools.lru_cache(maxsize = None)
+def _zoo_module_available(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _eager_decodes(model):
+    # Eager decode steps skip Unsloth's compiled regions (zoo `unsloth_eager_decode`).
+    if unsloth_eager_decode is None or os.environ.get("UNSLOTH_EAGER_DECODE", "1") == "0":
+        return False
+    return _is_decode_compile_model(model) and "forward" not in model.__dict__
+
+
+class _EagerDecodeSteps:
+    """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
+    `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
+    a compiled decode step are unchanged."""
+
+    def __init__(self, model):
+        self.model = model
+        self.forward = model.forward
+
+    def _forward(self, *args, **kwargs):
+        if not torch.compiler.is_compiling():
+            ids = kwargs.get("input_ids")
+            if ids is None:
+                ids = kwargs.get("inputs_embeds")
+            if ids is not None and ids.dim() >= 2 and ids.shape[1] == 1:
+                with unsloth_eager_decode():
+                    return self.forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        # transformers reads signature(self.forward) (logits_to_keep, attention_mask,
+        # position_ids), so the stand-in has to present the real one.
+        step = self._forward
+
+        @functools.wraps(self.forward)
+        def forward(*args, **kwargs):
+            return step(*args, **kwargs)
+
+        self.model.forward = forward
+        return self
+
+    def __exit__(self, *exc):
+        del self.model.forward
+        return False
+
+
+def _compiles_decode(model):
+    if unsloth_decode_compile is None:
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DECODE", "0") != "1":
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
+        return False
+    # Mirror transformers' own auto-compile exceptions: when it will not compile the step,
+    # leave the eager decode path exactly as it was.
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is not None and not getattr(quantizer, "is_compileable", False):
+        return False
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict) and ({"cpu", "disk"} & set(map(str, device_map.values()))):
+        return False
+    return _is_decode_compile_model(model)
+
+
+def _match_compiled_call(model, compile_decode):
+    # CompileConfig equality ignores the `disable` attribute, so transformers would keep
+    # reusing the callable built for the other mode: drop it when the mode changes.
+    if model.__dict__.get("_unsloth_compile_decode", compile_decode) != compile_decode:
+        model.__dict__.pop("_compiled_call", None)
+        model.__dict__.pop("_last_compile_config", None)
+    model._unsloth_compile_decode = compile_decode
+
+
+def _decode_cache_bucket(length):
+    # A static cache of a new length recompiles the decode step; round it up to a power of
+    # two (>= 1024) so later calls with a different max_new_tokens reuse it.
+    if type(length) is not int or length <= 0:
+        return length
+    return max(1024, 1 << (length - 1).bit_length())
+
+
+class _CompileDecodeOnRepeat:
+    """One generate() call. Buckets the static cache, and compiles the decode step only for a
+    (batch, cache length) this model has decoded before: compiling costs ~30-45 s per new shape,
+    more than a whole eager call, so a one-off shape stays on the eager path exactly as before.
+    Both hooks sit where transformers decides, so its own batch and length are used."""
+
+    def __init__(self, model):
+        self.model = model
+        self.compile = False
+        self.scopes = contextlib.ExitStack()
+        self.prepare_static_cache = model._prepare_static_cache
+        self.valid_auto_compile_criteria = model._valid_auto_compile_criteria
+
+    def _prepare(self, *args, **kwargs):
+        # `max_cache_len` is the third argument on every 5.x release, by keyword since 5.2.
+        if "max_cache_len" in kwargs:
+            kwargs["max_cache_len"] = _decode_cache_bucket(kwargs["max_cache_len"])
+        elif len(args) >= 3:
+            args = (*args[:2], _decode_cache_bucket(args[2]), *args[3:])
+        cache = self.prepare_static_cache(*args, **kwargs)
+        batch_size = kwargs.get("batch_size", args[1] if len(args) > 1 else None)
+        key = (batch_size, getattr(cache, "max_cache_len", None))
+        seen = getattr(self.model, "_unsloth_decoded_shapes", None)
+        if seen is None:
+            seen = self.model._unsloth_decoded_shapes = set()
+            self.model._unsloth_compiled_batches = {}
+        compiled = self.model._unsloth_compiled_batches.setdefault(key[1], set())
+        # Once two batch sizes compiled at this length, Dynamo has made batch dynamic (sizes >= 2
+        # share that graph), so a new batch size costs no compile: skip its eager warm-up call.
+        self.compile = key in seen or (
+            type(batch_size) is int and batch_size >= 2 and len(compiled) >= 2
+        )
+        seen.add(key)
+        self.compiled, self.batch_size = compiled, batch_size
+        return cache
+
+    def _criteria(self, *args, **kwargs):
+        if not self.compile or not self.valid_auto_compile_criteria(*args, **kwargs):
+            return False
+        self.compiled.add(self.batch_size)
+        self.scopes.enter_context(unsloth_decode_compile())
+        return True
+
+    def __enter__(self):
+        self.model._prepare_static_cache = self._prepare
+        self.model._valid_auto_compile_criteria = self._criteria
+        return self
+
+    def __exit__(self, *exc):
+        del self.model._prepare_static_cache
+        del self.model._valid_auto_compile_criteria
+        self.scopes.close()
+        return False
+
 
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
@@ -1021,7 +1615,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
         model_eos_token_id = model_eos_token_id[0]
 
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+    # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
+    default_pad_token_id = model_eos_token_id
+    if (
+        _is_text_seq2seq_config(self.config)
+        and getattr(self.config, "pad_token_id", None) is not None
+    ):
+        default_pad_token_id = self.config.pad_token_id
+    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -1103,6 +1704,22 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+    compile_decode = (
+        cache_implementation == "static"
+        and not force_dynamic_cache
+        and _compiles_decode(self)
+        # transformers compiles only on these devices and without disable_compile; anywhere
+        # else a bucketed cache would only cost memory.
+        and getattr(getattr(self, "device", None), "type", None) == "cuda"
+        and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
+        and hasattr(self, "_prepare_static_cache")
+        and hasattr(self, "_valid_auto_compile_criteria")
+        and "_prepare_static_cache" not in self.__dict__
+    )
+    compile_config = _decode_compile_config if compile_decode else _compile_config
+    if _is_decode_compile_model(self):
+        _match_compiled_call(self, compile_decode)
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
@@ -1111,16 +1728,18 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if force_dynamic_cache:
             kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = _compile_config
+            kwargs["generation_config"].compile_config = compile_config
     else:
         kwargs["cache_implementation"] = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
         )
         if cache_implementation is not None:
-            kwargs["compile_config"] = _compile_config
+            kwargs["compile_config"] = compile_config
 
+    decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
+    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -1369,6 +1988,236 @@ def _construct_vlm_processor_fallback(
     except Exception as _e:
         _fb_err = _e
     return None, _fb_err
+
+
+def _mxfp4_lora_keeps_experts_packed(
+    quant_method,
+    full_finetuning = False,
+    device_map = None,
+    model_name = None,
+    max_memory = None,
+    revision = None,
+    variant = None,
+    cache_dir = None,
+    subfolder = None,
+    local_files_only = False,
+    token = None,
+    use_safetensors = None,
+    num_layers = None,
+):
+    """Use unsloth_zoo's packed MXFP4 experts for LoRA: native matmul_ogs has no backward.
+
+    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would
+    dequantize every expert to 16 bit); "auto" maps offload if the checkpoint exceeds free memory."""
+    # In-memory configs carry the QuantizationMethod enum; str() is "QuantizationMethod.MXFP4".
+    quant_method = getattr(quant_method, "value", quant_method)
+    if full_finetuning or str(quant_method).lower() != "mxfp4":
+        return False
+    if device_map is not None and not isinstance(device_map, (dict, str)):
+        device_map = str(device_map)
+    if device_map is None:
+        try:
+            import torch
+            device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
+        except Exception:
+            device_map = "cpu"
+    # unsloth_zoo only sees offload after this config is built, so check explicit maps here. Its guard
+    # unpacks every expert on ANY cpu / disk entry, so offloading even lm_head rules packed out.
+    if isinstance(device_map, dict) and any(
+        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
+    ):
+        return False
+    if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
+        return False
+    try:
+        import sys
+        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+        zoo_mxfp4 = sys.modules["unsloth_zoo.temporary_patches.mxfp4"]
+    except Exception:
+        return False
+    # zoo's offload flag belongs to the previous load (it clears it only once this load validates);
+    # this load's offload is judged above and below.
+    offloads = getattr(zoo_mxfp4, "_LOAD_OFFLOADS", None)
+    if isinstance(offloads, list) and offloads:
+        offloads[0] = False
+    try:
+        if not keep_mxfp4_experts_packed():
+            return False
+    except Exception:
+        return False
+    if isinstance(device_map, str) and device_map in (
+        "auto",
+        "balanced",
+        "balanced_low_0",
+        "sequential",
+    ):
+        # infer_auto_device_map spills to CPU / disk when full; unknown sizes stay packed.
+        try:
+            import json
+            import os
+            import torch
+
+            prefix = subfolder.strip("/") + "/" if subfolder else ""
+
+            def with_variant(name):
+                # Mirrors transformers' _add_variant.
+                if not variant:
+                    return name
+                parts = name.split(".")
+                return ".".join(parts[:-1] + [variant, parts[-1]])
+
+            def weight_bytes(
+                files,
+                read_index,
+                size_of = None,
+            ):
+                # Only files from_pretrained reads, in its order (not stale shards / original/).
+                files = {name.replace(os.sep, "/"): size or 0 for name, size in files}
+                formats = [
+                    ("model.safetensors", "model.safetensors.index.json"),
+                    ("pytorch_model.bin", "pytorch_model.bin.index.json"),
+                ]
+                for single, index in formats[1:] if use_safetensors is False else formats:
+                    single, index = prefix + with_variant(single), prefix + with_variant(index)
+                    if single in files:
+                        return files[single]
+                    if index in files:
+                        shards = set(json.loads(read_index(index))["weight_map"].values())
+                        # Shards may sit in nested folders a listing does not reach.
+                        return sum(
+                            files.get(prefix + shard) or (size_of(prefix + shard) if size_of else 0)
+                            for shard in shards
+                        )
+                return 0
+
+            def folder_files(folder):
+                root = os.path.join(folder, prefix) if prefix else folder
+                if not os.path.isdir(root):
+                    return []
+                return [
+                    (prefix + name, os.path.getsize(os.path.join(root, name)))
+                    for name in os.listdir(root)
+                    if os.path.isfile(os.path.join(root, name))
+                ]
+
+            def folder_size(folder):
+                def size(name):
+                    path = os.path.join(folder, name)
+                    return os.path.getsize(path) if os.path.isfile(path) else 0
+
+                return size
+
+            def folder_index(folder):
+                def read(name):
+                    with open(os.path.join(folder, name), encoding = "utf-8") as file:
+                        return file.read()
+
+                return read
+
+            if os.path.isdir(str(model_name)):
+                folder = str(model_name)
+                checkpoint_bytes = weight_bytes(
+                    folder_files(folder), folder_index(folder), folder_size(folder)
+                )
+            else:
+                try:
+                    from huggingface_hub import HfApi, hf_hub_download
+
+                    if local_files_only:
+                        raise OSError("local_files_only: no Hub lookup")
+                    info = HfApi().model_info(
+                        str(model_name), revision = revision, files_metadata = True, token = token
+                    )
+
+                    def hub_index(name):
+                        path = hf_hub_download(
+                            str(model_name),
+                            name,
+                            revision = revision,
+                            cache_dir = cache_dir,
+                            token = token,
+                        )
+                        with open(path, encoding = "utf-8") as file:
+                            return file.read()
+
+                    checkpoint_bytes = weight_bytes(
+                        [(sibling.rfilename, sibling.size) for sibling in (info.siblings or ())],
+                        hub_index,
+                    )
+                except Exception:
+                    # Offline: size the cache; not snapshot_download (fails on unfetched metal/, original/).
+                    from huggingface_hub import try_to_load_from_cache
+
+                    folder = None
+                    for name in (
+                        "model.safetensors",
+                        "model.safetensors.index.json",
+                        "pytorch_model.bin",
+                        "pytorch_model.bin.index.json",
+                    ):
+                        name = prefix + with_variant(name)
+                        path = try_to_load_from_cache(
+                            str(model_name), name, cache_dir = cache_dir, revision = revision
+                        )
+                        if isinstance(path, str):
+                            folder = path[: -len(name)]
+                            break
+                    if folder is None:
+                        raise OSError("checkpoint not in the local cache")
+                    checkpoint_bytes = weight_bytes(
+                        folder_files(folder), folder_index(folder), folder_size(folder)
+                    )
+            backend = torch.cuda
+            if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
+                if torch.xpu.is_available():
+                    backend = torch.xpu
+            probed = backend.is_available() and backend.device_count() > 0
+            if max_memory:
+                devices = (
+                    sorted(
+                        {
+                            int(key)
+                            for key in max_memory
+                            if str(key).isdigit() and int(key) < backend.device_count()
+                        }
+                    )
+                    if probed
+                    else []
+                )
+            else:
+                devices = list(range(backend.device_count())) if probed else []
+            frees = []
+            for index in devices:
+                try:
+                    free = backend.mem_get_info(index)[0]
+                except Exception:
+                    continue
+                budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
+                if isinstance(budget, str):
+                    from accelerate.utils import convert_file_size_to_int
+                    budget = convert_file_size_to_int(budget)
+                if isinstance(budget, int):
+                    free = min(free, budget)
+                frees.append(free if max_memory else 0.9 * free)
+            # Measured free memory keeps an activation margin; an explicit max_memory is taken as given.
+            if device_map != "sequential" and len(frees) > 1 and checkpoint_bytes:
+                # get_balanced_memory caps every card but the last at size / n (its buffer left out).
+                low_zero = device_map == "balanced_low_0"
+                per_card = checkpoint_bytes / (len(frees) - 1 if low_zero else len(frees))
+                frees = [
+                    free if low_zero and i == 0 else min(free, per_card)
+                    for i, free in enumerate(frees[:-1])
+                ] + frees[-1:]
+            if len(frees) > 1 and checkpoint_bytes and num_layers:
+                # Decoder layers are placed whole, so each card but the last can strand up to one layer.
+                layer = checkpoint_bytes / num_layers
+                frees = [max(0, free - layer) for free in frees[:-1]] + frees[-1:]
+            limit = sum(frees)
+            if checkpoint_bytes and probed and checkpoint_bytes > limit:
+                return False
+        except Exception:
+            pass
+    return True
 
 
 def _get_total_transformer_layers(model):
@@ -1869,6 +2718,21 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
         PreTrainedModel.to = original_to
 
 
+def _offload_activation_pack(x):
+    # Only activations (they require grad); masks and rotary tables are shared across layers.
+    if x.requires_grad and x.device.type != "cpu":
+        return x.device, x.to("cpu", non_blocking = True)
+    return None, x
+
+
+def _offload_activation_unpack(packed):
+    device, x = packed
+    return x if device is None else x.to(device, non_blocking = True)
+
+
+_NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -1916,6 +2780,26 @@ class FastBaseModel:
         user_config = kwargs.pop("config", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
+        _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
+        if _offload_layers and load_layers_to_host is None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs a newer unsloth_zoo (`pip install --upgrade unsloth_zoo`); "
+                "get_peft_model(offload_layers = ...) still swaps once the model is on the card.",
+            )
+        if _offload_layers and (fast_inference or full_finetuning):
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "streams frozen LoRA base weights, so it cannot be combined with "
+                "fast_inference or full_finetuning.",
+            )
+        if _offload_layers and (
+            not torch.cuda.is_available() or is_integrated_unified_memory_gpu()
+        ):
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
+            )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
         local_files_only = _get_effective_local_files_only(kwargs)
@@ -2003,7 +2887,7 @@ class FastBaseModel:
             elif family_decoder:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
-                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                _text_key_mapping = _apply_text_only_key_mapping(kwargs, parent_config, text_config)
                 text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
@@ -2051,6 +2935,27 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
+        # Outside the VLM block: text_only = True has is_vlm_config False.
+        if (
+            fast_inference
+            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and not _is_sparse_moe_config(auto_config)
+        ):
+            raise RuntimeError(
+                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
+                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
+                "Please set fast_inference = False."
+            )
+        if (
+            fast_inference
+            and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+            and _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_moe_fast_inference()
+        ):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
             # mllama is still only in vllm v0, and vLLM V0 does not support LoRA on multimodal models. TODO: revisit once vLLM V1 supports Llama 3.2 (mllama).
@@ -2355,10 +3260,60 @@ class FastBaseModel:
             ),
         )
 
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
+
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+        if _offload_layers and block_swap_load_device(device_map) is None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs every layer on one GPU; pass offload_layers to get_peft_model instead.",
+            )
+        _embedding_needed = None
+        if _offload_layers == "auto":
+            _offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
+                requested_device_map(device_map),
+                model_name,
+                max_seq_length = max_seq_length,
+                # Windows / WSL decline the offload later: a plan counting on it would leave a streamed table unhooked.
+                offload_embedding = bool(offload_embedding)
+                and _offload_embedding_unsupported_platform() is None,
+                planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
+                placement = "spread",
+                skip_reason = _planner_skip_reason
+                or (
+                    "the planner cannot rebuild this checkpoint's prepared config"
+                    if _planner_config is not None
+                    else None
+                ),
+                **planner_config_overrides(kwargs),
+                token = token,
+                trust_remote_code = trust_remote_code,
+                **planner_hub_kwargs(kwargs),
+                revision = _revision,
+                **add_dtype_kwargs(torch_dtype),
+                **planner_quantization_kwargs(
+                    **compressed_tensors_planner_quantization(
+                        auto_config, load_in_4bit, load_in_8bit, user_quantization_config
+                    ),
+                    rewritten_quantization_config = modelopt_planner_quantization_config(
+                        auto_config, dequantize = load_in_16bit
+                    )
+                    if _modelopt_rewritten
+                    else fp8_to_nf4_planner_quantization_config(
+                        auto_config,
+                        SKIP_QUANTIZATION_MODULES + _architecture_skip_modules(model_types),
+                    ),
+                    extra_skip_modules = _architecture_skip_modules(model_types) or None,
+                ),
+            )
+        _block_swap_device = block_swap_load_device(device_map)
+        if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
+            # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
+            device_map = {"": _block_swap_device}
+        _block_swap_state = None
 
         # Prefetch the repo (killable child) so the in-process load is a cache hit. vLLM owns the download only when actually available; if it was requested but is missing, the load falls through in-process, so warm the weights here.
         _vllm_owns_weights = fast_inference and is_vLLM_available()
@@ -2422,7 +3377,11 @@ class FastBaseModel:
         elif load_in_16bit:
             bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
+            # FastModel passes load_in_4bit = False with a quantization_config, which still quantizes.
+            if user_quantization_config is None:
+                print(
+                    "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
+                )
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
@@ -2497,7 +3456,25 @@ class FastBaseModel:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    # Except LoRA with zoo's packed experts: stays MXFP4 and has a backward.
+                    if (
+                        load_in_16bit
+                        or _mxfp4_lora_keeps_experts_packed(
+                            quant_method,
+                            full_finetuning,
+                            device_map,
+                            model_name,
+                            kwargs.get("max_memory", None),
+                            _revision,
+                            kwargs.get("variant", None),
+                            kwargs.get("cache_dir", None),
+                            kwargs.get("subfolder", None),
+                            kwargs.get("local_files_only", False),
+                            token,
+                            kwargs.get("use_safetensors", None),
+                            getattr(auto_config, "num_hidden_layers", None),
+                        )
+                    ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:
                         quantization_config = quantizer.from_dict(
@@ -2529,6 +3506,8 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         try:
+            # get_peft_model(offload_layers = "auto") may move it later, unless the caller said no.
+            _offload_embedding_mode = False if fast_inference else offload_embedding
             if offload_embedding and fast_inference:
                 if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
                     print(
@@ -2558,14 +3537,17 @@ class FastBaseModel:
                     )
                 ):
                     try:
-                        model = auto_model.from_pretrained(
-                            model_name,
-                            config = model_config,
-                            device_map = device_map,
-                            token = token,
-                            trust_remote_code = trust_remote_code,
-                            **kwargs,
-                        )
+                        with begin_block_swap_load(
+                            _offload_layers, device_map, embeddings = bool(_embedding_needed)
+                        ) as (_block_swap_state):
+                            model = auto_model.from_pretrained(
+                                model_name,
+                                config = model_config,
+                                device_map = device_map,
+                                token = token,
+                                trust_remote_code = trust_remote_code,
+                                **kwargs,
+                            )
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
@@ -2591,19 +3573,28 @@ class FastBaseModel:
                     offload_embedding,
                 )
 
-                _attach_bnb_multidevice_hooks(
-                    model,
-                    load_in_4bit = load_in_4bit,
-                    load_in_8bit = load_in_8bit,
-                    offload_embedding = offload_embedding,
-                    fast_inference = fast_inference,
-                )
+                # One card by construction: the layers in host RAM are not an offloaded dispatch.
+                if _block_swap_state is None:
+                    _attach_bnb_multidevice_hooks(
+                        model,
+                        load_in_4bit = load_in_4bit,
+                        load_in_8bit = load_in_8bit,
+                        offload_embedding = offload_embedding,
+                        fast_inference = fast_inference,
+                    )
+                _no_placement_hooked = _hook_no_placement_ancestors(model)
+                if _no_placement_hooked:
+                    logger.info(
+                        f"Unsloth: hooked {_no_placement_hooked} module(s) above the CPU-kept "
+                        "no-placement table so their inputs follow the map."
+                    )
                 _aligned_root_device = _align_root_hook_with_input_embeddings(model)
                 if _aligned_root_device is not None:
                     logger.info(
                         f"Unsloth: inputs now go straight to {_aligned_root_device}, where the input "
                         "embedding lives, instead of through the first device in the map."
                     )
+                _move_gemma4_token_types_to_input_embeddings(model)
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
                     model,
@@ -2632,24 +3623,17 @@ class FastBaseModel:
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
+                # "auto" moves it only when memory is tight, here and again in get_peft_model.
+                model._unsloth_offload_embedding_mode = _offload_embedding_mode
                 if offload_embedding:
-                    embed_tokens = model.get_input_embeddings()
-                    out_embed = (
-                        model.get_output_embeddings()
-                        if hasattr(model, "get_output_embeddings")
-                        else None
-                    )
-                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                    embed_tokens.to("cpu")
-
-                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                    _pin_device_to_decoder(model)
-                    # GPU memory must be freed explicitly or it will not be freed.
-                    clean_gpu_cache()
-                    gc.collect()
+                    offload_input_embedding(model)
+                elif _offload_embedding_mode == OFFLOAD_EMBEDDING_AUTO and _embedding_needed:
+                    _offload_embedding_for_room(model, require_frozen = False)
+                elif _offload_embedding_mode == OFFLOAD_EMBEDDING_AUTO:
+                    offload_embedding_if_tight(model, max_seq_length, at_load = True)
+                elif _offload_embedding_mode:
+                    # A tied input embedding stays; untied per-layer tables still move.
+                    offload_spare_embeddings(model, require_frozen = False)
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,
@@ -2683,6 +3667,27 @@ class FastBaseModel:
                         load_in_4bit,
                         load_in_8bit,
                         load_in_16bit,
+                    )
+
+                from unsloth_zoo.utils import get_quant_type
+
+                # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                if (
+                    (
+                        load_in_4bit
+                        or load_in_8bit
+                        or str(model_name).lower().endswith("-bnb-4bit")
+                        or get_quant_type(model_config) == "bitsandbytes"
+                    )
+                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+                    and _is_sparse_moe_config(model_config)
+                ):
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
+                        "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
+                        f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
+                        "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
+                        "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
@@ -3038,9 +4043,10 @@ class FastBaseModel:
         apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
-        tokenizer.padding_side = "left"
+        _padding_side = _generation_padding_side(getattr(model, "config", None))
+        tokenizer.padding_side = _padding_side
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "left"
+            tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
         if (
@@ -3096,9 +4102,20 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        # Last, so the host copies carry the fp32 recasts the passes above make.
+        finish_block_swap_load(
+            model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
+        )
 
         # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
-        if not fast_inference and not offload_embedding:
+        # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.
+        _base = model.get_base_model() if hasattr(model, "get_base_model") else model
+        if (
+            not fast_inference
+            and not offload_embedding
+            and not getattr(_base, "_unsloth_embedding_offloaded", False)
+            and _block_swap_state is None
+        ):
             try:
                 _repaired = _repair_dispatch_hooks(model)
                 if _repaired:
@@ -3111,6 +4128,7 @@ class FastBaseModel:
                     f"Unsloth: could not check the dispatch hooks "
                     f"({type(_exc).__name__}: {_exc})."
                 )
+        _install_bnb_nf4_override()
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
@@ -3141,8 +4159,11 @@ class FastBaseModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
+        offload_layers = None,
+        checkpoint_skip_layers = 0,
         **kwargs,
     ):
+        offload_layers = legacy_offload_layers(kwargs, offload_layers)
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
@@ -3155,8 +4176,37 @@ class FastBaseModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM):
+        if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if task_type == TaskType.CAUSAL_LM and _is_seq2seq_lm_config(
+            getattr(model, "config", None)
+        ):
+            # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
+            task_type = TaskType.SEQ_2_SEQ_LM
+        if _is_text_seq2seq_config(getattr(model, "config", None)):
+            # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
+            finetune_vision_layers = True
+            # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
+            if (
+                target_modules is None or target_modules == "all-linear"
+            ) and finetune_language_layers:
+                _output = model.get_output_embeddings()
+                _linears = [
+                    name
+                    for name, module in model.named_modules()
+                    if isinstance(module, torch.nn.Linear) and module is not _output
+                ]
+                if finetune_attention_modules and finetune_mlp_modules:
+                    target_modules = sorted({name.rsplit(".", 1)[-1] for name in _linears})
+                elif finetune_attention_modules or finetune_mlp_modules:
+                    target_modules = [
+                        name
+                        for name in _linears
+                        if bool(re.search(r"attention|attn", name.lower()))
+                        == finetune_attention_modules
+                    ]
+                    # Full paths carry the family choice; get_peft_regex would reject them.
+                    finetune_attention_modules = finetune_mlp_modules = True
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)
@@ -3217,6 +4267,9 @@ class FastBaseModel:
             )
         modules_to_save = _scope_modules_to_save_to_core(model, modules_to_save)
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+        if any(str(m).split(".")[-1] == "embed_tokens" for m in (modules_to_save or ())):
+            if restore_input_embedding(model):
+                print("Unsloth: Moved the offloaded input embedding back to the GPU to train it.")
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
@@ -3289,7 +4342,7 @@ class FastBaseModel:
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
-            loftq_config, lora_dropout, bias, init_lora_weights, model
+            loftq_config, lora_dropout, bias, init_lora_weights, model, r
         )
 
         # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
@@ -3380,6 +4433,8 @@ class FastBaseModel:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
 
+        validate_init_target_parameters(init_lora_weights, target_parameters)
+
         local_variables = {
             **locals(),
             **kwargs,
@@ -3453,7 +4508,13 @@ class FastBaseModel:
 
             _LoraModel._create_and_replace = _patched_car
 
-        model = _get_peft_model(model, lora_config)
+        from .lora_init import fast_lora_init, record_fast_pissa
+
+        with fast_lora_init() as fast:
+            model = _get_peft_model(model, lora_config)
+        if fast["pissa"]:
+            record_fast_pissa(model)
+        snapshot_residual_lora_init(model, init_lora_weights)
 
         # PEFT may have wrapped an endpoint this load repaired; the hook stays on base_layer and the adapter branch reads the caller's tensor.
         try:
@@ -3482,6 +4543,11 @@ class FastBaseModel:
         model.max_seq_length = max_seq_length
         for module in model.modules():
             module.max_seq_length = max_seq_length
+        offload_embedding_if_tight(model)
+        install_block_swap(
+            model, offload_layers, use_gradient_checkpointing = use_gradient_checkpointing
+        )
+        skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
@@ -3518,19 +4584,45 @@ class FastBaseModel:
             if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
                 float32_mixed_precision = False
 
-        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant.
+        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
+        # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
+        _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        if _force_non_reentrant:
+            use_reentrant = False
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
-            _orig_checkpoint = torch_checkpoint.checkpoint
+            _orig_checkpoint = getattr(
+                torch_checkpoint.checkpoint,
+                "_unsloth_original",
+                torch_checkpoint.checkpoint,
+            )
+            _offload = use_gradient_checkpointing == "unsloth"
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
-                return _orig_checkpoint(function, *args, **kwargs)
+                if not _offload:
+                    return _orig_checkpoint(function, *args, **kwargs)
+                with torch.autograd.graph.saved_tensors_hooks(
+                    _offload_activation_pack, _offload_activation_unpack
+                ):
+                    return _orig_checkpoint(function, *args, **kwargs)
 
+            _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
+        else:
+            # Drop the wrapper an earlier deepseek_v41 load in this process installed.
+            for _mod, _name in (
+                (torch_checkpoint, "checkpoint"),
+                (torch_checkpoint, "_old_checkpoint"),
+                (hf_modeling_utils, "checkpoint"),
+            ):
+                _orig = getattr(getattr(_mod, _name, None), "_unsloth_original", None)
+                if _orig is not None:
+                    setattr(_mod, _name, _orig)
 
         from .loader_utils import enable_composite_gradient_checkpointing
         from .remote_moe_shims import prepare_remote_moe_for_training
@@ -3548,14 +4640,22 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        freeze_peft_variant_weights(model)
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _unsloth_freeze_norm_running_stats(model)
+        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
+        if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
+            # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
+            for module in model.modules():
+                func = getattr(module, "_gradient_checkpointing_func", None)
+                if getattr(func, "__module__", None) == "torch.utils.checkpoint":
+                    module._gradient_checkpointing_func = _nonre_checkpoint
         # Persist the configured GC mode so the trainer restores it verbatim: for_inference() clears the module flags every GRPO generation step, and TrainingArguments defaults gradient_checkpointing=False, which would silently disable it at train time (#4735).
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # The Gemma3N audio conformer's variable-length tensors cause stride mismatches in the AOT autograd compiled backward under non-reentrant checkpointing, and TRL may override gradient_checkpointing_kwargs later, so intercept the enable and force use_reentrant=True.
-        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 
@@ -3566,6 +4666,32 @@ class FastBaseModel:
                 return _original_gc_enable(**kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
+
+        if _force_non_reentrant:
+            # Wrap the unpatched method so a second post_patch_model (get_peft_model) replaces the wrapper instead of nesting it.
+            _original_gc_enable_nr = getattr(
+                model.gradient_checkpointing_enable,
+                "_unsloth_gc_original",
+                model.gradient_checkpointing_enable,
+            )
+
+            def _gc_enable_non_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
+                gc_kwargs["use_reentrant"] = False
+                # Bind this model's wrapper (and its offloading) even if a later load restored the global.
+                _prev_checkpoint = hf_modeling_utils.checkpoint
+                hf_modeling_utils.checkpoint = _nonre_checkpoint
+                try:
+                    return _original_gc_enable_nr(gc_kwargs, *args, **kwargs)
+                finally:
+                    hf_modeling_utils.checkpoint = _prev_checkpoint
+
+            _gc_enable_non_reentrant._unsloth_gc_original = _original_gc_enable_nr
+            model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 
         from transformers.trainer import Trainer
 
@@ -3635,7 +4761,9 @@ class FastBaseModel:
             if hasattr(m, "training"):
                 m.training = False
             if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.padding_side = "left"
+                m._saved_temp_tokenizer.padding_side = _generation_padding_side(
+                    getattr(m, "config", None)
+                )
             m._flag_for_generation = True
 
         m = model
@@ -3669,11 +4797,16 @@ class FastBaseModel:
         return model
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if not hasattr(model, "parameters"):
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        use_gradient_checkpointing = resolve_training_gradient_checkpointing(
+            model, use_gradient_checkpointing
+        )
+        if use_gradient_checkpointing:
+            arm_gradient_checkpointing(model)
 
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
@@ -3681,7 +4814,7 @@ class FastBaseModel:
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(m, use_gradient_checkpointing)
             if hasattr(m, "training"):
                 m.training = True
             if hasattr(m, "_saved_temp_tokenizer"):
@@ -3703,7 +4836,7 @@ class FastBaseModel:
         # Since transformers 4.53, this must be turned on explicitly.
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)

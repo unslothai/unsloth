@@ -24,10 +24,12 @@ _BACKEND = _HERE.parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Fresh interpreter: main.py's truststore injection does not survive the spawn.
+# Fresh interpreter: main.py's process-wide network injections do not survive the spawn.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from hub.utils.snapshot_filters import (
     SNAPSHOT_IGNORE_PATTERNS,
@@ -124,7 +126,7 @@ def _parent_is_alive(parent_pid: int) -> bool:
     return True
 
 
-def _terminate_orphaned_self() -> None:
+def _terminate_orphaned_self(heartbeat: str | None = None) -> None:
     # Hard exit from the watchdog thread: a self-SIGTERM would be deferred while the main thread is GIL-blocked in a C socket read, and the partial resumes byte-exact with atomic marker writes.
     try:
         print(
@@ -134,10 +136,16 @@ def _terminate_orphaned_self() -> None:
         sys.stderr.flush()
     except Exception:
         pass
+    # The parent owns heartbeat cleanup and is gone, so nobody else will remove it.
+    try:
+        from hub.utils.download_heartbeat import remove
+        remove(heartbeat)
+    except Exception:
+        pass
     os._exit(130)
 
 
-def _install_parent_death_watchdog(parent_pid: int | None) -> None:
+def _install_parent_death_watchdog(parent_pid: int | None, heartbeat: str | None = None) -> None:
     if not parent_pid or parent_pid <= 0:
         return
     interval = _parent_poll_seconds()
@@ -149,7 +157,7 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
             except Exception:
                 alive = True
             if not alive:
-                _terminate_orphaned_self()
+                _terminate_orphaned_self(heartbeat)
                 return
             time.sleep(interval)
 
@@ -578,7 +586,12 @@ def _recover_manifest_after_download(
         )
 
 
-def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
+def _download_snapshot(
+    repo_id: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
@@ -619,6 +632,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
         token = _hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
         max_workers = 1,
+        tqdm_class = tqdm_class,
     )
     if info is None:
         _recover_manifest_after_download(
@@ -656,7 +670,13 @@ def _gguf_variant_target_plan(
     return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
 
 
-def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
+def _download_gguf_variant(
+    repo_id: str,
+    variant: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils.hf_cache_state import has_active_incomplete_blobs
@@ -761,6 +781,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
         token = _hf_token_arg(hf_token),
         allow_patterns = targets,
         max_workers = 1,
+        tqdm_class = tqdm_class,
     )
     _verify_completed_download(
         "model",
@@ -788,7 +809,12 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
 
 
 def _download_scoped_snapshot(
-    repo_id: str, scope: str, files: list[str], hf_token: str | None, mode: str
+    repo_id: str,
+    scope: str,
+    files: list[str],
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
 ) -> None:
     """Fetch exactly ``files`` from ``repo_id``, keyed under ``scope``. For consumers that read a deliberate subset of a repo (the diffusion loader skips the packaged root single, transformer/ shards and fp16 twins). Keyed apart from the repo's full snapshot so neither manifest describes the other, and the repo is not later judged partial against expectations it was never meant to meet."""
     from huggingface_hub import HfApi, snapshot_download
@@ -856,6 +882,7 @@ def _download_scoped_snapshot(
         token = _hf_token_arg(hf_token),
         allow_patterns = files,
         max_workers = 1,
+        tqdm_class = tqdm_class,
     )
     if info is None:
         # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
@@ -878,7 +905,12 @@ def _download_scoped_snapshot(
     )
 
 
-def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
+def _download_dataset(
+    repo_id: str,
+    hf_token: str | None,
+    mode: str,
+    tqdm_class: type | None = None,
+) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
     from hub.utils import download_manifest
@@ -923,6 +955,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         "token": _hf_token_arg(hf_token),
         "repo_type": "dataset",
         "max_workers": 1,
+        "tqdm_class": tqdm_class,
     }
     if isinstance(commit_hash, str) and commit_hash.strip():
         download_kwargs["revision"] = commit_hash.strip()
@@ -975,6 +1008,23 @@ def _force_stall_for_tests(repo_id: str, repo_type: str) -> None:
         time.sleep(3600)
 
 
+def _progress_class(heartbeat: str | None) -> type | None:
+    if not heartbeat:
+        return None
+    from huggingface_hub.utils import tqdm as hf_tqdm
+    from hub.utils.download_heartbeat import HeartbeatWriter
+
+    writer = HeartbeatWriter(heartbeat)
+
+    class _Heartbeat(hf_tqdm):
+        def update(self, n = 1):
+            if n and n > 0:
+                writer.add(int(n))
+            return super().update(n)
+
+    return _Heartbeat
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
     parser.add_argument("--repo-id", required = True)
@@ -987,6 +1037,7 @@ def main() -> None:
         default = None,
         help = "Temp JSON file holding a scoped job's exact file list (deleted after reading).",
     )
+    parser.add_argument("--heartbeat", default = None)
     args = parser.parse_args()
 
     scoped_files: list[str] = []
@@ -1002,24 +1053,25 @@ def main() -> None:
                 pass
 
     _install_signal_handlers()
-    _install_parent_death_watchdog(args.parent_pid)
+    _install_parent_death_watchdog(args.parent_pid, args.heartbeat)
 
     hf_token = os.environ.get("HF_TOKEN") or None
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")
 
+    progress = _progress_class(args.heartbeat)
     try:
         if args.dataset:
-            _download_dataset(args.repo_id, hf_token, args.transport)
+            _download_dataset(args.repo_id, hf_token, args.transport, progress)
         elif scoped_files:
             _download_scoped_snapshot(
-                args.repo_id, args.variant, scoped_files, hf_token, args.transport
+                args.repo_id, args.variant, scoped_files, hf_token, args.transport, progress
             )
         elif args.variant:
-            _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport)
+            _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport, progress)
         else:
-            _download_snapshot(args.repo_id, hf_token, args.transport)
+            _download_snapshot(args.repo_id, hf_token, args.transport, progress)
         sys.exit(0)
     except SystemExit:
         raise

@@ -39,13 +39,15 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useSettingsDialogStore } from "@/features/settings";
+import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
 
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
   type ProviderAuthStatus,
-  type ProviderApiType,
+  type ConnectionApiType,
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
@@ -56,6 +58,10 @@ import {
   updateProviderConfig,
 } from "./api/providers-api";
 
+import {
+  type CustomReasoningConfig,
+  normalizeCustomReasoningConfig,
+} from "./custom-reasoning";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
@@ -67,11 +73,14 @@ import {
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+  connectionApiFields,
   getExternalProviderApiKey,
   isCustomProviderType,
+  isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
+  learnCatalogModelCapabilities,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
@@ -80,7 +89,10 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
-import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  providerSavesInFlight,
+  useExternalProvidersStore,
+} from "./stores/external-providers-store";
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
@@ -128,6 +140,12 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
         "Ensure the vLLM server is running and models are loaded, then reload — or enter model IDs manually below.",
     },
   };
+
+const SYSTEM_ONE_EMPTY_CATALOG_HINT = {
+  title: "No decision models found on this server.",
+  description:
+    "Type the model name in the box below. For another Unsloth server, type default.",
+};
 
 function emptyCatalogHint(providerType: string): {
   title: string;
@@ -249,13 +267,14 @@ export function ChatProvidersSettings({
   // first sync cannot pull them back into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
+  const t = useT();
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
 
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
-  const [apiType, setApiType] = useState<ProviderApiType>("chat_completions");
+  const [apiType, setApiType] = useState<ConnectionApiType>("chat_completions");
   const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [editingBackendProviderType, setEditingBackendProviderType] = useState<
     string | null
@@ -279,6 +298,9 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
+  const [autoReloadModels, setAutoReloadModels] = useState(false);
+  const modelFieldsAtOpenRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -287,18 +309,29 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const decisionsOnly = isDecisionConnection({
+    providerType,
+    decisionsOnly: apiType === "systemone",
+  });
   // a connection being created has no stored type yet, so only the UI type can decide
   const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
-  );
+  ) && !decisionsOnly;
   // llama.cpp hides the key field. Ollama and vLLM show an optional key: Ollama cloud and
   // secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
+  // Legacy OpenAI rows also appear as Custom in the UI, but must not gain this opt-in.
+  const isCustomReasoningConnection =
+    providerType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+    (!editingProviderId || editingBackendProviderType === "custom");
+  const showCustomReasoning =
+    isCustomReasoningConnection && apiType === "chat_completions";
   // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
+    !decisionsOnly &&
     providerModelSupportsStudioTools(
       toExternalBackendProviderType(providerType),
       null,
@@ -400,6 +433,7 @@ export function ChatProvidersSettings({
     seededProviderTypeRef.current = providerType;
     setMaxOutputTokensDraft("");
     setApiType("chat_completions");
+    setReasoningConfig(null);
     setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
@@ -413,7 +447,11 @@ export function ChatProvidersSettings({
     // cloud providers and local OpenAI-compat presets stay empty until "Load available models".
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
-    setSelectedModelIds([]);
+    setSelectedModelIds(
+      isDecisionConnection({ providerType })
+        ? entry.default_models.slice(0, 1)
+        : [],
+    );
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -521,6 +559,7 @@ export function ChatProvidersSettings({
     setBaseUrlDraft("");
     setMaxOutputTokensDraft("");
     setApiType("chat_completions");
+    setReasoningConfig(null);
     setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
@@ -528,6 +567,8 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setAutoReloadModels(false);
+    modelFieldsAtOpenRef.current = null;
   }
 
   function openAddProvider() {
@@ -535,6 +576,9 @@ export function ChatProvidersSettings({
     const entry = providerType ? registryByType.get(providerType) : null;
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
+    }
+    if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
+      setSelectedModelIds(entry.default_models.slice(0, 1));
     }
     autoOpenedAddFormRef.current = true;
     setPage("form");
@@ -601,9 +645,12 @@ export function ChatProvidersSettings({
       }
       return null;
     }
-    return parseOptionalBaseUrl(trimmed, {
+    const baseUrl = parseOptionalBaseUrl(trimmed, {
       appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
     });
+    return apiType === "systemone"
+      ? (baseUrl?.replace(/\/systemone$/, "") ?? null)
+      : baseUrl;
   }
 
   function parseMaxOutputTokens(input: string): number | null {
@@ -690,6 +737,8 @@ export function ChatProvidersSettings({
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
+      // The picker keeps only ids, so per-model capabilities are learned here or lost.
+      learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);
@@ -708,7 +757,10 @@ export function ChatProvidersSettings({
         prev.filter((id) => modelIds.includes(id)),
       );
       if (modelIds.length === 0) {
-        const hint = emptyCatalogHint(providerType);
+        const hint =
+          providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"
+            ? SYSTEM_ONE_EMPTY_CATALOG_HINT
+            : emptyCatalogHint(providerType);
         toast.info(hint.title, { description: hint.description });
       } else {
         toast.success(
@@ -762,7 +814,7 @@ export function ChatProvidersSettings({
         providerType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
-        apiType: created.api_type ?? "chat_completions",
+        ...connectionApiFields(created.api_type),
         models,
         availableModels: available,
         hasApiKey: created.has_api_key,
@@ -870,6 +922,9 @@ export function ChatProvidersSettings({
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens,
+        reasoningConfig: isCustomReasoningConnection
+          ? (showCustomReasoning ? reasoningConfig : null)
+          : undefined,
         apiKey: apiKey.trim(),
 
       });
@@ -889,17 +944,22 @@ export function ChatProvidersSettings({
         backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
-        apiType: created.api_type ?? "chat_completions",
+        ...connectionApiFields(created.api_type),
         models: modelsToSave,
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
         maxOutputTokens: created.max_output_tokens ?? undefined,
+        reasoningConfig: created.provider_type === "custom"
+          ? normalizeCustomReasoningConfig(created.reasoning_config)
+          : undefined,
 
         hasApiKey: created.has_api_key,
 
         authKind: created.auth_kind,
         authStatus: created.auth_status,
+        autoReloadModels:
+          uiProviderType === "llama_cpp" ? autoReloadModels : undefined,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
@@ -907,14 +967,27 @@ export function ChatProvidersSettings({
         updatedAt,
       };
       onProvidersChange([
-        ...providers.filter((p) => p.id !== created.id),
+        ...useExternalProvidersStore.getState().providers.filter((p) => p.id !== created.id),
         provider,
       ]);
       void refreshProviderModelCatalogs([provider]);
       resetForm();
       autoOpenedAddFormRef.current = true;
       setPage("list");
-      toast.success("Connection added.");
+      toast.success(
+        "Connection added.",
+        isDecisionConnection(provider)
+          ? {
+              action: {
+                label: "Use it for the Decision API",
+                onClick: () =>
+                  useSettingsDialogStore.getState().openDialog("api-keys", {
+                    scrollTarget: "api-keys-decision-api",
+                  }),
+              },
+            }
+          : undefined,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to add connection: ${message}`);
@@ -998,7 +1071,16 @@ export function ChatProvidersSettings({
         return;
       }
     }
+    // Untouched model fields are left out of the save, so an auto reload landing before or during it stands.
+    const keepSavedModels =
+      existing.providerType === "llama_cpp" &&
+      modelFieldsAtOpenRef.current ===
+        JSON.stringify([selectedModelIds, manualIds, availableModels]);
+    const availableModelsToSave = manualOnly
+      ? []
+      : pruneProviderModelIds(existing.providerType, availableModels);
     setMutatingProvider(true);
+    providerSavesInFlight.add(editingProviderId);
     try {
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
@@ -1015,11 +1097,12 @@ export function ChatProvidersSettings({
           : existing.name,
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
-        models: modelsToSave,
-        availableModels: manualOnly
-          ? []
-          : pruneProviderModelIds(existing.providerType, availableModels),
+        models: keepSavedModels ? undefined : modelsToSave,
+        availableModels: keepSavedModels ? undefined : availableModelsToSave,
         maxOutputTokens,
+        reasoningConfig: isCustomReasoningConnection
+          ? (showCustomReasoning ? reasoningConfig : null)
+          : undefined,
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -1041,14 +1124,21 @@ export function ChatProvidersSettings({
         backendProviderType: updated.provider_type,
         name: updated.display_name,
         baseUrl: updated.base_url ?? "",
-        apiType: updated.api_type ?? "chat_completions",
-        models: modelsToSave,
-        availableModels: manualOnly
-          ? []
-          : pruneProviderModelIds(existing.providerType, availableModels),
+        ...connectionApiFields(updated.api_type),
+        models: keepSavedModels
+          ? (updated.models?.length ? updated.models : existing.models)
+          : modelsToSave,
+        availableModels: keepSavedModels
+          ? (updated.available_models?.length ? updated.available_models : existing.availableModels)
+          : availableModelsToSave,
         maxOutputTokens: updated.max_output_tokens ?? undefined,
+        reasoningConfig: updated.provider_type === "custom"
+          ? normalizeCustomReasoningConfig(updated.reasoning_config)
+          : undefined,
 
         hasApiKey: updated.has_api_key,
+        autoReloadModels:
+          existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
         isReasoningModel: supportsProviderReasoningToggle(
           existing.providerType,
         )
@@ -1056,8 +1146,9 @@ export function ChatProvidersSettings({
           : undefined,
         updatedAt,
       };
+      // Live store, not the render snapshot: auto reload may have written during the await.
       onProvidersChange(
-        providers.map((provider) =>
+        useExternalProvidersStore.getState().providers.map((provider) =>
           provider.id === editingProviderId ? editedProvider : provider,
         ),
       );
@@ -1070,6 +1161,7 @@ export function ChatProvidersSettings({
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to update connection: ${message}`);
     } finally {
+      providerSavesInFlight.delete(editingProviderId);
       setMutatingProvider(false);
     }
   }
@@ -1151,7 +1243,19 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
-    setApiType(provider.apiType ?? "chat_completions");
+    setAutoReloadModels(provider.autoReloadModels === true);
+    modelFieldsAtOpenRef.current = null;
+    setApiType(
+      provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
+    );
+    setReasoningConfig(
+      provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE &&
+      provider.backendProviderType === "custom" &&
+      !provider.decisionsOnly &&
+      (provider.apiType ?? "chat_completions") === "chat_completions"
+        ? (normalizeCustomReasoningConfig(provider.reasoningConfig) ?? null)
+        : null,
+    );
     // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under one would
     // fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
@@ -1189,12 +1293,11 @@ export function ChatProvidersSettings({
       ]);
       setAvailableModels(catalogModels);
       const catalogSet = new Set(catalogModels);
-      setSelectedModelIds(
-        provider.models.filter((model) => catalogSet.has(model)),
-      );
-      setManualModelIds(
-        provider.models.filter((model) => !catalogSet.has(model)).join("\n"),
-      );
+      const selected = provider.models.filter((model) => catalogSet.has(model));
+      const manual = provider.models.filter((model) => !catalogSet.has(model));
+      setSelectedModelIds(selected);
+      setManualModelIds(manual.join("\n"));
+      modelFieldsAtOpenRef.current = JSON.stringify([selected, manual, catalogModels]);
       return;
     }
     if (provider.authKind === "chatgpt_oauth") {
@@ -1262,7 +1365,9 @@ export function ChatProvidersSettings({
       await deleteProviderConfig(providerId);
       removeExternalProviderApiKey(providerId);
       onProvidersChange(
-        providers.filter((provider) => provider.id !== providerId),
+        useExternalProvidersStore.getState().providers.filter(
+          (provider) => provider.id !== providerId,
+        ),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -1310,9 +1415,10 @@ export function ChatProvidersSettings({
         providerId: provider.id,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
-        apiType: provider.apiType,
+        apiType: provider.decisionsOnly ? "systemone" : provider.apiType,
         modelId:
-          provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
+          provider.providerType === LEGACY_CUSTOM_PROVIDER_TYPE ||
+          isDecisionConnection(provider)
             ? (provider.models[0] ?? null)
             : null,
       });
@@ -1387,6 +1493,7 @@ export function ChatProvidersSettings({
                   onValueChange={(value) => {
                     if (editingProviderId) return;
                     setProviderType(value);
+                    setReasoningConfig(null);
                     setAvailableModels([]);
                     setSelectedModelIds([]);
                     setManualModelIds("");
@@ -1560,7 +1667,10 @@ export function ChatProvidersSettings({
                   </div>
                   <Select
                     value={apiType}
-                    onValueChange={(value) => setApiType(value as ProviderApiType)}
+                    onValueChange={(value) => {
+                      setApiType(value as ConnectionApiType);
+                      if (value !== "chat_completions") setReasoningConfig(null);
+                    }}
                   >
                     <SelectTrigger id="provider-api-type" className="h-9 w-full text-sm">
                       <SelectValue />
@@ -1568,6 +1678,7 @@ export function ChatProvidersSettings({
                     <SelectContent>
                       <SelectItem value="chat_completions">OpenAI Chat Completions</SelectItem>
                       <SelectItem value="responses">OpenAI Responses</SelectItem>
+                      <SelectItem value="systemone">System One (decisions)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1583,7 +1694,9 @@ export function ChatProvidersSettings({
                       Base URL
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
-                      OpenAI-compatible endpoint.
+                      {decisionsOnly
+                        ? "Up to the version, such as /v1. Studio adds /systemone."
+                        : "OpenAI-compatible endpoint."}
                     </p>
                   </div>
                   <Input
@@ -1652,6 +1765,97 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {providerType === "llama_cpp" ? (
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-auto-reload-models"
+                      className="text-sm font-medium"
+                    >
+                      Reload models automatically on connect
+                    </Label>
+                    <p
+                      id="provider-auto-reload-models-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Refresh once on connect and after a disconnect while Studio is open.
+                      New model IDs are enabled automatically. Saved in this browser.
+                    </p>
+                  </div>
+                  <Switch
+                    id="provider-auto-reload-models"
+                    checked={autoReloadModels}
+                    onCheckedChange={setAutoReloadModels}
+                    aria-describedby="provider-auto-reload-models-help"
+                  />
+                </div>
+              ) : null}
+              {showCustomReasoning ? (
+                <>
+                  <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
+                        Reasoning support
+                      </Label>
+                      <p id="provider-reasoning-support-help" className="text-xs leading-snug text-muted-foreground">
+                        Opt in only if this endpoint accepts reasoning controls. Otherwise no reasoning fields are sent.
+                      </p>
+                    </div>
+                    <label htmlFor="provider-reasoning-support" className="flex cursor-pointer items-center gap-2 text-sm">
+                      <Checkbox
+                        id="provider-reasoning-support"
+                        checked={reasoningConfig?.enabled === true}
+                        aria-describedby="provider-reasoning-support-help"
+                        onCheckedChange={(checked) => setReasoningConfig({
+                          enabled: checked === true,
+                          style: reasoningConfig?.style ?? "reasoning_effort",
+                        })}
+                      />
+                      Enable reasoning controls
+                    </label>
+                  </div>
+                  {reasoningConfig?.enabled ? (
+                    <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
+                          Reasoning parameter style
+                        </Label>
+                        <p className="text-xs leading-snug text-muted-foreground">
+                          Choose the request format your endpoint supports.
+                        </p>
+                      </div>
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <Select
+                          value={reasoningConfig.style}
+                          onValueChange={(style) => setReasoningConfig({
+                            enabled: true,
+                            style: style as CustomReasoningConfig["style"],
+                          })}
+                        >
+                          <SelectTrigger id="provider-reasoning-style" className="h-9 w-full text-sm" aria-describedby="provider-reasoning-style-help">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="reasoning_effort">reasoning_effort</SelectItem>
+                            <SelectItem value="reasoning">reasoning (enabled / effort)</SelectItem>
+                            <SelectItem value="thinking">thinking (enabled / disabled)</SelectItem>
+                            <SelectItem value="chat_template_kwargs.enable_thinking">chat_template_kwargs.enable_thinking</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p id="provider-reasoning-style-help" className="text-xs leading-snug text-muted-foreground">
+                          {reasoningConfig.style === "reasoning_effort"
+                            ? 'Thinking off sends reasoning_effort: "none".'
+                            : reasoningConfig.style === "reasoning"
+                              ? "Thinking off sends reasoning: { enabled: false }."
+                              : reasoningConfig.style === "thinking"
+                                ? 'Thinking off sends thinking: { type: "disabled" }.'
+                                : "Thinking off sends chat_template_kwargs: { enable_thinking: false }."}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
@@ -1859,7 +2063,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -1948,7 +2152,7 @@ export function ChatProvidersSettings({
                             </Button>
                           </div>
                         </div>
-                        <ul className="max-h-56 overflow-y-auto rounded-md border border-border/70 bg-background/50">
+                        <ul className="max-h-56 overflow-y-auto scroll-rounded rounded-md border border-border/70 bg-background/50">
                           {filteredAvailableModels.length === 0 ? (
                             <li className="px-3 py-3 text-xs text-muted-foreground">
                               No matching models
@@ -2050,7 +2254,7 @@ export function ChatProvidersSettings({
       <header className="flex min-w-0 flex-col gap-1 pr-8">
         <h1 className="text-xl font-semibold font-heading">Connections</h1>
         <p className="text-xs text-muted-foreground">
-          Manage model connections for chat.
+          Manage model connections for chat and the Decision API.
         </p>
       </header>
 
@@ -2136,6 +2340,11 @@ export function ChatProvidersSettings({
                             {provider.models.length}{" "}
                             {provider.models.length === 1 ? "model" : "models"}
                           </span>
+                          {isDecisionConnection(provider) ? (
+                            <span className="shrink-0 rounded-full border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
+                              {t("settings.apiKeys.decisionApi.title")}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-0.5 truncate text-xs text-muted-foreground">
                           <span>{providerLabel}</span>

@@ -4,6 +4,8 @@
 // Real runtime, focus handling, footer, timestamp and stylesheet. Only message
 // data and the unrelated action handlers are fixtures; no backend is needed.
 import {
+  ActionBarMorePrimitive,
+  ActionBarPrimitive,
   AssistantRuntimeProvider,
   MessagePrimitive,
   ThreadPrimitive,
@@ -101,6 +103,33 @@ function Assistant() {
     </MessagePrimitive.Root>
   );
 }
+function PopupAssistant() {
+  const reveal = useActionBarFocusReveal();
+  return (
+    <MessagePrimitive.Root
+      className="aui-assistant-message-root"
+      tabIndex={0}
+      {...reveal}
+    >
+      <MessagePrimitive.Parts />
+      <ActionBarPrimitive.Root
+        autohide="always"
+        className="aui-assistant-action-bar-root"
+      >
+        <ActionBarMorePrimitive.Root modal={false}>
+          <ActionBarMorePrimitive.Trigger>More</ActionBarMorePrimitive.Trigger>
+          <ActionBarMorePrimitive.Content
+            onCloseAutoFocus={(event) => event.preventDefault()}
+          >
+            <ActionBarMorePrimitive.Item>
+              Menu action
+            </ActionBarMorePrimitive.Item>
+          </ActionBarMorePrimitive.Content>
+        </ActionBarMorePrimitive.Root>
+      </ActionBarPrimitive.Root>
+    </MessagePrimitive.Root>
+  );
+}
 declare global {
   interface Window {
     messageTimeFixture: {
@@ -148,7 +177,12 @@ function App() {
             className="aui-thread-viewport min-w-0 overflow-auto px-5"
           >
             <ThreadPrimitive.Messages
-              components={{ UserMessage: User, AssistantMessage: Assistant }}
+              components={{
+                UserMessage: User,
+                AssistantMessage: params.has("popup")
+                  ? PopupAssistant
+                  : Assistant,
+              }}
             />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>

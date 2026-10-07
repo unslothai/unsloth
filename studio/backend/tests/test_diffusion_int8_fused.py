@@ -28,6 +28,35 @@ needs_cuda = pytest.mark.skipif(
 )
 
 
+def _cuda_int8_toolchain() -> bool:
+    """The probe's prerequisites without the probe: on such a host a refused probe is a failure, not a skip."""
+    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        return False
+    try:
+        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return fused._triton_version_ok() and fused._triton_jit_toolchain_ok()
+
+
+@pytest.mark.skipif(
+    not _cuda_int8_toolchain(), reason = "needs CUDA (not ROCm), Triton >= 3.2, torchao"
+)
+def test_device_probe_accepts_this_torchao():
+    fused._device_ok.cache_clear()
+    assert fused._device_ok(torch.cuda.current_device())
+
+
+def _int8_config():
+    """Studio's int8 config as an ``Int8Tensor`` (0.17 defaults to the legacy tensor), no process-wide setter."""
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if hasattr(cfg, "version"):
+        cfg.version = 2
+    return cfg
+
+
 def _require_int8tensor(module):
     """Skip when the torchao (<= 0.17) int8 config builds the legacy tensor: the fused path then keeps stock."""
     for m in module.modules():
@@ -45,6 +74,42 @@ def _require_int8tensor(module):
 def _clean_env(monkeypatch):
     monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
     yield
+
+
+def test_int_mm_finds_safe_int_mm_after_torchao_kernel_was_removed(monkeypatch):
+    """torchao main moved ``safe_int_mm`` out of ``torchao.kernel.intmm`` (and deleted ``torchao.kernel``):
+    the fused forwards must find it in its new home, not fail every int8 render with ModuleNotFoundError."""
+    import sys
+    import types
+
+    calls = []
+    new_home = types.ModuleType("torchao.quantization.quantize_.workflows.int8.kernels")
+    new_home.safe_int_mm = lambda a, b: calls.append((a, b)) or "out"
+    monkeypatch.setitem(sys.modules, "torchao.kernel", None)
+    monkeypatch.setitem(sys.modules, "torchao.kernel.intmm", None)
+    monkeypatch.setitem(sys.modules, new_home.__name__, new_home)
+    monkeypatch.setattr(fused, "_INTMM_MODULE", None, raising = False)
+    weight = types.SimpleNamespace(qdata = torch.ones(3, 2, dtype = torch.int8))
+    a = torch.ones(4, 2, dtype = torch.int8)
+    assert fused._int_mm(a, weight) == "out"
+    assert len(calls) == 1 and calls[0][0] is a and tuple(calls[0][1].shape) == (2, 3)
+
+
+def test_int_mm_prefers_the_released_home(monkeypatch):
+    """torchao <= 0.18 keeps ``torchao.kernel.intmm``: it wins over any other copy, so the capture-safe rebinding
+    Studio installs there is the one that runs."""
+    import sys
+    import types
+
+    old_home = types.ModuleType("torchao.kernel.intmm")
+    old_home.safe_int_mm = lambda a, b: "old"
+    new_home = types.ModuleType("torchao.quantization.quantize_.workflows.int8.kernels")
+    new_home.safe_int_mm = lambda a, b: "new"
+    monkeypatch.setitem(sys.modules, "torchao.kernel.intmm", old_home)
+    monkeypatch.setitem(sys.modules, new_home.__name__, new_home)
+    monkeypatch.setattr(fused, "_INTMM_MODULE", None, raising = False)
+    weight = types.SimpleNamespace(qdata = torch.ones(3, 2, dtype = torch.int8))
+    assert fused._int_mm(torch.ones(4, 2, dtype = torch.int8), weight) == "old"
 
 
 @pytest.mark.parametrize(
@@ -97,16 +162,23 @@ def _rand_inputs(
     ws_dtype = torch.float32,
     bias = True,
     seed = 0,
+    xs_dtype = torch.float32,
 ):
     g = torch.Generator(device = "cpu").manual_seed(seed)
     c = torch.randint(-(2**20), 2**20, (m, n), generator = g, dtype = torch.int32).cuda()
-    xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).float().cuda()
+    xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).to(xs_dtype).cuda()
     ws = (torch.rand(n, generator = g) * 1e-4 + 1e-6).to(ws_dtype).cuda()
     b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).cuda() if bias else None
     return c, xs, ws, b
 
 
+_XS_DTYPES = pytest.mark.parametrize(
+    "xs_dtype", [torch.float32, torch.bfloat16], ids = ["xs_fp32", "xs_bf16"]
+)
+
+
 @needs_cuda
+@_XS_DTYPES
 @pytest.mark.parametrize(
     "m, n, ws_dtype, bias",
     [
@@ -116,18 +188,20 @@ def _rand_inputs(
         (17, 8, torch.float32, True),  # smallest eligible
     ],
 )
-def test_kernel_bit_exact_vs_eager_reference(m, n, ws_dtype, bias):
-    c, xs, ws, b = _rand_inputs(m, n, ws_dtype = ws_dtype, bias = bias)
+def test_kernel_bit_exact_vs_eager_reference(m, n, ws_dtype, bias, xs_dtype):
+    c, xs, ws, b = _rand_inputs(m, n, ws_dtype = ws_dtype, bias = bias, xs_dtype = xs_dtype)
     q, s = fused._launch(c, xs, ws, b, None)
     q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
+    assert s.dtype == s_ref.dtype == xs_dtype
     assert torch.equal(s, s_ref)
     assert torch.equal(q, q_ref)
 
 
 @needs_cuda
-def test_kernel_small_activations_take_the_exact_amax_path():
+@_XS_DTYPES
+def test_kernel_small_activations_take_the_exact_amax_path(xs_dtype):
     # Every pre-activation negative: max|gelu| comes from the negative lobe, not gelu(max y).
-    c, xs, ws, b = _rand_inputs(256, 1024, bias = False)
+    c, xs, ws, b = _rand_inputs(256, 1024, bias = False, xs_dtype = xs_dtype)
     c = -c.abs() - 1
     q, s = fused._launch(c, xs, ws, b, None)
     q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
@@ -135,10 +209,11 @@ def test_kernel_small_activations_take_the_exact_amax_path():
 
 
 @needs_cuda
+@_XS_DTYPES
 @pytest.mark.parametrize("transposed", [False, True])
-def test_kernel_prefix_segment(transposed):
+def test_kernel_prefix_segment(transposed, xs_dtype):
     bsz, seq, heads, hd, n = 2, 300, 4, 64, 1024
-    c, xs, ws, b = _rand_inputs(bsz * seq, n)
+    c, xs, ws, b = _rand_inputs(bsz * seq, n, xs_dtype = xs_dtype)
     if transposed:  # SDPA output layout [B, H, S, D] seen as [B, S, H, D]
         prefix = (
             (torch.randn(bsz, heads, seq, hd, device = "cuda") * 3).to(torch.bfloat16).transpose(1, 2)
@@ -157,7 +232,7 @@ def _quantized_ff(
     seed = 0,
 ):
     FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     torch.manual_seed(seed)
     ff = (
@@ -168,7 +243,7 @@ def _quantized_ff(
     )
     for p in ff.parameters():
         p.data.normal_(0, 0.05)
-    quantize_(ff, Int8DynamicActivationInt8WeightConfig())
+    quantize_(ff, _int8_config())
     return _require_int8tensor(ff)
 
 
@@ -235,7 +310,7 @@ def test_uninstall_restores_stock_forward():
 @needs_cuda
 def test_flux_single_block_bit_identical_to_stock_eager():
     tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     torch.manual_seed(0)
     blk = (
@@ -248,7 +323,7 @@ def test_flux_single_block_bit_identical_to_stock_eager():
         p.data.normal_(0, 0.05)
     quantize_(
         blk,
-        Int8DynamicActivationInt8WeightConfig(),
+        _int8_config(),
         filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "norm" not in fqn,
     )
     _require_int8tensor(blk)
@@ -263,22 +338,123 @@ def test_flux_single_block_bit_identical_to_stock_eager():
 
 
 @needs_cuda
+@_XS_DTYPES
 @pytest.mark.parametrize(
     "m, n, gate_col, value_col", [(4352, 10240, 0, 10240), (300, 1024, 1024, 0), (17, 64, 0, 64)]
 )
-def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col):
-    c, xs, ws, b = _rand_inputs(m, 2 * n, bias = False)
+def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col, xs_dtype):
+    c, xs, ws, b = _rand_inputs(m, 2 * n, bias = False, xs_dtype = xs_dtype)
     q, s = fused._launch_swiglu(c, xs, ws, None, gate_col, value_col, n)
     q_ref, s_ref = fused.reference_dq_swiglu_quant(c, xs, ws, None, gate_col, value_col, n)
+    assert s.dtype == s_ref.dtype == xs_dtype
     assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
 
 
+def _bf16_tie_ints(m, n, seed):
+    """int32 accumulators in [2^24, 2^30) within one fp32 ulp of a bf16 rounding midpoint, both signs."""
+    g = torch.Generator(device = "cpu").manual_seed(seed)
+    e = torch.randint(24, 30, (m, n), generator = g, dtype = torch.int64)
+    one = torch.ones_like(e)
+    mid = (
+        torch.bitwise_left_shift(one, e)
+        + torch.randint(0, 128, (m, n), generator = g, dtype = torch.int64)
+        * torch.bitwise_left_shift(one, e - 7)
+        + torch.bitwise_left_shift(one, e - 8)
+    )
+    half_ulp = torch.bitwise_left_shift(one, e - 24)
+    off = torch.randint(-1, 2, (m, n), generator = g, dtype = torch.int64) * half_ulp
+    off = off + torch.randint(-1, 2, (m, n), generator = g, dtype = torch.int64)
+    sign = torch.randint(0, 2, (m, n), generator = g, dtype = torch.int64) * 2 - 1
+    return ((mid + off) * sign).to(torch.int32).cuda()
+
+
+def _double_rounding_hits(c):
+    """How many int32 values round differently int32 -> bf16 directly (exact RNE in int64) than via fp32 (torch)."""
+    v = c.cpu().to(torch.int64)
+    a = v.abs()
+    e = torch.floor(torch.log2(a.double().clamp(min = 1))).to(torch.int64)
+    shift = (e - 7).clamp(min = 1)
+    one = torch.ones_like(a)
+    q = torch.bitwise_right_shift(a, shift)
+    r = a - torch.bitwise_left_shift(q, shift)
+    half = torch.bitwise_left_shift(one, shift - 1)
+    q = q + ((r > half) | ((r == half) & (q % 2 == 1))).to(torch.int64)
+    single = torch.bitwise_left_shift(q, shift) * v.sign()
+    double = c.cpu().float().to(torch.bfloat16).double().to(torch.int64)
+    return int((single != double)[a >= 2**24].sum())
+
+
+@needs_cuda
+@_XS_DTYPES
+def test_kernels_round_large_accumulators_like_torchao(xs_dtype):
+    m, n = 64, 2048
+    c = _bf16_tie_ints(m, n, 3)
+    assert _double_rounding_hits(c) > 100  # the inputs do reach the case
+    _, xs, ws, b = _rand_inputs(m, n, xs_dtype = xs_dtype)
+    xs = (xs * 2**-10).to(xs_dtype)  # |c * xs| stays O(1-100): GELU / SiLU in their curved range
+    q, s = fused._launch(c, xs, ws, b, None)
+    q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
+    assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
+    q, s = fused._launch_swiglu(c, xs, ws, b, n // 2, 0, n // 2)
+    q_ref, s_ref = fused.reference_dq_swiglu_quant(c, xs, ws, b, n // 2, 0, n // 2)
+    assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
+
+
+@needs_cuda
+def test_gelu_rounds_every_bf16_input_like_aten():
+    assert fused._gelu_matches_aten(torch.device("cuda", torch.cuda.current_device()))
+
+
+@needs_cuda
+def test_epilogue_rounds_scale_product_and_bias_separately():
+    assert fused._epilogue_matches_torchao(
+        torch.device("cuda", torch.cuda.current_device()), 4101, 3000
+    )
+
+
+@needs_cuda
+def test_reference_act_quant_is_torchao_own():
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    g = torch.Generator(device = "cpu").manual_seed(5)
+    h = torch.randn(300, 3072, generator = g) * (torch.rand(1, 3072, generator = g) * 6)
+    h[:, :4] *= 80
+    h[7] = 0
+    h = h.to(torch.bfloat16).cuda()
+    t = Int8Tensor.from_hp(h, PerRow())
+    q, s = fused._reference_act_quant(h, t.scale.dtype)
+    assert torch.equal(q, t.qdata) and torch.equal(s, t.scale.reshape(-1))
+
+
+@needs_cuda
+@_XS_DTYPES
+def test_fake_ops_report_the_real_scale_dtype(xs_dtype):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    c, xs, ws, b = _rand_inputs(40, 256, xs_dtype = xs_dtype)
+    op = fused._op()
+    real = (op.gelu(c, xs, ws, b, None)[1], op.swiglu(c, xs, ws, b, 128, 0, 128)[1])
+    with FakeTensorMode() as mode:
+        fc, fxs, fws, fb = (mode.from_tensor(t) for t in (c, xs, ws, b))
+        fake = (op.gelu(fc, fxs, fws, fb, None)[1], op.swiglu(fc, fxs, fws, fb, 128, 0, 128)[1])
+    assert [t.dtype for t in fake] == [t.dtype for t in real] == [xs_dtype, xs_dtype]
+
+
+@needs_cuda
+def test_quantizing_leaves_fp32_matmul_precision_alone():
+    # The default handler's recommended_inductor_config_setter() turns on TF32 process-wide; Studio opts out.
+    before = torch.get_float32_matmul_precision()
+    _quantized_ff()
+    assert torch.get_float32_matmul_precision() == before
+
+
 def _quantize(module):
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     for p in module.parameters():
         p.data.normal_(0, 0.05)
-    quantize_(module, Int8DynamicActivationInt8WeightConfig())
+    quantize_(module, _int8_config())
     return _require_int8tensor(module)
 
 
@@ -606,7 +782,7 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
 
     tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
     hooks = pytest.importorskip("diffusers.hooks")
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     torch.manual_seed(0)
     model = (
@@ -629,7 +805,7 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
         p.data.normal_(0, 0.05)
     quantize_(
         model,
-        Int8DynamicActivationInt8WeightConfig(),
+        _int8_config(),
         filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear)
         and "single_transformer_blocks" in fqn
         and "norm" not in fqn,
@@ -663,3 +839,226 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
     out = run(model)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
     assert all(fused.is_installed(b) for b in model.single_transformer_blocks)
+
+
+def _zimage_convrot_ff(rotate):
+    """Z-Image FeedForward(256, 512) with ``rotate`` of w1 / w2 / w3 ConvRot-rotated at group 256, then int8."""
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
+
+    zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
+    torch.manual_seed(0)
+    ff = zmod.FeedForward(256, 512).cuda().to(torch.bfloat16).eval()
+    for p in ff.parameters():
+        p.data.normal_(0, 0.05)
+    rotate_linears_(ff, list(rotate), 256)
+    warm_rotation_cache(ff, "cuda", torch.bfloat16)
+    quantize_(ff, _int8tensor_config(Int8DynamicActivationInt8WeightConfig))
+    return _require_int8tensor(ff)
+
+
+def _int8tensor_config(cls):
+    """The Int8Tensor (v2) config the hosted int8 checkpoints carry; torchao <= 0.17 defaults to the legacy tensor."""
+    try:
+        return cls(version = 2)
+    except TypeError:
+        return cls()
+
+
+def _outlier_input():
+    g = torch.Generator(device = "cpu").manual_seed(3)
+    x = torch.randn(2, 150, 256, generator = g)
+    x[..., :4] *= 40  # a few heavy channels: what the rotation exists for
+    return x.to(torch.bfloat16).cuda()
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "rotate, groups",
+    [(("w1", "w2", "w3"), (256, 256)), (("w1", "w3"), (256, 0)), (("w2",), (0, 256))],
+)
+def test_zimage_convrot_swiglu_fuses_and_matches_stock_eager(rotate, groups):
+    if not groups[1] and not _act_scale_is_fp32():
+        # A plain w2 runs the SwiGLU kernel's own quant, which matches torchao's fp32-scale act quant (>= 0.18) only;
+        # this is the kernel's existing contract, unchanged here (the all-rotated MLP never reaches that quant).
+        pytest.skip(
+            "the fused SwiGLU kernel's act quant matches torchao >= 0.18 (fp32 activation scale) only"
+        )
+    ff = _zimage_convrot_ff(rotate)
+    x = _outlier_input()
+    with torch.no_grad():
+        ref = ff(x)
+        torch._dynamo.reset()
+        stock_compiled = torch.compile(ff, fullgraph = True)(x)
+        assert fused.install(ff) == 1
+        assert ff.__dict__[fused._SWIGLU_ATTR][6:] == groups
+        out = ff(x)
+        torch._dynamo.reset()
+        compiled = torch.compile(ff, fullgraph = True)(x)
+    # one rotation + one act quant for w1 and w3 instead of two of each: the same ops on the same input
+    assert torch.equal(out, ref)
+    _assert_within_compile_floor(compiled, stock_compiled, ref)
+
+
+@needs_cuda
+def test_zimage_convrot_swiglu_with_disagreeing_gate_and_value_keeps_stock():
+    ff = _zimage_convrot_ff(("w1",))  # w3 plain: the two halves no longer share one input
+    assert fused.install(ff) == 0
+    assert not fused.is_installed(ff)
+
+
+def _act_scale_is_fp32() -> bool:
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    x = torch.ones(32, 64, dtype = torch.bfloat16)
+    return Int8Tensor.from_hp(x, PerRow()).scale.dtype == torch.float32
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "m, k", [(4224, 3840), (4224, 10240), (77, 2560), (17, 4096), (40, 4352), (3, 256)]
+)
+def test_act_quant_kernel_is_bit_exact_vs_torchao(m, k):
+    assert fused._act_quant_device_ok(torch.cuda.current_device())
+    g = torch.Generator(device = "cpu").manual_seed(m + k)
+    x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
+    x[:, :5] *= 80
+    x[min(1, m - 1)] = 0
+    x = x.to(torch.bfloat16).cuda()
+    q, s = fused._act_quant_op()(x)
+    rq, rs = fused.reference_act_quant(x)
+    # torchao's own scale dtype: bf16 up to 0.17, fp32 from 0.18
+    assert s.dtype == rs.dtype == (torch.float32 if fused._act_scale_fp32() else torch.bfloat16)
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+    with torch.no_grad():
+        torch._dynamo.reset()
+        cq, cs = torch.compile(lambda t: fused._act_quant_op()(t), fullgraph = True)(x)
+    assert torch.equal(cq, rq) and torch.equal(cs, rs)
+
+
+@needs_cuda
+@pytest.mark.parametrize("fast_quant", [False, True])
+@pytest.mark.parametrize("rotated", [False, True])
+@pytest.mark.parametrize("bias", [False, True])
+def test_int8_linear_equals_the_module_without_the_zero_point_pass(
+    rotated, bias, fast_quant, monkeypatch
+):
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", fused._act_quant_op() if fast_quant else None)
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({torch.cuda.current_device()}))
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
+
+    torch.manual_seed(0)
+    holder = torch.nn.Sequential(torch.nn.Linear(512, 384, bias = bias)).cuda().to(torch.bfloat16)
+    if rotated:
+        rotate_linears_(holder, ["0"], 256)
+        warm_rotation_cache(holder, "cuda", torch.bfloat16)
+    quantize_(holder, _int8tensor_config(Int8DynamicActivationInt8WeightConfig))
+    lin = _require_int8tensor(holder)[0]
+    x = _outlier_input().repeat(1, 1, 2)
+    with torch.no_grad():
+        ref = lin(x)
+        out = fused.int8_linear(lin, x)
+        torch._dynamo.reset()
+        compiled = torch.compile(lambda t: fused.int8_linear(lin, t), fullgraph = True)(x)
+        stock_compiled = torch.compile(lin, fullgraph = True)(x)
+    assert torch.equal(out, ref)  # y - 0 == y: the dropped term is exactly zero
+    _assert_within_compile_floor(compiled, stock_compiled, ref)
+    # anything it cannot reproduce is the module itself
+    small = x[:, :4]
+    assert torch.equal(fused.int8_linear(lin, small), lin(small))
+
+
+def test_kill_switch_also_drops_the_act_quant_kernel(monkeypatch):
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", object())
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({0}))
+    monkeypatch.setenv(fused.INT8_FUSED_ENV, "0")
+    assert fused.install(torch.nn.Linear(8, 8)) == 0
+    assert fused._ACTQ_HANDLE is None and not fused._ACTQ_DEVICES
+
+
+@needs_cuda
+def test_kill_switch_makes_int8_linear_the_module(monkeypatch):
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    # a Linear int8_linear would otherwise run itself
+    monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
+    monkeypatch.setattr(fused, "_fast_act_quant", reached)
+    lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
+    fused.install(None)
+    with pytest.raises(Reached):
+        fused.int8_linear(lin, x)
+    monkeypatch.setenv(fused.INT8_FUSED_ENV, "0")
+    fused.install(None)
+    assert torch.equal(fused.int8_linear(lin, x), lin(x))
+    monkeypatch.delenv(fused.INT8_FUSED_ENV)
+    fused.install(None)
+    assert fused._LINEAR_OFF is False
+
+
+@needs_cuda
+def test_int8_linear_leaves_offload_hooks_and_off_device_weights_to_the_module(monkeypatch):
+    from accelerate.hooks import ModelHook, add_hook_to_module
+
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    monkeypatch.setattr(fused, "_LINEAR_OFF", False)
+    monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
+    monkeypatch.setattr(fused, "_fast_act_quant", reached)
+    x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+    lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    with pytest.raises(Reached):  # the control: a bare Linear is run by int8_linear itself
+        fused.int8_linear(lin, x)
+
+    calls = []
+
+    class Onload(ModelHook):
+        def pre_forward(self, module, *args, **kwargs):
+            calls.append(module.weight.device.type)
+            module.to("cuda")
+            return args, kwargs
+
+    # a hook runs even when the weight already sits on the input's device
+    hooked = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    add_hook_to_module(hooked, Onload())
+    assert torch.equal(fused.int8_linear(hooked, x), hooked(x)) and calls == ["cuda", "cuda"]
+    # no hook and the weight elsewhere: module(x) (torch's own device error), never the int8 path
+    off_device = torch.nn.Linear(64, 32).to(torch.bfloat16)
+    with pytest.raises(RuntimeError):
+        fused.int8_linear(off_device, x)
+
+
+@needs_cuda
+def test_act_quant_kernel_only_runs_on_a_device_that_passed_its_probe(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", lambda x: calls.append(x) or (x, x[:, 0]))
+    monkeypatch.setattr(fused, "_act_quant", lambda x, w: ("stock", None))
+    x = torch.zeros(32, 256, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({x.device.index + 1}))
+    assert fused._fast_act_quant(x, None) == ("stock", None) and not calls
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({x.device.index}))
+    fused._fast_act_quant(x, None)
+    assert len(calls) == 1
+
+
+def test_int8_linear_leaves_an_installed_int8_gemm_forward_alone(monkeypatch):
+    from core.inference import diffusion_int8_gemm as g8
+
+    assert fused._I8_GEMM_MARK == g8._MARK
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._MARK] = object()  # what diffusion_int8_gemm.install leaves on a swapped Linear
+    lin.forward = lambda x: "int8_gemm forward"
+    assert fused.int8_linear(lin, torch.randn(32, 8)) == "int8_gemm forward"

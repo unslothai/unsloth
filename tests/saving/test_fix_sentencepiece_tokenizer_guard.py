@@ -310,3 +310,52 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
     result = _read_pieces(f"{loaded[-1]}/tokenizer.model")
     assert result.count("X") == 1 and "Y" in result and "aa" in result, result
     assert tok is not None
+
+
+def test_a_scratch_directory_created_by_another_process_is_reused(tmp_path, monkeypatch):
+    """Two processes sharing a working directory both see the scratch dir missing; the
+    second makedirs must not raise. Simulated by reporting the directory absent after
+    another process has already created it."""
+    import unsloth.tokenizer_utils as tokenizer_utils
+
+    _stub_auto_tokenizer(monkeypatch)
+    old, new = _tokenizers()
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+    os.makedirs(location)
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        tokenizer_utils.os.path,
+        "exists",
+        lambda path: False if os.fspath(path) == location else real_exists(path),
+    )
+
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert old.saved_to
+
+
+def test_every_scratch_makedirs_tolerates_an_existing_directory():
+    """convert_to_fast_tokenizer shares the pattern but needs a real slow tokenizer to reach
+    it, so pin the call shape for every makedirs in the module instead."""
+    import ast
+    import inspect
+
+    import unsloth.tokenizer_utils as tokenizer_utils
+
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(tokenizer_utils)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "makedirs"
+    ]
+    assert calls, "no makedirs call found; update this test"
+    racy = [
+        node.lineno
+        for node in calls
+        if not any(
+            kw.arg == "exist_ok" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+            for kw in node.keywords
+        )
+    ]
+    assert not racy, f"makedirs without exist_ok = True at tokenizer_utils.py lines {racy}"

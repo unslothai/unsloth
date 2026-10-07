@@ -12,7 +12,7 @@ import time
 from typing import Any, Mapping, Optional
 
 from utils.reasoning_budget import validate_reasoning_budget_message
-from utils.account_context import OWNER, run_as
+from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
@@ -62,9 +62,13 @@ def _apply_idle_floor(seconds: int) -> int:
     return 0 if seconds <= 0 else max(MIN_AUTO_UNLOAD_IDLE_SECONDS, seconds)
 
 
-def _cached_setting(key: str, default: Any) -> Any:
+def _cached_setting(
+    key: str,
+    default: Any,
+    account: AccountContext = OWNER,
+) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
-    cache_key = (OWNER.account_id, key)
+    cache_key = (account.account_id, key)
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(cache_key)
@@ -72,7 +76,7 @@ def _cached_setting(key: str, default: Any) -> Any:
             return hit[1]
     try:
         from storage.studio_db import get_app_setting
-        stored = run_as(OWNER, get_app_setting, key, None)
+        stored = run_as(account, get_app_setting, key, None)
     except Exception:
         stored = None
     value = default if stored is None else stored
@@ -81,8 +85,8 @@ def _cached_setting(key: str, default: Any) -> Any:
     return value
 
 
-def _invalidate(key: str) -> None:
-    cache_key = (OWNER.account_id, key)
+def _invalidate(key: str, account: AccountContext = OWNER) -> None:
+    cache_key = (account.account_id, key)
     with _cache_lock:
         _cache.pop(cache_key, None)
 
@@ -421,11 +425,22 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
     return parsed
 
 
+_ENGINE_DEFAULTS = {"engine_parallelism": "tensor", "engine_precision": "auto"}
+
+
 def normalize_model_override(
     payload: dict[str, Any], *, keep_empty_extra_args: bool = False
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
+    # The defaults ("tensor", "auto") are not stored: a default-only row would count as an
+    # override, shadow a repository row in auto-switch, and re-tick Remember.
+    if payload.get("engine_parallelism") in ("pipeline", "data"):
+        entry["engine_parallelism"] = payload["engine_parallelism"]
+    if payload.get("engine_precision") in ("bf16", "fp16", "int4", "int8", "fp8"):
+        entry["engine_precision"] = payload["engine_precision"]
+    if payload.get("engine") in ("vllm", "sglang"):
+        entry["engine"] = payload["engine"]
 
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
@@ -508,6 +523,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -571,10 +589,21 @@ def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Op
 
 
 def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> dict[str, Any]:
-    """Map a stored per-model config onto ``LoadRequest`` keyword arguments. Mirrors the UI's load payload (features/chat/api/chat-adapter.ts) so an API auto-switch load and a picker load of the same model produce the same command line. GPU placement is GGUF-only there, so it is gated the same way here: a safetensors model loads through HF auto-placement and must not inherit a hidden GGUF GPU pin."""
+    """Map remembered settings onto the same load options used by the picker.
+
+    GGUF and optional engines accept explicit GPU selection. The default
+    safetensors backend uses automatic placement and must not inherit that pin.
+    """
     if not override:
         return {}
     kwargs: dict[str, Any] = {}
+    if not is_gguf and override.get("engine") in ("vllm", "sglang"):
+        kwargs["engine"] = override["engine"]
+        kwargs["engine_parallelism"] = override.get("engine_parallelism", "tensor")
+        kwargs["engine_precision"] = override.get("engine_precision", "auto")
+        kwargs["load_in_4bit"] = False
+        if override.get("gpu_ids") is not None:
+            kwargs["gpu_ids"] = override["gpu_ids"]
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
@@ -602,6 +631,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
         if override.get(source) is not None:
             kwargs[target] = override[source]
@@ -724,9 +754,20 @@ def _fold_posix_path_variant(value: str) -> str:
 
 
 def get_model_overrides() -> dict[str, dict]:
-    """Per-model launch configs keyed by model id (see normalize_model_override)."""
-    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
-    return raw if isinstance(raw, dict) else {}
+    """Per-model launch configs keyed by model id (see normalize_model_override), from the acting account's studio.db."""
+    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
+    if not isinstance(raw, dict):
+        return {}
+    # Rows saved before engine defaults were dropped (see normalize_model_override) read as
+    # what they mean: those fields unset, and a row holding nothing else absent.
+    cleaned = {}
+    for key, entry in raw.items():
+        if isinstance(entry, dict):
+            entry = {k: v for k, v in entry.items() if _ENGINE_DEFAULTS.get(k, object()) != v}
+            if not entry:
+                continue
+        cleaned[key] = entry
+    return cleaned
 
 
 def get_model_override(model_id: str) -> dict:
@@ -799,11 +840,13 @@ def resolve_override_for_load(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing."""
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine)."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:
             return resolve_model_override_key(key) or key, override
+    if not is_owner_context():
+        return run_as(OWNER, resolve_override_for_load, load_id, alias_id, variant)
     return None, {}
 
 
@@ -900,5 +943,5 @@ def set_model_override(
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )
-    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    _invalidate(MODEL_OVERRIDES_SETTING_KEY, current_account())
     return entry

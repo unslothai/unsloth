@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import os
 import sys
 import threading
@@ -8,7 +9,7 @@ import weakref
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
@@ -286,6 +287,23 @@ def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
     assert int(first.headers["Retry-After"]) >= 1
     assert _post(client).status_code == 503
     assert attempts == ["laya-multilingual"]
+
+
+def test_failed_load_logs_the_underlying_cause(client, monkeypatch, caplog):
+    def fail(checkpoint):
+        try:
+            raise RuntimeError("HIP error: invalid device function")
+        except RuntimeError as exc:
+            raise ModuleNotFoundError("Could not import module 'AutoTokenizer'") from exc
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", fail)
+    with caplog.at_level("WARNING", logger = laya_runtime.__name__):
+        response = _post(client)
+    assert response.status_code == 503
+    assert "HIP error" not in response.json()["detail"]["message"]
+    [record] = [r for r in caplog.records if r.getMessage().startswith("System One load failed")]
+    assert "HIP error: invalid device function" in caplog.text
+    assert record.exc_info is not None
 
 
 def test_settings_never_report_an_install(client):
@@ -1544,8 +1562,8 @@ def test_collate_matches_laya():
 
 def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA GPU")
+    if not torch.cuda.is_available() or torch.version.hip:
+        pytest.skip("needs a CUDA GPU (ROCm never builds graphs)")
     laya = laya_runtime._laya()
     encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
     torch.manual_seed(0)
@@ -1754,3 +1772,311 @@ def test_rocm_never_builds_cuda_graphs(tmp_path, monkeypatch):
     batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
     laya_runtime._run_model(agent, batch)
     assert "_unsloth_graphs" not in agent.__dict__
+
+
+def test_chunks_split_rows_and_trim_padding():
+    torch = pytest.importorskip("torch")
+    lengths = [10, 3, 7, 2, 9]
+    batch = laya_runtime._collate(
+        [{"ids": list(range(2, 2 + n)), "markers": [1], "qtype": 0} for n in lengths], 0
+    )
+    parts = list(laya_runtime._chunks(batch, 20))
+    # 20 // 10 tokens = 2 rows per forward, each trimmed to its own longest row.
+    assert [tuple(p["input_ids"].shape) for p in parts] == [(2, 10), (2, 7), (1, 9)]
+    for name in laya_runtime._INPUTS:
+        if name in ("input_ids", "attention_mask"):
+            continue
+        assert torch.equal(torch.cat([p[name] for p in parts]), batch[name])
+    assert list(laya_runtime._chunks(batch, 10**6)) == [batch]
+    # A row longer than the budget still runs, one row at a time.
+    assert [p["input_ids"].shape[0] for p in laya_runtime._chunks(batch, 4)] == [1] * 5
+
+
+def test_chunked_forward_matches_one_forward(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model({**cfg, "head_layers": 2}, encoder_dir = encoder_dir).eval()
+    agent = SimpleNamespace(model = model, device = torch.device("cpu"), dtype = torch.float32)
+    batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch)))
+    with torch.inference_mode():
+        want = model(*batch.values())[0]
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "cpu", 40)
+    got = laya_runtime._run_model(agent, batch)
+    torch.testing.assert_close(got, want, atol = 1e-5, rtol = 1e-4)
+    calls = []
+    monkeypatch.setattr(
+        laya_runtime,
+        "_run_chunk",
+        lambda agent, part: calls.append(part)
+        or torch.zeros(part["input_ids"].shape[0], part["marker_pos"].shape[1]),
+    )
+    assert laya_runtime._run_model(agent, batch).shape == want.shape and len(calls) == 4
+    # The kill switch keeps laya's single forward.
+    calls.clear()
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FAST", "0")
+    laya_runtime._run_model(agent, batch)
+    assert len(calls) == 1
+
+
+def test_mlx_requests_run_in_chunks(monkeypatch):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    seen = []
+
+    class Model:
+        def logits(self, batch):
+            seen.append(tuple(batch["input_ids"].shape))
+            return np.full(
+                (batch["input_ids"].shape[0], batch["marker_pos"].shape[1]), float(len(seen))
+            )
+
+    agent = SimpleNamespace(device = "mlx", model = Model(), tok = SimpleNamespace(pad_token_id = 0))
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "mlx", 8)
+    items = [{"ids": [2, 5, 6, 1], "markers": [1, 2], "qtype": 0} for _ in range(5)]
+    logits, usage = laya_runtime._forward(agent, items)
+    assert seen == [(2, 4), (2, 4), (1, 4)] and usage == 20
+    assert logits[:, 0].tolist() == [1, 1, 2, 2, 3]
+
+
+def test_cuda_graph_results_survive_the_next_replay(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
+    first = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
+    second = {**first, "input_ids": torch.randint(5, 300, first["input_ids"].shape)}
+    a = laya_runtime._run_model(agent, first)
+    kept = a.clone()
+    laya_runtime._run_model(agent, second)
+    assert torch.equal(a, kept)
+
+
+def test_chunk_budget_splits_only_where_memory_is_short(monkeypatch):
+    torch = pytest.importorskip("torch")
+    # A CPU runs one forward: every extra forward costs a fixed overhead, and host RAM is rarely the limit.
+    assert laya_runtime._chunk_budget(torch.device("cpu")) is None
+    assert laya_runtime._chunk_budget("mlx") == laya_runtime._CHUNK_TOKENS["mlx"]
+    gib = 1 << 30
+    for total, hip, want in (
+        (8 * gib, None, 16384),  # a small card keeps the floor
+        (24 * gib, None, 26214),
+        (180 * gib, None, 196608),  # the 64 x 1024 request stays one forward
+        (96 * gib, "7.1", 31457),  # ROCm activations are larger per token
+    ):
+        monkeypatch.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda device, t = total: SimpleNamespace(total_memory = t),
+        )
+        monkeypatch.setattr(torch.version, "hip", hip)
+        assert laya_runtime._chunk_budget(torch.device("cuda")) == want
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "cuda", None)
+    assert laya_runtime._chunk_budget(torch.device("cuda")) is None
+
+
+def _fake_mlx(monkeypatch, **zoo):
+    mx = SimpleNamespace(float16 = "float16", float32 = "float32")
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core = mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", SimpleNamespace(**zoo))
+
+
+def test_mlx_runs_fp16_checkpoints_in_fp16(monkeypatch, tmp_path):
+    import transformers
+
+    _fake_mlx(
+        monkeypatch, load_decision_model = lambda folder, compute_dtype = "float32": compute_dtype
+    )
+    fake_laya = SimpleNamespace(
+        common = SimpleNamespace(clamp_temperature = float),
+        agent = SimpleNamespace(Agent = SimpleNamespace(_to_internal = None)),
+    )
+    monkeypatch.setitem(sys.modules, "laya", fake_laya)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda path: None)
+    (tmp_path / "rl_agent_config.json").write_text("{}")
+    assert laya_runtime._MLXAgent(tmp_path, True).model == "float16"
+    assert laya_runtime._MLXAgent(tmp_path, False).model == "float32"
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FP32", "1")
+    assert laya_runtime._MLXAgent(tmp_path, True).model == "float32"
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_FP32")
+    # An unsloth-zoo whose loader predates compute_dtype.
+    _fake_mlx(monkeypatch, load_decision_model = lambda folder, dtype = "float32": dtype)
+    old = laya_runtime._MLXAgent(tmp_path, True)
+    assert old.dtype == old.model == "float32"
+
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mlx")
+    monkeypatch.setattr(laya_runtime, "_MLXAgent", lambda folder, fp16: fp16)
+    assert _REAL_LOAD(catalog.CHECKPOINTS["laya-english"]) == (True, "mlx")
+
+
+def test_mlx_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
+    import numpy as np
+
+    _fake_mlx(monkeypatch)
+
+    class Model:
+        dtype = "float16"
+
+        def set_dtype(self, dtype):
+            self.dtype = dtype
+
+        def logits(self, batch):
+            return np.array([[np.inf if self.dtype == "float16" else 1.0, 0.5]])
+
+    agent = SimpleNamespace(device = "mlx", dtype = "float16", model = Model(), tok = gpu_agent.tok)
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert logits.tolist() == [[1.0, 0.5]] and agent.dtype == agent.model.dtype == "float32"
+    # An fp32 agent has nothing wider to retry in: its non-finite logits come back without a set_dtype call.
+    agent.model.dtype = "float16"  # only makes the fake emit inf
+    agent.model.set_dtype = None
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert np.isinf(logits[0, 0])
+
+
+def _mcp_decide(arguments):
+    from fastmcp import Client
+    async def call():
+        async with Client(systemone.decisions_mcp) as mcp:
+            return await mcp.call_tool("decide", arguments, raise_on_error = False)
+
+    return asyncio.run(call())
+
+
+def test_decisions_mcp_answers_like_the_route(client):
+    route = _post(client).json()
+    result = _mcp_decide(
+        {"state": "Everything is down and we have a demo at noon.", "questions": QUESTIONS}
+    )
+    assert not result.is_error
+    assert result.structured_content == route
+
+
+def test_decisions_mcp_reports_the_route_errors(monkeypatch, runtime):
+    result = _mcp_decide({"state": "x", "questions": {}})
+    assert result.is_error and "At least one question" in result.content[0].text
+    long_state = "x" * (systemone.MAX_STATE_CHARS + 1)
+    result = _mcp_decide({"state": long_state, "questions": QUESTIONS})
+    assert result.is_error and "State is longer than" in result.content[0].text
+    monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+    result = _mcp_decide({"state": "x", "questions": QUESTIONS})
+    assert result.is_error and "Settings > API" in result.content[0].text
+    assert runtime == []
+
+
+def test_chat_calls_studio_decisions_without_a_server_or_key(client):
+    import json
+
+    from core.inference.mcp_client import call_tool_sync, close_mcp_sessions, list_tools_async
+
+    url = client.get("/api/settings/systemone").json()["mcp_url"]
+    assert url == f"http://127.0.0.1:80{systemone.MCP_PATH}/"
+    tools = asyncio.run(list_tools_async(url, timeout = 10))
+    assert [tool["name"] for tool in tools] == ["decide"]
+    text = call_tool_sync(url, None, "decide", {"state": "x", "questions": QUESTIONS}, scope = "chat")
+    close_mcp_sessions(url, None)
+    assert json.loads(text)["answers"]["urgent"] == {"type": "noul", "noul": 0.9}
+
+
+def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
+    from main import app
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "decide", "arguments": {"state": "x", "questions": QUESTIONS}},
+    }
+    listing = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    headers = {"Accept": "application/json, text/event-stream"}
+    assert (
+        TestClient(app).post(f"{systemone.MCP_PATH}/", json = call, headers = headers).status_code
+        == 401
+    )
+
+    async def signed_in(credentials):
+        return "tester"
+
+    monkeypatch.setattr(systemone, "get_current_subject", signed_in)
+    mcp_app = systemone.decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+    served = Starlette(
+        routes = [Mount(systemone.MCP_PATH, systemone.RequireStudioAuth(mcp_app))],
+        lifespan = mcp_app.lifespan,
+    )
+    with TestClient(served) as http:
+        listed = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+        answered = http.post(
+            f"{systemone.MCP_PATH}/", json = call, headers = {**headers, "Authorization": "Bearer t"}
+        )
+        monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+        hidden = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["result"]["structuredContent"]["answers"]["urgent"]["noul"] == 0.9
+    assert [tool["name"] for tool in listed.json()["result"]["tools"]] == ["decide"]
+    assert hidden.json()["result"]["tools"] == []
+
+
+def test_managed_accounts_can_add_studio_decisions_but_not_other_loopback():
+    from core.inference.mcp_client import validate_mcp_address
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("alice-id", "alice")
+    run_as(alice, validate_mcp_address, f"http://127.0.0.1:8888{systemone.MCP_PATH}/")
+    with pytest.raises(HTTPException):
+        run_as(alice, validate_mcp_address, "http://127.0.0.1:8888/mcp")
+
+
+def test_mlx_overflow_in_a_later_chunk_reruns_the_whole_request_in_fp32(monkeypatch):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    _fake_mlx(monkeypatch)
+    seen = []
+
+    class Model:
+        dtype = "float16"
+
+        def set_dtype(self, dtype):
+            self.dtype = dtype
+
+        def logits(self, batch):
+            seen.append((self.dtype, batch["input_ids"].shape[0]))
+            rows = batch["input_ids"].shape[0]
+            bad = self.dtype == "float16" and len(seen) == 3
+            return np.full((rows, batch["marker_pos"].shape[1]), np.inf if bad else 1.0)
+
+    agent = SimpleNamespace(
+        device = "mlx", dtype = "float16", model = Model(), tok = SimpleNamespace(pad_token_id = 0)
+    )
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "mlx", 8)
+    items = [{"ids": [2, 5, 6, 1], "markers": [1, 2], "qtype": 0} for _ in range(5)]
+    logits, _ = laya_runtime._forward(agent, items)
+    assert np.isfinite(logits).all() and logits.shape == (5, 2)
+    # Three fp16 chunks, the last overflowing, then all three again in fp32.
+    assert seen == [
+        ("float16", 2),
+        ("float16", 2),
+        ("float16", 1),
+        ("float32", 2),
+        ("float32", 2),
+        ("float32", 1),
+    ]
+
+
+def test_an_env_pinned_local_clef_folder_keeps_the_clef_layout(monkeypatch, tmp_path):
+    from core.systemone import catalog
+
+    for name in ("config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (tmp_path / name).write_text("{}", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_SUBFOLDER", raising = False)
+    assert catalog.default_checkpoint().layout == "clef"

@@ -57,7 +57,7 @@ from core.training.diffusion_train_common import (
     _restore_perf_flags,
     discover_image_caption_pairs,
     has_functional_torchao,
-    native_bf16_supported,
+    flow_bf16_trainable,
     native_bf16_supported_xpu,
     PermutationBatchSampler,
     repo_is_prequantized,
@@ -1198,8 +1198,18 @@ _LTX2_TARGETS = (
 _LTX2_TRAIN_FPS = 24.0
 
 
-def _ltx2_load_conditioners(cfg, device, weight_dtype):
+def _ltx2_pipeline_cls():
+    """``diffusers.LTX2Pipeline``, importable on the pinned transformers (see ltx2_import_compat)."""
+    from core.inference.ltx2_import_compat import ensure_ltx2_pipelines_importable
+
+    ensure_ltx2_pipelines_importable()
     from diffusers import LTX2Pipeline
+
+    return LTX2Pipeline
+
+
+def _ltx2_load_conditioners(cfg, device, weight_dtype):
+    LTX2Pipeline = _ltx2_pipeline_cls()
 
     pipe, vae = _load_pipe_without_transformer(LTX2Pipeline, cfg, device)
     # The connectors are not a text_encoder attribute, so _encoders_to_device never reaches them.
@@ -1300,13 +1310,13 @@ def _ltx2_audio_token_count(config, num_pixel_frames: int, fps: float) -> int:
 
 def _ltx2_pack(latents, conf):
     """[B,C,F,H,W] -> [B, F*H*W, C] via the pipeline's own patchifier."""
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     return LTX2Pipeline._pack_latents(latents, conf.patch_size, conf.patch_size_t)
 
 
 def _ltx2_unpack(pred, f, h, w, conf):
     """The inverse of ``_ltx2_pack``, back to the 5-D shape ``target = noise - latents`` has."""
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     return LTX2Pipeline._unpack_latents(pred, f, h, w, conf.patch_size, conf.patch_size_t)
 
 
@@ -1363,7 +1373,7 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
 
 
 def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
-    from diffusers import LTX2Pipeline
+    LTX2Pipeline = _ltx2_pipeline_cls()
     LTX2Pipeline.save_lora_weights(
         save_directory = out_dir,
         transformer_lora_layers = transformer_lora_layers,
@@ -1504,7 +1514,9 @@ def _open_resized(path, resolution):
     Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     w0, h0 = img.size
     scale = resolution / min(w0, h0)
     rw, rh = max(resolution, round(w0 * scale)), max(resolution, round(h0 * scale))
@@ -1860,7 +1872,7 @@ def run_dit_lora_training(
     device = resolve_train_device()
     # bf16 throughout (fp32 on a CPU-only box, to keep import/unit tests architecture-agnostic). Both accelerator
     # guards gate on NATIVE bf16, since is_bf16_supported() counts emulation on CUDA and on XPU alike.
-    if device == "cuda" and not native_bf16_supported():
+    if device == "cuda" and not flow_bf16_trainable():
         raise ValueError(
             "This trainer requires a bfloat16-capable GPU (Ampere or newer); "
             "this CUDA device does not support bf16."

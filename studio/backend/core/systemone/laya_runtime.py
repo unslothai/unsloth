@@ -76,6 +76,14 @@ def _device() -> str:
     return candidate if device_can_allocate(candidate) else "cpu"
 
 
+def _training_active() -> bool:
+    try:
+        from core.training import get_training_backend
+        return bool(get_training_backend().is_training_active())
+    except Exception:
+        return False
+
+
 def _mlx_available() -> bool:
     try:
         import unsloth_zoo.mlx.decision  # noqa: F401
@@ -95,7 +103,47 @@ def _wanted(path: str, subfolder: str | None) -> bool:
     return rest in _WEIGHT_FILES or rest.startswith(tuple(f"{name}/" for name in _REQUIRED_DIRS))
 
 
+def _clef_complete(folder: Path) -> bool:
+    import json
+
+    from utils.models.model_config import CLEF_MARKERS
+
+    if not all((folder / name).is_file() for name in CLEF_MARKERS):
+        return False
+    index = folder / "model.safetensors.index.json"
+    if not index.is_file():
+        return (folder / "model.safetensors").is_file()
+    try:
+        shards = set(json.loads(index.read_text(encoding = "utf-8"))["weight_map"].values())
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return all((folder / shard).is_file() for shard in shards)
+
+
+def _clef_dir(checkpoint: Checkpoint, local_only: bool) -> Path:
+    if checkpoint.is_local:
+        root = Path(checkpoint.source).expanduser()
+    else:
+        from huggingface_hub import snapshot_download
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+        from utils.utils import hf_env_offline
+
+        root = Path(
+            snapshot_download(
+                checkpoint.source,
+                cache_dir = active_hf_hub_cache(),
+                local_files_only = local_only or hf_env_offline(),
+            )
+        )
+    if not _clef_complete(root):
+        raise FileNotFoundError(f"No complete Clef checkpoint at {root}")
+    return root
+
+
 def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path:
+    if checkpoint.layout == "clef":
+        return _clef_dir(checkpoint, local_only)
     if checkpoint.name == LOCAL_NAME and not checkpoint.is_local:
         raise FileNotFoundError(
             f"UNSLOTH_SYSTEMONE_MODEL={checkpoint.source} is neither a known model nor a directory"
@@ -194,6 +242,8 @@ def is_cached(checkpoint: Checkpoint) -> bool:
         root = _checkpoint_dir(checkpoint, local_only = True)
     except Exception:
         return False
+    if checkpoint.layout == "clef":
+        return True
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     return all((folder / name).is_file() for name in _WEIGHT_FILES)
 
@@ -201,9 +251,10 @@ def is_cached(checkpoint: Checkpoint) -> bool:
 def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
     cached = is_cached(checkpoint)
     plan = {"repo": None, "files": [], "size_bytes": 0, "cached": cached, "error": None}
-    if checkpoint.name == LOCAL_NAME:
+    if checkpoint.name == LOCAL_NAME or checkpoint.is_local:
         if not cached:
-            plan["error"] = f"No complete Laya checkpoint at {checkpoint.source}"
+            kind = "Clef" if checkpoint.layout == "clef" else "Laya"
+            plan["error"] = f"No complete {kind} checkpoint at {checkpoint.source}"
         return plan
     plan["repo"] = checkpoint.source
     plan["size_bytes"] = checkpoint.download_bytes
@@ -215,7 +266,8 @@ def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
         files = [
             (entry.path, getattr(entry, "size", 0) or 0)
             for entry in entries
-            if hasattr(entry, "size") and _wanted(entry.path, checkpoint.subfolder)
+            if hasattr(entry, "size")
+            and (checkpoint.layout == "clef" or _wanted(entry.path, checkpoint.subfolder))
         ]
     except Exception as exc:
         plan["error"] = f"Could not list {checkpoint.source}: {type(exc).__name__}"
@@ -247,10 +299,17 @@ def _release_memory() -> None:
             logger.debug("Could not clear the Decision API device cache", exc_info = True)
 
 
+def _close(agent) -> None:
+    # A Clef agent is a worker process; ending it returns its GPU memory.
+    if agent is not None and hasattr(agent, "close"):
+        agent.close()
+
+
 def _evict() -> None:
     global _agent, _loaded, _device_name
     with _run_lock:
-        _agent = _loaded = _device_name = None
+        agent, _agent, _loaded, _device_name = _agent, None, None, None
+    _close(agent)
     _release_memory()
 
 
@@ -259,9 +318,15 @@ class _MLXAgent:
 
     device = "mlx"
 
-    def __init__(self, folder: Path):
+    def __init__(
+        self,
+        folder: Path,
+        fp16_checkpoint: bool = False,
+    ):
+        import inspect
         import json
 
+        import mlx.core as mx
         from transformers import AutoTokenizer
         from unsloth_zoo.mlx.decision import load_decision_model
 
@@ -277,30 +342,54 @@ class _MLXAgent:
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
         self._to_internal = laya.agent.Agent._to_internal
-        self.model = load_decision_model(folder)
+        # As _precision does for fp16 checkpoints on CUDA: exact fp16 weights, fp16 matmuls, fp32 norms.
+        # An unsloth-zoo without compute_dtype casts the whole model instead, so it stays fp32.
+        mixed = "compute_dtype" in inspect.signature(load_decision_model).parameters
+        self.dtype = mx.float16 if fp16_checkpoint and mixed and not _fp32_forced() else mx.float32
+        self.model = load_decision_model(folder, **({"compute_dtype": self.dtype} if mixed else {}))
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
+    from utils.systemone_settings import get_device as preferred_device
+
     root = _checkpoint_dir(checkpoint)
+    if checkpoint.layout == "clef":
+        from .clef_runtime import ClefAgent, ClefWorkerError
+
+        _evict()
+        agent = ClefAgent(root, cancelled = _training_active)
+        # Training may have started while this loaded, and Clef has no CPU fallback.
+        if _training_active():
+            agent.close()
+            raise ClefWorkerError(
+                f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
+            )
+        return agent, "cuda"
     _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
-    device = _device()
+    # While training holds the GPU, a GPU model loads on CPU, as dictation does; see _misplaced.
+    for_training = _training_active() and preferred_device() == "gpu"
+    device = "cpu" if for_training else _device()
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
+    fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     if device == "mlx":
-        return _MLXAgent(folder), device
+        return _MLXAgent(folder, fp16_checkpoint), device
     if device not in ("cuda", "cpu"):
         return _load_laya(str(root), subfolder = checkpoint.subfolder, device = device), device
     import torch
 
     # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
-    fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     weights, _ = _precision(torch.device(device), fp16_checkpoint)
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
     )
+    # Training may have started while this built.
+    if device != "cpu" and _training_active():
+        device, for_training = "cpu", True
     _place(agent, torch.device(device), fp16_checkpoint)
+    agent.__dict__["_unsloth_for_training"] = for_training
     return agent, str(agent.device.type)
 
 
@@ -410,24 +499,30 @@ def _stored_fp16(folder: Path) -> bool:
     return bool(sizes) and max(sizes, key = sizes.get) == "F16"
 
 
+def _fp32_forced() -> bool:
+    import os
+    return os.environ.get("UNSLOTH_SYSTEMONE_FP32", "") == "1"
+
+
 def _precision(device, fp16_checkpoint: bool):
     """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
 
     An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
     10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
     """
-    import os
     import platform
 
     import torch
 
-    if os.environ.get("UNSLOTH_SYSTEMONE_FP32", "") == "1":
+    if _fp32_forced():
         return None, None
     if device.type == "cuda":
         if fp16_checkpoint:
             return torch.float16, torch.float16
-        if torch.version.hip:
-            bf16 = torch.cuda.is_bf16_supported()
+        from core.inference.rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+
+        if is_rocm_torch(torch):
+            bf16 = rocm_bf16_supported(torch, device.index)
         else:
             # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.
             bf16 = torch.cuda.get_device_capability(device)[0] >= 8
@@ -525,7 +620,7 @@ def _load(checkpoint: Checkpoint) -> None:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("System One load failed: %s", message)
+        logger.warning("System One load failed: %s", message, exc_info = True)
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None
@@ -541,10 +636,40 @@ def _load(checkpoint: Checkpoint) -> None:
     )
 
 
+def _misplaced() -> bool:
+    # The resident model follows the same rule: off the GPU while training holds it, back on it after.
+    if getattr(_agent, "_unsloth_for_training", False):
+        return not _training_active()
+    return _device_name not in (None, "cpu") and _training_active()
+
+
+def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
+    if checkpoint.layout != "clef":
+        return
+    from .catalog import clef_unsupported_reason
+
+    if (reason := clef_unsupported_reason()) is not None:
+        raise Unavailable(400, "api_usage_error", reason)
+    if not _training_active():
+        return
+    # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
+    if _loaded is not None and _loaded.layout == "clef":
+        _evict()
+    raise Unavailable(
+        503,
+        "model_unavailable",
+        f"{checkpoint.name} needs the GPU, which a training run is using; it answers again when the run ends.",
+        retry_after = 30,
+    )
+
+
 def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
     global _loader, _loading
+    # Asked before _state_lock: the training backend takes its own lock.
+    _clef_blocked_by_training(checkpoint)
+    misplaced = _misplaced()
     with _state_lock:
-        if _loaded == checkpoint and _agent is not None:
+        if _loaded == checkpoint and _agent is not None and not misplaced:
             return None
         if _failure and _failure[0] == checkpoint and time.monotonic() < _failure[2]:
             raise Unavailable(
@@ -698,12 +823,21 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 
 def _forward(agent, items: list[dict[str, Any]]):
     global _agent, _loaded, _device_name
+    import numpy as np
     import torch
 
     batch = _collate(items, agent.tok.pad_token_id)
     if agent.device == "mlx":
         try:
-            return agent.model.logits(batch), int(batch["attention_mask"].sum())
+            logits = _mlx_logits(agent, batch)
+            if not np.isfinite(logits).all():
+                import mlx.core as mx
+                if agent.dtype != mx.float32:
+                    logger.warning("Laya overflowed in float16; continuing in float32")
+                    agent.model.set_dtype(mx.float32)
+                    agent.dtype = mx.float32
+                    logits = _mlx_logits(agent, batch)
+            return logits, int(batch["attention_mask"].sum())
         except RuntimeError as exc:
             # MLX reports exhausted memory as "[malloc] Unable to allocate ..." or "Insufficient Memory".
             reason = str(exc).lower()
@@ -750,7 +884,64 @@ def _forward(agent, items: list[dict[str, Any]]):
     return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
 
 
+def _chunks(batch, budget: int):
+    """``batch`` as consecutive row slices of at most ``budget`` padded tokens, each trimmed to its longest row.
+
+    ``budget=None`` keeps the whole batch."""
+    rows, tokens = batch["input_ids"].shape
+    step = rows if budget is None else max(1, budget // tokens)
+    if rows <= step:
+        yield batch
+        return
+    for start in range(0, rows, step):
+        part = {name: batch[name][start : start + step] for name in _INPUTS}
+        keep = int(part["attention_mask"].sum(1).max())
+        part["input_ids"] = part["input_ids"][:, :keep]
+        part["attention_mask"] = part["attention_mask"][:, :keep]
+        yield part
+
+
+def _mlx_logits(agent, batch):
+    """One MLX request, forwarded in chunks and concatenated on the host."""
+    import numpy as np
+    return np.concatenate(
+        [agent.model.logits(part) for part in _chunks(batch, _chunk_budget("mlx"))]
+    )
+
+
 def _run_model(agent, batch):
+    import torch
+
+    if not _marker_head(agent.model):
+        return _run_chunk(agent, batch)
+    budget = _chunk_budget(agent.device)
+    # cat copies, so no result is a view into a CUDA graph's output buffer, which its next replay overwrites.
+    return torch.cat([_run_chunk(agent, part) for part in _chunks(batch, budget)])
+
+
+def _chunk_budget(device):
+    """Padded tokens per forward, or None for one forward.
+
+    Splitting only saves memory: each extra forward costs a fixed overhead. On a CPU host memory is rarely the
+    limit and that overhead dominates (a 16-core Strix Halo ran the 64-question request 5x slower in 4096-token
+    chunks), so the CPU runs one forward. A GPU splits only past a share of its memory, so a large card keeps
+    one forward and its speed, and a small one still bounds its peak.
+    """
+    kind = getattr(device, "type", device)
+    budget = _CHUNK_TOKENS.get(kind)
+    if kind != "cuda" or budget is None:
+        return budget
+    import torch
+
+    try:
+        total = torch.cuda.get_device_properties(device).total_memory
+    except (RuntimeError, AssertionError):
+        return budget
+    per_token = _TOKEN_BYTES["hip" if torch.version.hip else "cuda"]
+    return max(budget, int(total * _GPU_SHARE) // per_token)
+
+
+def _run_chunk(agent, batch):
     import os
 
     import torch
@@ -783,6 +974,12 @@ def _run_model(agent, batch):
 
 
 _INPUTS = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+# Smallest padded rows x tokens per forward; a larger request runs as several (see _chunk_budget). None: one forward.
+_CHUNK_TOKENS = {"cuda": 16384, "mlx": 8192, "cpu": None}
+# Activation bytes per padded token of the worst request (B200 fp16 41 KiB, gfx1151 137 KiB), with headroom.
+_TOKEN_BYTES = {"cuda": 48 << 10, "hip": 160 << 10}
+# Share of the GPU's total memory one Decision API forward may take before the request is split.
+_GPU_SHARE = 0.05
 # Padded rows x tokens above which a batch runs eagerly (B200: graphs win up to 8 x 1024, lose at 16 x 512).
 _GRAPH_TOKENS = 8192
 
@@ -1110,6 +1307,8 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
             raise Unavailable(
                 503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 5
             )
+        if checkpoint.layout == "clef":
+            return _decide_clef(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
         try:
             result, truncated = _predict(agent, state, laya_questions)
@@ -1123,6 +1322,34 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
         "usage": {"input_tokens": int(result["usage"]["input_tokens"]), "output_tokens": 0},
         "truncated": truncated,
     }
+
+
+def _decide_clef(checkpoint: Checkpoint, agent, state, questions) -> dict[str, Any]:
+    from .clef_runtime import ClefWorkerError
+    try:
+        result = agent.decide(state, questions)
+    except ValueError as exc:
+        raise Unavailable(422, "invalid_request_error", str(exc)) from None
+    except ClefWorkerError as exc:
+        # A dead or hung worker is dropped, so the next request starts a fresh one.
+        threading.Thread(target = _evict_agent, args = (agent,), daemon = True).start()
+        raise Unavailable(503, "model_unavailable", str(exc), retry_after = 5) from None
+    return {
+        "model": checkpoint.name,
+        "answers": {name: _wire_answer(result["answers"][name]) for name in questions},
+        "usage": {"input_tokens": int(result["input_tokens"]), "output_tokens": 0},
+        "truncated": bool(result["truncated"]),
+    }
+
+
+def _evict_agent(agent) -> None:
+    global _agent, _loaded, _device_name
+    # Waits for _decide to release _run_lock.
+    with _run_lock:
+        if _agent is not agent:
+            return
+        _agent = _loaded = _device_name = None
+    _close(agent)
 
 
 def status() -> dict[str, Any]:
@@ -1150,8 +1377,9 @@ def unload() -> bool:
     global _agent, _loaded, _device_name, _failure
     ensure_can_unload()
     with _run_lock:
-        was_loaded = _agent is not None
+        agent, was_loaded = _agent, _agent is not None
         _agent = _loaded = _device_name = None
         _failure = None
+    _close(agent)
     _release_memory()
     return was_loaded

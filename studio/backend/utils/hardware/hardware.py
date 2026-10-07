@@ -682,6 +682,19 @@ def _masks_hide_every_accelerator(*, block_inventory: bool = False) -> bool:
     return True
 
 
+def _emptied_cuda_mask_hides_amd_on_a_mixed_host() -> bool:
+    """Emptied CUDA_VISIBLE_DEVICES hides the AMD card from ROCm torch on an NVIDIA + AMD host. A log line, not a mismatch: the mask is deliberate on AMD-only hosts. Blocks on the inventory."""
+    if not _mask_is_emptied("CUDA_VISIBLE_DEVICES") or "HIP_VISIBLE_DEVICES" in os.environ:
+        return False
+    if not _torch_reports_a_hip_runtime():
+        return False
+    try:
+        devices = get_physical_gpu_inventory().get("devices") or []
+    except Exception:
+        return False
+    return {"nvidia", "amd"} <= {device.get("vendor") for device in devices}
+
+
 def _vendors_masked_off(*, block_inventory: bool = False) -> set:
     """Vendors whose devices are all hidden by a mask that can take effect here."""
     relevant = _relevant_visibility_masks(block_inventory = block_inventory)
@@ -874,7 +887,7 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
     return keep
 
 
-# The gfx targets this stack will actually install a ROCm wheel for (install.sh's _amd_arch_index_family_for_gfx, plus gfx906 from the ROCm 6.3 path). A card outside this set (Polaris gfx803, RDNA 1 gfx101x) is left on CPU torch ON PURPOSE.
+# The gfx targets this stack will actually install a ROCm wheel for (install.sh's _amd_arch_index_family_for_gfx, plus gfx906 from the ROCm 6.3 path). A card outside this set (Polaris gfx803; RDNA 1 gfx101x off Windows, see _rocm_supported_gfx_here) is left on CPU torch ON PURPOSE.
 _ROCM_SUPPORTED_GFX = frozenset(
     {
         "gfx906",
@@ -1000,15 +1013,30 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
     (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
     (r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300", "gfx1034"),
+    (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
+    (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
+    (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),
 ]
+
+
+# Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
+_ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
+
+
+def _rocm_supported_gfx_here() -> "frozenset[str]":
+    """The arches the installers ship a ROCm wheel for on THIS platform."""
+    if platform.system() == "Windows":
+        return _ROCM_SUPPORTED_GFX | _ROCM_SUPPORTED_GFX_WINDOWS_ONLY
+    return _ROCM_SUPPORTED_GFX
 
 
 def _rocm_supported_gfx_from_gpu_name(name: str) -> Optional[str]:
     """The gfx arch this marketing name maps to, when the ROCm wheels cover it."""
     if not name:
         return None
+    _supported = _rocm_supported_gfx_here()
     for pattern, arch in _GPU_NAME_GFX_TABLE:
-        if re.search(pattern, name, re.IGNORECASE) and arch in _ROCM_SUPPORTED_GFX:
+        if re.search(pattern, name, re.IGNORECASE) and arch in _supported:
             return arch
     return None
 
@@ -1029,7 +1057,7 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
             return True
         # Nothing NAMES the card, so ask what the installer asks: _has_rocm_gpu() falls back to the KFD topology, and a card `studio update` would repair is eligible here.
         return _linux_kfd_reports_an_amd_gpu()
-    return any(gfx in _ROCM_SUPPORTED_GFX for gfx in candidates)
+    return any(gfx in _rocm_supported_gfx_here() for gfx in candidates)
 
 
 def _expected_xpu_flavor_was_chosen() -> bool:
@@ -1379,6 +1407,30 @@ def _xpu_device_name_or_placeholder(torch) -> str:
         return "<unavailable>"
 
 
+# RDNA 3/3.5/4 only; gfx1250 is Instinct, so avoid a broad gfx12 prefix.
+_MIOPEN_SEARCH_CUTOFF_ARCH_PREFIXES = ("gfx110", "gfx115", "gfx120")
+
+
+def _configure_rocm_miopen(torch) -> None:
+    if "MIOPEN_SEARCH_CUTOFF" in os.environ:
+        return
+    try:
+        count = torch.cuda.device_count()
+        # MIOpen's cutoff is process-wide, so every visible GPU must qualify.
+        if not count or not all(
+            _props_gfx_arch(torch.cuda.get_device_properties(i)).startswith(
+                _MIOPEN_SEARCH_CUTOFF_ARCH_PREFIXES
+            )
+            for i in range(count)
+        ):
+            return
+    except Exception as exc:
+        logger.debug("MIOpen search cutoff device probe failed: %s", exc)
+        return
+    os.environ.setdefault("MIOPEN_SEARCH_CUTOFF", "1")
+    logger.info("ROCm RDNA: enabled MIOpen search cutoff (MIOPEN_SEARCH_CUTOFF=1)")
+
+
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
@@ -1443,6 +1495,7 @@ def _detect_hardware_locked() -> DeviceType:
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
+                _configure_rocm_miopen(torch)
                 _hip_label = _hip_ver or torch.__version__
                 print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
@@ -1522,6 +1575,15 @@ def _detect_hardware_locked() -> DeviceType:
             _build_reason, _build_detail = _mismatch_verdict_for_this_host()
             if _build_reason is not None:
                 CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+            elif _emptied_cuda_mask_hides_amd_on_a_mixed_host():
+                logger.warning(
+                    "CUDA_VISIBLE_DEVICES=%r hides the AMD GPU from ROCm torch as well as the "
+                    "NVIDIA one: HIP reads it when HIP_VISIBLE_DEVICES is unset. Unset "
+                    "CUDA_VISIBLE_DEVICES (or set HIP_VISIBLE_DEVICES=0) before launching. "
+                    "To get ROCm torch on an NVIDIA + AMD host without the mask, install "
+                    "with UNSLOTH_FORCE_ROCM_TORCH=1.",
+                    os.environ.get("CUDA_VISIBLE_DEVICES"),
+                )
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -4628,6 +4690,16 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     try:
         numeric_ids = [int(value) for value in tokens]
     except ValueError:
+        # nvidia-smi indices are PCI order, so they only name the same cards a numeric mask written back to a child would under PCI_BUS_ID (#8873).
+        if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+            from . import nvidia
+            resolved_ids = nvidia.resolve_uuid_mask(cuda_visible)
+            if resolved_ids is not None:
+                return {
+                    "raw": cuda_visible,
+                    "numeric_ids": resolved_ids,
+                    "supports_explicit_gpu_ids": True,
+                }
         return {
             "raw": cuda_visible,
             "numeric_ids": None,
@@ -5908,6 +5980,117 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
 
     result["available"] = bool(result["devices"])
     return result
+
+
+def _installed_llama_backend() -> Optional[str]:
+    """The backend the installed llama.cpp prebuilt records, as Settings shows it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.llama_cpp_freshness import read_install_marker
+    from utils.prebuilt.llama_backend import marker_backend
+
+    return marker_backend(read_install_marker(LlamaCppBackend._find_llama_server_binary()))
+
+
+def _smi_inference_device(
+    index: int,
+    ordinal: int,
+    name: Optional[str],
+    total_gb: Optional[float],
+    used_gb: Optional[float],
+) -> Dict[str, Any]:
+    known = total_gb is not None and used_gb is not None
+    return {
+        "index": index,
+        "index_kind": "physical",
+        "visible_ordinal": ordinal,
+        "name": name,
+        "memory_total_gb": total_gb,
+        "vram_used_gb": used_gb,
+        "vram_free_gb": round(max(0.0, total_gb - used_gb), 2) if known else None,
+        "vram_utilization_pct": round((used_gb / total_gb) * 100, 1)
+        if known and total_gb > 0
+        else None,
+        "shared_memory": False,
+    }
+
+
+def _nvidia_inference_devices() -> list[Dict[str, Any]]:
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    from . import nvidia
+
+    # The mask llama.cpp's own nvidia-smi probe applies: hidden cards are not llama-server's.
+    allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+    if allowed is None and os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        return []  # a UUID / MIG mask names cards nvidia-smi rows cannot be matched to
+    physical = [
+        row
+        for row in (nvidia.get_physical_gpu_inventory().get("devices") or [])
+        if isinstance(row.get("index"), int)
+    ]
+    # nvidia-smi rows are PCI order; CUDA ordinals (and numeric masks) only match them under PCI_BUS_ID.
+    if os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID" and (
+        allowed is not None or len(physical) > 1
+    ):
+        return []
+    rows = [row for row in physical if allowed is None or row["index"] in allowed]
+    if not rows:
+        return []
+    if allowed is not None:
+        # visible_ordinal is the child's numbering, which follows the mask's order.
+        try:
+            order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        except ValueError:
+            order = nvidia.resolve_uuid_mask(os.environ["CUDA_VISIBLE_DEVICES"].strip()) or []
+        rows.sort(
+            key = lambda row: order.index(row["index"]) if row["index"] in order else len(order)
+        )
+    usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
+    usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
+    devices = []
+    for ordinal, row in enumerate(rows):
+        util = usage_by_index.get(row["index"], {})
+        devices.append(
+            _smi_inference_device(
+                row["index"],
+                ordinal,
+                row.get("name"),
+                row.get("memory_total_gb") or util.get("vram_total_gb"),
+                util.get("vram_used_gb"),
+            )
+        )
+    return devices
+
+
+def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """The NVIDIA cards a CUDA llama.cpp runs on when torch is another backend, else None.
+
+    nvidia-smi only: a CUDA context here would pin VRAM. No ROCm counterpart: amd-smi cannot
+    prove the memory scope HIP sees (an APU reports only its carve-out).
+    """
+    try:
+        llama_backend = _installed_llama_backend()
+    except Exception as e:
+        logger.debug("Could not read the installed llama.cpp backend: %s", e)
+        return None
+    if llama_backend != "cuda" or _backend_label(get_device()) == "cuda":
+        return None
+    try:
+        devices = _nvidia_inference_devices()
+    except Exception as e:
+        logger.debug("CUDA inference GPU query failed: %s", e)
+        return None
+    # Not []: the load estimate reads that as "no GPU". Capacity-less procfs rows read as 0 GB.
+    if not devices or not all((d["memory_total_gb"] or 0) > 0 for d in devices):
+        return None
+    return {
+        "available": True,
+        "backend": llama_backend,
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": devices,
+        "index_kind": "physical",
+    }
 
 
 def _repair_smi_visible_devices(

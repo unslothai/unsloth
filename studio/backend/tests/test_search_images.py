@@ -59,6 +59,7 @@ RAW_IMAGES = [
 
 @pytest.fixture(autouse = True)
 def _isolated_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_inflight", {})
     monkeypatch.setattr(search_images, "_cleared_unservable", set())

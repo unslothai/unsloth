@@ -40,6 +40,13 @@ WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
 
+# The desktop card also stops below the window chrome.
+CARD_CAP = {
+    WEB_BANNER: "max-h-[calc(100dvh_-_2rem)]",
+    TAURI_BANNER: "max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))]",
+}
+
+
 # An apostrophe in JSX text is prose, not the start of a string: "We're ready"
 # in a banner's copy would otherwise run a scanner to the next apostrophe or off
 # the end of the file, and a copy edit would fail these tests. The frontend is
@@ -1231,7 +1238,7 @@ def test_expanded_popup_fits_a_short_viewport(banner):
     # The notes region shrinks inside the capped card, so header and actions stay on screen.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
     src = banner.read_text(encoding = "utf-8")
-    assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
+    assert CARD_CAP[banner] in src, "card is the backstop on tiny viewports"
 
 
 def test_relative_release_body_links_point_at_the_repository():
@@ -1359,7 +1366,7 @@ def test_only_the_notes_region_scrolls(banner):
     surface = _card_surface(src)
     # The painted surface: capped, and a column, so the region inside it is the
     # one that scrolls.
-    _assert_classes(surface, "flex", "max-h-[calc(100dvh_-_2rem)]", "flex-col")
+    _assert_classes(surface, "flex", CARD_CAP[banner], "flex-col")
     # Neither card scrolls. Asserted as the absence of a scrolling overflow
     # rather than as the presence of `overflow-hidden`, because those are two
     # different claims: the browser card now clips nothing at all, and reading
@@ -1842,7 +1849,9 @@ def _capped_rails(provider: str) -> int:
     """
     # _only_under and not a substring: `md:max-h-[100dvh]` contains the utility while leaving
     # every smaller viewport uncapped, which is the spill this test exists to prevent.
-    return sum(1 for rail in _corner_rails(provider) if _only_under(rail, "max-h-[100dvh]"))
+    # The desktop rail stops below the window chrome; there is none in the browser.
+    caps = ("max-h-[100dvh]", "max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))]")
+    return sum(1 for rail in _corner_rails(provider) if any(_only_under(rail, c) for c in caps))
 
 
 def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
@@ -1999,8 +2008,12 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         "paddingTop": "STACK_SHADOW_GUTTER_TOP",
         "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
         "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
-        "paddingRight": "STACK_CARD_INSET_RIGHT",
+        "paddingRight": "STACK_CARD_INSET_RIGHT_PAST_PANEL",
     }
+    assert re.search(
+        r"const STACK_CARD_INSET_RIGHT_PAST_PANEL =\s*`calc\(\$\{STACK_CARD_INSET_RIGHT\}px \+ var\(",
+        provider,
+    ), "the rail's right padding is no longer the px card inset plus the panel width"
     openings = _rail_openings(provider)
     assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
     for tag in openings:
@@ -2932,3 +2945,112 @@ def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module
     )
     stripped = notes_module.strip_release_body(body)
     assert stripped == "Intro.\n\n###### Deeply nested announcement\n\n- a real change"
+
+
+@pytest.fixture(autouse=True)
+def github_lockout(notes_module):
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    notes_module.reset_release_notes_cache()
+    yield freshness_flow
+    freshness_flow._api_rate_limited_until = 0.0
+    notes_module.reset_release_notes_cache()
+
+
+@pytest.mark.parametrize(
+    ("url_override", "env", "expected"),
+    [
+        (None, {"GH_TOKEN": "ghp_gh", "GITHUB_TOKEN": "ghp_github"}, "Bearer ghp_github"),
+        (None, {"GH_TOKEN": "ghp_gh"}, "Bearer ghp_gh"),
+        ("https://mirror.example/releases", {"GH_TOKEN": "ghp_gh"}, None),
+        ("http://api.github.com/repos/x/releases", {"GITHUB_TOKEN": "ghp_secret"}, None),
+    ],
+)
+def test_where_the_release_notes_token_may_travel(
+    notes_module, github_lockout, monkeypatch, url_override, env, expected
+):
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout=None):
+        seen.append(request)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    notes_module._fetch_latest_release()
+    assert seen[0].get_header("Authorization") == expected
+    assert "Authorization" not in seen[0].headers
+
+
+@pytest.mark.parametrize(
+    ("url_override", "status", "remaining", "body", "shared", "reported"),
+    [
+        (None, 403, "0", b"", True, True),
+        (None, 429, "4998", b"", True, True),
+        (None, 403, "4998", b'{"message": "secondary rate limit"}', True, True),
+        (None, 403, "4998", b"", False, False),
+        ("https://mirror.example/releases", 429, "0", b"", False, True),
+    ],
+)
+def test_which_release_note_refusals_reach_the_shared_lockout(
+    notes_module,
+    github_lockout,
+    monkeypatch,
+    url_override,
+    status,
+    remaining,
+    body,
+    shared,
+    reported,
+):
+    import email.message
+    import io
+    import urllib.error
+
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, status, "refused", headers, io.BytesIO(body))
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    result = notes_module.get_latest_release()
+    assert (github_lockout.github_rate_limit_remaining() > 0) is shared
+    assert ("rate limit" in (result.error or "").lower()) is reported
+
+
+@pytest.mark.parametrize("url_override", [None, "https://mirror.example/releases"])
+def test_the_shared_lockout_parks_only_the_github_api(
+    notes_module, github_lockout, monkeypatch, url_override
+):
+    import urllib.error
+
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    github_lockout.hold_github_api(60)
+    calls = []
+
+    def capture(request, timeout=None):
+        calls.append(request.full_url)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    notes_module.get_latest_release(refresh=True)
+    assert calls == ([] if url_override is None else [url_override])

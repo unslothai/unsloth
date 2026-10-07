@@ -28,10 +28,12 @@ from typing import Any
 
 logger = get_logger(__name__)
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from utils.hardware import apply_gpu_ids
 
@@ -439,6 +441,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
                 compressed_method = cmd.get("compressed_method"),
+                install_missing_dependencies = cmd.get("install_missing_dependencies", False),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
@@ -458,6 +461,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
+                npu_q4nx = cmd.get("npu_q4nx", False),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -468,6 +472,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 private = cmd.get("private", False),
                 gguf = cmd.get("gguf", False),
                 gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
+                adapter_format = cmd.get("adapter_format"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"

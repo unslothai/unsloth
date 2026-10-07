@@ -5,6 +5,7 @@ export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
 export { invalidateLlamaFlagCatalog } from "./api/llama-flags";
 export { ModelRowMenu } from "./components/model-selector/model-row-menu";
+export { formatFootprintBytes } from "./components/model-selector/pickers";
 export {
   makePinRank,
   pinKey,
@@ -45,6 +46,7 @@ export type {
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
 export { modelConfigDraftKey } from "./model-config/model-config-draft";
+export { splitQuantSuffix } from "./model-config/model-identity";
 export {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
@@ -72,6 +74,7 @@ export {
   adoptCachedRepoConfig,
   adoptLegacyConfigKey,
   isServedByLlamaCpp,
+  resumesThought,
   contextPinPatch,
   listPerModelConfigs,
   isServedByMlx,
@@ -82,3 +85,7 @@ export {
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";
+export {
+  SharedRunConfigLinkHandler,
+  receiveSharedRunConfigUrls,
+} from "./sharing";

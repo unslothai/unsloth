@@ -596,10 +596,15 @@ with sync_playwright() as p:
             soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
             unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
-            if unavailable.count() == 0:
-                soft_fail("chat-only /export did not show the export unavailable gate")
-            else:
+            # Wait for the gate itself: it renders only once the hardware query has answered
+            # (hardware.loaded && exportSupported === false), while the form and its CTA, which
+            # satisfy the wait above, render before that. A count() taken at that instant missed
+            # the gate on a slow Windows runner although it was on its way.
+            try:
+                unavailable.wait_for(state = "visible", timeout = 15_000)
                 info("OK chat-only /export rendered the unavailable gate")
+            except Exception:
+                soft_fail("chat-only /export did not show the export unavailable gate within 15s")
     else:
         # Non-chat-only: verify the export-cta button + HF token field.
         cta = page.locator('[data-tour="export-cta"]').first

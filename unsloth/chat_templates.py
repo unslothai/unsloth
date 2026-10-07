@@ -648,6 +648,19 @@ DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message
 
+qwen25_coder_ollama = _ollama_template("qwen-25-coder")
+CHAT_TEMPLATES["qwen-2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen-25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-25-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen25-coder"] = qwen25_default_system_message
+
 # "{{ bos_token }}"\ # Phi-4 removes BOS?
 # =========================================== Phi-4
 phi4_template = \
@@ -2081,13 +2094,6 @@ def get_chat_template(
     if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
 
-    # The spliced ShareGPT values land inside Jinja literals, so escape them.
-    new_chat_template = chat_template\
-        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
-        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
-        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
-        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
-
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper: that import path pulls Torch/GPU-specific
         # modules in before MLX training.
@@ -2099,14 +2105,22 @@ def get_chat_template(
 
     # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
+        role, content, user, assistant = (
+            "'" + _escape_jinja_literal(mapping[key]) + "'"
+            for key in ("role", "content", "user", "assistant")
+        )
         chat_template = \
-            "{% if 'role' in messages[0] %}" + \
-            chat_template + \
-            "{% else %}" + \
-            new_chat_template + \
-            "{% endif %}"
-    else:
-        chat_template = new_chat_template
+            "{%- if 'role' not in messages[0] -%}" + \
+            "{%- set sharegpt = namespace(messages = []) -%}" + \
+            "{%- for message in messages -%}" + \
+            "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
+            ".get(message[" + role + "], message[" + role + "]) -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + " + \
+            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
+            "{%- endfor -%}" + \
+            "{%- set messages = sharegpt.messages -%}" + \
+            "{%- endif %}" + \
+            chat_template
 
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
@@ -2130,6 +2144,8 @@ def get_chat_template(
     # tokenizer and remapped eos. The loader mirrors these onto the processor
     # (models/vision.py), so refresh them here or that copy goes stale.
     if _processor is not None:
+        # GGUF export unwraps the processor before it builds the Ollama Modelfile.
+        tokenizer._ollama_modelfile = ollama_modelfile
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):
@@ -2167,8 +2183,17 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+_COLUMN_RE = re.compile(r"\{(.+?)\}")
+
+
+def _column_names_in(text):
+    return _COLUMN_RE.findall(_ESCAPED_BRACES_RE.sub("", text))
+
+
 def _parse_combined_prompt(combined_prompt, dataset):
-    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    possible_columns = _column_names_in(combined_prompt)
     dataset_columns = set(dataset.column_names)
     for column in possible_columns:
         if column not in dataset_columns:
@@ -2211,14 +2236,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            needed_columns = _column_names_in(optional_prompt)
             formatter_templates.append(("required", optional_prompt, needed_columns))
             merged_prompt_parts.append(optional_prompt)
             continue
 
         _, prompt = optional_prompt
         prompt = prompt[2:-2]
-        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        needed_columns = _column_names_in(prompt)
         if len(needed_columns) == 0:
             raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
         optional_name = f"__optional_{j}__"
@@ -2337,7 +2362,8 @@ def to_sharegpt(
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
-        all_shuffled.append(shuffled)
+        # Kept caller columns live on copy 0; repeating them makes axis=1 concat fail.
+        all_shuffled.append(shuffled.select_columns([f"conversations{j}"]))
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     n_extensions += 1
@@ -2356,7 +2382,7 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        remove_columns = dataset.column_names if remove_unused_columns else None,
+        remove_columns = dataset.column_names if remove_unused_columns else conversation_columns,
     )
     return dataset
 

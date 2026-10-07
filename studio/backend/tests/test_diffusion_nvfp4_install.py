@@ -1515,3 +1515,18 @@ def test_an_unreported_failure_does_not_revert_a_concurrent_upgrade(env):
     assert "flashinfer-python" not in env.dists, reason
     assert env.dists["packaging"] == "26.0", reason
     assert not [c for c in env.commands if "packaging==25.0" in c]
+
+
+def test_cutlass_dsl_is_held_to_the_flash4_range_when_absent(env):
+    # An unconstrained resolve lands cutlass-dsl 4.8.0, which the hub FA4 build cannot load.
+    ok, reason = _ensure(env)
+    assert ok, reason
+    assert "nvidia-cutlass-dsl>=4.4,<4.6" in env.constraints_seen[0].splitlines()
+
+
+def test_an_installed_cutlass_dsl_is_pinned_not_ranged(env):
+    env.dists["nvidia-cutlass-dsl"] = "4.4.2"
+    ok, reason = _ensure(env)
+    assert ok, reason
+    pins = env.constraints_seen[0].splitlines()
+    assert "nvidia-cutlass-dsl==4.4.2" in pins and "nvidia-cutlass-dsl>=4.4,<4.6" not in pins

@@ -109,7 +109,7 @@ test("the load hook actually consults the watch, and on the cached branch", () =
 // Local paths, Ollama manifests and cached LoRAs never reach the Hub, so they are not polled.
   assert.match(
     hook,
-    /const watchForCacheMiss =\n\s+isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId\(modelId\);/,
+    /const watchForCacheMiss =\n\s+!managedLoad && isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId\(modelId\);/,
   );
 });
 

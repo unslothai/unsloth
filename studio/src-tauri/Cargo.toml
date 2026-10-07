@@ -14,7 +14,9 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-tauri = { version = "~2.11.5", features = ["tray-icon"] }
+# Windows executable-resource icons and ICO entry selection (tauri #15274 / #15241).
+# unstable: child webviews in the main window, for the browser panel's pages (browser_webview.rs).
+tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
@@ -32,9 +34,10 @@ log = "0.4"
 simplelog = "0.12"
 dirs = "6"
 regex = "1"
+url = "2"
 open = "5"
 process-wrap = { version = "9", features = ["std"] }
-fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
+strip-ansi-escapes = "0.2"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-updater = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -50,13 +53,23 @@ time = { version = "0.3", features = ["formatting"] }
 libc = "0.2"
 signal-hook = "0.4"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
+[dev-dependencies]
+# A paused clock for the address poll's tests (browser_webview.rs).
+tokio = { version = "1", features = ["test-util"] }
 
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSString"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", features = ["exception"] }
+
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSPrintInfo", "NSPrintOperation", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSDictionary", "NSKeyValueCoding", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString", "NSURL", "NSData", "NSGeometry"] }
+# The browser panel's content rules (browser_webview.rs), snapshots and printing
+# (browser_capture.rs); wry already builds this crate.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration", "objc2-app-kit", "objc2-core-foundation"] }
+block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# PNG output for the browser panel's screenshots (browser_capture.rs); gtk already builds it.
+cairo-rs = { version = "0.18", features = ["png"] }
 gdk = "0.18"
 gdk-pixbuf = "0.18"
 glib = "0.18"
@@ -67,14 +80,14 @@ webkit2gtk = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Keep these versions aligned with Tauri's WebView2 controller bindings.
-webview2-com = "0.38"
+webview2-com = "0.39.1"
 winreg = "0.55"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
-windows-core = "0.61.2"
+windows-core = "0.62.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "~2.7.0", features = [] }
 
 [features]
 default = ["custom-protocol"]

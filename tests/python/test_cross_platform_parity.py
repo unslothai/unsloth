@@ -131,7 +131,7 @@ class TestPreTuringCapParity:
         (
             STACK_PY,
             "_cap_cuda_family_for_pre_turing(",
-            "def _detect_cuda_torch_index_url",
+            "def _detect_cuda_torch_index_family",
             "\ndef ",
         ),
     )

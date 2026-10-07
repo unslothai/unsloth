@@ -56,8 +56,8 @@ class AuthStatusResponse(BaseModel):
     full_access: bool = Field(
         True,
         description = (
-            "Whether the unsandboxed tool modes (Full access, bypass permissions) may be "
-            "offered. False whenever another account exists, active or not."
+            "Legacy pre-login hint: false whenever another account exists, active or not. "
+            "Signed-in clients offer Full access only to the installation owner."
         ),
     )
     requires_password_change: bool = Field(

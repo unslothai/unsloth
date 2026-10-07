@@ -25,17 +25,17 @@ import { useCopyFeedback } from "@/features/hub/hooks/use-copy-feedback";
 import { formatBytes } from "@/features/hub";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownDoubleStandardIcon } from "@/lib/chevron-icons";
 import { stripAnsi } from "@/lib/strip-ansi";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  ArrowDownDoubleIcon,
   Copy01Icon,
   Download01Icon,
   FolderOpenIcon,
   InformationCircleIcon,
-  RefreshIcon,
+  Refresh01Icon,
   Search01Icon,
   Shield01Icon,
   TextWrapIcon,
@@ -596,7 +596,7 @@ export function DebuggingTab() {
                 void poll();
               }}
             >
-              <HugeiconsIcon strokeWidth={1.75} icon={RefreshIcon} />
+              <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
               {t("settings.debugging.refreshNow")}
             </Button>
           </div>
@@ -722,7 +722,7 @@ export function DebuggingTab() {
             onScroll={onScroll}
             data-testid="debug-log-pane"
             className={cn(
-              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
               wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
               !text && "text-muted-foreground",
             )}
@@ -740,7 +740,10 @@ export function DebuggingTab() {
               data-testid="debug-log-jump-to-latest"
               className="absolute right-3 bottom-3 rounded-full shadow-md"
             >
-              <HugeiconsIcon strokeWidth={1.75} icon={ArrowDownDoubleIcon} />
+              <HugeiconsIcon
+                strokeWidth={1.75}
+                icon={ChevronDownDoubleStandardIcon}
+              />
               {t("settings.debugging.jumpToLatest")}
             </Button>
           ) : null}

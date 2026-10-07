@@ -525,6 +525,8 @@ test("no default takes a chord the browser owns without a reason", () => {
     // because the browser's own find is what it replaces. Reserving it is still
     // right -- it is what warns a web user before they rebind onto it.
     "Mod+KeyF",
+    // The command palette takes Print the same way.
+    "Mod+KeyP",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -912,7 +914,8 @@ test("Reset all local preferences clears the rebound chords", async () => {
 // shows an English word in the middle of a translated settings dialog.
 test("every locale overlay carries the shortcut strings", async () => {
   const locales = [
-    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "sv",
+    "zh-CN",
   ];
   for (const locale of locales) {
     const source = await readFile(
@@ -1514,6 +1517,7 @@ test("every action has a useShortcut call site", async () => {
   const files = [
     "../src/app/routes/__root.tsx",
     "../src/components/app-sidebar.tsx",
+    "../src/components/command-palette.tsx",
     "../src/components/ui/sidebar.tsx",
     "../src/components/assistant-ui/thread.tsx",
     "../src/components/assistant-ui/tool-confirmation-controls.tsx",
@@ -1523,6 +1527,8 @@ test("every action has a useShortcut call site", async () => {
     "../src/features/chat/components/chat-search-dialog.tsx",
     "../src/features/api-monitor/api-monitor-overlay.tsx",
     "../src/features/find-in-page/components/find-in-page.tsx",
+    "../src/features/browser/browser-panel.tsx",
+    "../src/features/browser/browser-toggle.tsx",
   ];
   const sources = await Promise.all(
     files.map((file) => readFile(new URL(file, import.meta.url), "utf8")),
