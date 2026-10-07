@@ -355,7 +355,9 @@ class _MtmdDownloadState:
         return snapshot
 
     def cancel(
-        self, model_id: Optional[str] = None, download_id: Optional[str] = None
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
     ) -> bool:
         """Stop an in-flight download. False when none was running."""
         with self._lock:
@@ -561,9 +563,7 @@ def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download(
-    model: Optional[str] = None, download_id: Optional[str] = None
-) -> bool:
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
     try:
         model_id = resolve_mtmd_model_id(model) if model is not None else None
     except SttModelIdError:

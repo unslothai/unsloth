@@ -241,16 +241,12 @@ def test_cancel_route_forwards_the_request_identity():
 
     cancelled = []
     module = SimpleNamespace(
-        cancel_model_download = lambda model, download_id: cancelled.append(
-            (model, download_id)
-        )
+        cancel_model_download = lambda model, download_id: cancelled.append((model, download_id))
         or False,
         download_status = lambda: {"downloading": True, "model": "new"},
     )
 
-    result = inference._cancel_account_stt_download(
-        module, "transformers", "old", "old-download"
-    )
+    result = inference._cancel_account_stt_download(module, "transformers", "old", "old-download")
 
     assert cancelled == [("old", "old-download")]
     assert result["cancelled"] is False
@@ -263,9 +259,7 @@ def test_start_account_download_returns_the_attempt_identity(monkeypatch):
     module = SimpleNamespace(start_model_download = lambda *args: "attempt-a")
 
     assert (
-        inference._start_account_stt_download(
-            module, "transformers", "small", None, "a" * 40
-        )
+        inference._start_account_stt_download(module, "transformers", "small", None, "a" * 40)
         == "attempt-a"
     )
 

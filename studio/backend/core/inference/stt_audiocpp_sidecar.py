@@ -348,7 +348,9 @@ class _AudioCppDownloadState:
         return snapshot
 
     def cancel(
-        self, model_id: Optional[str] = None, download_id: Optional[str] = None
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
     ) -> bool:
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
@@ -535,9 +537,7 @@ def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download(
-    model: Optional[str] = None, download_id: Optional[str] = None
-) -> bool:
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
     requested = str(model).strip() if model is not None else None
     return _download_state.cancel(requested, download_id)
 
