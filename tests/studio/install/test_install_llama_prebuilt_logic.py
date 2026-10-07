@@ -4089,6 +4089,56 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
     assert not (runtime_dir / "llama-cli").exists()
 
 
+@pytest.mark.parametrize("bundles_fit_params", [True, False])
+def test_macos_install_makes_llama_fit_params_executable(
+    tmp_path: Path, bundles_fit_params: bool
+) -> None:
+    """#12901: the guarded extractor drops archive modes, so the optional Metal
+    probe must be chmod'ed like llama-server, and bundles without it still install."""
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    names = ["llama-server", "llama-quantize", "libllama.dylib", "libggml.dylib"]
+    if bundles_fit_params:
+        names.append("llama-fit-params")
+    bundle = archives / "llama-b9001-bin-macos-arm64.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in names:
+            add_bytes_to_tar(archive, name, f"{name}\n".encode(), mode = 0o755)
+
+    import hashlib
+
+    choice = asset_choice(
+        name = bundle.name,
+        source_label = "published",
+        install_kind = "macos-arm64",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, **kw):
+        shutil.copy2(bundle, target_path)
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, macos_host(), install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    fit_params = install / "build" / "bin" / "llama-fit-params"
+    if bundles_fit_params:
+        assert stat.S_IMODE(fit_params.stat().st_mode) == 0o755
+    else:
+        assert not fit_params.exists()
+
+
 def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: Path) -> None:
     """Installer DLL discovery must scan the same path set as the backend (cu12/cu13/conda layouts + torch/lib)."""
     import site as _site
