@@ -16,6 +16,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER_PATH = REPO_ROOT / "docker" / "unsloth_run.py"
+ROOT_SHIM_PATH = REPO_ROOT / "docker" / "unsloth_root_shim.py"
 RUN_SH = REPO_ROOT / "docker" / "run.sh"
 
 NOTEBOOK = {
@@ -54,6 +55,7 @@ def _run(
     seen = {}
 
     def nbconvert(cmd, env = None):
+        seen["env"] = env
         src = cmd[cmd.index("--output") - 1]
         seen["input"] = src
         kernel_cwd = os.path.dirname(os.path.abspath(src))
@@ -188,25 +190,73 @@ def test_an_unmapped_host_identity_is_rejected(runner, tmp_path):
         runner._container_run_ids((1000, 1000), uid_map, gid_map)
 
 
-def test_url_run_uses_host_identity_without_scanning_the_worktree(runner):
-    cmd = ["/opt/unsloth-venv/bin/jupyter", "nbconvert"]
+def test_url_run_uses_host_identity_with_a_privileged_install_path(runner, monkeypatch, cwd):
+    monkeypatch.setenv("UNSLOTH_RUN_UID", "1234")
+    monkeypatch.setenv("UNSLOTH_RUN_GID", "5678")
+    monkeypatch.setattr(runner, "_container_run_ids", lambda ids: ids)
 
-    assert runner._host_owned_command(cmd, (1234, 5678)) == [
+    seen = _run(runner, monkeypatch, ["https://example.invalid/nb/Llama.ipynb"])
+
+    assert seen["env"]["UNSLOTH_NB_ROOT_INSTALL"] == "1"
+    assert runner._host_owned_command(["jupyter"], (1234, 5678)) == [
         "/usr/bin/setpriv",
         "--reuid=1234",
         "--regid=5678",
         "--keep-groups",
-        "--inh-caps=-all,+chown,+dac_override,+fowner",
-        "--ambient-caps=-all,+chown,+dac_override,+fowner",
-        *cmd,
+        "--inh-caps=-all,+chown,+dac_override,+fowner,+setgid,+setuid",
+        "--ambient-caps=-all,+chown,+dac_override,+fowner,+setgid,+setuid",
+        "jupyter",
     ]
 
 
 @pytest.mark.parametrize("host_ids", [None, (0, 0)])
-def test_run_without_a_nonroot_host_identity_needs_no_privilege_wrapper(runner, host_ids):
-    cmd = ["/opt/unsloth-venv/bin/jupyter", "nbconvert"]
-
+def test_run_without_a_nonroot_mapped_identity_needs_no_privilege_wrapper(runner, host_ids):
+    cmd = ["jupyter"]
     assert runner._host_owned_command(cmd, host_ids) is cmd
+
+
+def test_root_shim_restores_root_before_executing_system_tools(monkeypatch):
+    spec = importlib.util.spec_from_file_location("unsloth_root_shim_under_test", ROOT_SHIM_PATH)
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+    calls = []
+    monkeypatch.setattr(shim.os, "setgid", lambda gid: calls.append(("gid", gid)))
+    monkeypatch.setattr(shim.os, "setuid", lambda uid: calls.append(("uid", uid)))
+    monkeypatch.setattr(
+        shim.os,
+        "execv",
+        lambda path, argv: calls.append(("exec", path, argv)),
+    )
+    monkeypatch.setattr(shim.sys, "argv", ["apt-get", "install", "-y", "git"])
+
+    shim.main()
+
+    assert calls == [
+        ("gid", 0),
+        ("uid", 0),
+        ("exec", "/usr/bin/apt-get", ["/usr/bin/apt-get", "install", "-y", "git"]),
+    ]
+
+
+def test_root_shim_emulates_common_sudo_flags(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "unsloth_root_shim_sudo_under_test", ROOT_SHIM_PATH
+    )
+    shim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shim)
+    calls = []
+    monkeypatch.setattr(shim.os, "setgid", lambda gid: None)
+    monkeypatch.setattr(shim.os, "setuid", lambda uid: None)
+    monkeypatch.setattr(
+        shim.os,
+        "execvpe",
+        lambda file, argv, env: calls.append((file, argv, env)),
+    )
+    monkeypatch.setattr(shim.sys, "argv", ["sudo", "-E", "--", "apt-get", "update"])
+
+    shim.main()
+
+    assert calls == [("apt-get", ["apt-get", "update"], shim.os.environ)]
 
 
 def _run_sh_argv(tmp_path, *command):

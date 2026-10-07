@@ -206,7 +206,7 @@ def _host_owned_command(cmd, run_ids):
     if run_ids is None or run_ids == (0, 0):
         return cmd
     uid, gid = run_ids
-    capabilities = "-all,+chown,+dac_override,+fowner"
+    capabilities = "-all,+chown,+dac_override,+fowner,+setgid,+setuid"
     return [
         "/usr/bin/setpriv",
         f"--reuid={uid}",
@@ -270,6 +270,8 @@ def main():
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
+    if run_ids is not None and run_ids != (0, 0):
+        env["UNSLOTH_NB_ROOT_INSTALL"] = "1"
     # nested runs need a fresh marker to avoid overwriting or reusing the caller's transformers pin
     fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
     os.close(fd)
