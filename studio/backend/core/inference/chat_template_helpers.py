@@ -819,8 +819,8 @@ def _neutralize_argument_leaves(value, markup = None):
 def _neutralized_arguments(arguments, markup = None):
     """Neutralize a replayed call's ``arguments``, or None when already clean. OpenAI ships
     ``arguments`` as JSON *text*, and every consumer decodes it back to an object AFTER this runs
-    (``_normalize_tool_call_arguments`` re-renders through ``json.loads`` when a template rejects
-    a string, and llama.cpp does the same in ``workaround::func_args_not_string``), so rewriting
+    (``_normalize_tool_call_arguments`` parses it with ``json.loads`` before rendering, and
+    llama.cpp does the same in ``workaround::func_args_not_string``), so rewriting
     the raw text lets "\\u003ctool_call|\\u003e" through and the decoded marker forges a turn
     (#7066). Parse first, rewrite the decoded leaves, re-serialize; a clean payload stays
     byte-identical so the prefix cache still hits."""

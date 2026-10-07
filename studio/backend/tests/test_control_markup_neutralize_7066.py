@@ -1579,9 +1579,9 @@ def test_media_placeholders_do_not_survive_an_assistant_replay():
 
 def test_json_escaped_arguments_cannot_smuggle_a_marker():
     """``arguments`` is JSON *text* on the OpenAI wire, and every consumer decodes it back
-    to an object AFTER neutralization: ``_normalize_tool_call_arguments`` re-renders
-    through ``json.loads`` when a template rejects a string, and llama.cpp does the same
-    in ``workaround::func_args_not_string``. So a marker written "\\u003ctool_call|\\u003e"
+    to an object AFTER neutralization: ``_normalize_tool_call_arguments`` parses it with
+    ``json.loads`` before rendering, and llama.cpp does the same in
+    ``workaround::func_args_not_string``. So a marker written "\\u003ctool_call|\\u003e"
     survived a rewrite done on the raw text and forged a turn once decoded (#7066)."""
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
